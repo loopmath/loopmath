@@ -1,0 +1,39 @@
+What I read
+  claude-code   6,218 session files, 5,104 parsed, 1,114 skipped
+  codex         4,158 session files, 3,820 parsed, 338 skipped
+  total         10,376 session files, 8,924 parsed, 1,452 skipped (2,103 from cache)
+  window        every log file, no time limit
+
+  graded 8102 of 8924 runs (90.8% structural); tiers: verified 5210 / reported 1802 / heuristic 1090 / asserted 402 / censored 420
+
+  tier        runs
+  verified   5,210
+  reported   1,802
+  heuristic  1,090
+  asserted     402
+  censored     420
+  ungraded       0
+
+Configurations
+  dollars per accepted run (80% confidence band)
+
+  configuration    runs  accepted  tiers  $/accepted  80% band
+  opus-5-xhigh      120       84%  n/a        $12.34  $9.10 to $15.80
+  sonnet-5-medium   340       79%  n/a        $1,204  $980.00 to $1,450
+
+  naive spread 8.2x; honest, cell-adjusted spread 5.6x
+  A task-mix cell is one workspace paired with the main kind of file the run wrote; matching compares configurations only where they share a cell, which is a proxy for the kind of task worked on, not an identification of the task itself.
+  1 of 2 workflow configurations have a point estimate that falls outside their own confidence band (marked with * in the table above). That is expected here, not a mistake: the band shows the spread of the resampling, not error bars centered on the estimate, and because the measure here is a ratio, resampling can push the band above the single estimate computed once on the full sample.
+  The thinnest confidence band above rests on only 940 of 1000 resampling draws. A workflow configuration drops out of a draw when that resample leaves it below the minimum run count or the minimum number of shared task-mix cells, so a thin band carries less support than a wide one might suggest.
+  cheapest vs most expensive: 3.1x the tokens but 10.4x the dollars (3.4x amplifier)
+  WARNING: 12 runs priced from placeholder rates (sonnet-5: 12).
+  Price table as of 2026-08-31.
+
+What I left out
+  1,452 session files did not parse into a run
+        of which 1,200 had no assistant turns, 252 were unreadable or empty
+    882 runs unpriced: no price entry for the model
+        of which 420 were censored: instant retry under 60 s with no approval signal
+    140 runs in configurations with fewer than 5 runs
+
+Local only. Nothing uploaded.

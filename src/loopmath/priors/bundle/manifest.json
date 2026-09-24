@@ -1,0 +1,202 @@
+{
+ "schema": "loopmath.prior.manifest/1",
+ "built_at": "2026-09-23T19:43:45-07:00",
+ "loopmath_version": "0.1.0",
+ "ocp": "0.3",
+ "config_id_impl": "loopmath.ocp.canonical.config_id",
+ "tariff": {
+  "id": "c5bf7030740a",
+  "date": "2026-08-31",
+  "source": "loopmath prices.toml"
+ },
+ "reduction": {
+  "profile": "share reduction, spec 03 section 7 (Analyst D19)",
+  "repo_salt": "random per build, not stored"
+ },
+ "size_cap_bytes": 5000000,
+ "sources": {
+  "sweep": {
+   "file": "sweep.jsonl.gz",
+   "bytes": 128122,
+   "sha256": "ff4428c4cdd71e7d20491d2426387b028a5204260013dabc158ab4431c192fb4",
+   "runs": 660,
+   "converter": "sweep/1",
+   "inputs": {
+    "description": "loopmath internal sweep (sweep0830): the experiment repository's results, contract v3 run files and attempts.jsonl",
+    "files": 661,
+    "sha256": "f9158f5ce1b5bf9d702a0a6ada5d2fd5f3d41128a43680c49568436f2d7bfe65"
+   },
+   "validation": {
+    "checker": "loopmath.ocp.conformance (v0.3)",
+    "errors": 0,
+    "warnings": 0
+   },
+   "summary": {
+    "runs": 660,
+    "outcomes": {
+     "accepted": 616,
+     "not accepted": 21,
+     "unknown": 23
+    },
+    "types": {
+     "bug_fix": 90,
+     "feature": 480,
+     "refactor": 90
+    },
+    "shapes": {
+     "plan_implement_review": 660
+    },
+    "attempts_by_model": {
+     "fable-5": 160,
+     "gpt-5.6-luna": 295,
+     "gpt-5.6-sol": 454,
+     "gpt-5.6-terra": 130,
+     "opus-5": 1003,
+     "sonnet-5": 145
+    },
+    "tokens": 471045151,
+    "usd": 1097.46,
+    "unpriced_attempts": 0,
+    "cost_unknown_attempts": 30
+   },
+   "counts": {
+    "infra_error_runs": 20,
+    "runs_with_infra_rounds": 30,
+    "cost_incomplete_runs": 21,
+    "superseded_rows": 719,
+    "later_rows": 5
+   },
+   "notes": [
+    "run files are authoritative; attempts.jsonl rows are matched by developer start time",
+    "superseded_rows: earlier executions the harness re-ran after a crash; later_rows: executions after the run file was written; neither is in the bundle",
+    "a developer or reviewer round whose CLI crashed without a timeout is flagged dev.loopmath.infra_error; when every developer round crashed the tests verdict is error",
+    "timed-out rounds that reported no usage carry dev.loopmath.tokens_unknown and no cost",
+    "planner tokens are the one shared plan per task and planner (dev.loopmath.shared_across_runs)",
+    "dollars priced with the packaged prices.toml (tariff above), not the recorded cost_usd",
+    "em dashes in source receipts are replaced by commas; receipts are then dropped by the reduction"
+   ],
+   "warnings": []
+  },
+  "e0": {
+   "file": "e0.jsonl.gz",
+   "bytes": 89185,
+   "sha256": "042659f3617666e04aa1f22cf01a27fde7060e0559fbf64bb3c9060174cb90f6",
+   "runs": 809,
+   "converter": "e0/1",
+   "inputs": {
+    "description": "E0 corpus copy (parser-spec v1, built 2026-08-28): sessions.jsonl and session-dag-join.jsonl",
+    "files": 2,
+    "sha256": "9532381e5ced0eebe639f137cb8a9683f73b4ed8f12c214ef9163f5ed6e3206e"
+   },
+   "validation": {
+    "checker": "loopmath.ocp.conformance (v0.3)",
+    "errors": 0,
+    "warnings": 0
+   },
+   "summary": {
+    "runs": 809,
+    "outcomes": {
+     "unknown": 809
+    },
+    "types": {
+     "untyped": 809
+    },
+    "shapes": {
+     "solo": 809
+    },
+    "attempts_by_model": {
+     "fable-5": 68,
+     "gpt-5.6-luna": 3,
+     "gpt-5.6-sol": 170,
+     "gpt-5.6-terra": 4,
+     "opus-4.8": 4,
+     "opus-5": 588,
+     "sonnet-4.6": 1,
+     "sonnet-5": 21
+    },
+    "tokens": 9611519372,
+    "usd": 9118.06,
+    "unpriced_attempts": 0,
+    "cost_unknown_attempts": 0
+   },
+   "counts": {
+    "sessions": 1716,
+    "runs": 809,
+    "subagent_attempts": 50,
+    "skipped": {
+     "fleet_stub": 727,
+     "no_model": 19,
+     "no_tokens": 4,
+     "subagent_without_bundled_parent": 1,
+     "temporary_folder": 106
+    }
+   },
+   "notes": [
+    "one logged habit run per real main session (catalog solo shape: harness, primary model, dominant effort)",
+    "no verdicts (D7): no signals and no acceptance rule; these runs feed the cost and tokens heads only",
+    "no task type: the corpus has no text to label from",
+    "subagent transcripts are extra attempts on their parent's run (dev.loopmath.subagent)",
+    "left out: fleet stubs (no model, an API error), sessions with no model or tokens, temporary folders",
+    "Codex input tokens exclude the cached tokens (input minus cached, as ingest.codex does)",
+    "dollars priced with the packaged prices.toml"
+   ],
+   "warnings": []
+  },
+  "rq1": {
+   "file": "rq1.jsonl.gz",
+   "bytes": 14230,
+   "sha256": "a2d003eb758842077af4e81fb9d33e7a244f90f02cae430a26fa215189a1866f",
+   "runs": 44,
+   "converter": "rq1/1",
+   "inputs": {
+    "description": "loopmath internal RQ1 phase 1: lane 10's OCP v0.3 conversion (D15)",
+    "files": 45,
+    "sha256": "b9c345add9711eaa9bf7047cd53cb8583310f7efb3117b48db2f5fd45b955893"
+   },
+   "validation": {
+    "checker": "loopmath.ocp.conformance (v0.3)",
+    "errors": 0,
+    "warnings": 0
+   },
+   "summary": {
+    "runs": 44,
+    "outcomes": {
+     "accepted": 21,
+     "not accepted": 23
+    },
+    "types": {
+     "feature": 44
+    },
+    "shapes": {
+     "best_of_n": 6,
+     "implement_review": 6,
+     "plan_implement": 6,
+     "solo": 18,
+     "swarm": 8
+    },
+    "attempts_by_model": {
+     "gpt-5.6-luna": 62,
+     "gpt-5.6-sol": 34
+    },
+    "tokens": 3420883230,
+    "usd": 482.23,
+    "unpriced_attempts": 0,
+    "cost_unknown_attempts": 0
+   },
+   "counts": {
+    "runs": 44,
+    "config_ids_changed": 0
+   },
+   "notes": [
+    "D15 labels checked on every run: type feature, repo ale-bench, subtype ahc/<problem>, source rq1, rule heldout_perf>=2400",
+    "configuration ids recomputed with the bundle's canonical form; lane 10's id kept as lane10_config_id",
+    "attempt roles written as their piece's role (D32)",
+    "dollars repriced from tokens with the packaged prices.toml; lane 10's list-price total is recorded_usd",
+    "lane 10's submission curve (dev.loopmath.rq1) is dropped by the share reduction"
+   ],
+   "warnings": []
+  }
+ },
+ "size_bytes": 231537,
+ "problems": []
+}

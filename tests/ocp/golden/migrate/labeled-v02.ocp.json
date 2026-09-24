@@ -1,0 +1,17 @@
+{
+  "ocp": "0.2",
+  "producer": {"name": "golden-fixture", "version": "1", "capabilities": {"groups": false, "events": false, "artifacts": false, "edges_dep": true, "edges_spawn": false, "edges_launch": false, "edges_artifact": false, "cost_usd": false, "cost_tokens": false, "outcome_evidence": true}},
+  "privacy": {"profile": "metadata_only"},
+  "run": {"id": "golden-labeled-run", "started_at": "2026-09-21T10:00:00-07:00",
+          "labels": {"task": "tsk_widget_since", "type": "feature", "repo": "example/widget", "team": "tools"}},
+  "nodes": [{"id": "impl", "kind": "impl", "state": "done"}, {"id": "rev", "kind": "review", "state": "done"},
+            {"id": "mixed", "kind": "task", "state": "done"}],
+  "edges": [{"from": "impl", "to": "rev", "kind": "dep", "tier": "reported"}],
+  "attempts": [
+    {"id": "impl.a1", "node": "impl", "status": "done", "role": {"value": "dev", "tier": "heuristic", "evidence": "session name"}, "outcome": {"result": "done", "evidence": "reported"}},
+    {"id": "impl.a2", "node": "impl", "status": "done", "role": {"value": "dev", "tier": "heuristic", "evidence": "session name"}, "outcome": {"result": "done", "evidence": "reported"}},
+    {"id": "rev.a1", "node": "rev", "status": "done", "role": {"value": "reviewer", "tier": "heuristic", "evidence": "session name"}, "outcome": {"result": "done", "evidence": "reported"}},
+    {"id": "mixed.a1", "node": "mixed", "status": "done", "role": {"value": "dev", "tier": "heuristic", "evidence": "session name"}, "outcome": {"result": "done", "evidence": "reported"}},
+    {"id": "mixed.a2", "node": "mixed", "status": "done", "role": {"value": "reviewer", "tier": "heuristic", "evidence": "session name"}, "outcome": {"result": "done", "evidence": "reported"}}
+  ]
+}

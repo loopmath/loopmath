@@ -1,0 +1,4 @@
+{"timestamp":"2026-08-31T10:30:00Z","type":"session_meta","payload":{"id":"codex-stray","timestamp":"2026-08-31T10:30:00Z","cwd":"/ws/alpha","originator":"codex_exec","cli_version":"0.40.0","source":"exec"}}
+{"timestamp":"2026-08-31T10:30:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>cwd=/ws/alpha</environment_context>"}]}}
+{"timestamp":"2026-08-31T10:30:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Summarize the module layout"}]}}
+{"timestamp":"2026-08-31T10:31:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Ten modules."}]}}

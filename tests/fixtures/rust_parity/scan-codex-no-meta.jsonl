@@ -1,0 +1,4 @@
+{"timestamp":"2026-09-02T12:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"relative","input":"*** Begin Patch\n*** Add File: relative.md\n+pending\n*** End Patch"}}
+{"timestamp":"2026-09-02T12:00:01Z","type":"turn_context","payload":{"cwd":"/from-turn"}}
+{"timestamp":"2026-09-02T12:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"resolved","input":"*** Begin Patch\n*** Add File: resolved.md\n+ok\n*** End Patch"}}
+{"timestamp":"2026-09-02T12:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"resolved","output":"Success. Updated the following files:\nA resolved.md\n"}}

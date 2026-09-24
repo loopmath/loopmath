@@ -1,0 +1,2469 @@
+{
+ "schema": "loopmath.recommend/1",
+ "task": {
+  "id": "tsk_fixture01",
+  "type": "feature",
+  "repo": "loopmath/loopmath",
+  "title": "Add --since to loopmath runs",
+  "subtype": null,
+  "org": null,
+  "features": {
+   "size": "s",
+   "lang": "python",
+   "has_tests": "yes",
+   "spec_clarity": "clear",
+   "needs_design": "no",
+   "touches": "few"
+  },
+  "base_commit": "672fd0d",
+  "source": "orchestrator",
+  "labeled_by": null,
+  "group_chain": [
+   [
+    "type",
+    "feature"
+   ],
+   [
+    "repo",
+    "loopmath/loopmath"
+   ],
+   [
+    "task",
+    "tsk_fixture01"
+   ]
+  ],
+  "support": {
+   "type": 412,
+   "repo": 23,
+   "task": 0
+  }
+ },
+ "rule": {
+  "name": "tests+review",
+  "definition": "tests pass and the reviewer approves",
+  "requires": [
+   "tests",
+   "review"
+  ],
+  "score": null,
+  "excludes_events": [
+   "revert",
+   "incident"
+  ],
+  "window_days": 14
+ },
+ "fit": {
+  "id": "fit_20260923160000",
+  "at": "2026-09-23T16:00:00-07:00",
+  "age_s": 540,
+  "n_runs": {
+   "prior": 1150,
+   "user": 23
+  }
+ },
+ "usual": {
+  "config": {
+   "id": "cfg_2eff0db574f9",
+   "workflow": {
+    "id": "implement_review",
+    "version": 1,
+    "title": "Implement, then review",
+    "pieces": [
+     {
+      "id": "implement",
+      "role": "implementer",
+      "setting": null,
+      "width": 1
+     },
+     {
+      "id": "review",
+      "role": "reviewer",
+      "setting": null,
+      "width": 1
+     }
+    ],
+    "artifacts": [
+     "patch",
+     "review_notes"
+    ],
+    "edges": [
+     [
+      "implement",
+      "patch"
+     ],
+     [
+      "patch",
+      "review"
+     ],
+     [
+      "review",
+      "review_notes"
+     ]
+    ],
+    "control": {
+     "gates": [
+      {
+       "id": "g_review",
+       "after": "review",
+       "rule": "review_approve",
+       "on_fail": "implement"
+      }
+     ],
+     "budget_rounds": 3,
+     "rescue": "redo_usual"
+    }
+   },
+   "settings": {
+    "implement": {
+     "harness": "claude-code",
+     "model": "claude-opus-5-5",
+     "effort": "high",
+     "context_policy": "fresh",
+     "options": {}
+    },
+    "review": {
+     "harness": "codex",
+     "model": "gpt-6-astra",
+     "effort": "xhigh",
+     "context_policy": "fresh",
+     "options": {}
+    }
+   }
+  },
+  "label": "implement_review: claude-opus-5-5/high, gpt-6-astra/xhigh",
+  "prediction": {
+   "config": "cfg_2eff0db574f9",
+   "p_success": {
+    "mean": 0.78,
+    "lo": 0.69,
+    "hi": 0.85,
+    "level": 0.8
+   },
+   "cost": {
+    "usd": {
+     "mean": 2.1,
+     "lo": 1.37,
+     "hi": 3.28,
+     "level": 0.8
+    },
+    "tokens": {
+     "mean": 378000.0,
+     "lo": 245700.0,
+     "hi": 589680.0,
+     "level": 0.8
+    }
+   },
+   "ell": {
+    "usd": {
+     "mean": 2.69,
+     "lo": 1.75,
+     "hi": 4.2,
+     "level": 0.8
+    },
+    "tokens": {
+     "mean": 484200.0,
+     "lo": 314730.0,
+     "hi": 755352.0,
+     "level": 0.8
+    }
+   },
+   "rounds": {
+    "mean": 1.4,
+    "lo": 1.0,
+    "hi": 2.2,
+    "level": 0.8
+   },
+   "per_piece": {
+    "implement": {
+     "piece": "implement",
+     "cost": {
+      "usd": {
+       "mean": 1.05,
+       "lo": 0.68,
+       "hi": 1.64,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 189000.0,
+       "lo": 122850.0,
+       "hi": 294840.0,
+       "level": 0.8
+      }
+     },
+     "gate_pass": null,
+     "rounds": {
+      "mean": 1.4,
+      "lo": 1.0,
+      "hi": 2.2,
+      "level": 0.8
+     },
+     "cost_per_round": null
+    },
+    "review": {
+     "piece": "review",
+     "cost": {
+      "usd": {
+       "mean": 1.05,
+       "lo": 0.68,
+       "hi": 1.64,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 189000.0,
+       "lo": 122850.0,
+       "hi": 294840.0,
+       "level": 0.8
+      }
+     },
+     "gate_pass": {
+      "mean": 0.72,
+      "lo": 0.6,
+      "hi": 0.83,
+      "level": 0.8
+     },
+     "rounds": {
+      "mean": 1.4,
+      "lo": 1.0,
+      "hi": 2.2,
+      "level": 0.8
+     },
+     "cost_per_round": null
+    }
+   },
+   "support": 23,
+   "scores": {
+    "heldout_perf": {
+     "name": "heldout_perf",
+     "unit": "perf",
+     "better": "higher",
+     "value": {
+      "mean": 2350,
+      "lo": 2090,
+      "hi": 2590,
+      "level": 0.8
+     },
+     "p_reach": null,
+     "support": 44
+    }
+   },
+   "success_from": "success_head"
+  },
+  "from": "history"
+ },
+ "curve": [
+  {
+   "levels": [
+    50
+   ],
+   "config": "cfg_3806f48e6577",
+   "reached": true,
+   "uncertain": false,
+   "prediction": {
+    "config": "cfg_3806f48e6577",
+    "p_success": {
+     "mean": 0.52,
+     "lo": 0.43,
+     "hi": 0.59,
+     "level": 0.8
+    },
+    "cost": {
+     "usd": {
+      "mean": 0.4,
+      "lo": 0.26,
+      "hi": 0.62,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 72000.0,
+      "lo": 46800.0,
+      "hi": 112320.0,
+      "level": 0.8
+     }
+    },
+    "ell": {
+     "usd": {
+      "mean": 1.69,
+      "lo": 1.1,
+      "hi": 2.64,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 304200.0,
+      "lo": 197730.0,
+      "hi": 474552.0,
+      "level": 0.8
+     }
+    },
+    "rounds": {
+     "mean": 1.0,
+     "lo": 1.0,
+     "hi": 1.8,
+     "level": 0.8
+    },
+    "per_piece": {
+     "implement": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 0.4,
+        "lo": 0.26,
+        "hi": 0.62,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 72000.0,
+        "lo": 46800.0,
+        "hi": 112320.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.0,
+       "lo": 1.0,
+       "hi": 1.8,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    "support": 23,
+    "scores": {
+     "heldout_perf": {
+      "name": "heldout_perf",
+      "unit": "perf",
+      "better": "higher",
+      "value": {
+       "mean": 1900,
+       "lo": 1640,
+       "hi": 2140,
+       "level": 0.8
+      },
+      "p_reach": null,
+      "support": 44
+     }
+    },
+    "success_from": "success_head"
+   }
+  },
+  {
+   "levels": [
+    70
+   ],
+   "config": "cfg_a7c1ee13535f",
+   "reached": true,
+   "uncertain": false,
+   "prediction": {
+    "config": "cfg_a7c1ee13535f",
+    "p_success": {
+     "mean": 0.74,
+     "lo": 0.65,
+     "hi": 0.81,
+     "level": 0.8
+    },
+    "cost": {
+     "usd": {
+      "mean": 1.3,
+      "lo": 0.85,
+      "hi": 2.03,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 234000.0,
+      "lo": 152100.0,
+      "hi": 365040.0,
+      "level": 0.8
+     }
+    },
+    "ell": {
+     "usd": {
+      "mean": 2.0,
+      "lo": 1.3,
+      "hi": 3.12,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 360000.0,
+      "lo": 234000.0,
+      "hi": 561600.0,
+      "level": 0.8
+     }
+    },
+    "rounds": {
+     "mean": 1.6,
+     "lo": 1.0,
+     "hi": 2.4000000000000004,
+     "level": 0.8
+    },
+    "per_piece": {
+     "implement": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 0.65,
+        "lo": 0.42,
+        "hi": 1.01,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 117000.0,
+        "lo": 76050.0,
+        "hi": 182520.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.6,
+       "lo": 1.0,
+       "hi": 2.4000000000000004,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     },
+     "review": {
+      "piece": "review",
+      "cost": {
+       "usd": {
+        "mean": 0.65,
+        "lo": 0.42,
+        "hi": 1.01,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 117000.0,
+        "lo": 76050.0,
+        "hi": 182520.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": {
+       "mean": 0.72,
+       "lo": 0.6,
+       "hi": 0.83,
+       "level": 0.8
+      },
+      "rounds": {
+       "mean": 1.6,
+       "lo": 1.0,
+       "hi": 2.4000000000000004,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    "support": 23,
+    "scores": {
+     "heldout_perf": {
+      "name": "heldout_perf",
+      "unit": "perf",
+      "better": "higher",
+      "value": {
+       "mean": 2290,
+       "lo": 2030,
+       "hi": 2530,
+       "level": 0.8
+      },
+      "p_reach": null,
+      "support": 44
+     }
+    },
+    "success_from": "success_head"
+   }
+  },
+  {
+   "levels": [
+    80
+   ],
+   "config": "cfg_14bc260b9eee",
+   "reached": true,
+   "uncertain": false,
+   "prediction": {
+    "config": "cfg_14bc260b9eee",
+    "p_success": {
+     "mean": 0.84,
+     "lo": 0.75,
+     "hi": 0.91,
+     "level": 0.8
+    },
+    "cost": {
+     "usd": {
+      "mean": 3.0,
+      "lo": 1.95,
+      "hi": 4.68,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 540000.0,
+      "lo": 351000.0,
+      "hi": 842400.0,
+      "level": 0.8
+     }
+    },
+    "ell": {
+     "usd": {
+      "mean": 3.43,
+      "lo": 2.23,
+      "hi": 5.35,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 617400.0,
+      "lo": 401310.0,
+      "hi": 963144.0,
+      "level": 0.8
+     }
+    },
+    "rounds": {
+     "mean": 1.3,
+     "lo": 1.0,
+     "hi": 2.1,
+     "level": 0.8
+    },
+    "per_piece": {
+     "implement": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 1.5,
+        "lo": 0.98,
+        "hi": 2.34,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 270000.0,
+        "lo": 175500.0,
+        "hi": 421200.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.3,
+       "lo": 1.0,
+       "hi": 2.1,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     },
+     "review": {
+      "piece": "review",
+      "cost": {
+       "usd": {
+        "mean": 1.5,
+        "lo": 0.98,
+        "hi": 2.34,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 270000.0,
+        "lo": 175500.0,
+        "hi": 421200.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": {
+       "mean": 0.72,
+       "lo": 0.6,
+       "hi": 0.83,
+       "level": 0.8
+      },
+      "rounds": {
+       "mean": 1.3,
+       "lo": 1.0,
+       "hi": 2.1,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    "support": 23,
+    "scores": {
+     "heldout_perf": {
+      "name": "heldout_perf",
+      "unit": "perf",
+      "better": "higher",
+      "value": {
+       "mean": 2460,
+       "lo": 2200,
+       "hi": 2700,
+       "level": 0.8
+      },
+      "p_reach": null,
+      "support": 44
+     }
+    },
+    "success_from": "success_head"
+   }
+  },
+  {
+   "levels": [
+    90
+   ],
+   "config": "cfg_48a78920bd7d",
+   "reached": true,
+   "uncertain": true,
+   "prediction": {
+    "config": "cfg_48a78920bd7d",
+    "p_success": {
+     "mean": 0.88,
+     "lo": 0.79,
+     "hi": 0.95,
+     "level": 0.8
+    },
+    "cost": {
+     "usd": {
+      "mean": 3.4,
+      "lo": 2.21,
+      "hi": 5.3,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 612000.0,
+      "lo": 397800.0,
+      "hi": 954720.0,
+      "level": 0.8
+     }
+    },
+    "ell": {
+     "usd": {
+      "mean": 3.72,
+      "lo": 2.42,
+      "hi": 5.8,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 669600.0,
+      "lo": 435240.0,
+      "hi": 1044576.0,
+      "level": 0.8
+     }
+    },
+    "rounds": {
+     "mean": 1.2,
+     "lo": 1.0,
+     "hi": 2.0,
+     "level": 0.8
+    },
+    "per_piece": {
+     "plan": {
+      "piece": "plan",
+      "cost": {
+       "usd": {
+        "mean": 1.13,
+        "lo": 0.73,
+        "hi": 1.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 203399.99999999997,
+        "lo": 132210.0,
+        "hi": 317303.99999999994,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.0,
+       "lo": 1.0,
+       "hi": 2.0,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     },
+     "implement": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 1.13,
+        "lo": 0.73,
+        "hi": 1.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 203399.99999999997,
+        "lo": 132210.0,
+        "hi": 317303.99999999994,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.2,
+       "lo": 1.0,
+       "hi": 2.0,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     },
+     "review": {
+      "piece": "review",
+      "cost": {
+       "usd": {
+        "mean": 1.13,
+        "lo": 0.73,
+        "hi": 1.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 203399.99999999997,
+        "lo": 132210.0,
+        "hi": 317303.99999999994,
+        "level": 0.8
+       }
+      },
+      "gate_pass": {
+       "mean": 0.72,
+       "lo": 0.6,
+       "hi": 0.83,
+       "level": 0.8
+      },
+      "rounds": {
+       "mean": 1.2,
+       "lo": 1.0,
+       "hi": 2.0,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    "support": 23,
+    "scores": {
+     "heldout_perf": {
+      "name": "heldout_perf",
+      "unit": "perf",
+      "better": "higher",
+      "value": {
+       "mean": 2520,
+       "lo": 2260,
+       "hi": 2760,
+       "level": 0.8
+      },
+      "p_reach": null,
+      "support": 44
+     }
+    },
+    "success_from": "success_head"
+   }
+  },
+  {
+   "levels": [
+    95
+   ],
+   "config": null,
+   "reached": false,
+   "uncertain": true,
+   "prediction": null
+  },
+  {
+   "levels": [
+    99
+   ],
+   "config": null,
+   "reached": false,
+   "uncertain": true,
+   "prediction": null
+  }
+ ],
+ "default_pick": {
+  "config": "cfg_3806f48e6577"
+ },
+ "goal": {
+  "level": 80,
+  "config": "cfg_14bc260b9eee"
+ },
+ "alternatives": [
+  {
+   "config": {
+    "id": "cfg_3806f48e6577",
+    "workflow": {
+     "id": "solo",
+     "version": 1,
+     "title": "One agent",
+     "pieces": [
+      {
+       "id": "implement",
+       "role": "implementer",
+       "setting": null,
+       "width": 1
+      }
+     ],
+     "artifacts": [
+      "patch"
+     ],
+     "edges": [
+      [
+       "implement",
+       "patch"
+      ]
+     ],
+     "control": {
+      "gates": [],
+      "budget_rounds": 1,
+      "rescue": "redo_usual"
+     }
+    },
+    "settings": {
+     "implement": {
+      "harness": "claude-code",
+      "model": "claude-fable-5-1",
+      "effort": "medium",
+      "context_policy": "fresh",
+      "options": {}
+     }
+    }
+   },
+   "origin": "catalog",
+   "diff_vs_usual": [
+    "shape: implement_review to solo",
+    "implementer: claude-opus-5-5/high to claude-fable-5-1/medium",
+    "reviewer removed"
+   ],
+   "prediction": {
+    "config": "cfg_3806f48e6577",
+    "p_success": {
+     "mean": 0.52,
+     "lo": 0.43,
+     "hi": 0.59,
+     "level": 0.8
+    },
+    "cost": {
+     "usd": {
+      "mean": 0.4,
+      "lo": 0.26,
+      "hi": 0.62,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 72000.0,
+      "lo": 46800.0,
+      "hi": 112320.0,
+      "level": 0.8
+     }
+    },
+    "ell": {
+     "usd": {
+      "mean": 1.69,
+      "lo": 1.1,
+      "hi": 2.64,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 304200.0,
+      "lo": 197730.0,
+      "hi": 474552.0,
+      "level": 0.8
+     }
+    },
+    "rounds": {
+     "mean": 1.0,
+     "lo": 1.0,
+     "hi": 1.8,
+     "level": 0.8
+    },
+    "per_piece": {
+     "implement": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 0.4,
+        "lo": 0.26,
+        "hi": 0.62,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 72000.0,
+        "lo": 46800.0,
+        "hi": 112320.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.0,
+       "lo": 1.0,
+       "hi": 1.8,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    "support": 23,
+    "scores": {
+     "heldout_perf": {
+      "name": "heldout_perf",
+      "unit": "perf",
+      "better": "higher",
+      "value": {
+       "mean": 1900,
+       "lo": 1640,
+       "hi": 2140,
+       "level": 0.8
+      },
+      "p_reach": null,
+      "support": 44
+     }
+    },
+    "success_from": "success_head"
+   }
+  },
+  {
+   "config": {
+    "id": "cfg_a7c1ee13535f",
+    "workflow": {
+     "id": "implement_review",
+     "version": 1,
+     "title": "Implement, then review",
+     "pieces": [
+      {
+       "id": "implement",
+       "role": "implementer",
+       "setting": null,
+       "width": 1
+      },
+      {
+       "id": "review",
+       "role": "reviewer",
+       "setting": null,
+       "width": 1
+      }
+     ],
+     "artifacts": [
+      "patch",
+      "review_notes"
+     ],
+     "edges": [
+      [
+       "implement",
+       "patch"
+      ],
+      [
+       "patch",
+       "review"
+      ],
+      [
+       "review",
+       "review_notes"
+      ]
+     ],
+     "control": {
+      "gates": [
+       {
+        "id": "g_review",
+        "after": "review",
+        "rule": "review_approve",
+        "on_fail": "implement"
+       }
+      ],
+      "budget_rounds": 3,
+      "rescue": "redo_usual"
+     }
+    },
+    "settings": {
+     "implement": {
+      "harness": "codex",
+      "model": "gpt-6-sol",
+      "effort": "high",
+      "context_policy": "fresh",
+      "options": {}
+     },
+     "review": {
+      "harness": "claude-code",
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "context_policy": "fresh",
+      "options": {}
+     }
+    }
+   },
+   "origin": "catalog",
+   "diff_vs_usual": [
+    "implementer: claude-opus-5-5/high to gpt-6-sol/high",
+    "reviewer: gpt-6-astra/xhigh to claude-opus-5-5/high"
+   ],
+   "prediction": {
+    "config": "cfg_a7c1ee13535f",
+    "p_success": {
+     "mean": 0.74,
+     "lo": 0.65,
+     "hi": 0.81,
+     "level": 0.8
+    },
+    "cost": {
+     "usd": {
+      "mean": 1.3,
+      "lo": 0.85,
+      "hi": 2.03,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 234000.0,
+      "lo": 152100.0,
+      "hi": 365040.0,
+      "level": 0.8
+     }
+    },
+    "ell": {
+     "usd": {
+      "mean": 2.0,
+      "lo": 1.3,
+      "hi": 3.12,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 360000.0,
+      "lo": 234000.0,
+      "hi": 561600.0,
+      "level": 0.8
+     }
+    },
+    "rounds": {
+     "mean": 1.6,
+     "lo": 1.0,
+     "hi": 2.4000000000000004,
+     "level": 0.8
+    },
+    "per_piece": {
+     "implement": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 0.65,
+        "lo": 0.42,
+        "hi": 1.01,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 117000.0,
+        "lo": 76050.0,
+        "hi": 182520.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.6,
+       "lo": 1.0,
+       "hi": 2.4000000000000004,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     },
+     "review": {
+      "piece": "review",
+      "cost": {
+       "usd": {
+        "mean": 0.65,
+        "lo": 0.42,
+        "hi": 1.01,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 117000.0,
+        "lo": 76050.0,
+        "hi": 182520.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": {
+       "mean": 0.72,
+       "lo": 0.6,
+       "hi": 0.83,
+       "level": 0.8
+      },
+      "rounds": {
+       "mean": 1.6,
+       "lo": 1.0,
+       "hi": 2.4000000000000004,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    "support": 23,
+    "scores": {
+     "heldout_perf": {
+      "name": "heldout_perf",
+      "unit": "perf",
+      "better": "higher",
+      "value": {
+       "mean": 2290,
+       "lo": 2030,
+       "hi": 2530,
+       "level": 0.8
+      },
+      "p_reach": null,
+      "support": 44
+     }
+    },
+    "success_from": "success_head"
+   }
+  },
+  {
+   "config": {
+    "id": "cfg_8b34d35eb438",
+    "workflow": {
+     "id": "solo",
+     "version": 1,
+     "title": "One agent",
+     "pieces": [
+      {
+       "id": "implement",
+       "role": "implementer",
+       "setting": null,
+       "width": 1
+      }
+     ],
+     "artifacts": [
+      "patch"
+     ],
+     "edges": [
+      [
+       "implement",
+       "patch"
+      ]
+     ],
+     "control": {
+      "gates": [],
+      "budget_rounds": 1,
+      "rescue": "redo_usual"
+     }
+    },
+    "settings": {
+     "implement": {
+      "harness": "claude-code",
+      "model": "claude-opus-5-5",
+      "effort": "xhigh",
+      "context_policy": "fresh",
+      "options": {}
+     }
+    }
+   },
+   "origin": "catalog",
+   "diff_vs_usual": [
+    "shape: implement_review to solo",
+    "implementer effort: high to xhigh",
+    "reviewer removed"
+   ],
+   "prediction": {
+    "config": "cfg_8b34d35eb438",
+    "p_success": {
+     "mean": 0.7,
+     "lo": 0.61,
+     "hi": 0.77,
+     "level": 0.8
+    },
+    "cost": {
+     "usd": {
+      "mean": 1.6,
+      "lo": 1.04,
+      "hi": 2.5,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 288000.0,
+      "lo": 187200.0,
+      "hi": 449280.0,
+      "level": 0.8
+     }
+    },
+    "ell": {
+     "usd": {
+      "mean": 2.41,
+      "lo": 1.57,
+      "hi": 3.76,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 433800.0,
+      "lo": 281970.0,
+      "hi": 676728.0,
+      "level": 0.8
+     }
+    },
+    "rounds": {
+     "mean": 1.0,
+     "lo": 1.0,
+     "hi": 1.8,
+     "level": 0.8
+    },
+    "per_piece": {
+     "implement": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 1.6,
+        "lo": 1.04,
+        "hi": 2.5,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 288000.0,
+        "lo": 187200.0,
+        "hi": 449280.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.0,
+       "lo": 1.0,
+       "hi": 1.8,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    "support": 23,
+    "scores": {
+     "heldout_perf": {
+      "name": "heldout_perf",
+      "unit": "perf",
+      "better": "higher",
+      "value": {
+       "mean": 2250,
+       "lo": 1990,
+       "hi": 2490,
+       "level": 0.8
+      },
+      "p_reach": null,
+      "support": 44
+     }
+    },
+    "success_from": "success_head"
+   }
+  },
+  {
+   "config": {
+    "id": "cfg_48a78920bd7d",
+    "workflow": {
+     "id": "plan_implement_review",
+     "version": 1,
+     "title": "Plan, implement, review",
+     "pieces": [
+      {
+       "id": "plan",
+       "role": "planner",
+       "setting": null,
+       "width": 1
+      },
+      {
+       "id": "implement",
+       "role": "implementer",
+       "setting": null,
+       "width": 1
+      },
+      {
+       "id": "review",
+       "role": "reviewer",
+       "setting": null,
+       "width": 1
+      }
+     ],
+     "artifacts": [
+      "plan_doc",
+      "patch",
+      "review_notes"
+     ],
+     "edges": [
+      [
+       "plan",
+       "plan_doc"
+      ],
+      [
+       "plan_doc",
+       "implement"
+      ],
+      [
+       "implement",
+       "patch"
+      ],
+      [
+       "patch",
+       "review"
+      ],
+      [
+       "review",
+       "review_notes"
+      ]
+     ],
+     "control": {
+      "gates": [
+       {
+        "id": "g_review",
+        "after": "review",
+        "rule": "review_approve",
+        "on_fail": "implement"
+       }
+      ],
+      "budget_rounds": 3,
+      "rescue": "redo_usual"
+     }
+    },
+    "settings": {
+     "plan": {
+      "harness": "claude-code",
+      "model": "claude-opus-5-5",
+      "effort": "xhigh",
+      "context_policy": "fresh",
+      "options": {}
+     },
+     "implement": {
+      "harness": "claude-code",
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "context_policy": "fresh",
+      "options": {}
+     },
+     "review": {
+      "harness": "codex",
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "context_policy": "fresh",
+      "options": {}
+     }
+    }
+   },
+   "origin": "catalog",
+   "diff_vs_usual": [
+    "planner added: claude-opus-5-5/xhigh"
+   ],
+   "prediction": {
+    "config": "cfg_48a78920bd7d",
+    "p_success": {
+     "mean": 0.88,
+     "lo": 0.79,
+     "hi": 0.95,
+     "level": 0.8
+    },
+    "cost": {
+     "usd": {
+      "mean": 3.4,
+      "lo": 2.21,
+      "hi": 5.3,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 612000.0,
+      "lo": 397800.0,
+      "hi": 954720.0,
+      "level": 0.8
+     }
+    },
+    "ell": {
+     "usd": {
+      "mean": 3.72,
+      "lo": 2.42,
+      "hi": 5.8,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 669600.0,
+      "lo": 435240.0,
+      "hi": 1044576.0,
+      "level": 0.8
+     }
+    },
+    "rounds": {
+     "mean": 1.2,
+     "lo": 1.0,
+     "hi": 2.0,
+     "level": 0.8
+    },
+    "per_piece": {
+     "plan": {
+      "piece": "plan",
+      "cost": {
+       "usd": {
+        "mean": 1.13,
+        "lo": 0.73,
+        "hi": 1.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 203399.99999999997,
+        "lo": 132210.0,
+        "hi": 317303.99999999994,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.0,
+       "lo": 1.0,
+       "hi": 2.0,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     },
+     "implement": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 1.13,
+        "lo": 0.73,
+        "hi": 1.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 203399.99999999997,
+        "lo": 132210.0,
+        "hi": 317303.99999999994,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.2,
+       "lo": 1.0,
+       "hi": 2.0,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     },
+     "review": {
+      "piece": "review",
+      "cost": {
+       "usd": {
+        "mean": 1.13,
+        "lo": 0.73,
+        "hi": 1.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 203399.99999999997,
+        "lo": 132210.0,
+        "hi": 317303.99999999994,
+        "level": 0.8
+       }
+      },
+      "gate_pass": {
+       "mean": 0.72,
+       "lo": 0.6,
+       "hi": 0.83,
+       "level": 0.8
+      },
+      "rounds": {
+       "mean": 1.2,
+       "lo": 1.0,
+       "hi": 2.0,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    "support": 23,
+    "scores": {
+     "heldout_perf": {
+      "name": "heldout_perf",
+      "unit": "perf",
+      "better": "higher",
+      "value": {
+       "mean": 2520,
+       "lo": 2260,
+       "hi": 2760,
+       "level": 0.8
+      },
+      "p_reach": null,
+      "support": 44
+     }
+    },
+    "success_from": "success_head"
+   }
+  }
+ ],
+ "exploration": {
+  "best_value": {
+   "kind": "best_value",
+   "candidate": {
+    "config": {
+     "id": "cfg_a7c1ee13535f",
+     "workflow": {
+      "id": "implement_review",
+      "version": 1,
+      "title": "Implement, then review",
+      "pieces": [
+       {
+        "id": "implement",
+        "role": "implementer",
+        "setting": null,
+        "width": 1
+       },
+       {
+        "id": "review",
+        "role": "reviewer",
+        "setting": null,
+        "width": 1
+       }
+      ],
+      "artifacts": [
+       "patch",
+       "review_notes"
+      ],
+      "edges": [
+       [
+        "implement",
+        "patch"
+       ],
+       [
+        "patch",
+        "review"
+       ],
+       [
+        "review",
+        "review_notes"
+       ]
+      ],
+      "control": {
+       "gates": [
+        {
+         "id": "g_review",
+         "after": "review",
+         "rule": "review_approve",
+         "on_fail": "implement"
+        }
+       ],
+       "budget_rounds": 3,
+       "rescue": "redo_usual"
+      }
+     },
+     "settings": {
+      "implement": {
+       "harness": "codex",
+       "model": "gpt-6-sol",
+       "effort": "high",
+       "context_policy": "fresh",
+       "options": {}
+      },
+      "review": {
+       "harness": "claude-code",
+       "model": "claude-opus-5-5",
+       "effort": "high",
+       "context_policy": "fresh",
+       "options": {}
+      }
+     }
+    },
+    "origin": "catalog",
+    "diff_vs_usual": [
+     "implementer: claude-opus-5-5/high to gpt-6-sol/high",
+     "reviewer: gpt-6-astra/xhigh to claude-opus-5-5/high"
+    ],
+    "prediction": {
+     "config": "cfg_a7c1ee13535f",
+     "p_success": {
+      "mean": 0.74,
+      "lo": 0.65,
+      "hi": 0.81,
+      "level": 0.8
+     },
+     "cost": {
+      "usd": {
+       "mean": 1.3,
+       "lo": 0.85,
+       "hi": 2.03,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 234000.0,
+       "lo": 152100.0,
+       "hi": 365040.0,
+       "level": 0.8
+      }
+     },
+     "ell": {
+      "usd": {
+       "mean": 2.0,
+       "lo": 1.3,
+       "hi": 3.12,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 360000.0,
+       "lo": 234000.0,
+       "hi": 561600.0,
+       "level": 0.8
+      }
+     },
+     "rounds": {
+      "mean": 1.6,
+      "lo": 1.0,
+      "hi": 2.4000000000000004,
+      "level": 0.8
+     },
+     "per_piece": {
+      "implement": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 0.65,
+         "lo": 0.42,
+         "hi": 1.01,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 117000.0,
+         "lo": 76050.0,
+         "hi": 182520.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.6,
+        "lo": 1.0,
+        "hi": 2.4000000000000004,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      },
+      "review": {
+       "piece": "review",
+       "cost": {
+        "usd": {
+         "mean": 0.65,
+         "lo": 0.42,
+         "hi": 1.01,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 117000.0,
+         "lo": 76050.0,
+         "hi": 182520.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": {
+        "mean": 0.72,
+        "lo": 0.6,
+        "hi": 0.83,
+        "level": 0.8
+       },
+       "rounds": {
+        "mean": 1.6,
+        "lo": 1.0,
+        "hi": 2.4000000000000004,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     "support": 23,
+     "scores": {
+      "heldout_perf": {
+       "name": "heldout_perf",
+       "unit": "perf",
+       "better": "higher",
+       "value": {
+        "mean": 2290,
+        "lo": 2030,
+        "hi": 2530,
+        "level": 0.8
+       },
+       "p_reach": null,
+       "support": 44
+      }
+     },
+     "success_from": "success_head"
+    }
+   },
+   "gain_per_run": {
+    "usd": 0.42,
+    "success_pp": -1.0,
+    "cost_pct": -38.0,
+    "score": null
+   },
+   "p_beats_goal": 0.31,
+   "price": {
+    "usd": {
+     "mean": 1.3,
+     "lo": 0.85,
+     "hi": 2.03,
+     "level": 0.8
+    },
+    "tokens": {
+     "mean": 234000.0,
+     "lo": 152100.0,
+     "hi": 365040.0,
+     "level": 0.8
+    }
+   },
+   "payback_runs": 3.1,
+   "runner_ups": [
+    {
+     "config": {
+      "id": "cfg_3806f48e6577",
+      "workflow": {
+       "id": "solo",
+       "version": 1,
+       "title": "One agent",
+       "pieces": [
+        {
+         "id": "implement",
+         "role": "implementer",
+         "setting": null,
+         "width": 1
+        }
+       ],
+       "artifacts": [
+        "patch"
+       ],
+       "edges": [
+        [
+         "implement",
+         "patch"
+        ]
+       ],
+       "control": {
+        "gates": [],
+        "budget_rounds": 1,
+        "rescue": "redo_usual"
+       }
+      },
+      "settings": {
+       "implement": {
+        "harness": "claude-code",
+        "model": "claude-fable-5-1",
+        "effort": "medium",
+        "context_policy": "fresh",
+        "options": {}
+       }
+      }
+     },
+     "origin": "catalog",
+     "diff_vs_usual": [
+      "shape: implement_review to solo",
+      "implementer: claude-opus-5-5/high to claude-fable-5-1/medium",
+      "reviewer removed"
+     ],
+     "prediction": {
+      "config": "cfg_3806f48e6577",
+      "p_success": {
+       "mean": 0.52,
+       "lo": 0.43,
+       "hi": 0.59,
+       "level": 0.8
+      },
+      "cost": {
+       "usd": {
+        "mean": 0.4,
+        "lo": 0.26,
+        "hi": 0.62,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 72000.0,
+        "lo": 46800.0,
+        "hi": 112320.0,
+        "level": 0.8
+       }
+      },
+      "ell": {
+       "usd": {
+        "mean": 1.69,
+        "lo": 1.1,
+        "hi": 2.64,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 304200.0,
+        "lo": 197730.0,
+        "hi": 474552.0,
+        "level": 0.8
+       }
+      },
+      "rounds": {
+       "mean": 1.0,
+       "lo": 1.0,
+       "hi": 1.8,
+       "level": 0.8
+      },
+      "per_piece": {
+       "implement": {
+        "piece": "implement",
+        "cost": {
+         "usd": {
+          "mean": 0.4,
+          "lo": 0.26,
+          "hi": 0.62,
+          "level": 0.8
+         },
+         "tokens": {
+          "mean": 72000.0,
+          "lo": 46800.0,
+          "hi": 112320.0,
+          "level": 0.8
+         }
+        },
+        "gate_pass": null,
+        "rounds": {
+         "mean": 1.0,
+         "lo": 1.0,
+         "hi": 1.8,
+         "level": 0.8
+        },
+        "cost_per_round": null
+       }
+      },
+      "support": 23,
+      "scores": {
+       "heldout_perf": {
+        "name": "heldout_perf",
+        "unit": "perf",
+        "better": "higher",
+        "value": {
+         "mean": 1900,
+         "lo": 1640,
+         "hi": 2140,
+         "level": 0.8
+        },
+        "p_reach": null,
+        "support": 44
+       }
+      },
+      "success_from": "success_head"
+     }
+    },
+    {
+     "config": {
+      "id": "cfg_8b34d35eb438",
+      "workflow": {
+       "id": "solo",
+       "version": 1,
+       "title": "One agent",
+       "pieces": [
+        {
+         "id": "implement",
+         "role": "implementer",
+         "setting": null,
+         "width": 1
+        }
+       ],
+       "artifacts": [
+        "patch"
+       ],
+       "edges": [
+        [
+         "implement",
+         "patch"
+        ]
+       ],
+       "control": {
+        "gates": [],
+        "budget_rounds": 1,
+        "rescue": "redo_usual"
+       }
+      },
+      "settings": {
+       "implement": {
+        "harness": "claude-code",
+        "model": "claude-opus-5-5",
+        "effort": "xhigh",
+        "context_policy": "fresh",
+        "options": {}
+       }
+      }
+     },
+     "origin": "catalog",
+     "diff_vs_usual": [
+      "shape: implement_review to solo",
+      "implementer effort: high to xhigh",
+      "reviewer removed"
+     ],
+     "prediction": {
+      "config": "cfg_8b34d35eb438",
+      "p_success": {
+       "mean": 0.7,
+       "lo": 0.61,
+       "hi": 0.77,
+       "level": 0.8
+      },
+      "cost": {
+       "usd": {
+        "mean": 1.6,
+        "lo": 1.04,
+        "hi": 2.5,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 288000.0,
+        "lo": 187200.0,
+        "hi": 449280.0,
+        "level": 0.8
+       }
+      },
+      "ell": {
+       "usd": {
+        "mean": 2.41,
+        "lo": 1.57,
+        "hi": 3.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 433800.0,
+        "lo": 281970.0,
+        "hi": 676728.0,
+        "level": 0.8
+       }
+      },
+      "rounds": {
+       "mean": 1.0,
+       "lo": 1.0,
+       "hi": 1.8,
+       "level": 0.8
+      },
+      "per_piece": {
+       "implement": {
+        "piece": "implement",
+        "cost": {
+         "usd": {
+          "mean": 1.6,
+          "lo": 1.04,
+          "hi": 2.5,
+          "level": 0.8
+         },
+         "tokens": {
+          "mean": 288000.0,
+          "lo": 187200.0,
+          "hi": 449280.0,
+          "level": 0.8
+         }
+        },
+        "gate_pass": null,
+        "rounds": {
+         "mean": 1.0,
+         "lo": 1.0,
+         "hi": 1.8,
+         "level": 0.8
+        },
+        "cost_per_round": null
+       }
+      },
+      "support": 23,
+      "scores": {
+       "heldout_perf": {
+        "name": "heldout_perf",
+        "unit": "perf",
+        "better": "higher",
+        "value": {
+         "mean": 2250,
+         "lo": 1990,
+         "hi": 2490,
+         "level": 0.8
+        },
+        "p_reach": null,
+        "support": 44
+       }
+      },
+      "success_from": "success_head"
+     }
+    }
+   ],
+   "auto_ok": false
+  },
+  "max_gain": {
+   "kind": "max_gain",
+   "candidate": {
+    "config": {
+     "id": "cfg_8b34d35eb438",
+     "workflow": {
+      "id": "solo",
+      "version": 1,
+      "title": "One agent",
+      "pieces": [
+       {
+        "id": "implement",
+        "role": "implementer",
+        "setting": null,
+        "width": 1
+       }
+      ],
+      "artifacts": [
+       "patch"
+      ],
+      "edges": [
+       [
+        "implement",
+        "patch"
+       ]
+      ],
+      "control": {
+       "gates": [],
+       "budget_rounds": 1,
+       "rescue": "redo_usual"
+      }
+     },
+     "settings": {
+      "implement": {
+       "harness": "claude-code",
+       "model": "claude-opus-5-5",
+       "effort": "xhigh",
+       "context_policy": "fresh",
+       "options": {}
+      }
+     }
+    },
+    "origin": "catalog",
+    "diff_vs_usual": [
+     "shape: implement_review to solo",
+     "implementer effort: high to xhigh",
+     "reviewer removed"
+    ],
+    "prediction": {
+     "config": "cfg_8b34d35eb438",
+     "p_success": {
+      "mean": 0.7,
+      "lo": 0.61,
+      "hi": 0.77,
+      "level": 0.8
+     },
+     "cost": {
+      "usd": {
+       "mean": 1.6,
+       "lo": 1.04,
+       "hi": 2.5,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 288000.0,
+       "lo": 187200.0,
+       "hi": 449280.0,
+       "level": 0.8
+      }
+     },
+     "ell": {
+      "usd": {
+       "mean": 2.41,
+       "lo": 1.57,
+       "hi": 3.76,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 433800.0,
+       "lo": 281970.0,
+       "hi": 676728.0,
+       "level": 0.8
+      }
+     },
+     "rounds": {
+      "mean": 1.0,
+      "lo": 1.0,
+      "hi": 1.8,
+      "level": 0.8
+     },
+     "per_piece": {
+      "implement": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 1.6,
+         "lo": 1.04,
+         "hi": 2.5,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 288000.0,
+         "lo": 187200.0,
+         "hi": 449280.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.8,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     "support": 23,
+     "scores": {
+      "heldout_perf": {
+       "name": "heldout_perf",
+       "unit": "perf",
+       "better": "higher",
+       "value": {
+        "mean": 2250,
+        "lo": 1990,
+        "hi": 2490,
+        "level": 0.8
+       },
+       "p_reach": null,
+       "support": 44
+      }
+     },
+     "success_from": "success_head"
+    }
+   },
+   "gain_per_run": {
+    "usd": 0.95,
+    "success_pp": 6.0,
+    "cost_pct": 4.0,
+    "score": null
+   },
+   "p_beats_goal": 0.44,
+   "price": {
+    "usd": {
+     "mean": 4.1,
+     "lo": 2.67,
+     "hi": 6.4,
+     "level": 0.8
+    },
+    "tokens": {
+     "mean": 737999.9999999999,
+     "lo": 479699.99999999994,
+     "hi": 1151279.9999999998,
+     "level": 0.8
+    }
+   },
+   "payback_runs": 4.3,
+   "runner_ups": [
+    {
+     "config": {
+      "id": "cfg_a7c1ee13535f",
+      "workflow": {
+       "id": "implement_review",
+       "version": 1,
+       "title": "Implement, then review",
+       "pieces": [
+        {
+         "id": "implement",
+         "role": "implementer",
+         "setting": null,
+         "width": 1
+        },
+        {
+         "id": "review",
+         "role": "reviewer",
+         "setting": null,
+         "width": 1
+        }
+       ],
+       "artifacts": [
+        "patch",
+        "review_notes"
+       ],
+       "edges": [
+        [
+         "implement",
+         "patch"
+        ],
+        [
+         "patch",
+         "review"
+        ],
+        [
+         "review",
+         "review_notes"
+        ]
+       ],
+       "control": {
+        "gates": [
+         {
+          "id": "g_review",
+          "after": "review",
+          "rule": "review_approve",
+          "on_fail": "implement"
+         }
+        ],
+        "budget_rounds": 3,
+        "rescue": "redo_usual"
+       }
+      },
+      "settings": {
+       "implement": {
+        "harness": "codex",
+        "model": "gpt-6-sol",
+        "effort": "high",
+        "context_policy": "fresh",
+        "options": {}
+       },
+       "review": {
+        "harness": "claude-code",
+        "model": "claude-opus-5-5",
+        "effort": "high",
+        "context_policy": "fresh",
+        "options": {}
+       }
+      }
+     },
+     "origin": "catalog",
+     "diff_vs_usual": [
+      "implementer: claude-opus-5-5/high to gpt-6-sol/high",
+      "reviewer: gpt-6-astra/xhigh to claude-opus-5-5/high"
+     ],
+     "prediction": {
+      "config": "cfg_a7c1ee13535f",
+      "p_success": {
+       "mean": 0.74,
+       "lo": 0.65,
+       "hi": 0.81,
+       "level": 0.8
+      },
+      "cost": {
+       "usd": {
+        "mean": 1.3,
+        "lo": 0.85,
+        "hi": 2.03,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 234000.0,
+        "lo": 152100.0,
+        "hi": 365040.0,
+        "level": 0.8
+       }
+      },
+      "ell": {
+       "usd": {
+        "mean": 2.0,
+        "lo": 1.3,
+        "hi": 3.12,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 360000.0,
+        "lo": 234000.0,
+        "hi": 561600.0,
+        "level": 0.8
+       }
+      },
+      "rounds": {
+       "mean": 1.6,
+       "lo": 1.0,
+       "hi": 2.4000000000000004,
+       "level": 0.8
+      },
+      "per_piece": {
+       "implement": {
+        "piece": "implement",
+        "cost": {
+         "usd": {
+          "mean": 0.65,
+          "lo": 0.42,
+          "hi": 1.01,
+          "level": 0.8
+         },
+         "tokens": {
+          "mean": 117000.0,
+          "lo": 76050.0,
+          "hi": 182520.0,
+          "level": 0.8
+         }
+        },
+        "gate_pass": null,
+        "rounds": {
+         "mean": 1.6,
+         "lo": 1.0,
+         "hi": 2.4000000000000004,
+         "level": 0.8
+        },
+        "cost_per_round": null
+       },
+       "review": {
+        "piece": "review",
+        "cost": {
+         "usd": {
+          "mean": 0.65,
+          "lo": 0.42,
+          "hi": 1.01,
+          "level": 0.8
+         },
+         "tokens": {
+          "mean": 117000.0,
+          "lo": 76050.0,
+          "hi": 182520.0,
+          "level": 0.8
+         }
+        },
+        "gate_pass": {
+         "mean": 0.72,
+         "lo": 0.6,
+         "hi": 0.83,
+         "level": 0.8
+        },
+        "rounds": {
+         "mean": 1.6,
+         "lo": 1.0,
+         "hi": 2.4000000000000004,
+         "level": 0.8
+        },
+        "cost_per_round": null
+       }
+      },
+      "support": 23,
+      "scores": {
+       "heldout_perf": {
+        "name": "heldout_perf",
+        "unit": "perf",
+        "better": "higher",
+        "value": {
+         "mean": 2290,
+         "lo": 2030,
+         "hi": 2530,
+         "level": 0.8
+        },
+        "p_reach": null,
+        "support": 44
+       }
+      },
+      "success_from": "success_head"
+     }
+    },
+    {
+     "config": {
+      "id": "cfg_3806f48e6577",
+      "workflow": {
+       "id": "solo",
+       "version": 1,
+       "title": "One agent",
+       "pieces": [
+        {
+         "id": "implement",
+         "role": "implementer",
+         "setting": null,
+         "width": 1
+        }
+       ],
+       "artifacts": [
+        "patch"
+       ],
+       "edges": [
+        [
+         "implement",
+         "patch"
+        ]
+       ],
+       "control": {
+        "gates": [],
+        "budget_rounds": 1,
+        "rescue": "redo_usual"
+       }
+      },
+      "settings": {
+       "implement": {
+        "harness": "claude-code",
+        "model": "claude-fable-5-1",
+        "effort": "medium",
+        "context_policy": "fresh",
+        "options": {}
+       }
+      }
+     },
+     "origin": "catalog",
+     "diff_vs_usual": [
+      "shape: implement_review to solo",
+      "implementer: claude-opus-5-5/high to claude-fable-5-1/medium",
+      "reviewer removed"
+     ],
+     "prediction": {
+      "config": "cfg_3806f48e6577",
+      "p_success": {
+       "mean": 0.52,
+       "lo": 0.43,
+       "hi": 0.59,
+       "level": 0.8
+      },
+      "cost": {
+       "usd": {
+        "mean": 0.4,
+        "lo": 0.26,
+        "hi": 0.62,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 72000.0,
+        "lo": 46800.0,
+        "hi": 112320.0,
+        "level": 0.8
+       }
+      },
+      "ell": {
+       "usd": {
+        "mean": 1.69,
+        "lo": 1.1,
+        "hi": 2.64,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 304200.0,
+        "lo": 197730.0,
+        "hi": 474552.0,
+        "level": 0.8
+       }
+      },
+      "rounds": {
+       "mean": 1.0,
+       "lo": 1.0,
+       "hi": 1.8,
+       "level": 0.8
+      },
+      "per_piece": {
+       "implement": {
+        "piece": "implement",
+        "cost": {
+         "usd": {
+          "mean": 0.4,
+          "lo": 0.26,
+          "hi": 0.62,
+          "level": 0.8
+         },
+         "tokens": {
+          "mean": 72000.0,
+          "lo": 46800.0,
+          "hi": 112320.0,
+          "level": 0.8
+         }
+        },
+        "gate_pass": null,
+        "rounds": {
+         "mean": 1.0,
+         "lo": 1.0,
+         "hi": 1.8,
+         "level": 0.8
+        },
+        "cost_per_round": null
+       }
+      },
+      "support": 23,
+      "scores": {
+       "heldout_perf": {
+        "name": "heldout_perf",
+        "unit": "perf",
+        "better": "higher",
+        "value": {
+         "mean": 1900,
+         "lo": 1640,
+         "hi": 2140,
+         "level": 0.8
+        },
+        "p_reach": null,
+        "support": 44
+       }
+      },
+      "success_from": "success_head"
+     }
+    }
+   ],
+   "auto_ok": false
+  }
+ },
+ "pair": {
+  "members": [
+   "cfg_14bc260b9eee",
+   "cfg_a7c1ee13535f"
+  ],
+  "explore_pick": "best_value",
+  "instructions": [
+   "same task and base commit",
+   "separate worktrees",
+   "run start --new-slate, then run start --slate SLT",
+   "blinded referee after both finish",
+   "outcome --slate SLT --prefer RUN|tie --judge referee --blinded"
+  ]
+ },
+ "message": "Your usual workflow (implement_review: claude-opus-5-5/high, gpt-6-astra/xhigh) has a 78% chance of an accepted result at about $2.10 (378,000 tokens). Your goal is the 80% row. Trying implement_review: gpt-6-sol/high, claude-opus-5-5/high alongside it costs $1.30 (234,000 tokens) now. There is a 31% chance it beats your goal. Trying it once is expected to save about $0.42 on each future similar run, so it pays for itself after about 3 similar runs. The option with the biggest gain is solo: claude-opus-5-5/xhigh: it costs $4.10 (738,000 tokens) now, has a 44% chance to beat your goal, is expected to save about $0.95 per future similar run, and pays for itself after about 4 runs.",
+ "rec": "rec_01J8FIXTURE000000000000001"
+}

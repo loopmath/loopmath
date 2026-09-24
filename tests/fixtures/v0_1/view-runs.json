@@ -1,0 +1,1175 @@
+{
+ "schema": "loopmath.view.runs/1",
+ "generated_at": "2026-09-23T16:00:00-07:00",
+ "filters": {},
+ "runs": [
+  {
+   "run": "run_01J8F0000000000000000001",
+   "started_at": "2026-09-20T10:04:00-07:00",
+   "task": {
+    "type": "feature",
+    "repo": "loopmath/loopmath",
+    "subtype": null,
+    "title": "Fixture task for implement_review"
+   },
+   "config": {
+    "id": "cfg_2eff0db574f9",
+    "label": "implement_review: claude-opus-5-5/high, gpt-6-astra/xhigh",
+    "workflow": "implement_review"
+   },
+   "source": "usual",
+   "slate": null,
+   "state": "finished",
+   "cost": {
+    "usd": 1.95,
+    "tokens": 351000
+   },
+   "z": 1.0,
+   "q": 0.95,
+   "tier": "reported",
+   "score": null,
+   "rounds": 1,
+   "receipt": {
+    "predicted": {
+     "config": "cfg_2eff0db574f9",
+     "p_success": {
+      "mean": 0.78,
+      "lo": 0.69,
+      "hi": 0.85,
+      "level": 0.8
+     },
+     "cost": {
+      "usd": {
+       "mean": 2.1,
+       "lo": 1.37,
+       "hi": 3.28,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 378000.0,
+       "lo": 245700.0,
+       "hi": 589680.0,
+       "level": 0.8
+      }
+     },
+     "ell": {
+      "usd": {
+       "mean": 2.69,
+       "lo": 1.75,
+       "hi": 4.2,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 484200.0,
+       "lo": 314730.0,
+       "hi": 755352.0,
+       "level": 0.8
+      }
+     },
+     "rounds": {
+      "mean": 1.4,
+      "lo": 1.0,
+      "hi": 2.2,
+      "level": 0.8
+     },
+     "per_piece": {
+      "implement": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 1.05,
+         "lo": 0.68,
+         "hi": 1.64,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 189000.0,
+         "lo": 122850.0,
+         "hi": 294840.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.4,
+        "lo": 1.0,
+        "hi": 2.2,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      },
+      "review": {
+       "piece": "review",
+       "cost": {
+        "usd": {
+         "mean": 1.05,
+         "lo": 0.68,
+         "hi": 1.64,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 189000.0,
+         "lo": 122850.0,
+         "hi": 294840.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": {
+        "mean": 0.72,
+        "lo": 0.6,
+        "hi": 0.83,
+        "level": 0.8
+       },
+       "rounds": {
+        "mean": 1.4,
+        "lo": 1.0,
+        "hi": 2.2,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     "support": 23,
+     "scores": {
+      "heldout_perf": {
+       "name": "heldout_perf",
+       "unit": "perf",
+       "better": "higher",
+       "value": {
+        "mean": 2350,
+        "lo": 2090,
+        "hi": 2590,
+        "level": 0.8
+       },
+       "p_reach": null,
+       "support": 44
+      }
+     },
+     "success_from": "success_head"
+    },
+    "cost_in_interval": true,
+    "surprise": -0.13
+   }
+  },
+  {
+   "run": "run_01J8F0000000000000000002",
+   "started_at": "2026-09-21T14:30:00-07:00",
+   "task": {
+    "type": "feature",
+    "repo": "loopmath/loopmath",
+    "subtype": null,
+    "title": "Fixture task for implement_review"
+   },
+   "config": {
+    "id": "cfg_14bc260b9eee",
+    "label": "implement_review: claude-opus-5-5/xhigh, gpt-6-astra/xhigh",
+    "workflow": "implement_review"
+   },
+   "source": "alternative",
+   "slate": "slt_01J8F00000000000000000A1",
+   "state": "finished",
+   "cost": {
+    "usd": 3.62,
+    "tokens": 651600
+   },
+   "z": 1.0,
+   "q": 0.98,
+   "tier": "verified",
+   "score": 0.8,
+   "rounds": 1,
+   "receipt": {
+    "predicted": {
+     "config": "cfg_14bc260b9eee",
+     "p_success": {
+      "mean": 0.84,
+      "lo": 0.75,
+      "hi": 0.91,
+      "level": 0.8
+     },
+     "cost": {
+      "usd": {
+       "mean": 3.0,
+       "lo": 1.95,
+       "hi": 4.68,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 540000.0,
+       "lo": 351000.0,
+       "hi": 842400.0,
+       "level": 0.8
+      }
+     },
+     "ell": {
+      "usd": {
+       "mean": 3.43,
+       "lo": 2.23,
+       "hi": 5.35,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 617400.0,
+       "lo": 401310.0,
+       "hi": 963144.0,
+       "level": 0.8
+      }
+     },
+     "rounds": {
+      "mean": 1.3,
+      "lo": 1.0,
+      "hi": 2.1,
+      "level": 0.8
+     },
+     "per_piece": {
+      "implement": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 1.5,
+         "lo": 0.98,
+         "hi": 2.34,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 270000.0,
+         "lo": 175500.0,
+         "hi": 421200.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.3,
+        "lo": 1.0,
+        "hi": 2.1,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      },
+      "review": {
+       "piece": "review",
+       "cost": {
+        "usd": {
+         "mean": 1.5,
+         "lo": 0.98,
+         "hi": 2.34,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 270000.0,
+         "lo": 175500.0,
+         "hi": 421200.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": {
+        "mean": 0.72,
+        "lo": 0.6,
+        "hi": 0.83,
+        "level": 0.8
+       },
+       "rounds": {
+        "mean": 1.3,
+        "lo": 1.0,
+        "hi": 2.1,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     "support": 23,
+     "scores": {
+      "heldout_perf": {
+       "name": "heldout_perf",
+       "unit": "perf",
+       "better": "higher",
+       "value": {
+        "mean": 2460,
+        "lo": 2200,
+        "hi": 2700,
+        "level": 0.8
+       },
+       "p_reach": null,
+       "support": 44
+      }
+     },
+     "success_from": "success_head"
+    },
+    "cost_in_interval": true,
+    "surprise": 0.37
+   },
+   "preference": {
+    "slate": "slt_01J8F00000000000000000A1",
+    "winner": "run_01J8F0000000000000000002",
+    "judge": "referee",
+    "blinded": true
+   }
+  },
+  {
+   "run": "run_01J8F0000000000000000003",
+   "started_at": "2026-09-21T14:31:00-07:00",
+   "task": {
+    "type": "feature",
+    "repo": "loopmath/loopmath",
+    "subtype": null,
+    "title": "Fixture task for implement_review"
+   },
+   "config": {
+    "id": "cfg_a7c1ee13535f",
+    "label": "implement_review: gpt-6-sol/high, claude-opus-5-5/high",
+    "workflow": "implement_review"
+   },
+   "source": "exploration",
+   "slate": "slt_01J8F00000000000000000A1",
+   "state": "finished",
+   "cost": {
+    "usd": 1.12,
+    "tokens": 201600
+   },
+   "z": 0.0,
+   "q": 0.98,
+   "tier": "verified",
+   "score": null,
+   "rounds": 3,
+   "receipt": {
+    "predicted": {
+     "config": "cfg_a7c1ee13535f",
+     "p_success": {
+      "mean": 0.74,
+      "lo": 0.65,
+      "hi": 0.81,
+      "level": 0.8
+     },
+     "cost": {
+      "usd": {
+       "mean": 1.3,
+       "lo": 0.85,
+       "hi": 2.03,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 234000.0,
+       "lo": 152100.0,
+       "hi": 365040.0,
+       "level": 0.8
+      }
+     },
+     "ell": {
+      "usd": {
+       "mean": 2.0,
+       "lo": 1.3,
+       "hi": 3.12,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 360000.0,
+       "lo": 234000.0,
+       "hi": 561600.0,
+       "level": 0.8
+      }
+     },
+     "rounds": {
+      "mean": 1.6,
+      "lo": 1.0,
+      "hi": 2.4000000000000004,
+      "level": 0.8
+     },
+     "per_piece": {
+      "implement": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 0.65,
+         "lo": 0.42,
+         "hi": 1.01,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 117000.0,
+         "lo": 76050.0,
+         "hi": 182520.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.6,
+        "lo": 1.0,
+        "hi": 2.4000000000000004,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      },
+      "review": {
+       "piece": "review",
+       "cost": {
+        "usd": {
+         "mean": 0.65,
+         "lo": 0.42,
+         "hi": 1.01,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 117000.0,
+         "lo": 76050.0,
+         "hi": 182520.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": {
+        "mean": 0.72,
+        "lo": 0.6,
+        "hi": 0.83,
+        "level": 0.8
+       },
+       "rounds": {
+        "mean": 1.6,
+        "lo": 1.0,
+        "hi": 2.4000000000000004,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     "support": 23,
+     "scores": {
+      "heldout_perf": {
+       "name": "heldout_perf",
+       "unit": "perf",
+       "better": "higher",
+       "value": {
+        "mean": 2290,
+        "lo": 2030,
+        "hi": 2530,
+        "level": 0.8
+       },
+       "p_reach": null,
+       "support": 44
+      }
+     },
+     "success_from": "success_head"
+    },
+    "cost_in_interval": true,
+    "surprise": -0.25
+   }
+  },
+  {
+   "run": "run_01J8F0000000000000000004",
+   "started_at": "2026-09-22T09:12:00-07:00",
+   "task": {
+    "type": "feature",
+    "repo": "loopmath/loopmath",
+    "subtype": null,
+    "title": "Fixture task for solo"
+   },
+   "config": {
+    "id": "cfg_3806f48e6577",
+    "label": "solo: claude-fable-5-1/medium",
+    "workflow": "solo"
+   },
+   "source": "habit",
+   "slate": null,
+   "state": "finished",
+   "cost": {
+    "usd": 0.37,
+    "tokens": 66600
+   },
+   "z": null,
+   "q": 0.8,
+   "tier": "heuristic",
+   "score": null,
+   "rounds": 1,
+   "receipt": {
+    "predicted": {
+     "config": "cfg_3806f48e6577",
+     "p_success": {
+      "mean": 0.52,
+      "lo": 0.43,
+      "hi": 0.59,
+      "level": 0.8
+     },
+     "cost": {
+      "usd": {
+       "mean": 0.4,
+       "lo": 0.26,
+       "hi": 0.62,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 72000.0,
+       "lo": 46800.0,
+       "hi": 112320.0,
+       "level": 0.8
+      }
+     },
+     "ell": {
+      "usd": {
+       "mean": 1.69,
+       "lo": 1.1,
+       "hi": 2.64,
+       "level": 0.8
+      },
+      "tokens": {
+       "mean": 304200.0,
+       "lo": 197730.0,
+       "hi": 474552.0,
+       "level": 0.8
+      }
+     },
+     "rounds": {
+      "mean": 1.0,
+      "lo": 1.0,
+      "hi": 1.8,
+      "level": 0.8
+     },
+     "per_piece": {
+      "implement": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 0.4,
+         "lo": 0.26,
+         "hi": 0.62,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 72000.0,
+         "lo": 46800.0,
+         "hi": 112320.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.8,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     "support": 23,
+     "scores": {
+      "heldout_perf": {
+       "name": "heldout_perf",
+       "unit": "perf",
+       "better": "higher",
+       "value": {
+        "mean": 1900,
+        "lo": 1640,
+        "hi": 2140,
+        "level": 0.8
+       },
+       "p_reach": null,
+       "support": 44
+      }
+     },
+     "success_from": "success_head"
+    },
+    "cost_in_interval": true,
+    "surprise": -0.14
+   }
+  }
+ ],
+ "selected": {
+  "run": "run_01J8F0000000000000000002",
+  "doc": {
+   "ocp": "0.3",
+   "note": "full OCP v0.3 document goes here (lane 1 golden)"
+  },
+  "graph": {
+   "config": "cfg_14bc260b9eee",
+   "label": "implement_review: claude-opus-5-5/xhigh, gpt-6-astra/xhigh",
+   "nodes": [
+    {
+     "id": "implement",
+     "kind": "piece",
+     "role": "implementer",
+     "setting": {
+      "harness": "claude-code",
+      "model": "claude-opus-5-5",
+      "effort": "xhigh",
+      "context_policy": "fresh",
+      "options": {}
+     },
+     "prediction": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 1.5,
+        "lo": 0.98,
+        "hi": 2.34,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 270000.0,
+        "lo": 175500.0,
+        "hi": 421200.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.3,
+       "lo": 1.0,
+       "hi": 2.1,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    {
+     "id": "review",
+     "kind": "piece",
+     "role": "reviewer",
+     "setting": {
+      "harness": "codex",
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "context_policy": "fresh",
+      "options": {}
+     },
+     "prediction": {
+      "piece": "review",
+      "cost": {
+       "usd": {
+        "mean": 1.5,
+        "lo": 0.98,
+        "hi": 2.34,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 270000.0,
+        "lo": 175500.0,
+        "hi": 421200.0,
+        "level": 0.8
+       }
+      },
+      "gate_pass": {
+       "mean": 0.72,
+       "lo": 0.6,
+       "hi": 0.83,
+       "level": 0.8
+      },
+      "rounds": {
+       "mean": 1.3,
+       "lo": 1.0,
+       "hi": 2.1,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    {
+     "id": "patch",
+     "kind": "artifact"
+    },
+    {
+     "id": "review_notes",
+     "kind": "artifact"
+    }
+   ],
+   "edges": [
+    {
+     "from": "implement",
+     "to": "patch"
+    },
+    {
+     "from": "patch",
+     "to": "review"
+    },
+    {
+     "from": "review",
+     "to": "review_notes"
+    }
+   ],
+   "gates": [
+    {
+     "id": "g_review",
+     "after": "review",
+     "rule": "review_approve",
+     "on_fail": "implement"
+    }
+   ]
+  },
+  "signals": [
+   {
+    "name": "tests",
+    "kind": "verdict",
+    "value": "pass",
+    "observed_at": "2026-09-21T15:02:00-07:00",
+    "tier": "verified"
+   },
+   {
+    "name": "review",
+    "kind": "verdict",
+    "value": "accept",
+    "observed_at": "2026-09-21T15:10:00-07:00",
+    "tier": "reported"
+   },
+   {
+    "name": "quality",
+    "kind": "score",
+    "value": 0.8,
+    "unit": "fraction",
+    "better": "higher",
+    "observed_at": "2026-09-21T15:20:00-07:00",
+    "tier": "reported"
+   }
+  ]
+ },
+ "details": {
+  "run_01J8F0000000000000000001": {
+   "doc": {
+    "ocp": "0.3",
+    "note": "full OCP v0.3 document goes here (lane 1 golden)"
+   },
+   "graph": {
+    "config": "cfg_2eff0db574f9",
+    "label": "implement_review: claude-opus-5-5/high, gpt-6-astra/xhigh",
+    "nodes": [
+     {
+      "id": "implement",
+      "kind": "piece",
+      "role": "implementer",
+      "setting": {
+       "harness": "claude-code",
+       "model": "claude-opus-5-5",
+       "effort": "high",
+       "context_policy": "fresh",
+       "options": {}
+      },
+      "prediction": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 1.05,
+         "lo": 0.68,
+         "hi": 1.64,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 189000.0,
+         "lo": 122850.0,
+         "hi": 294840.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.4,
+        "lo": 1.0,
+        "hi": 2.2,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     {
+      "id": "review",
+      "kind": "piece",
+      "role": "reviewer",
+      "setting": {
+       "harness": "codex",
+       "model": "gpt-6-astra",
+       "effort": "xhigh",
+       "context_policy": "fresh",
+       "options": {}
+      },
+      "prediction": {
+       "piece": "review",
+       "cost": {
+        "usd": {
+         "mean": 1.05,
+         "lo": 0.68,
+         "hi": 1.64,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 189000.0,
+         "lo": 122850.0,
+         "hi": 294840.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": {
+        "mean": 0.72,
+        "lo": 0.6,
+        "hi": 0.83,
+        "level": 0.8
+       },
+       "rounds": {
+        "mean": 1.4,
+        "lo": 1.0,
+        "hi": 2.2,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     {
+      "id": "patch",
+      "kind": "artifact"
+     },
+     {
+      "id": "review_notes",
+      "kind": "artifact"
+     }
+    ],
+    "edges": [
+     {
+      "from": "implement",
+      "to": "patch"
+     },
+     {
+      "from": "patch",
+      "to": "review"
+     },
+     {
+      "from": "review",
+      "to": "review_notes"
+     }
+    ],
+    "gates": [
+     {
+      "id": "g_review",
+      "after": "review",
+      "rule": "review_approve",
+      "on_fail": "implement"
+     }
+    ]
+   },
+   "signals": []
+  },
+  "run_01J8F0000000000000000002": {
+   "doc": {
+    "ocp": "0.3",
+    "note": "full OCP v0.3 document goes here (lane 1 golden)"
+   },
+   "graph": {
+    "config": "cfg_14bc260b9eee",
+    "label": "implement_review: claude-opus-5-5/xhigh, gpt-6-astra/xhigh",
+    "nodes": [
+     {
+      "id": "implement",
+      "kind": "piece",
+      "role": "implementer",
+      "setting": {
+       "harness": "claude-code",
+       "model": "claude-opus-5-5",
+       "effort": "xhigh",
+       "context_policy": "fresh",
+       "options": {}
+      },
+      "prediction": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 1.5,
+         "lo": 0.98,
+         "hi": 2.34,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 270000.0,
+         "lo": 175500.0,
+         "hi": 421200.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.3,
+        "lo": 1.0,
+        "hi": 2.1,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     {
+      "id": "review",
+      "kind": "piece",
+      "role": "reviewer",
+      "setting": {
+       "harness": "codex",
+       "model": "gpt-6-astra",
+       "effort": "xhigh",
+       "context_policy": "fresh",
+       "options": {}
+      },
+      "prediction": {
+       "piece": "review",
+       "cost": {
+        "usd": {
+         "mean": 1.5,
+         "lo": 0.98,
+         "hi": 2.34,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 270000.0,
+         "lo": 175500.0,
+         "hi": 421200.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": {
+        "mean": 0.72,
+        "lo": 0.6,
+        "hi": 0.83,
+        "level": 0.8
+       },
+       "rounds": {
+        "mean": 1.3,
+        "lo": 1.0,
+        "hi": 2.1,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     {
+      "id": "patch",
+      "kind": "artifact"
+     },
+     {
+      "id": "review_notes",
+      "kind": "artifact"
+     }
+    ],
+    "edges": [
+     {
+      "from": "implement",
+      "to": "patch"
+     },
+     {
+      "from": "patch",
+      "to": "review"
+     },
+     {
+      "from": "review",
+      "to": "review_notes"
+     }
+    ],
+    "gates": [
+     {
+      "id": "g_review",
+      "after": "review",
+      "rule": "review_approve",
+      "on_fail": "implement"
+     }
+    ]
+   },
+   "signals": [
+    {
+     "name": "tests",
+     "kind": "verdict",
+     "value": "pass",
+     "observed_at": "2026-09-21T15:02:00-07:00",
+     "tier": "verified"
+    },
+    {
+     "name": "review",
+     "kind": "verdict",
+     "value": "accept",
+     "observed_at": "2026-09-21T15:10:00-07:00",
+     "tier": "reported"
+    },
+    {
+     "name": "quality",
+     "kind": "score",
+     "value": 0.8,
+     "unit": "fraction",
+     "better": "higher",
+     "observed_at": "2026-09-21T15:20:00-07:00",
+     "tier": "reported"
+    }
+   ]
+  },
+  "run_01J8F0000000000000000003": {
+   "doc": {
+    "ocp": "0.3",
+    "note": "full OCP v0.3 document goes here (lane 1 golden)"
+   },
+   "graph": {
+    "config": "cfg_a7c1ee13535f",
+    "label": "implement_review: gpt-6-sol/high, claude-opus-5-5/high",
+    "nodes": [
+     {
+      "id": "implement",
+      "kind": "piece",
+      "role": "implementer",
+      "setting": {
+       "harness": "codex",
+       "model": "gpt-6-sol",
+       "effort": "high",
+       "context_policy": "fresh",
+       "options": {}
+      },
+      "prediction": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 0.65,
+         "lo": 0.42,
+         "hi": 1.01,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 117000.0,
+         "lo": 76050.0,
+         "hi": 182520.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.6,
+        "lo": 1.0,
+        "hi": 2.4000000000000004,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     {
+      "id": "review",
+      "kind": "piece",
+      "role": "reviewer",
+      "setting": {
+       "harness": "claude-code",
+       "model": "claude-opus-5-5",
+       "effort": "high",
+       "context_policy": "fresh",
+       "options": {}
+      },
+      "prediction": {
+       "piece": "review",
+       "cost": {
+        "usd": {
+         "mean": 0.65,
+         "lo": 0.42,
+         "hi": 1.01,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 117000.0,
+         "lo": 76050.0,
+         "hi": 182520.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": {
+        "mean": 0.72,
+        "lo": 0.6,
+        "hi": 0.83,
+        "level": 0.8
+       },
+       "rounds": {
+        "mean": 1.6,
+        "lo": 1.0,
+        "hi": 2.4000000000000004,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     {
+      "id": "patch",
+      "kind": "artifact"
+     },
+     {
+      "id": "review_notes",
+      "kind": "artifact"
+     }
+    ],
+    "edges": [
+     {
+      "from": "implement",
+      "to": "patch"
+     },
+     {
+      "from": "patch",
+      "to": "review"
+     },
+     {
+      "from": "review",
+      "to": "review_notes"
+     }
+    ],
+    "gates": [
+     {
+      "id": "g_review",
+      "after": "review",
+      "rule": "review_approve",
+      "on_fail": "implement"
+     }
+    ]
+   },
+   "signals": []
+  },
+  "run_01J8F0000000000000000004": {
+   "doc": {
+    "ocp": "0.3",
+    "note": "full OCP v0.3 document goes here (lane 1 golden)"
+   },
+   "graph": {
+    "config": "cfg_3806f48e6577",
+    "label": "solo: claude-fable-5-1/medium",
+    "nodes": [
+     {
+      "id": "implement",
+      "kind": "piece",
+      "role": "implementer",
+      "setting": {
+       "harness": "claude-code",
+       "model": "claude-fable-5-1",
+       "effort": "medium",
+       "context_policy": "fresh",
+       "options": {}
+      },
+      "prediction": {
+       "piece": "implement",
+       "cost": {
+        "usd": {
+         "mean": 0.4,
+         "lo": 0.26,
+         "hi": 0.62,
+         "level": 0.8
+        },
+        "tokens": {
+         "mean": 72000.0,
+         "lo": 46800.0,
+         "hi": 112320.0,
+         "level": 0.8
+        }
+       },
+       "gate_pass": null,
+       "rounds": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.8,
+        "level": 0.8
+       },
+       "cost_per_round": null
+      }
+     },
+     {
+      "id": "patch",
+      "kind": "artifact"
+     }
+    ],
+    "edges": [
+     {
+      "from": "implement",
+      "to": "patch"
+     }
+    ],
+    "gates": []
+   },
+   "signals": []
+  }
+ }
+}

@@ -1,0 +1,13 @@
+{"timestamp":"2026-09-02T11:00:00Z","type":"session_meta","payload":{"cwd":"/work","originator":"codex_exec","source":"exec","cli_version":"0.146.0"}}
+{"timestamp":"2026-09-02T11:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"patch-ok","input":"*** Begin Patch\n*** Add File: confirmed.md\n+ok\n*** End Patch"}}
+{"timestamp":"2026-09-02T11:00:02Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"patch-ok","output":"Success. Updated the following files:\nA confirmed.md\n"}}
+{"timestamp":"2026-09-02T11:00:03Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"patch-missing","input":"*** Begin Patch\n*** Update File: pending.md\n@@\n-old\n+new\n*** End Patch"}}
+{"timestamp":"2026-09-02T11:00:04Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"shell-fail","input":"const a = await tools.exec_command({cmd:\"cat one.txt\", workdir:\"/one\"});\nconst b = await tools.exec_command({cmd:\"cat two.txt > out.txt\", workdir:\"/two\"});\nconst c = await tools.exec_command({cmd:\"cp only-source\", workdir:\"/three\"});"}}
+{"timestamp":"2026-09-02T11:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"shell-fail","output":{"output":"combined failure","metadata":{"exit_code":1}}}}
+{"timestamp":"2026-09-02T11:00:06Z","type":"response_item","payload":{"type":"local_shell_call","call_id":"variables","action":{"command":["bash","-lc","cat $INPUT > $OUTPUT"],"working_directory":"/work"}}}
+{"timestamp":"2026-09-02T11:00:07Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}
+{"timestamp":"2026-09-02T11:00:08Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"patch-fail","input":"*** Begin Patch\n*** Update File: rejected.md\n@@\n-old\n+new\n*** End Patch"}}
+{"timestamp":"2026-09-02T11:00:09Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"patch-fail","output":"apply_patch verification failed: mismatch"}}
+{"timestamp":"2026-09-02T11:00:10Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"patch-delete","input":"*** Begin Patch\n*** Delete File: obsolete.md\n*** End Patch"}}
+{"timestamp":"2026-09-02T11:00:11Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"patch-delete","output":"Success. Updated the following files:\nD obsolete.md\n"}}
+{"timestamp":"2026-09-02T11:00:12Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"patch-unparsed","input":"this is not a patch"}}

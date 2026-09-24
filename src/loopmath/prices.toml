@@ -1,0 +1,277 @@
+# Provider price table, $/Mtok, as of 2026-08-31.
+#
+# SPEC amendment 1 (08-31, Analyst). This table is copied from
+# the experiment repository's results/prices-2026-08-31.toml, which is the
+# authoritative source. It replaces the SPEC section 5 example values, which
+# were an Opus-4-era carryover and about 3x too high on opus.
+#
+# Anthropic rates DERIVED EXACTLY from billing data in attempts.jsonl
+#   (least-squares on cost_usd ~ input + cache_read + cache_write + output;
+#   fable residual $0.0000, opus/sonnet consistent with the 1 : 0.1 : 2 : 5
+#   structure).
+# OpenAI rates from published Aug-2026 pricing (the codex CLI reports no
+#   cost_usd): sol cut $5/$30 to $4/$20 on 2026-08-21 (promo through about
+#   Nov 21); luna cut roughly 80% on 2026-07-30; cached input is 10% of the
+#   input rate on GPT-5.x; OpenAI does not charge for cache writes.
+#
+# CAVEAT, named here and printed in output, never hidden: GPT-5.6
+#   long-context requests (over roughly 272k tokens) carry a surcharge
+#   (sol $8/$30, terra $4/$18, luna $0.40/$1.80) that per-attempt records
+#   cannot resolve. Those requests are priced at the standard rate, so any
+#   GPT-5.6 figure here is a floor, not an exact bill.
+#
+# ONE DELIBERATE DEVIATION from a byte-for-byte copy, and the reason for it.
+# The source file writes its GPT tables with unquoted keys, as [gpt-5.6-sol].
+# A dot is a key separator in TOML, so that parses as a table `gpt-5` with
+# children `6-sol`, `6-terra`, `6-luna` and `4`, and every GPT price silently
+# disappears from a lookup by model name. Verified against tomllib before
+# changing anything. Every table name here is therefore quoted, which is what
+# makes the file mean what the source intended. Rates, source labels and
+# as_of are otherwise reproduced exactly.
+
+as_of = "2026-08-31"
+
+# ---------------------------------------------------------------------------
+# Confirmed rates from the authoritative table.
+# ---------------------------------------------------------------------------
+
+["claude-opus-5"]
+input = 5.00
+cache_read = 0.50
+cache_write = 10.00
+output = 25.00
+source = "derived from billing (exact)"
+
+["claude-sonnet-5"]
+input = 2.00
+cache_read = 0.20
+cache_write = 4.00
+output = 10.00
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-23: Claude Sonnet 5 at $2 input, $4 1h cache write, $0.20 cache read, $10 output; the page says the $2/$10 launch price is now standard and the planned $3/$15 will not occur. Replaces the 3/0.30/6/15 row derived from billing (fit residual < $1.05 over 126 attempts), Analyst D34"
+
+["claude-fable-5"]
+input = 10.00
+cache_read = 1.00
+cache_write = 20.00
+output = 50.00
+source = "derived from billing (exact, residual $0.0000)"
+
+["claude-fable-5-1"]
+input = 10.00
+cache_read = 0.25
+cache_write = 20.00
+output = 50.00
+source = "official list, added 2026-09-07 (Analyst): same 10/50 tier as fable-5, but Fable 5.1 reads cache at 0.25 (fable-5 is 1.00); cache_write taken as 2x input (1h tier) as for fable-5. Claude Code total_cost_usd on 229 E3 fable-5-1 runs matched these rates within 4 percent."
+
+["gpt-5.6-sol"]
+input = 4.00
+cache_read = 0.40
+cache_write = 0.00
+zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
+output = 20.00
+source = "published, post 08-21 cut (was 5/30)"
+
+["gpt-5.6-terra"]
+input = 2.00
+cache_read = 0.20
+cache_write = 0.00
+zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
+output = 12.00
+source = "published"
+
+["gpt-5.6-luna"]
+input = 0.20
+cache_read = 0.02
+cache_write = 0.00
+zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
+output = 1.20
+source = "published, post 07-30 cut (~80% down)"
+
+["gpt-5.4"]
+input = 2.50
+cache_read = 0.25
+cache_write = 0.00
+zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
+output = 15.00
+source = "published legacy pricing (needed for E1)"
+
+# OpenCode models observed in its local session store.  The rates below are
+# from OpenCode 1.17.11's models.json catalog, inspected 2026-09-02.  The
+# three OpenCode-hosted routes are explicitly free in that catalog, so their
+# zeros are real.  validate-prices still warns on zero input/output rates by
+# design because zero_ok applies only to cache_write.
+
+["gpt-5.3-codex-spark"]
+input = 1.75
+cache_read = 0.175
+cache_write = 0.00
+zero_ok = true
+output = 14.00
+source = "OpenCode 1.17.11 model catalog, openai provider"
+
+["gpt-5.4-mini"]
+input = 0.75
+cache_read = 0.075
+cache_write = 0.00
+zero_ok = true
+output = 4.50
+source = "OpenCode 1.17.11 model catalog, openai provider"
+
+["big-pickle"]
+input = 0.00
+cache_read = 0.00
+cache_write = 0.00
+zero_ok = true
+output = 0.00
+source = "OpenCode 1.17.11 model catalog, opencode free route"
+
+["deepseek-v4-flash-free"]
+input = 0.00
+cache_read = 0.00
+cache_write = 0.00
+zero_ok = true
+output = 0.00
+source = "OpenCode 1.17.11 model catalog, opencode free route"
+
+["north-mini-code-free"]
+input = 0.00
+cache_read = 0.00
+cache_write = 0.00
+zero_ok = true
+output = 0.00
+source = "OpenCode 1.17.11 model catalog, opencode free route"
+
+# ---------------------------------------------------------------------------
+# Rows checked on the provider pages on 2026-09-23 (loopmath 0.1.0, lane 02).
+# Each source names its page and the date it was read; the tariff record
+# written with every priced attempt takes its date from "checked YYYY-MM-DD".
+#
+# Anthropic (https://platform.claude.com/docs/en/about-claude/pricing): cache_write is the 1-hour write rate (2x input), as
+#   for the rows above. Claude Code writes the 1-hour cache: 64.2M of 64.2M
+#   cache-write tokens in 200 recent sessions on the build machine were 1h.
+# OpenAI (https://developers.openai.com/api/docs/pricing and each model's
+#   page): GPT-6 bills cache writes (1.25x input), but Codex reported 0
+#   cache-write tokens in all 91 recent GPT-6 sessions on the build machine,
+#   so that stream prices at 0 whatever the rate says. Prompts over 272K
+#   input tokens bill 2x input and cache and 1.5x output for the whole
+#   request; they are priced at the standard rate here. Both make a GPT-6
+#   figure a floor, not an exact bill.
+# ---------------------------------------------------------------------------
+
+["claude-opus-5-5"]
+input = 4.00
+cache_read = 0.20
+cache_write = 8.00
+output = 20.00
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-23: Claude Opus 5.5 at $4 input, $8 1h cache write, $0.20 cache read (0.05x input), $20 output; cache_write is the 1h rate"
+
+["gpt-6-astra"]
+input = 10.00
+cache_read = 1.00
+cache_write = 12.50
+output = 50.00
+source = "official list, https://developers.openai.com/api/docs/models/gpt-6-astra, checked 2026-09-23: standard tier, $10 input, $1 cached input, $12.50 cache write, $50 output; prompts over 272K input tokens bill more and are priced at this rate (a floor)"
+
+["gpt-6-sol"]
+input = 2.00
+cache_read = 0.20
+cache_write = 2.50
+output = 10.00
+source = "official list, https://developers.openai.com/api/docs/models/gpt-6-sol, checked 2026-09-23: standard tier, $2 input, $0.20 cached input, $2.50 cache write, $10 output; prompts over 272K input tokens bill more and are priced at this rate (a floor)"
+
+["gpt-6-luna"]
+input = 0.10
+cache_read = 0.01
+cache_write = 0.125
+output = 0.50
+source = "official list, https://developers.openai.com/api/docs/models/gpt-6-luna, checked 2026-09-23: standard tier, $0.10 input, $0.01 cached input, $0.125 cache write, $0.50 output; prompts over 272K input tokens bill more and are priced at this rate (a floor)"
+
+["opus-4.8"]
+input = 5.00
+cache_read = 0.50
+cache_write = 10.00
+output = 25.00
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-23: Claude Opus 4.8 at $5 input, $10 1h cache write, $0.50 cache read, $25 output; cache_write is the 1h rate"
+
+["opus-4.7"]
+input = 5.00
+cache_read = 0.50
+cache_write = 10.00
+output = 25.00
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-23: Claude Opus 4.7 at $5 input, $10 1h cache write, $0.50 cache read, $25 output; cache_write is the 1h rate"
+
+["opus-4.6"]
+input = 5.00
+cache_read = 0.50
+cache_write = 10.00
+output = 25.00
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-23: Claude Opus 4.6 at $5 input, $10 1h cache write, $0.50 cache read, $25 output; cache_write is the 1h rate"
+
+["sonnet-4.6"]
+input = 3.00
+cache_read = 0.30
+cache_write = 6.00
+output = 15.00
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-23: Claude Sonnet 4.6 at $3 input, $6 1h cache write, $0.30 cache read, $15 output; cache_write is the 1h rate"
+
+["haiku-4.5"]
+input = 1.00
+cache_read = 0.10
+cache_write = 2.00
+output = 5.00
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-23: Claude Haiku 4.5 at $1 input, $2 1h cache write, $0.10 cache read, $5 output; cache_write is the 1h rate"
+
+# ---------------------------------------------------------------------------
+# Models observed in the local log estate that the authoritative table does
+# not cover. Every one is todo = true: a best public-price guess, never a
+# confirmed rate, and every output that uses one says so by name. They are
+# priced anyway because a flagged estimate is more useful than a hole, and
+# they are never priced at zero, because zero reads as a real cheap answer.
+# Anthropic entries follow the 1 : 0.1 : 2 : 5 structure the billing fit
+# found; OpenAI entries follow 1 : 0.1 : 0 : 6 and charge no cache writes.
+# ---------------------------------------------------------------------------
+
+["gpt-5.5"]
+input = 2.50
+cache_read = 0.25
+cache_write = 0.00
+zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
+output = 15.00
+todo = true
+source = "guess: assumed at gpt-5.4 legacy rates"
+
+["gpt-5.3-codex"]
+input = 2.50
+cache_read = 0.25
+cache_write = 0.00
+zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
+output = 15.00
+todo = true
+source = "guess: assumed at gpt-5.4 legacy rates"
+
+["gpt-5.2-codex"]
+input = 2.50
+cache_read = 0.25
+cache_write = 0.00
+zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
+output = 15.00
+todo = true
+source = "guess: assumed at gpt-5.4 legacy rates"
+
+["gpt-5.2"]
+input = 2.50
+cache_read = 0.25
+cache_write = 0.00
+zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
+output = 15.00
+todo = true
+source = "guess: assumed at gpt-5.4 legacy rates"
+
+["gpt-5.1-codex-mini"]
+input = 0.25
+cache_read = 0.025
+cache_write = 0.00
+zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
+output = 2.00
+todo = true
+source = "guess: mini tier, roughly a tenth of the gpt-5.4 rate"

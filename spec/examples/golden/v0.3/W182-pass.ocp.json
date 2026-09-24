@@ -1,0 +1,273 @@
+{
+  "ocp": "0.3",
+  "producer": {
+    "name": "loopmath",
+    "version": "0.1.0",
+    "emitted_at": "2026-09-23T10:00:00-07:00",
+    "capabilities": {
+      "task": true,
+      "configuration": true,
+      "signals": true,
+      "slate": true,
+      "receipt": true,
+      "edges_dep": true,
+      "artifacts": true,
+      "cost_usd": true,
+      "cost_tokens": true,
+      "outcome_evidence": true,
+      "groups": false
+    },
+    "framework": "loopmath"
+  },
+  "privacy": {
+    "profile": "metadata_only"
+  },
+  "run": {
+    "id": "run_golden_w182_pass",
+    "started_at": "2026-09-23T10:00:00-07:00",
+    "task": {
+      "id": "tsk_ex_solo",
+      "title": "example task for solo",
+      "type": "bug_fix",
+      "repo": "example/widget",
+      "base_commit": "a1b2c3d",
+      "features": {
+        "size": "s",
+        "lang": "python",
+        "has_tests": "yes"
+      },
+      "source": {
+        "kind": "live"
+      },
+      "labeled_by": {
+        "how": "orchestrator"
+      }
+    },
+    "configuration": {
+      "id": "cfg_261aaa36000b",
+      "workflow": {
+        "id": "solo",
+        "version": 1,
+        "title": "One agent implements",
+        "pieces": [
+          {
+            "id": "implement",
+            "role": "implementer",
+            "width": 1
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "issue",
+            "kind": "issue"
+          },
+          {
+            "id": "repo",
+            "kind": "repo"
+          },
+          {
+            "id": "diff",
+            "kind": "diff"
+          }
+        ],
+        "edges": [
+          [
+            "issue",
+            "implement"
+          ],
+          [
+            "repo",
+            "implement"
+          ],
+          [
+            "implement",
+            "diff"
+          ]
+        ],
+        "control": {
+          "gates": [],
+          "repair": {},
+          "budget": 1,
+          "rescue": {
+            "kind": "configuration",
+            "ref": "usual"
+          }
+        }
+      },
+      "settings": {
+        "implement": {
+          "harness": "claude-code",
+          "model": {
+            "raw": "claude-opus-5-5",
+            "id": "claude-opus-5-5"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        }
+      },
+      "source": "usual",
+      "rec": "rec_ex01"
+    },
+    "provenance": {
+      "kind": "designed",
+      "chooser": "loopmath"
+    },
+    "acceptance_rule": {
+      "name": "tests",
+      "definition": "tests pass",
+      "requires": [
+        "tests"
+      ],
+      "score": null,
+      "excludes_events": [
+        "revert",
+        "incident"
+      ],
+      "window_days": 14
+    },
+    "signals": [
+      {
+        "id": "sig_tests_ci",
+        "kind": "verdict",
+        "name": "tests",
+        "value": "pass",
+        "at_attempt": "implement.a1",
+        "observed_at": "2026-09-23T10:16:00-07:00",
+        "source": {
+          "kind": "ci",
+          "ref": "ci/run/4411"
+        },
+        "tier": "verified"
+      },
+      {
+        "id": "sig_runtime",
+        "kind": "score",
+        "name": "runtime_s",
+        "value": 960.0,
+        "unit": "s",
+        "better": "lower",
+        "scale": "log",
+        "observed_at": "2026-09-23T10:17:00-07:00",
+        "source": {
+          "kind": "orchestrator"
+        },
+        "tier": "verified"
+      }
+    ],
+    "title": "W182 pass: extension keys use dev.loopmath.",
+    "ended_at": "2026-09-23T10:17:00-07:00",
+    "ext": {
+      "dev.loopmath.note": "extension under the loopmath namespace"
+    }
+  },
+  "nodes": [
+    {
+      "id": "implement",
+      "kind": "impl",
+      "vertex": "implement",
+      "state": "done",
+      "title": "implementer (implement)"
+    }
+  ],
+  "edges": [],
+  "attempts": [
+    {
+      "id": "implement.a1",
+      "node": "implement",
+      "vertex": "implement",
+      "n": 1,
+      "round": 1,
+      "harness": "claude-code",
+      "model": {
+        "raw": "claude-opus-5-5",
+        "id": "claude-opus-5-5"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "started_at": "2026-09-23T10:01:00-07:00",
+      "cwd": "~/work/widget",
+      "ended_at": "2026-09-23T10:13:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 320000,
+        "output_tokens": 16000,
+        "requests": 20,
+        "usd": 0.99,
+        "basis": "measured",
+        "tariff": {
+          "id": "prices-3f9a1c2e",
+          "date": "2026-09-01",
+          "source": "prices.toml"
+        }
+      },
+      "role": {
+        "value": "implementer",
+        "tier": "verified",
+        "evidence": "workflow piece role"
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "diff",
+      "path": "artifacts/diff",
+      "kind": {
+        "value": "code",
+        "tier": "verified",
+        "evidence": "declared by the workflow"
+      },
+      "producer": "implement.a1",
+      "writers": [
+        "implement.a1"
+      ],
+      "consumers": [],
+      "first_write_at": "2026-09-23T10:13:00-07:00",
+      "n_writes": 1,
+      "n_reads": 0,
+      "vertex": "diff",
+      "version": 1
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-09-23T10:00:00-07:00",
+      "type": "note",
+      "detail": "run started"
+    },
+    {
+      "at": "2026-09-23T10:01:00-07:00",
+      "type": "attempt_started",
+      "attempt": "implement.a1",
+      "node": "implement"
+    },
+    {
+      "at": "2026-09-23T10:13:00-07:00",
+      "type": "attempt_settled",
+      "attempt": "implement.a1",
+      "node": "implement"
+    },
+    {
+      "at": "2026-09-23T10:16:00-07:00",
+      "type": "signal_observed",
+      "detail": "verdict tests"
+    },
+    {
+      "at": "2026-09-23T10:17:00-07:00",
+      "type": "signal_observed",
+      "detail": "score runtime_s"
+    },
+    {
+      "at": "2026-09-23T10:17:00-07:00",
+      "type": "run_finished",
+      "detail": "accepted; 1 attempts, 0.99 usd"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+ "workspaces": {
+  "ws-delta": {
+   "nodes": {
+    "delta-lead": {
+     "role": {"value": "boss", "tier": "verified", "source": "not one of the enumerated roles: malformed, dropped"},
+     "phase": {"value": "build", "tier": "heuristic", "source": "graph rule"},
+     "phase": {"value": "build", "tier": "hand", "source": "a person checked it"},
+     "fine_role": {"value": "plan", "tier": "verified", "source": "first in the text, loses to the hand label"},
+     "fine_role": {"value": "orchestrate", "tier": "hand", "source": "a person read the prompt"},
+     "parent": {"value": 42, "tier": "verified", "source": "a number is not a run id: malformed, dropped"}
+    },
+    "delta-impl": {
+     "role": {"value": "dev", "tier": "guess", "source": "tier outside the label tier set: malformed, dropped"},
+     "phase": {"value": "build", "source": "no tier at all: malformed, dropped"},
+     "fine_role": {"value": "implement", "tier": "hand", "source": "kept", "note": "an extra key, counted"}
+    },
+    "delta-reviewer": {
+     "role": "reviewer",
+     "phase": {"value": "post", "tier": "heuristic", "source": "kept"}
+    }
+   },
+   "artifacts": []
+  },
+  "ws-echo": {
+   "nodes": "oops"
+  }
+ }
+}

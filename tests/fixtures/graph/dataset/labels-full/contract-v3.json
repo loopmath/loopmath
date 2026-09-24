@@ -1,0 +1,40 @@
+{
+ "source": "ws-delta/runs/ledger.json",
+ "attempts": [
+  {
+   "task": "W0", "n": 1, "actor": "planner", "model": "opus5", "started_at": "2026-08-31T12:00:00Z", "ended_at": "2026-08-31T12:10:00Z", "result": "done",
+   "cause": {"type": "initial"},
+   "session": {"value": "delta-lead", "tier": "verified", "source": "the lead's receipt names its session id"},
+   "labels": {"send_back": {"value": false, "tier": "verified", "source": "ledger cause initial; nothing cites it"}, "approved": {"value": true, "tier": "verified", "source": "result done, no later attempt of W0"}}
+  },
+  {
+   "task": "W0", "n": 2, "actor": "planner", "model": "opus5", "started_at": "2026-08-31T12:10:00Z", "ended_at": "2026-08-31T12:12:00Z", "result": "done",
+   "cause": {"type": "followup", "ref": "W0"},
+   "session": {"value": "delta-lead", "tier": "heuristic", "source": "actor planner with model opus5; the lead is the only opus session"},
+   "labels": {"send_back": {"value": false, "tier": "verified", "source": "ledger cause followup"}, "approved": {"value": true, "tier": "verified", "source": "result done, nothing sent back"}}
+  },
+  {
+   "task": "P1", "n": 1, "actor": "dev", "model": "sonnet5", "started_at": "2026-08-31T12:01:00Z", "ended_at": "2026-08-31T12:03:00Z", "result": "done",
+   "cause": {"type": "initial"},
+   "session": {"value": "delta-impl", "tier": "heuristic", "source": "spawn description 'Implement the parser' matches the ledger title"},
+   "labels": {"send_back": {"value": true, "tier": "verified", "source": "P1 n2 was opened with cause sent_back citing it"}, "approved": {"value": false, "tier": "verified", "source": "a later attempt of P1 was opened with cause sent_back"}}
+  },
+  {
+   "task": "P1", "n": 2, "actor": "dev", "model": "sonnet5", "started_at": "2026-08-31T12:05:00Z", "ended_at": "2026-08-31T12:08:00Z", "result": "done",
+   "cause": {"type": "sent_back", "ref": "P1"},
+   "session": {"value": "delta-impl", "tier": "heuristic", "source": "the same subagent was reused for the fix round, so the two attempts share a session and disagree on both labels"},
+   "labels": {"send_back": {"value": false, "tier": "verified", "source": "ledger cause sent_back names this attempt as the fix; nothing cites it"}, "approved": {"value": true, "tier": "verified", "source": "result done, no later attempt of P1"}}
+  },
+  {
+   "task": "R1", "n": 1, "actor": "reviewer", "model": "gpt-5", "started_at": "2026-08-31T12:15:00Z", "ended_at": "2026-08-31T12:16:00Z", "result": "done",
+   "cause": {"type": "initial"},
+   "session": {"value": "delta-ghost", "tier": "heuristic", "source": "a session the graph lacks"},
+   "labels": {"send_back": {"value": true, "tier": "verified", "source": "R1 was cited by P1 n2"}, "approved": {"value": true, "tier": "verified", "source": "result done"}}
+  },
+  {
+   "task": "R2", "n": 1, "actor": "reviewer", "model": "gpt-5", "started_at": "2026-08-31T12:17:00Z", "ended_at": "2026-08-31T12:18:00Z", "result": "done",
+   "cause": {"type": "initial"},
+   "labels": {"send_back": {"value": false, "tier": "verified", "source": "nothing cites it"}, "approved": {"value": true, "tier": "verified", "source": "result done"}}
+  }
+ ]
+}

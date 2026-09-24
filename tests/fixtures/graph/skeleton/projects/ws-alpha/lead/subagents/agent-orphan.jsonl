@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-08-31T10:04:00Z","sessionId":"lead","agentId":"agent-orphan","isSidechain":true,"cwd":"/ws/alpha","message":{"role":"user","content":"Fix the flaky test"}}
+{"type":"assistant","timestamp":"2026-08-31T10:04:30Z","sessionId":"lead","agentId":"agent-orphan","isSidechain":true,"cwd":"/ws/alpha","message":{"role":"assistant","content":[{"type":"text","text":"The test is deterministic now."}]}}

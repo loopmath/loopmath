@@ -1,0 +1,20 @@
+c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6	1788172200	Ada
+notes/after-hours.md
+
+deadbeefdeadbeefdeadbeefdeadbeefdeadbeef	notatime	Ada
+docs/broken.md
+
+c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5	1788170970	Ada
+docs/BUILD-PLAN.md
+
+c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4	1788170820	Ada
+reviews/T1.md
+
+c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3	1788170700	Ada
+
+c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2	1788170580	Ada
+docs/BUILD-PLAN.md
+src/scan.py
+
+c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1	1788166800	Ada Example
+docs/e0-design.md

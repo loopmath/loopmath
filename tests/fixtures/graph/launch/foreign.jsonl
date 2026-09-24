@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-08-30T09:59:30.000Z","cwd":"__OTHER__","message":{"role":"user","content":"Review the other project."}}
+{"type":"assistant","timestamp":"2026-08-30T10:00:01.000Z","cwd":"__OTHER__","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_f1","name":"Bash","input":{"command":"nohup tools/review.sh T9 x.py > reviews/.log-T9 2>&1 &"}}]}}
+{"type":"user","timestamp":"2026-08-30T10:00:01.500Z","cwd":"__OTHER__","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_f1","content":""}]}}

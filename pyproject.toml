@@ -1,0 +1,110 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loopmath"
+version = "0.1.0"
+description = "Plan agent workflows, record how they went, and learn from your own Claude Code and Codex logs"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "QKV Labs" },
+]
+keywords = [
+    "agents",
+    "claude code",
+    "codex",
+    "cost analysis",
+    "developer tools",
+    "workflow analysis",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Quality Assurance",
+]
+# Core: everything the loop needs (onboard, recommend, run, outcome, finish, the
+# views). The default belief engine behind `fit`, `recommend` and receipts is
+# Gaussian and uses scipy (spec 00 section 4, `loopmath/belief/`); jsonschema
+# checks OCP documents; `analyze` runs on numpy and pandas. A plotting stack
+# stays out: matplotlib is only for the E0 figure writer (the `e0` extra).
+dependencies = [
+    "jsonschema>=4",
+    "numpy",
+    "pandas",
+    "scipy",
+]
+
+# The research verbs (`loopmath research fit|transfer-test`) use the older PyMC
+# engine and need the [bayes] extra; they say so when it is missing. The default
+# engine does not.
+[project.optional-dependencies]
+bayes = [
+    "pymc>=5",
+    # `fit_bayes.py` imports pytensor directly. Do not rely on pymc's
+    # transitive dependency to supply a module loopmath itself imports.
+    "pytensor",
+    "arviz",
+    # arviz writes a fit with `to_netcdf`, which needs a NetCDF backend it does
+    # not itself depend on. Without one, `loopmath research fit --out PATH` samples fine and
+    # then dies on the write. Declared here so a fresh install of the extra can
+    # actually use `--out`; the CLI still catches the missing backend and says
+    # which package to install rather than surfacing a raw ValueError.
+    "h5netcdf",
+]
+
+# The E0 walkdown verb writes figures, which is the only thing in the package
+# that needs a plotting stack. Without this extra, `loopmath analyze-e0` is simply
+# not registered and every other verb works unchanged.
+e0 = [
+    "matplotlib",
+]
+
+[project.scripts]
+loopmath = "loopmath.cli:main"
+loop = "loopmath.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/loopmath/loopmath"
+Issues = "https://github.com/loopmath/loopmath/issues"
+Repository = "https://github.com/loopmath/loopmath.git"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+loopmath = [
+    "prices.toml",
+    "workflows/catalog/*.toml",
+    "skill/SKILL.md",
+    "priors/*.toml",
+    "priors/bundle/*",
+    "views/assets/*",
+    "ocp/schema/*.json",
+]
+
+[tool.setuptools.data-files]
+spec = [
+    "spec/ocp_conformance.py",
+    "spec/ocp-v0.schema.json",
+    "spec/ocp-v0.2.schema.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = '-m "not packaging"'
+markers = [
+    "packaging: builds and installs a distribution artifact in an isolated environment",
+]

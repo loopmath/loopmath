@@ -1,0 +1,4 @@
+{"timestamp":"2026-08-30T10:17:30.000Z","type":"session_meta","payload":{"id":"01a0c1c5-0000-7000-8000-000000000005","timestamp":"2026-08-30T10:17:30.000Z","cwd":"__WS__","originator":"codex_exec","cli_version":"0.144.1","source":"exec"}}
+{"timestamp":"2026-08-30T10:17:30.100Z","type":"turn_context","payload":{"turn_id":"turn-1","cwd":"__WS__","model":"gpt-5.6-sol","effort":"medium"}}
+{"timestamp":"2026-08-30T10:17:30.200Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Review src/e.py against SPEC.md"}]}}
+{"timestamp":"2026-08-30T10:18:30.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"VERDICT: FLAGS"}]}}

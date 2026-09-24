@@ -1,0 +1,4 @@
+{"timestamp":"2026-08-31T10:05:03Z","type":"session_meta","payload":{"id":"codex-review","timestamp":"2026-08-31T10:05:03Z","cwd":"/ws/alpha","originator":"codex_exec","cli_version":"0.40.0","source":"exec"}}
+{"timestamp":"2026-08-31T10:05:04Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>cwd=/ws/alpha</environment_context>"}]}}
+{"timestamp":"2026-08-31T10:05:04Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Review the plan in /ws/alpha/plan.md"}]}}
+{"timestamp":"2026-08-31T10:07:50Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The plan is sound."}]}}

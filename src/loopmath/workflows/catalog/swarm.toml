@@ -1,0 +1,61 @@
+id = "swarm"
+version = 1
+title = "Swarm: a planner splits the work, parallel workers, a reviewer"
+edges = [
+  "issue -> plan",
+  "repo -> plan",
+  "plan -> plan_doc",
+  "issue -> work",
+  "repo -> work",
+  "plan_doc -> work",
+  "work -> diff",
+  "diff -> review",
+  "issue -> review",
+  "plan_doc -> review",
+  "review -> verdict",
+]
+
+[[pieces]]
+id = "plan"
+role = "planner"
+width = 1
+
+[[pieces]]
+id = "work"
+role = "worker"
+width = 3
+
+[[pieces]]
+id = "review"
+role = "reviewer"
+width = 1
+
+[[artifacts]]
+id = "issue"
+kind = "issue"
+
+[[artifacts]]
+id = "repo"
+kind = "repo"
+
+[[artifacts]]
+id = "plan_doc"
+kind = "plan"
+
+[[artifacts]]
+id = "diff"
+kind = "diff"
+
+[[artifacts]]
+id = "verdict"
+kind = "verdict"
+
+[control]
+budget_rounds = 3
+rescue = "redo_usual"
+
+[[control.gates]]
+id = "g_review"
+after = "review"
+rule = "review_approve"
+on_fail = "work"

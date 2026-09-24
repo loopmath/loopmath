@@ -1,0 +1,80 @@
+{
+  "info": {
+    "id": "ses_fixture_child",
+    "projectID": "project_fixture_alpha",
+    "workspaceID": "workspace_fixture_alpha",
+    "parentID": "ses_fixture_root",
+    "directory": "/synthetic/workspaces/alpha",
+    "path": "alpha/child",
+    "title": "Invented child title that must not be emitted",
+    "version": "1.17.11",
+    "agent": "review",
+    "model": {
+      "providerID": "openai",
+      "id": "gpt-5.5",
+      "variant": "xhigh"
+    },
+    "cost": 0.003,
+    "tokens": {
+      "input": 200,
+      "output": 40,
+      "reasoning": 10,
+      "cache": {"read": 20, "write": 4}
+    },
+    "time": {
+      "created": 1704153600000,
+      "updated": 1704155400000
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "id": "msg_fixture_child_user",
+        "sessionID": "ses_fixture_child",
+        "role": "user",
+        "agent": "review",
+        "time": {"created": 1704153600000}
+      },
+      "parts": [
+        {
+          "id": "part_fixture_child_user",
+          "messageID": "msg_fixture_child_user",
+          "sessionID": "ses_fixture_child",
+          "type": "text",
+          "text": "INVENTED_PRIVATE_PROMPT_CHILD"
+        }
+      ]
+    },
+    {
+      "info": {
+        "id": "msg_fixture_child_assistant",
+        "sessionID": "ses_fixture_child",
+        "role": "assistant",
+        "parentID": "msg_fixture_child_user",
+        "agent": "review",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "variant": "xhigh",
+        "cost": 0.003,
+        "tokens": {
+          "input": 200,
+          "output": 40,
+          "reasoning": 10,
+          "cache": {"read": 20, "write": 4},
+          "total": 274
+        },
+        "time": {"created": 1704153660000, "completed": 1704153720000},
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "id": "part_fixture_child_text",
+          "messageID": "msg_fixture_child_assistant",
+          "sessionID": "ses_fixture_child",
+          "type": "text",
+          "text": "INVENTED_PRIVATE_RESPONSE_CHILD"
+        }
+      ]
+    }
+  ]
+}

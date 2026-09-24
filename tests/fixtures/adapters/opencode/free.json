@@ -1,0 +1,58 @@
+{
+  "info": {
+    "id": "ses_fixture_free_big_pickle",
+    "projectID": "project_fixture_beta",
+    "directory": "/synthetic/workspaces/beta",
+    "path": "beta/free",
+    "title": "Invented free-model title that must not be emitted",
+    "version": "1.17.11",
+    "agent": "general",
+    "model": {
+      "providerID": "opencode",
+      "id": "big-pickle"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 40,
+      "output": 8,
+      "reasoning": 2,
+      "cache": {"read": 4, "write": 0}
+    },
+    "time": {
+      "created": 1704326400000,
+      "updated": 1704328200000,
+      "archived": 1704330000000
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "id": "msg_fixture_free_big_pickle",
+        "sessionID": "ses_fixture_free_big_pickle",
+        "role": "assistant",
+        "agent": "general",
+        "providerID": "opencode",
+        "modelID": "big-pickle",
+        "cost": 0,
+        "tokens": {
+          "input": 40,
+          "output": 8,
+          "reasoning": 2,
+          "cache": {"read": 4, "write": 0},
+          "total": 54
+        },
+        "time": {"created": 1704326460000, "completed": 1704326520000},
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "id": "part_fixture_free_big_pickle",
+          "messageID": "msg_fixture_free_big_pickle",
+          "sessionID": "ses_fixture_free_big_pickle",
+          "type": "text",
+          "text": "INVENTED_PRIVATE_RESPONSE_FREE_MODEL"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,297 @@
+{
+  "ocp": "0.2",
+  "producer": {
+    "name": "loopmath",
+    "version": "0.1.0.dev0",
+    "framework": "claude-code",
+    "source_contract": "dagr_graph/1",
+    "emitted_at": "2026-08-31T12:00:00Z",
+    "capabilities": {
+      "groups": true,
+      "events": true,
+      "artifacts": true,
+      "edges_dep": true,
+      "edges_spawn": true,
+      "edges_launch": true,
+      "edges_artifact": true,
+      "cost_usd": true,
+      "cost_tokens": true,
+      "outcome_evidence": true
+    }
+  },
+  "privacy": {
+    "profile": "metadata_only",
+    "note": "session logs reduced to structure; paths and short labels only"
+  },
+  "run": {
+    "id": "swarm-example-01",
+    "title": "swarm: lead, planner, dev, codex review, post-build review",
+    "started_at": "2026-08-31T09:00:00Z",
+    "ended_at": "2026-08-31T11:50:00Z",
+    "workspace": "example-swarm",
+    "labels": { "family": "extractor-build" }
+  },
+  "nodes": [
+    { "id": "S-lead", "kind": "ops", "title": "lead session", "state": "done" },
+    { "id": "S-plan", "kind": "plan", "title": "planner subagent", "state": "done" },
+    { "id": "S-dev", "kind": "impl", "title": "dev subagent", "state": "done" },
+    { "id": "S-rev", "kind": "review", "title": "codex review of dev A", "state": "done" },
+    { "id": "S-ext", "kind": "ops", "title": "codex session launched by an unscanned program", "state": "settled_unverified" },
+    { "id": "S-post", "kind": "review", "title": "post-build review session", "state": "done" }
+  ],
+  "edges": [
+    { "from": "S-lead", "to": "S-plan", "kind": "spawn", "tier": "verified", "evidence": "Task tool_use id matched subagent meta" },
+    { "from": "S-lead", "to": "S-dev", "kind": "spawn", "tier": "verified", "evidence": "Task tool_use id matched subagent meta" },
+    { "from": "S-lead", "to": "S-rev", "kind": "launch", "tier": "heuristic", "evidence": "codex session began 3 s after codex exec in the same workspace", "from_attempt": "S-lead.a1", "to_attempt": "S-rev.a1" },
+    { "from": "S-plan", "to": "S-dev", "kind": "artifact", "tier": "verified", "artifact": "docs/BUILD-PLAN.md", "from_attempt": "S-plan.a1", "to_attempt": "S-dev.a1", "evidence": "Write at 09:08:10, Read at 09:12:40" },
+    { "from": "S-plan", "to": "S-rev", "kind": "artifact", "tier": "heuristic", "artifact": "docs/BUILD-PLAN.md", "from_attempt": "S-plan.a1", "to_attempt": "S-rev.a1", "evidence": "Write at 09:08:10, shell cat at 09:52:30 (shell reads are rule-inferred)" },
+    { "from": "S-dev", "to": "S-rev", "kind": "artifact", "tier": "heuristic", "artifact": "src/feature.py", "from_attempt": "S-dev.a1", "to_attempt": "S-rev.a1", "evidence": "Edit at 09:48:02, shell cat at 09:53:00 (shell reads are rule-inferred)" },
+    { "from": "S-rev", "to": "S-lead", "kind": "artifact", "tier": "verified", "artifact": "reviews/dev-A.md", "from_attempt": "S-rev.a1", "to_attempt": "S-lead.a1", "evidence": "codex -o at 10:05:00, Read at 10:06:15" }
+  ],
+  "attempts": [
+    {
+      "id": "S-lead.a1",
+      "node": "S-lead",
+      "n": 1,
+      "actor": "lead",
+      "harness": "claude-code",
+      "model": { "raw": "claude-fable-5-1", "id": "claude-fable-5-1", "family": "fable", "provider": "anthropic", "tier": "verified" },
+      "effort": "medium",
+      "cause": { "type": "initial" },
+      "origin": { "launched_by": null, "workspace": "example-swarm", "external": false, "how": null, "tier": "verified", "evidence": "top-level claude-code session; no launch signal in its meta" },
+      "role": { "value": "lead", "tier": "heuristic", "evidence": "top-level session with spawn and launch edges out" },
+      "phase": { "value": "build", "tier": "heuristic", "evidence": "the lead defines the build interval" },
+      "status": "done",
+      "started_at": "2026-08-31T09:00:00Z",
+      "ended_at": "2026-08-31T10:30:00Z",
+      "outcome": { "result": "done", "evidence": "verified", "receipt": "session ended cleanly" },
+      "cost": {
+        "input_tokens": 4200,
+        "cached_input_tokens": 910000,
+        "cache_creation_tokens": 62000,
+        "cache_creation_5m_tokens": 41000,
+        "cache_creation_1h_tokens": 21000,
+        "output_tokens": 18000,
+        "requests": 63,
+        "basis": "measured"
+      },
+      "session": "0f3c2a1e-lead"
+    },
+    {
+      "id": "S-plan.a1",
+      "node": "S-plan",
+      "n": 1,
+      "actor": "planner",
+      "harness": "claude-code",
+      "model": { "raw": "claude-opus-5", "id": "claude-opus-5", "family": "opus5", "provider": "anthropic", "tier": "verified" },
+      "effort": "xhigh",
+      "cause": { "type": "initial" },
+      "origin": { "launched_by": null, "workspace": "example-swarm", "external": false, "how": null, "tier": "verified", "evidence": "in-harness subagent (spawn edge), not a CLI launch" },
+      "role": { "value": "planner", "tier": "reported", "evidence": "declared type 'Plan'" },
+      "phase": { "value": "build", "tier": "heuristic", "evidence": "spawned by the lead, so inside the build interval by rule" },
+      "status": "done",
+      "started_at": "2026-08-31T09:01:00Z",
+      "ended_at": "2026-08-31T09:10:00Z",
+      "outcome": { "result": "done", "evidence": "verified", "receipt": "session ended cleanly" },
+      "cost": {
+        "input_tokens": 1500,
+        "cached_input_tokens": 120000,
+        "cache_creation_tokens": 9000,
+        "cache_creation_5m_tokens": 9000,
+        "cache_creation_1h_tokens": 0,
+        "output_tokens": 6100,
+        "requests": 11,
+        "basis": "measured"
+      },
+      "session": "0f3c2a1e-plan"
+    },
+    {
+      "id": "S-dev.a1",
+      "node": "S-dev",
+      "n": 1,
+      "actor": "dev",
+      "harness": "claude-code",
+      "model": { "raw": "claude-fable-5-1", "id": "claude-fable-5-1", "family": "fable", "provider": "anthropic", "tier": "verified" },
+      "effort": "medium",
+      "cause": { "type": "initial" },
+      "origin": { "launched_by": null, "workspace": "example-swarm", "external": false, "how": null, "tier": "verified", "evidence": "in-harness subagent (spawn edge), not a CLI launch" },
+      "role": { "value": "dev", "tier": "heuristic", "evidence": "subagent with no planner/reviewer signal" },
+      "phase": { "value": "build", "tier": "heuristic", "evidence": "spawned by the lead, so inside the build interval by rule" },
+      "status": "done",
+      "started_at": "2026-08-31T09:12:00Z",
+      "ended_at": "2026-08-31T09:50:00Z",
+      "outcome": { "result": "done", "evidence": "verified", "receipt": "session ended cleanly" },
+      "cost": {
+        "input_tokens": 2600,
+        "cached_input_tokens": 480000,
+        "cache_creation_tokens": 33000,
+        "cache_creation_5m_tokens": 33000,
+        "cache_creation_1h_tokens": 0,
+        "output_tokens": 14500,
+        "requests": 38,
+        "basis": "measured"
+      },
+      "session": "0f3c2a1e-dev"
+    },
+    {
+      "id": "S-rev.a1",
+      "node": "S-rev",
+      "n": 1,
+      "actor": "reviewer",
+      "harness": "codex",
+      "model": { "raw": "gpt-5.3-codex", "id": "gpt-5.3-codex", "family": "gpt", "provider": "openai", "tier": "reported" },
+      "effort": "high",
+      "cause": { "type": "initial" },
+      "origin": {
+        "launched_by": "S-lead.a1",
+        "workspace": "example-swarm",
+        "external": false,
+        "how": "codex exec",
+        "tier": "heuristic",
+        "evidence": "codex session began 3 s after codex exec in the same workspace; codex originator codex_exec agrees"
+      },
+      "role": { "value": "reviewer", "tier": "heuristic", "evidence": "launch command mentions review" },
+      "phase": { "value": "build", "tier": "heuristic", "evidence": "started inside the lead's interval" },
+      "status": "done",
+      "started_at": "2026-08-31T09:52:00Z",
+      "ended_at": "2026-08-31T10:05:00Z",
+      "outcome": { "result": "done", "evidence": "verified", "receipt": "session ended cleanly" },
+      "cost": {
+        "input_tokens": 21000,
+        "cached_input_tokens": 64000,
+        "output_tokens": 5200,
+        "reasoning_tokens": 3900,
+        "requests": 9,
+        "basis": "measured"
+      },
+      "session": "rollout-2026-08-31T09-52-00-rev"
+    },
+    {
+      "id": "S-ext.a1",
+      "node": "S-ext",
+      "n": 1,
+      "actor": "cli",
+      "harness": "codex",
+      "model": { "raw": "gpt-5.3-codex", "id": "gpt-5.3-codex", "family": "gpt", "provider": "openai", "tier": "reported" },
+      "cause": { "type": "initial" },
+      "origin": {
+        "launched_by": null,
+        "workspace": "example-swarm",
+        "external": true,
+        "how": "codex exec",
+        "tier": "reported",
+        "evidence": "codex originator codex_exec, source exec; no scanned session ran codex exec in the window"
+      },
+      "role": { "value": "cli", "tier": "heuristic", "evidence": "launched by an unscanned session; neither command nor prompt has role words" },
+      "phase": { "value": "build", "tier": "heuristic", "evidence": "started inside the lead's interval" },
+      "status": "settled_unverified",
+      "started_at": "2026-08-31T09:30:00Z",
+      "ended_at": "2026-08-31T09:40:00Z",
+      "outcome": { "result": "settled_unverified", "evidence": "heuristic", "reason": "rollout has no clean end marker" },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 12000,
+        "output_tokens": 900,
+        "requests": 3,
+        "basis": "measured"
+      },
+      "session": "rollout-2026-08-31T09-30-00-ext"
+    },
+    {
+      "id": "S-post.a1",
+      "node": "S-post",
+      "n": 1,
+      "actor": "post-review",
+      "harness": "claude-code",
+      "model": { "raw": "claude-opus-5", "id": "claude-opus-5", "family": "opus5", "provider": "anthropic", "tier": "verified" },
+      "effort": "xhigh",
+      "cause": { "type": "followup", "reason": "review of the finished build" },
+      "origin": { "launched_by": null, "workspace": "example-swarm", "external": false, "how": null, "tier": "verified", "evidence": "top-level claude-code session; no launch signal in its meta" },
+      "role": { "value": "solo", "tier": "heuristic", "evidence": null },
+      "phase": { "value": "post", "tier": "heuristic", "evidence": "top-level session starting 60 min after the lead ended" },
+      "status": "done",
+      "started_at": "2026-08-31T11:30:00Z",
+      "ended_at": "2026-08-31T11:50:00Z",
+      "outcome": { "result": "done", "evidence": "verified", "receipt": "session ended cleanly" },
+      "cost": {
+        "input_tokens": 3100,
+        "cached_input_tokens": 150000,
+        "cache_creation_tokens": 20000,
+        "cache_creation_5m_tokens": 8000,
+        "cache_creation_1h_tokens": 12000,
+        "output_tokens": 4400,
+        "requests": 12,
+        "basis": "measured"
+      },
+      "session": "0f3c2a1e-post"
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "docs/BUILD-PLAN.md",
+      "path": "docs/BUILD-PLAN.md",
+      "kind": { "value": "plan", "tier": "heuristic", "evidence": "path pattern" },
+      "producer": "S-plan.a1",
+      "writers": ["S-plan.a1"],
+      "consumers": ["S-dev.a1", "S-rev.a1"],
+      "first_write_at": "2026-08-31T09:08:10Z",
+      "n_writes": 1,
+      "n_reads": 2
+    },
+    {
+      "id": "src/feature.py",
+      "path": "src/feature.py",
+      "kind": { "value": "code", "tier": "heuristic", "evidence": "path pattern" },
+      "producer": "S-dev.a1",
+      "writers": ["S-dev.a1"],
+      "consumers": ["S-rev.a1"],
+      "first_write_at": "2026-08-31T09:20:30Z",
+      "n_writes": 2,
+      "n_reads": 1
+    },
+    {
+      "id": "reviews/dev-A.md",
+      "path": "reviews/dev-A.md",
+      "kind": { "value": "review", "tier": "heuristic", "evidence": "path pattern" },
+      "producer": "S-rev.a1",
+      "writers": ["S-rev.a1"],
+      "consumers": ["S-lead.a1"],
+      "first_write_at": "2026-08-31T10:05:00Z",
+      "n_writes": 1,
+      "n_reads": 1,
+      "ext": { "dev.dagr.graph": { "how": "codex -o" } }
+    }
+  ],
+  "events": [
+    { "at": "2026-08-31T09:00:00Z", "type": "attempt_started", "attempt": "S-lead.a1" },
+    { "at": "2026-08-31T09:01:00Z", "type": "attempt_started", "attempt": "S-plan.a1", "detail": "spawned by S-lead" },
+    { "at": "2026-08-31T09:08:10Z", "type": "artifact_written", "attempt": "S-plan.a1", "detail": "docs/BUILD-PLAN.md" },
+    { "at": "2026-08-31T09:10:00Z", "type": "attempt_settled", "attempt": "S-plan.a1" },
+    { "at": "2026-08-31T09:12:00Z", "type": "attempt_started", "attempt": "S-dev.a1", "detail": "spawned by S-lead" },
+    { "at": "2026-08-31T09:12:40Z", "type": "artifact_read", "attempt": "S-dev.a1", "detail": "docs/BUILD-PLAN.md" },
+    { "at": "2026-08-31T09:20:30Z", "type": "artifact_written", "attempt": "S-dev.a1", "detail": "src/feature.py" },
+    { "at": "2026-08-31T09:30:00Z", "type": "attempt_started", "attempt": "S-ext.a1", "detail": "launched by an unscanned session" },
+    { "at": "2026-08-31T09:40:00Z", "type": "attempt_settled", "attempt": "S-ext.a1" },
+    { "at": "2026-08-31T09:48:02Z", "type": "artifact_written", "attempt": "S-dev.a1", "detail": "src/feature.py" },
+    { "at": "2026-08-31T09:50:00Z", "type": "attempt_settled", "attempt": "S-dev.a1" },
+    { "at": "2026-08-31T09:51:57Z", "type": "launched", "attempt": "S-lead.a1", "node": "S-rev", "detail": "codex exec" },
+    { "at": "2026-08-31T09:52:00Z", "type": "attempt_started", "attempt": "S-rev.a1" },
+    { "at": "2026-08-31T09:52:30Z", "type": "artifact_read", "attempt": "S-rev.a1", "detail": "docs/BUILD-PLAN.md (shell cat)" },
+    { "at": "2026-08-31T09:53:00Z", "type": "artifact_read", "attempt": "S-rev.a1", "detail": "src/feature.py (shell cat)" },
+    { "at": "2026-08-31T10:05:00Z", "type": "artifact_written", "attempt": "S-rev.a1", "detail": "reviews/dev-A.md" },
+    { "at": "2026-08-31T10:05:00Z", "type": "attempt_settled", "attempt": "S-rev.a1" },
+    { "at": "2026-08-31T10:06:15Z", "type": "artifact_read", "attempt": "S-lead.a1", "detail": "reviews/dev-A.md" },
+    { "at": "2026-08-31T10:30:00Z", "type": "attempt_settled", "attempt": "S-lead.a1" },
+    { "at": "2026-08-31T11:30:00Z", "type": "attempt_started", "attempt": "S-post.a1" },
+    { "at": "2026-08-31T11:50:00Z", "type": "attempt_settled", "attempt": "S-post.a1" }
+  ],
+  "ext": {
+    "dev.dagr.graph": {
+      "sessions_scanned": 6,
+      "sessions_excluded": { "no_start_time": 0, "unparseable": 0 },
+      "nodes_without_role": 0,
+      "launch_unmatched": 1,
+      "artifacts_without_consumer": 0
+    }
+  }
+}

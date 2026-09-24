@@ -1,0 +1,752 @@
+{
+  "ocp": "0.3",
+  "producer": {
+    "name": "loopmath",
+    "version": "0.1.0",
+    "emitted_at": "2026-09-23T10:00:00-07:00",
+    "capabilities": {
+      "task": true,
+      "configuration": true,
+      "signals": true,
+      "slate": true,
+      "receipt": true,
+      "edges_dep": true,
+      "artifacts": true,
+      "cost_usd": true,
+      "cost_tokens": true,
+      "outcome_evidence": true,
+      "groups": false
+    },
+    "framework": "loopmath"
+  },
+  "privacy": {
+    "profile": "metadata_only"
+  },
+  "run": {
+    "id": "run_golden_e194_pass",
+    "started_at": "2026-09-23T10:00:00-07:00",
+    "task": {
+      "id": "tsk_ex_full",
+      "title": "example task for implement_review",
+      "type": "feature",
+      "repo": "example/widget",
+      "base_commit": "a1b2c3d",
+      "features": {
+        "size": "s",
+        "lang": "python",
+        "has_tests": "yes"
+      },
+      "source": {
+        "kind": "backlog",
+        "ref": "issue/412"
+      },
+      "labeled_by": {
+        "how": "labeler",
+        "model": "claude-fable-5-1",
+        "tier": "heuristic"
+      },
+      "subtype": "cli_flag",
+      "org": "example",
+      "groups": [
+        {
+          "level": "org",
+          "id": "example"
+        },
+        {
+          "level": "repo",
+          "id": "example/widget"
+        }
+      ]
+    },
+    "configuration": {
+      "id": "cfg_ab15440a2d9c",
+      "workflow": {
+        "id": "implement_review",
+        "version": 1,
+        "title": "Implement, then review",
+        "pieces": [
+          {
+            "id": "implement",
+            "role": "implementer",
+            "width": 1
+          },
+          {
+            "id": "review",
+            "role": "reviewer",
+            "width": 1
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "issue",
+            "kind": "issue"
+          },
+          {
+            "id": "repo",
+            "kind": "repo"
+          },
+          {
+            "id": "diff",
+            "kind": "diff"
+          },
+          {
+            "id": "verdict",
+            "kind": "verdict"
+          }
+        ],
+        "edges": [
+          [
+            "issue",
+            "implement"
+          ],
+          [
+            "repo",
+            "implement"
+          ],
+          [
+            "implement",
+            "diff"
+          ],
+          [
+            "diff",
+            "review"
+          ],
+          [
+            "issue",
+            "review"
+          ],
+          [
+            "review",
+            "verdict"
+          ]
+        ],
+        "control": {
+          "gates": [
+            "review"
+          ],
+          "repair": {
+            "review": "implement"
+          },
+          "budget": 3,
+          "rescue": {
+            "kind": "configuration",
+            "ref": "usual"
+          }
+        }
+      },
+      "settings": {
+        "implement": {
+          "harness": "claude-code",
+          "model": {
+            "raw": "claude-opus-5-5",
+            "id": "claude-opus-5-5"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "review": {
+          "harness": "codex",
+          "model": {
+            "raw": "gpt-6-astra",
+            "id": "gpt-6-astra"
+          },
+          "effort": "xhigh",
+          "context_policy": "fresh",
+          "options": {}
+        }
+      },
+      "source": "exploration",
+      "rec": "rec_ex01"
+    },
+    "provenance": {
+      "kind": "designed",
+      "chooser": "loopmath"
+    },
+    "acceptance_rule": {
+      "name": "tests+review+runtime",
+      "definition": "tests pass, the reviewer approves and the run finishes under 60 minutes",
+      "requires": [
+        "tests",
+        "review"
+      ],
+      "score": {
+        "name": "runtime_s",
+        "target": 3600,
+        "better": "lower",
+        "scale": "log"
+      },
+      "excludes_events": [
+        "revert",
+        "incident"
+      ],
+      "window_days": 14
+    },
+    "signals": [
+      {
+        "id": "sig_review_1",
+        "kind": "verdict",
+        "name": "review",
+        "value": "reject",
+        "at_attempt": "review.a1",
+        "observed_at": "2026-09-23T10:27:00-07:00",
+        "source": {
+          "kind": "orchestrator"
+        },
+        "tier": "reported"
+      },
+      {
+        "id": "sig_review_2",
+        "kind": "verdict",
+        "name": "review",
+        "value": "accept",
+        "at_attempt": "review.a2",
+        "observed_at": "2026-09-23T10:53:00-07:00",
+        "source": {
+          "kind": "orchestrator"
+        },
+        "tier": "reported"
+      },
+      {
+        "id": "sig_tests_ci",
+        "kind": "verdict",
+        "name": "tests",
+        "value": "pass",
+        "at_attempt": "review.a2",
+        "observed_at": "2026-09-23T10:55:00-07:00",
+        "source": {
+          "kind": "ci",
+          "ref": "ci/run/4411"
+        },
+        "tier": "verified"
+      },
+      {
+        "id": "sig_runtime",
+        "kind": "score",
+        "name": "runtime_s",
+        "value": 3300.0,
+        "unit": "s",
+        "better": "lower",
+        "scale": "log",
+        "observed_at": "2026-09-23T10:56:00-07:00",
+        "source": {
+          "kind": "orchestrator"
+        },
+        "tier": "verified",
+        "target": 3600
+      },
+      {
+        "id": "sig_quality",
+        "kind": "score",
+        "name": "quality",
+        "value": null,
+        "unit": "points",
+        "better": "higher",
+        "scale": "linear",
+        "observed_at": "2026-09-23T10:56:00-07:00",
+        "source": {
+          "kind": "user"
+        },
+        "tier": "asserted"
+      },
+      {
+        "id": "sig_issue",
+        "kind": "event",
+        "name": "issue",
+        "value": "issue/431",
+        "observed_at": "2026-09-25T09:00:00-07:00",
+        "source": {
+          "kind": "tracker",
+          "ref": "issue/431"
+        },
+        "tier": "reported"
+      }
+    ],
+    "title": "E194 pass: the run is a member of its slate and the preference names the slate",
+    "ended_at": "2026-09-23T10:56:00-07:00",
+    "labels": {
+      "example": "full-fields"
+    },
+    "slate": {
+      "id": "slt_ex_full",
+      "members": [
+        "run_golden_e194_pass",
+        "run_ex_full_b"
+      ],
+      "base_commit": "a1b2c3d",
+      "isolated": true,
+      "blinded": true
+    },
+    "preferences": [
+      {
+        "id": "prf_ex_full",
+        "slate": "slt_ex_full",
+        "winner": "run_golden_e194_pass",
+        "members": [
+          "run_golden_e194_pass",
+          "run_ex_full_b"
+        ],
+        "judge": {
+          "kind": "referee",
+          "model": "gpt-6-astra",
+          "blinded": true
+        },
+        "observed_at": "2026-09-23T10:56:00-07:00",
+        "tier": "reported"
+      }
+    ],
+    "rescue": {
+      "kind": "none",
+      "cost_usd": 0.0,
+      "basis": "measured"
+    },
+    "receipt": {
+      "before": {
+        "rec": "rec_ex01",
+        "fit": "fit_ex_20260923",
+        "predicted": {
+          "p_success": {
+            "mean": 0.78,
+            "lo": 0.66,
+            "hi": 0.88,
+            "level": 0.8
+          },
+          "cost_usd": {
+            "mean": 2.9,
+            "lo": 1.9,
+            "hi": 4.4
+          },
+          "tokens": {
+            "mean": 900000,
+            "lo": 600000,
+            "hi": 1400000
+          }
+        },
+        "gain_per_run": {
+          "usd": 0.4,
+          "success_pp": 3.0,
+          "cost_pct": -12.0,
+          "score": null
+        },
+        "price_usd": 1.2,
+        "payback_runs": 3
+      },
+      "after": {
+        "cost_usd": 3.52,
+        "tokens": 1376000,
+        "signals": [
+          "sig_review_2",
+          "sig_tests_ci"
+        ],
+        "moved": {
+          "p_success": {
+            "from": 0.78,
+            "to": 0.79
+          }
+        },
+        "fit_after": "fit_ex_20260923b"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "implement",
+      "kind": "impl",
+      "vertex": "implement",
+      "state": "done",
+      "title": "implementer (implement)"
+    },
+    {
+      "id": "review",
+      "kind": "review",
+      "vertex": "review",
+      "state": "done",
+      "title": "reviewer (review)",
+      "gate": {
+        "rule": "review",
+        "disposition": {
+          "rubric": "rubrics/review-v2.md",
+          "severity_map": "blocking=reject; minor=accept",
+          "grammar": "verdict-line/1"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "implement",
+      "to": "review",
+      "kind": "dep",
+      "tier": "reported"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "implement.a1",
+      "node": "implement",
+      "vertex": "implement",
+      "n": 1,
+      "round": 1,
+      "harness": "claude-code",
+      "model": {
+        "raw": "claude-opus-5-5",
+        "id": "claude-opus-5-5"
+      },
+      "effort": "xhigh",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "started_at": "2026-09-23T10:01:00-07:00",
+      "cwd": "~/work/widget",
+      "ended_at": "2026-09-23T10:13:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 320000,
+        "output_tokens": 16000,
+        "requests": 20,
+        "usd": 0.99,
+        "basis": "measured",
+        "tariff": {
+          "id": "prices-3f9a1c2e",
+          "date": "2026-09-01",
+          "source": "prices.toml"
+        }
+      },
+      "role": {
+        "value": "implementer",
+        "tier": "verified",
+        "evidence": "workflow piece role"
+      },
+      "setting": {
+        "harness": "claude-code",
+        "model": {
+          "raw": "claude-opus-5-5",
+          "id": "claude-opus-5-5"
+        },
+        "effort": "xhigh",
+        "context_policy": "summary",
+        "options": {}
+      }
+    },
+    {
+      "id": "review.a1",
+      "node": "review",
+      "vertex": "review",
+      "n": 1,
+      "round": 1,
+      "harness": "codex",
+      "model": {
+        "raw": "gpt-6-astra",
+        "id": "gpt-6-astra"
+      },
+      "effort": "xhigh",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "rejected",
+      "started_at": "2026-09-23T10:14:00-07:00",
+      "cwd": "~/work/widget",
+      "ended_at": "2026-09-23T10:26:00-07:00",
+      "outcome": {
+        "result": "rejected",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 320000,
+        "output_tokens": 16000,
+        "requests": 20,
+        "usd": 0.77,
+        "basis": "measured",
+        "tariff": {
+          "id": "prices-3f9a1c2e",
+          "date": "2026-09-01",
+          "source": "prices.toml"
+        }
+      },
+      "role": {
+        "value": "reviewer",
+        "tier": "verified",
+        "evidence": "workflow piece role"
+      }
+    },
+    {
+      "id": "implement.a2",
+      "node": "implement",
+      "vertex": "implement",
+      "n": 2,
+      "round": 2,
+      "harness": "claude-code",
+      "model": {
+        "raw": "claude-opus-5-5",
+        "id": "claude-opus-5-5"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "gate_failed",
+        "ref": "review.a1",
+        "by": "review"
+      },
+      "status": "done",
+      "started_at": "2026-09-23T10:27:00-07:00",
+      "cwd": "~/work/widget",
+      "ended_at": "2026-09-23T10:39:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 320000,
+        "output_tokens": 16000,
+        "requests": 20,
+        "usd": 0.99,
+        "basis": "measured",
+        "tariff": {
+          "id": "prices-3f9a1c2e",
+          "date": "2026-09-01",
+          "source": "prices.toml"
+        }
+      },
+      "role": {
+        "value": "implementer",
+        "tier": "verified",
+        "evidence": "workflow piece role"
+      }
+    },
+    {
+      "id": "review.a2",
+      "node": "review",
+      "vertex": "review",
+      "n": 2,
+      "round": 2,
+      "harness": "codex",
+      "model": {
+        "raw": "gpt-6-astra",
+        "id": "gpt-6-astra"
+      },
+      "effort": "xhigh",
+      "cause": {
+        "type": "followup",
+        "ref": "implement.a2"
+      },
+      "status": "done",
+      "started_at": "2026-09-23T10:40:00-07:00",
+      "cwd": "~/work/widget",
+      "ended_at": "2026-09-23T10:52:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 320000,
+        "output_tokens": 16000,
+        "requests": 20,
+        "usd": 0.77,
+        "basis": "measured",
+        "tariff": {
+          "id": "prices-3f9a1c2e",
+          "date": "2026-09-01",
+          "source": "prices.toml"
+        }
+      },
+      "role": {
+        "value": "reviewer",
+        "tier": "verified",
+        "evidence": "workflow piece role"
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "diff",
+      "path": "artifacts/diff",
+      "kind": {
+        "value": "code",
+        "tier": "verified",
+        "evidence": "declared by the workflow"
+      },
+      "producer": "implement.a1",
+      "writers": [
+        "implement.a1"
+      ],
+      "consumers": [
+        "review.a1"
+      ],
+      "first_write_at": "2026-09-23T10:13:00-07:00",
+      "n_writes": 1,
+      "n_reads": 1,
+      "vertex": "diff",
+      "version": 1,
+      "transfer_tokens": {
+        "review.a1": {
+          "input": 5200,
+          "cache_read": 41000
+        }
+      }
+    },
+    {
+      "id": "verdict",
+      "path": "artifacts/verdict",
+      "kind": {
+        "value": "review",
+        "tier": "verified",
+        "evidence": "declared by the workflow"
+      },
+      "producer": "review.a1",
+      "writers": [
+        "review.a1"
+      ],
+      "consumers": [],
+      "first_write_at": "2026-09-23T10:26:00-07:00",
+      "n_writes": 1,
+      "n_reads": 0,
+      "vertex": "verdict",
+      "version": 1
+    },
+    {
+      "id": "diff@v2",
+      "path": "artifacts/diff-v2",
+      "kind": {
+        "value": "code",
+        "tier": "verified",
+        "evidence": "declared by the workflow"
+      },
+      "producer": "implement.a2",
+      "writers": [
+        "implement.a2"
+      ],
+      "consumers": [
+        "review.a2"
+      ],
+      "first_write_at": "2026-09-23T10:39:00-07:00",
+      "n_writes": 1,
+      "n_reads": 1,
+      "vertex": "diff",
+      "version": 2,
+      "supersedes": "diff",
+      "transfer_tokens": {
+        "review.a2": {
+          "input": 5200,
+          "cache_read": 41000
+        }
+      }
+    },
+    {
+      "id": "verdict@v2",
+      "path": "artifacts/verdict-v2",
+      "kind": {
+        "value": "review",
+        "tier": "verified",
+        "evidence": "declared by the workflow"
+      },
+      "producer": "review.a2",
+      "writers": [
+        "review.a2"
+      ],
+      "consumers": [],
+      "first_write_at": "2026-09-23T10:52:00-07:00",
+      "n_writes": 1,
+      "n_reads": 0,
+      "vertex": "verdict",
+      "version": 2,
+      "supersedes": "verdict"
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-09-23T10:00:00-07:00",
+      "type": "note",
+      "detail": "run started"
+    },
+    {
+      "at": "2026-09-23T10:01:00-07:00",
+      "type": "attempt_started",
+      "attempt": "implement.a1",
+      "node": "implement"
+    },
+    {
+      "at": "2026-09-23T10:13:00-07:00",
+      "type": "attempt_settled",
+      "attempt": "implement.a1",
+      "node": "implement"
+    },
+    {
+      "at": "2026-09-23T10:14:00-07:00",
+      "type": "attempt_started",
+      "attempt": "review.a1",
+      "node": "review"
+    },
+    {
+      "at": "2026-09-23T10:26:00-07:00",
+      "type": "attempt_settled",
+      "attempt": "review.a1",
+      "node": "review"
+    },
+    {
+      "at": "2026-09-23T10:27:00-07:00",
+      "type": "attempt_started",
+      "attempt": "implement.a2",
+      "node": "implement"
+    },
+    {
+      "at": "2026-09-23T10:27:00-07:00",
+      "type": "signal_observed",
+      "detail": "verdict review"
+    },
+    {
+      "at": "2026-09-23T10:39:00-07:00",
+      "type": "attempt_settled",
+      "attempt": "implement.a2",
+      "node": "implement"
+    },
+    {
+      "at": "2026-09-23T10:40:00-07:00",
+      "type": "attempt_started",
+      "attempt": "review.a2",
+      "node": "review"
+    },
+    {
+      "at": "2026-09-23T10:52:00-07:00",
+      "type": "attempt_settled",
+      "attempt": "review.a2",
+      "node": "review"
+    },
+    {
+      "at": "2026-09-23T10:53:00-07:00",
+      "type": "signal_observed",
+      "detail": "verdict review"
+    },
+    {
+      "at": "2026-09-23T10:55:00-07:00",
+      "type": "signal_observed",
+      "detail": "verdict tests"
+    },
+    {
+      "at": "2026-09-23T10:56:00-07:00",
+      "type": "signal_observed",
+      "detail": "score runtime_s"
+    },
+    {
+      "at": "2026-09-23T10:56:00-07:00",
+      "type": "run_finished",
+      "detail": "accepted; 4 attempts, 3.52 usd"
+    },
+    {
+      "at": "2026-09-23T10:58:00-07:00",
+      "type": "receipt_written",
+      "detail": "before and after test counts"
+    },
+    {
+      "at": "2026-09-25T09:00:00-07:00",
+      "type": "signal_observed",
+      "detail": "event issue"
+    }
+  ]
+}

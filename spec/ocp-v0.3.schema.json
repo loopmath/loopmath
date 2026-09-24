@@ -1,0 +1,2213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ocp:run:0.3",
+  "title": "OCP v0.3 run document",
+  "description": "Orchestration Context Protocol v0.3. A strict superset of v0.2: every field added here is optional, and a v0.2 document stays valid when its 'ocp' value is changed to '0.3'. One JSON document describes one orchestration run. v0.3 adds the whole observation a learner needs: the task (run.task), the configuration that ran it, meaning the workflow shape and a setting per piece (run.configuration), how it was chosen (run.provenance), timestamped signals such as verdicts, scores and late events (run.signals), the user's acceptance rule (run.acceptance_rule), slates of runs compared on one task (run.slate), pair preferences (run.preferences), the fallback used when a run ended without acceptance (run.rescue), the receipt of predicted against actual (run.receipt, written only by loopmath), the tariff used to price each attempt (cost.tariff), and links from nodes, attempts and artifacts to the workflow's vertices. Unknown fields are ignored by consumers at every level. Producer-specific data goes in 'ext' objects with registered reverse-domain keys; loopmath's own namespace is 'dev.loopmath.' ('dev.dagr.' stays readable with a warning). String vocabularies are open sets with recommended lists, except these closed enums: evidence tier, privacy profile, attempt status, outcome result, signal.kind, configuration.source, provenance.kind, and the typed switches signal.better and signal.scale. Rules JSON Schema cannot express are numbered in OCP.md and checked by loopmath.ocp.conformance: all v0.2 rules, plus E190 (configuration id is the canonical hash), E191 (every piece has a setting), E192 (workflow edges join a piece and an artifact and form a DAG), E193 (gates and repair targets exist), E194 (slate members share task.id and base_commit), E195 (signal values match their kind), W196 (a receipt from a producer other than loopmath) and W182 ('dev.dagr.' extension keys).",
+  "type": "object",
+  "required": [
+    "ocp",
+    "producer",
+    "privacy",
+    "run",
+    "nodes"
+  ],
+  "properties": {
+    "ocp": {
+      "const": "0.3",
+      "description": "Protocol version. This schema validates exactly version 0.3; v0.2 documents validate against ocp-v0.2.schema.json and v0.1 documents against ocp-v0.schema.json. A v0.3 reader accepts all three."
+    },
+    "producer": {
+      "$ref": "#/$defs/producer"
+    },
+    "privacy": {
+      "$ref": "#/$defs/privacy"
+    },
+    "run": {
+      "$ref": "#/$defs/run"
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/group"
+      },
+      "description": "Optional named visual/organizational scopes (contract v3 'projects'). Grouping is orthogonal to dependency structure."
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "description": "The units of work. A gate is a node whose kind is 'gate'."
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "description": "Directed edges over node ids. 'dep' and 'fan_in' edges together must form a DAG; 'spawn', 'launch' and 'artifact' edges record discovered lineage and may form cycles."
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/attempt"
+      },
+      "description": "Flat list of tries, each pointing at its node. Attempts are records, not counters; a retry is a new attempt."
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      },
+      "description": "Files (or other addressable outputs) that one attempt produced and other attempts consumed. The handoff objects between attempts; the run records who wrote and who read them, never their content."
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      },
+      "description": "Optional append-only provenance log, ascending in time."
+    },
+    "ext": {
+      "$ref": "#/$defs/ext"
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$",
+      "description": "ISO-8601 / RFC-3339 timestamp with explicit offset."
+    },
+    "shortText": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "Short producer-authored label. Under the metadata_only profile this must never contain prompt or transcript text."
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "description": "Free-form string key/value labels for stratification (e.g. project family, model family)."
+    },
+    "ext": {
+      "type": "object",
+      "description": "Producer-specific extension data. Keys use registered reverse-domain namespaces, e.g. 'dev.loopmath.graph', 'langgraph.thread_id'. loopmath's namespace is 'dev.loopmath.'; the pre-rename 'dev.dagr.' stays readable in v0.3 and v0.4 with warning W182. Consumers must ignore namespaces they do not understand."
+    },
+    "evidenceTier": {
+      "enum": [
+        "verified",
+        "heuristic",
+        "reported"
+      ],
+      "description": "How an inferred label or edge is known. verified: mechanically established from the logs (ids match, both events present). heuristic: a rule inferred it (timing, text pattern, path containment). reported: a session, harness or model asserted it and the producer took it at face value. A producer must never upgrade a tier without new mechanical evidence."
+    },
+    "producer": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The emitting software (plugin or converter), e.g. 'ocp-from-contractv3'. The dagr extractor uses 'dagr' (optionally suffixed after a non-word character, e.g. 'dagr/graph'); that name switches on the extractor-only rule (cost.basis 'measured')."
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "framework": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The orchestration framework the run executed under, e.g. 'herdr-dagr', 'claude-code', 'langgraph', 'crewai'."
+        },
+        "framework_version": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "source_contract": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Upstream native format this document was derived from, e.g. 'dagr/3' or 'dagr_graph/1'."
+        },
+        "emitted_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "capabilities": {
+          "type": "object",
+          "description": "Elements this producer can emit. A false value promises that the corresponding element is absent from this document. Unknown boolean keys are producer extensions.",
+          "properties": {
+            "groups": {
+              "type": "boolean"
+            },
+            "events": {
+              "type": "boolean"
+            },
+            "artifacts": {
+              "type": "boolean"
+            },
+            "edges_dep": {
+              "type": "boolean"
+            },
+            "edges_spawn": {
+              "type": "boolean"
+            },
+            "edges_launch": {
+              "type": "boolean"
+            },
+            "edges_artifact": {
+              "type": "boolean"
+            },
+            "cost_usd": {
+              "type": "boolean"
+            },
+            "cost_tokens": {
+              "type": "boolean"
+            },
+            "outcome_evidence": {
+              "type": "boolean"
+            },
+            "task": {
+              "type": "boolean"
+            },
+            "configuration": {
+              "type": "boolean"
+            },
+            "signals": {
+              "type": "boolean"
+            },
+            "slate": {
+              "type": "boolean"
+            },
+            "receipt": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "required": [
+        "profile"
+      ],
+      "properties": {
+        "profile": {
+          "enum": [
+            "metadata_only",
+            "full"
+          ],
+          "description": "metadata_only: no prompt, completion, or transcript text anywhere in the document; free-text fields hold only short producer-authored labels. full: text may appear in ext namespaces (never in core fields)."
+        },
+        "note": {
+          "$ref": "#/$defs/shortText"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Producer-scoped stable run id."
+        },
+        "title": {
+          "$ref": "#/$defs/shortText"
+        },
+        "started_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "ended_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "workspace": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Opaque project/workspace locator for task-mix stratification (a name or hash, not necessarily a path)."
+        },
+        "labels": {
+          "$ref": "#/$defs/labels"
+        },
+        "task": {
+          "$ref": "#/$defs/task"
+        },
+        "configuration": {
+          "$ref": "#/$defs/configuration"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "acceptance_rule": {
+          "$ref": "#/$defs/acceptanceRule"
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/signal"
+          },
+          "description": "Verdicts, scores and late events, each timestamped."
+        },
+        "slate": {
+          "$ref": "#/$defs/slate"
+        },
+        "preferences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/preference"
+          }
+        },
+        "rescue": {
+          "$ref": "#/$defs/runRescue"
+        },
+        "receipt": {
+          "$ref": "#/$defs/receipt"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "title": {
+          "$ref": "#/$defs/shortText"
+        },
+        "parent": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Another group id; parent edges must be acyclic."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Stable identity independent of any attempt. Never a runtime locator such as a pane id."
+        },
+        "kind": {
+          "type": "string",
+          "x-recommended": [
+            "impl",
+            "review",
+            "test",
+            "gate",
+            "question",
+            "docs",
+            "ship",
+            "plan",
+            "ops",
+            "task",
+            "unknown"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "maxLength": 100,
+          "description": "Open set. Recommended vocabulary: impl, review, test, gate, question, docs, ship, plan, ops, task, unknown. 'gate' marks an acceptance fan-in point. 'task' is a generic task; 'unknown' means the producer cannot determine a more specific kind."
+        },
+        "title": {
+          "$ref": "#/$defs/shortText"
+        },
+        "group": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Optional group id; omitted means the run root."
+        },
+        "state": {
+          "type": "string",
+          "x-recommended": [
+            "queued",
+            "working",
+            "review",
+            "blocked",
+            "done",
+            "failed",
+            "rejected",
+            "canceled",
+            "settled_unverified"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "maxLength": 100,
+          "description": "Producer's current projection over the node's attempts. Recommended vocabulary (from dagr contract v3): queued, working, review, blocked, done, failed, rejected, canceled, settled_unverified. Consumers learning from settled runs should trust attempt outcomes over this field."
+        },
+        "labels": {
+          "$ref": "#/$defs/labels"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        },
+        "vertex": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The workflow piece id this node executes."
+        },
+        "gate": {
+          "type": "object",
+          "description": "Present when the node is a gate.",
+          "properties": {
+            "rule": {
+              "type": "string",
+              "maxLength": 100,
+              "x-recommended": [
+                "referee",
+                "tests",
+                "merge",
+                "ci"
+              ],
+              "$comment": "This list is recommended vocabulary; readers must accept other values.",
+              "description": "The acceptance rule this gate implements, when it is one."
+            },
+            "disposition": {
+              "type": "object",
+              "properties": {
+                "rubric": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "severity_map": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "grammar": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "ext": {
+                  "$ref": "#/$defs/ext"
+                }
+              },
+              "description": "Opaque references to how the gate judges."
+            },
+            "command": {
+              "type": "string",
+              "maxLength": 1000,
+              "description": "The command a mechanical gate runs."
+            },
+            "ext": {
+              "$ref": "#/$defs/ext"
+            }
+          }
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "$comment": "'tier' is required on every edge of a v0.2 or later document, whatever its kind (dep, fan_in, spawn, launch, artifact) and whoever the producer is. Its value is one of evidenceTier's three words and nothing else.",
+      "required": [
+        "from",
+        "to",
+        "tier"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Source node id (the prerequisite / input / spawner / launcher / producer's node)."
+        },
+        "to": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Target node id (the dependent / gate / spawned node / launched node / consumer's node)."
+        },
+        "kind": {
+          "type": "string",
+          "x-recommended": [
+            "dep",
+            "fan_in",
+            "spawn",
+            "launch",
+            "artifact"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "default": "dep",
+          "description": "dep: 'to' cannot start before 'from' settles. fan_in: 'from' is a member of gate 'to''s acceptance input set. spawn: node 'to' was dynamically created by work on 'from' inside the same harness (a Claude Code subagent through the Task tool). launch: work on 'from' started node 'to' as a separate harness session through its CLI (a Bash call running 'codex exec' or 'claude -p'). artifact: an attempt at 'from' wrote the artifact named by 'artifact' and an attempt at 'to' later read it; from_attempt and to_attempt name the two attempts. Other values are accepted, but only dep and fan_in participate in the acyclicity rule."
+        },
+        "tier": {
+          "$ref": "#/$defs/evidenceTier",
+          "description": "How the edge is known. Required on every v0.2 edge, whoever the producer is: an edge without an evidence tier does not conform."
+        },
+        "artifact": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "For kind 'artifact' (required there): the id of the artifact that flowed along this edge. Must name an entry in 'artifacts'."
+        },
+        "from_attempt": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "For kind 'artifact' (required there, optional elsewhere): the producing attempt id. Must be an attempt at node 'from' and equal to the artifact's producer."
+        },
+        "to_attempt": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "For kind 'artifact' (required there, optional elsewhere): the consuming attempt id. Must be an attempt at node 'to' and among the artifact's consumers."
+        },
+        "evidence": {
+          "$ref": "#/$defs/shortText",
+          "description": "Short producer-authored note on what established the edge, e.g. 'Task tool_use id matched subagent meta' or 'codex session began 3 s after codex exec in the same workspace'."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "artifact"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "artifact",
+          "from_attempt",
+          "to_attempt"
+        ]
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "id",
+        "path",
+        "kind",
+        "producer",
+        "writers",
+        "consumers",
+        "first_write_at",
+        "n_writes",
+        "n_reads"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Unique within the document. Producers may use the path itself or a hash of it."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "The path the writers and readers used, as the producer knew it (absolute or workspace-relative). A locator, never content."
+        },
+        "kind": {
+          "type": "object",
+          "required": [
+            "value",
+            "tier"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "x-recommended": [
+                "plan",
+                "review",
+                "spec",
+                "report",
+                "code",
+                "test",
+                "config",
+                "doc",
+                "data",
+                "log",
+                "commit",
+                "merge",
+                "issue",
+                "repo",
+                "diff",
+                "verdict",
+                "test_record",
+                "other"
+              ],
+              "$comment": "This list is recommended vocabulary; readers must accept other values.",
+              "maxLength": 100,
+              "description": "Open set. Recommended vocabulary: plan, review, spec, report, code, test, config, doc, data, log, commit, merge, issue, repo, diff, verdict, test_record, other (commit and merge from v0.3: a late event is matched to its run by its commit, decision D17; issue, repo, diff, verdict and test_record from v0.3: the artifact kinds of workflow pieces, decision D91). null when the kind is unknown; the key is always present and the tier stays required beside it."
+            },
+            "tier": {
+              "$ref": "#/$defs/evidenceTier"
+            },
+            "evidence": {
+              "$ref": "#/$defs/shortText",
+              "description": "What the kind was inferred from, e.g. 'path pattern' or 'heredoc first line'."
+            },
+            "ext": {
+              "$ref": "#/$defs/ext"
+            }
+          }
+        },
+        "producer": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Attempt id of the first writer. Must name an existing attempt and must equal writers[0]; anything else is a conformance error."
+        },
+        "writers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "description": "Attempt ids that wrote the artifact, in first-write order, each listed once. Never empty: an artifact exists because something wrote it, and writers[0] is the producer."
+        },
+        "consumers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "description": "Attempt ids that read the artifact after a write by another attempt, in first-read order, each listed once. May be empty (written, never read by another attempt)."
+        },
+        "first_write_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Timestamp of the first write event; null when the producer cannot compute it. The key is always present (amendment 13:10 (a)): unknown is an explicit null, never an absent key."
+        },
+        "n_writes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Number of write events across all writers; null when the producer cannot count them. A known count must be at least the number of writers; a smaller count undercounts and is a conformance error. A null count is unknown: it neither satisfies nor fails that check."
+        },
+        "n_reads": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Number of read events across all consumers; null when the producer cannot count them. A known count must be at least the number of consumers; a smaller count undercounts and is a conformance error. A null count is unknown: it neither satisfies nor fails that check."
+        },
+        "labels": {
+          "$ref": "#/$defs/labels"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        },
+        "vertex": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The workflow artifact id this artifact instantiates."
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Version of the artifact, from 1."
+        },
+        "supersedes": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The artifact id this version replaces."
+        },
+        "transfer_tokens": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cache_read": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "description": "Attempt id to the tokens that attempt spent reading this artifact, when known."
+        }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "description": "How the attempt came to exist. Every field is present; an unknown value is an explicit null, never an absent key.",
+      "required": [
+        "launched_by",
+        "workspace",
+        "external",
+        "how",
+        "tier"
+      ],
+      "properties": {
+        "launched_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200,
+          "description": "Attempt id of the launcher, when a scanned attempt started this one through a CLI. A 'launch' edge from the launcher's node to this attempt's node must exist. null when no scanned attempt is the launcher (top-level, unknown, or external). Must be null when 'external' is true: the two contradict each other."
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 500,
+          "description": "Workspace the launched harness reported as its working directory (an opaque locator, as run.workspace); null when unknown."
+        },
+        "external": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "true when the harness reports it was launched by another program (e.g. codex originator 'codex_exec') but no scanned attempt is the launcher: launched by an unscanned session, which is not the same as not launched. false when the attempt is known not to have been launched that way (a top-level session, or one whose launcher is in 'launched_by'). null when the harness gives no signal."
+        },
+        "how": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/shortText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The launch mechanism, e.g. 'codex exec', 'claude -p', 'via_script: tools/review.sh'; null when unknown."
+        },
+        "tier": {
+          "$ref": "#/$defs/evidenceTier"
+        },
+        "evidence": {
+          "$ref": "#/$defs/shortText"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      },
+      "if": {
+        "properties": {
+          "external": {
+            "const": true
+          }
+        },
+        "required": [
+          "external"
+        ]
+      },
+      "then": {
+        "properties": {
+          "launched_by": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    "role": {
+      "type": "object",
+      "description": "What the attempt did in the run. All three fields are present; evidence is null when there is nothing to cite.",
+      "required": [
+        "value",
+        "tier",
+        "evidence"
+      ],
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-recommended": [
+            "lead",
+            "solo",
+            "planner",
+            "dev",
+            "reviewer",
+            "cli",
+            "subagent"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "maxLength": 100,
+          "description": "Open set. Recommended vocabulary: lead (top-level session that spawned or launched others), solo (top-level session that did not), planner, dev, reviewer, cli (launched through a CLI with no role signal), subagent. null when the role is unknown; the key is always present and the tier stays required beside it."
+        },
+        "tier": {
+          "$ref": "#/$defs/evidenceTier"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/shortText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the label rests on, e.g. \"declared type 'Plan'\" or 'launch command mentions review'; null when nothing can be cited."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "description": "When in the run the attempt happened. All three fields are present; evidence is null when there is nothing to cite.",
+      "required": [
+        "value",
+        "tier",
+        "evidence"
+      ],
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-recommended": [
+            "build",
+            "post",
+            "external"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "maxLength": 100,
+          "description": "Open set. Recommended vocabulary: build (during the lead's activity), post (after the lead ended, e.g. a post-build review), external (outside the run's workspace). null when the phase is unknown; the key is always present and the tier stays required beside it."
+        },
+        "tier": {
+          "$ref": "#/$defs/evidenceTier"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/shortText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the label rests on; null when nothing can be cited."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "modelRef": {
+      "type": "object",
+      "properties": {
+        "raw": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The label exactly as the producer knew it, always preserved (e.g. 'fable·xhigh', 'opus5.xhigh'). Canonicalization is the consumer's job; the raw label is the ground truth."
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Canonical provider model id when known, e.g. 'claude-fable-5'."
+        },
+        "family": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Coarse family label for grouping attempts by model family, e.g. 'fable', 'opus5', 'sol5.6'."
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "e.g. 'anthropic', 'openai'."
+        },
+        "tier": {
+          "$ref": "#/$defs/evidenceTier",
+          "description": "How the model label is known: verified from per-request usage records, reported from a harness field, heuristic from a name pattern."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "description": "Token and money cost of one attempt, summed over all API requests the attempt made. Cached input is separated from uncached because the two are priced differently and blur cost comparisons when merged; cache creation is split by retention bucket for the same reason.",
+      "properties": {
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Uncached input tokens."
+        },
+        "cached_input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Input tokens served from cache (cache reads)."
+        },
+        "cache_creation_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Input tokens written to cache, all retention buckets together, when the provider bills them separately. When the two bucket fields are also present their sum must equal this."
+        },
+        "cache_creation_5m_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cache-creation tokens in the 5-minute retention bucket."
+        },
+        "cache_creation_1h_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cache-creation tokens in the 1-hour retention bucket, priced higher than the 5-minute bucket."
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reasoning_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Thinking/reasoning tokens when the provider reports them separately from output."
+        },
+        "requests": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of model API requests aggregated into this record."
+        },
+        "usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Billed cost in US dollars when the producer knows it. Consumers should prefer recomputing from tokens and a dated price table."
+        },
+        "basis": {
+          "type": "string",
+          "x-recommended": [
+            "measured",
+            "allocated"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "How the counts were attributed to this attempt. measured: summed from usage records that identify this attempt exactly (a per-session or per-agent transcript, or per-request usage tied to the attempt). allocated: apportioned from a coarser aggregate (per-day or per-worktree usage) by a heuristic such as a time-window join; consumers should down-weight accordingly. Absent means unknown. Required, and required to be 'measured', when the producer is the extractor."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        },
+        "tariff": {
+          "$ref": "#/$defs/tariff"
+        }
+      }
+    },
+    "cause": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "x-recommended": [
+            "initial",
+            "sent_back",
+            "gate_failed",
+            "followup",
+            "superseded",
+            "other"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "Why this attempt exists. initial: the first attempt for its node. sent_back: a review rejected earlier work. gate_failed: an acceptance gate failed. followup: continuation of earlier work. superseded: replaces an earlier attempt. other: a trigger that fits none of the named values."
+        },
+        "ref": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The earlier attempt id this cause points back to."
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Who triggered it (reviewer, operator, policy rule)."
+        },
+        "reason": {
+          "$ref": "#/$defs/shortText"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": [
+        "result"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "done",
+            "failed",
+            "rejected",
+            "canceled",
+            "settled_unverified",
+            "lost"
+          ],
+          "description": "Terminal result. done: accepted. failed: attempted and did not succeed. rejected: refused by a review or a gate. canceled: stopped before it settled on its own. settled_unverified: settled without a parseable acceptance signal. lost: the runtime vanished."
+        },
+        "evidence": {
+          "type": "string",
+          "x-recommended": [
+            "verified",
+            "reported",
+            "heuristic",
+            "asserted"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "How the result is known (dagr contract v3 tiers). verified: mechanically checked (tests, provenance receipt). reported: the actor asserted it through a typed envelope. heuristic: inferred. asserted: bare claim. Missing evidence must be treated as 'asserted', never upgraded."
+        },
+        "via": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Node id of the gate or review that produced this acceptance signal, when one did."
+        },
+        "receipt": {
+          "$ref": "#/$defs/shortText"
+        },
+        "reason": {
+          "$ref": "#/$defs/shortText"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "$comment": "origin, role and phase are deliberately NOT in 'required': an attempt need not carry origin, role or phase at all (a v0.1 attempt has none); the extractor's own output always carries all three, and the extractor, not the schema, enforces that. Once one of the three records is present, every field listed for it is required inside that record (see the origin, role and phase definitions).",
+      "required": [
+        "id",
+        "node",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Globally unique within the document."
+        },
+        "node": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The node this attempt tries."
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-based ordinal within the node."
+        },
+        "actor": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Logical agent/role that ran the attempt (not a volatile runtime locator)."
+        },
+        "harness": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "The agent harness that ran the attempt, e.g. 'claude-code', 'codex'."
+        },
+        "model": {
+          "$ref": "#/$defs/modelRef"
+        },
+        "effort": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Reasoning-effort label as configured, e.g. low, medium, high, xhigh, max. Open set; producers must not fold it into the model label."
+        },
+        "cause": {
+          "$ref": "#/$defs/cause"
+        },
+        "origin": {
+          "$ref": "#/$defs/origin",
+          "description": "How this attempt came to run: which scanned attempt launched it through a CLI, in which workspace, or that an unscanned program did."
+        },
+        "role": {
+          "$ref": "#/$defs/role",
+          "description": "What part the attempt played in the run (lead, planner, dev, reviewer, ...), with the tier and evidence the label rests on."
+        },
+        "phase": {
+          "$ref": "#/$defs/phase",
+          "description": "When in the run's life the attempt ran (build, post, external), with tier and evidence."
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "working",
+            "done",
+            "failed",
+            "rejected",
+            "canceled",
+            "settled_unverified",
+            "lost"
+          ],
+          "description": "Current or terminal status. queued: created, not started yet. working: running now. The terminal statuses are done, failed, rejected, canceled, settled_unverified and lost, each carrying the meaning outcome.result gives it. When terminal, an outcome record should be present and outcome.result must equal status."
+        },
+        "started_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "ended_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "outcome": {
+          "$ref": "#/$defs/outcome"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        },
+        "session": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Opaque correlate to the underlying harness session/transcript id, for producers that can join the two. Never transcript content."
+        },
+        "labels": {
+          "$ref": "#/$defs/labels"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        },
+        "vertex": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The workflow piece id this attempt executes."
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Repair round, 1-based."
+        },
+        "setting": {
+          "$ref": "#/$defs/setting",
+          "description": "Only when it differs from the configuration's setting for the vertex."
+        },
+        "cwd": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Working folder, opaque."
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "at",
+        "type"
+      ],
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "type": "string",
+          "x-recommended": [
+            "attempt_started",
+            "attempt_settled",
+            "promoted",
+            "directive",
+            "note",
+            "launched",
+            "artifact_written",
+            "artifact_read",
+            "signal_observed",
+            "receipt_written",
+            "run_finished"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "maxLength": 100,
+          "description": "Open set. Recommended vocabulary: attempt_started, attempt_settled, promoted, directive, note, launched, artifact_written, artifact_read, signal_observed, receipt_written, run_finished."
+        },
+        "node": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "attempt": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "actor": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "detail": {
+          "$ref": "#/$defs/shortText"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "An identifier of at most 200 characters."
+    },
+    "outcomeTier": {
+      "enum": [
+        "verified",
+        "reported",
+        "heuristic",
+        "asserted"
+      ],
+      "description": "How a signal or judgement is known (dagr contract v3 tiers). verified: mechanically checked (tests, CI, a provenance receipt). reported: a typed report from the orchestrator, user or tool. heuristic: inferred by a rule. asserted: a bare claim. Tiers are never upgraded without new mechanical evidence."
+    },
+    "interval": {
+      "type": "object",
+      "required": [
+        "mean"
+      ],
+      "properties": {
+        "mean": {
+          "type": "number"
+        },
+        "lo": {
+          "type": "number"
+        },
+        "hi": {
+          "type": "number"
+        },
+        "level": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Central coverage of [lo, hi]; 0.8 when absent."
+        }
+      },
+      "description": "A predicted quantity: mean and an 80 percent interval unless 'level' says otherwise."
+    },
+    "sourceRef": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "ref": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Opaque reference within that source (an issue id, a CI run id, a file)."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      },
+      "description": "Where a record came from."
+    },
+    "taskGroup": {
+      "type": "object",
+      "required": [
+        "level",
+        "id"
+      ],
+      "properties": {
+        "level": {
+          "type": "string",
+          "maxLength": 100,
+          "x-recommended": [
+            "org",
+            "type",
+            "repo",
+            "subtype"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "Grouping level, root first: org, type, repo, subtype, then extra user levels."
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "The group's key at that level."
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "description": "The task this run attempted (paper: tau, its features psi(tau) and its groups). Both members of a pair carry the same task.id and base_commit (E194).",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id",
+          "description": "Stable task id. Both members of a pair carry the same task.id."
+        },
+        "title": {
+          "$ref": "#/$defs/shortText",
+          "description": "Short title. 'loopmath share' drops it under metadata_only export."
+        },
+        "type": {
+          "type": "string",
+          "maxLength": 100,
+          "x-recommended": [
+            "bug_fix",
+            "feature",
+            "refactor",
+            "tests",
+            "docs",
+            "research",
+            "infra",
+            "data"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "Top-level task type."
+        },
+        "subtype": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "User subcategory; a slash-separated path is allowed, e.g. 'payments/webhooks'."
+        },
+        "repo": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Repository name or opaque id. 'loopmath share' replaces it with a salted hash."
+        },
+        "org": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Organization id. Defaults to the store's 'org' config."
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/taskGroup"
+          },
+          "description": "The task chain, root first: org, type, repo, subtype, extra user levels. Derived from the fields above when absent."
+        },
+        "features": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "boolean",
+              "number",
+              "string"
+            ]
+          },
+          "description": "Task features, key to boolean, number or string. Recommended keys: size (xs, s, m, l, xl), lang (primary language, lowercase), has_tests, spec_clarity (clear, partial, vague), needs_design, touches (1, 2-3, 4+). Filled by the orchestrator."
+        },
+        "base_commit": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Commit the run started from. Pair members must match (E194)."
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "maxLength": 100,
+              "x-recommended": [
+                "live",
+                "backlog",
+                "benchmark",
+                "history"
+              ],
+              "$comment": "This list is recommended vocabulary; readers must accept other values.",
+              "description": "Where the task came from. live: a user's task as it happens. backlog: a planned task list. benchmark: a benchmark item. history: a logged past session."
+            },
+            "ref": {
+              "type": "string",
+              "maxLength": 500,
+              "description": "Opaque reference within that source."
+            },
+            "ext": {
+              "$ref": "#/$defs/ext"
+            }
+          }
+        },
+        "labeled_by": {
+          "type": "object",
+          "required": [
+            "how"
+          ],
+          "properties": {
+            "how": {
+              "type": "string",
+              "maxLength": 100,
+              "x-recommended": [
+                "orchestrator",
+                "user",
+                "labeler",
+                "inferred"
+              ],
+              "$comment": "This list is recommended vocabulary; readers must accept other values.",
+              "description": "Who assigned type, subtype and features."
+            },
+            "model": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "The labelling model's id when 'how' is labeler."
+            },
+            "tier": {
+              "$ref": "#/$defs/outcomeTier"
+            },
+            "ext": {
+              "$ref": "#/$defs/ext"
+            }
+          }
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "description": "How one piece runs (paper: pi = (m, r, chi, options)): harness, model, reasoning effort, context policy and harness options.",
+      "properties": {
+        "harness": {
+          "type": "string",
+          "maxLength": 100,
+          "x-recommended": [
+            "claude-code",
+            "codex",
+            "command"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "The harness that runs the piece. 'command' marks a mechanical gate whose command is in options.command."
+        },
+        "model": {
+          "$ref": "#/$defs/modelRef"
+        },
+        "effort": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Reasoning-effort label as configured (low, medium, high, xhigh, max, default); harness-specific values kept verbatim."
+        },
+        "context_policy": {
+          "type": "string",
+          "maxLength": 100,
+          "x-recommended": [
+            "fresh",
+            "inherit",
+            "summary",
+            "default"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "Open string; 'fresh' when absent (decision D31)."
+        },
+        "options": {
+          "type": "object",
+          "description": "Harness options, e.g. {\"command\": \"pytest -q\"} for a command gate."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "workflowRef": {
+      "type": "object",
+      "required": [
+        "ref"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "maxLength": 200,
+          "minLength": 1,
+          "description": "A catalog or user workflow id, e.g. 'plan_implement_review'."
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      },
+      "description": "A workflow by reference instead of inline."
+    },
+    "piece": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id",
+          "description": "Vertex id, unique across the workflow's pieces and artifacts."
+        },
+        "role": {
+          "type": "string",
+          "maxLength": 100,
+          "x-recommended": [
+            "planner",
+            "implementer",
+            "reviewer",
+            "tester",
+            "referee",
+            "worker",
+            "plan",
+            "implement",
+            "review",
+            "test",
+            "integrate",
+            "select",
+            "research",
+            "docs"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "What the piece does. loopmath writes planner, implementer, reviewer, tester, referee, worker (decision D32); readers never rewrite roles."
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "q_v: parallel copies of the piece (best of n). 1 when absent."
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/workflow"
+            },
+            {
+              "$ref": "#/$defs/workflowRef"
+            }
+          ],
+          "description": "A nested workflow, instead of a role."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      },
+      "description": "A piece vertex: one unit of agent (or command) work in the workflow."
+    },
+    "workflowArtifact": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id",
+          "description": "Vertex id, unique across the workflow's pieces and artifacts."
+        },
+        "kind": {
+          "type": "string",
+          "maxLength": 100,
+          "x-recommended": [
+            "issue",
+            "repo",
+            "plan",
+            "spec",
+            "diff",
+            "review",
+            "verdict",
+            "test_record",
+            "report",
+            "other"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "What the artifact is."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      },
+      "description": "An artifact vertex: what pieces consume and produce."
+    },
+    "rescue": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "maxLength": 100,
+          "x-recommended": [
+            "configuration",
+            "person",
+            "none"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "The fallback when the workflow ends without acceptance. configuration: redo with the configuration in 'ref' (usually the user's usual one). person: a person does it. none: no fallback."
+        },
+        "ref": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "control": {
+      "type": "object",
+      "properties": {
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "uniqueItems": true,
+          "description": "Piece ids whose output is a verdict (E193: each names a piece)."
+        },
+        "repair": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "description": "Gate id to the piece that reruns when the gate rejects (E193: keys are gates, values are pieces)."
+        },
+        "budget": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "K_max: rounds allowed, including the first (decision D30). 1 means no repair; a missing or 0 budget reads as 1."
+        },
+        "rescue": {
+          "$ref": "#/$defs/rescue"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext",
+          "description": "Extension data. The key 'dev.loopmath.gate_rules' (piece id to a gate rule other than the role's default) is part of the configuration id (decision D29)."
+        }
+      },
+      "description": "The control policy Gamma: gates, the repair map, the repair budget and the rescue."
+    },
+    "workflow": {
+      "type": "object",
+      "required": [
+        "pieces"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Catalog or user workflow id. Excluded from the configuration id hash."
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Excluded from the configuration id hash."
+        },
+        "title": {
+          "$ref": "#/$defs/shortText",
+          "description": "Excluded from the configuration id hash."
+        },
+        "pieces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/piece"
+          },
+          "minItems": 1
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workflowArtifact"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "string",
+                "maxLength": 200
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Pairs [from, to]. Piece to artifact means produces; artifact to piece means consumes. Every edge joins a piece and an artifact and the graph is acyclic (E192); the repair loop lives in control.repair, not in an edge. Artifacts with no producer are inputs; with no consumer, outputs."
+        },
+        "control": {
+          "$ref": "#/$defs/control"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      },
+      "description": "A workflow shape W = (V, E, Gamma): piece and artifact vertices, typed edges, and the control policy."
+    },
+    "configuration": {
+      "type": "object",
+      "description": "What ran (paper: x = (W, pi)): a workflow and a setting per piece vertex.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^cfg_[0-9a-f]{12}$",
+          "description": "'cfg_' plus the first 12 hex digits of SHA-256 over the canonical JSON of {workflow, settings} (loopmath.ocp.canonical; OCP.md section 8): keys sorted, no whitespace, workflow id, version, title and ext excluded. Same shape and settings, same id, everywhere (E190)."
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/workflow"
+            },
+            {
+              "$ref": "#/$defs/workflowRef"
+            }
+          ],
+          "description": "Inline, or a catalog reference such as {\"ref\": \"plan_implement_review\", \"version\": 1}."
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/setting"
+          },
+          "description": "Piece vertex id to setting. Every piece vertex has one (E191)."
+        },
+        "source": {
+          "enum": [
+            "usual",
+            "alternative",
+            "exploration",
+            "user_edit",
+            "habit",
+            "designed"
+          ],
+          "description": "Why this configuration ran. usual: the user's usual workflow. alternative: an alternative loopmath offered. exploration: an exploration pick. user_edit: the user edited a suggestion. habit: a logged run, chosen by habit. designed: chosen by a planner such as 'loopmath plan'."
+        },
+        "rec": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The recommendation id (rec_...) this choice came from."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "signal": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "value",
+        "observed_at",
+        "tier"
+      ],
+      "description": "One timestamped observation about the run's result: a verdict, a score or a late event. Value types follow the kind (E195).",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "verdict",
+            "score",
+            "event"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200,
+          "x-recommended": [
+            "tests",
+            "referee",
+            "pair_referee",
+            "merge",
+            "ci",
+            "bench_score",
+            "runtime_s",
+            "quality",
+            "issue",
+            "incident",
+            "revert",
+            "hotfix"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "Recommended: verdicts tests, referee, pair_referee, merge, ci; scores bench_score, runtime_s, quality; events issue, incident, revert, hotfix."
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "null"
+          ],
+          "maxLength": 500,
+          "description": "verdict: one of accept, reject, pass, fail, error. score: a number, or null for a declared score not measured yet. event: a reference string. Only a score may be null (E195)."
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Unit of a score."
+        },
+        "better": {
+          "enum": [
+            "higher",
+            "lower"
+          ],
+          "description": "Which direction of a score is better."
+        },
+        "target": {
+          "type": "number",
+          "description": "Optional threshold that turns a score into pass or fail."
+        },
+        "scale": {
+          "enum": [
+            "linear",
+            "log",
+            "fraction"
+          ],
+          "description": "How the model treats a score. linear (default); log for positive ratio-like quantities (runtime, memory, latency); fraction for values in [0, 1] (pass rates; E195)."
+        },
+        "at_attempt": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The attempt after which the verdict applies (gives J_accept)."
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the signal was observed. Late events are appended with their own time."
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "maxLength": 100,
+              "x-recommended": [
+                "orchestrator",
+                "user",
+                "ci",
+                "tracker",
+                "judge",
+                "inferred"
+              ],
+              "$comment": "This list is recommended vocabulary; readers must accept other values.",
+              "description": "Who observed it."
+            },
+            "ref": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "ext": {
+              "$ref": "#/$defs/ext"
+            }
+          }
+        },
+        "tier": {
+          "$ref": "#/$defs/outcomeTier"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "scoreTarget": {
+      "type": "object",
+      "required": [
+        "name",
+        "target",
+        "better"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "A score signal name (E195: never a verdict or event name)."
+        },
+        "target": {
+          "type": "number"
+        },
+        "better": {
+          "enum": [
+            "higher",
+            "lower"
+          ]
+        },
+        "scale": {
+          "enum": [
+            "linear",
+            "log",
+            "fraction"
+          ]
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "acceptanceRule": {
+      "type": "object",
+      "required": [
+        "name",
+        "definition"
+      ],
+      "description": "The user's acceptance rule in effect when the run was recorded. The outcome function reads success through it. A rule with only 'score' expresses runtime targets, benchmark scores and quality bars; a binary rule is the special case with score null.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "For example 'tests+referee' or 'perf>=2400'."
+        },
+        "definition": {
+          "$ref": "#/$defs/shortText",
+          "description": "For people: 'tests pass and referee accepts'."
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "description": "Verdict names that must pass."
+        },
+        "score": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/scoreTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A score target. With 'requires' empty, success is 'score reaches target'; with both, success needs both."
+        },
+        "excludes_events": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "description": "Events that turn success into failure inside the window. [\"revert\", \"incident\"] when absent."
+        },
+        "window_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "14 when absent."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "slate": {
+      "type": "object",
+      "required": [
+        "id",
+        "members"
+      ],
+      "description": "Runs started together on one task to be compared (a pair is a slate of two). Every member's file carries the same object (E194).",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Run ids."
+        },
+        "base_commit": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "isolated": {
+          "type": "boolean",
+          "description": "Members ran in separate worktrees or sandboxes."
+        },
+        "blinded": {
+          "type": "boolean",
+          "description": "Judges did not know which member ran which configuration."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "preference": {
+      "type": "object",
+      "required": [
+        "id",
+        "slate",
+        "winner"
+      ],
+      "description": "A pairwise judgement between slate members. Copied into every member's file; readers deduplicate by id.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "slate": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "winner": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "A member run id, or 'tie' (E194)."
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "uniqueItems": true
+        },
+        "judge": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "maxLength": 100,
+              "x-recommended": [
+                "referee",
+                "user",
+                "model"
+              ],
+              "$comment": "This list is recommended vocabulary; readers must accept other values."
+            },
+            "model": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "blinded": {
+              "type": "boolean"
+            },
+            "ext": {
+              "$ref": "#/$defs/ext"
+            }
+          }
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "tier": {
+          "$ref": "#/$defs/outcomeTier"
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "logged",
+            "designed"
+          ],
+          "description": "logged: the run was observed as it happened, configuration chosen by the user's habit. designed: the configuration was chosen for the run (by loopmath, the user or a planner)."
+        },
+        "chooser": {
+          "type": "string",
+          "maxLength": 100,
+          "x-recommended": [
+            "habit",
+            "loopmath",
+            "user",
+            "planner"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values.",
+          "description": "Who chose the configuration."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "runRescue": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "description": "Present when the run ended without acceptance and a fallback was used.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "maxLength": 100,
+          "x-recommended": [
+            "configuration",
+            "person",
+            "none"
+          ],
+          "$comment": "This list is recommended vocabulary; readers must accept other values."
+        },
+        "ref": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "basis": {
+          "enum": [
+            "measured",
+            "expected"
+          ],
+          "description": "measured: the fallback ran and was priced. expected: an estimate."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "description": "Predicted against actual. Written only by loopmath (W196 when another producer writes one).",
+      "properties": {
+        "before": {
+          "type": "object",
+          "properties": {
+            "rec": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "The recommendation id."
+            },
+            "fit": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "The fit the prediction came from."
+            },
+            "predicted": {
+              "type": "object",
+              "properties": {
+                "p_success": {
+                  "$ref": "#/$defs/interval"
+                },
+                "cost_usd": {
+                  "$ref": "#/$defs/interval"
+                },
+                "tokens": {
+                  "$ref": "#/$defs/interval"
+                }
+              }
+            },
+            "gain_per_run": {
+              "description": "Per-run gain of an exploration pick: {usd, success_pp, cost_pct, score}, or null."
+            },
+            "price_usd": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "payback_runs": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "ext": {
+              "$ref": "#/$defs/ext"
+            }
+          }
+        },
+        "after": {
+          "type": "object",
+          "properties": {
+            "cost_usd": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "tokens": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "signals": {
+              "type": "array",
+              "description": "The signals the result was scored on (ids or copies)."
+            },
+            "moved": {
+              "description": "How the fit moved after this run (written by loopmath)."
+            },
+            "fit_after": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 200
+            },
+            "ext": {
+              "$ref": "#/$defs/ext"
+            }
+          }
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      }
+    },
+    "tariff": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Price table version: the prices.toml sha256 prefix."
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "The tariff date used, YYYY-MM-DD."
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Where the prices came from."
+        },
+        "ext": {
+          "$ref": "#/$defs/ext"
+        }
+      },
+      "description": "The price table used to compute usd."
+    }
+  }
+}

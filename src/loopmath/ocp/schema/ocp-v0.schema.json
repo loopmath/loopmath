@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ocp:run:0.1",
+  "title": "OCP v0 run document",
+  "description": "Orchestration Context Protocol v0. One JSON document describes one orchestration run: DAG topology (nodes, edges), per-node attempts with model and reasoning-effort labels, token cost records, acceptance outcomes with evidence tiers, timestamps, producer identity, and a declared privacy profile. Unknown fields are ignored by consumers (forward compatibility); the sanctioned place for producer-specific data is the 'ext' object present on every entity, with dotted-namespace keys such as 'dev.dagr.policy'. Referential rules a consumer must check that JSON Schema cannot express: edge endpoints and attempt.node name existing node ids, group.parent edges are acyclic, dep and fan_in edges form a DAG, event refs name existing nodes/attempts, terminal attempt statuses agree with outcome.result, and under privacy profile 'metadata_only' no free-text field may contain prompt or transcript text. A reference checker for these rules ships at spec/ocp_conformance.py.",
+  "type": "object",
+  "required": ["ocp", "producer", "privacy", "run", "nodes"],
+  "properties": {
+    "ocp": {
+      "const": "0.1",
+      "description": "Protocol version. This schema validates exactly version 0.1."
+    },
+    "producer": { "$ref": "#/$defs/producer" },
+    "privacy": { "$ref": "#/$defs/privacy" },
+    "run": { "$ref": "#/$defs/run" },
+    "groups": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/group" },
+      "description": "Optional named visual/organizational scopes (contract v3 'projects'). Grouping is orthogonal to dependency structure."
+    },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" },
+      "description": "The units of work. A gate is a node whose kind is 'gate'."
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" },
+      "description": "Directed edges over node ids. 'dep' and 'fan_in' edges together must form a DAG."
+    },
+    "attempts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/attempt" },
+      "description": "Flat list of tries, each pointing at its node. Attempts are records, not counters; a retry is a new attempt."
+    },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/event" },
+      "description": "Optional append-only provenance log, ascending in time."
+    },
+    "ext": { "$ref": "#/$defs/ext" }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$",
+      "description": "ISO-8601 / RFC-3339 timestamp with explicit offset."
+    },
+    "shortText": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "Short producer-authored label. Under the metadata_only profile this must never contain prompt or transcript text."
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "maxLength": 500 },
+      "description": "Free-form string key/value labels for stratification (e.g. project family, experiment arm)."
+    },
+    "ext": {
+      "type": "object",
+      "description": "Producer-specific extension data. Keys should be dotted-namespaced, e.g. 'dev.dagr.policy', 'langgraph.thread_id'. Consumers must ignore namespaces they do not understand."
+    },
+    "producer": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 200, "description": "The emitting software (plugin or converter), e.g. 'ocp-from-contractv3'." },
+        "version": { "type": "string", "maxLength": 100 },
+        "framework": { "type": "string", "maxLength": 200, "description": "The orchestration framework the run executed under, e.g. 'herdr-dagr', 'langgraph', 'crewai'." },
+        "framework_version": { "type": "string", "maxLength": 100 },
+        "source_contract": { "type": "string", "maxLength": 200, "description": "Upstream native format this document was derived from, e.g. 'dagr/3'." },
+        "emitted_at": { "$ref": "#/$defs/timestamp" },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "required": ["profile"],
+      "properties": {
+        "profile": {
+          "enum": ["metadata_only", "full"],
+          "description": "metadata_only: no prompt, completion, or transcript text anywhere in the document; free-text fields hold only short producer-authored labels. full: text may appear in ext namespaces (never in core fields)."
+        },
+        "note": { "$ref": "#/$defs/shortText" },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Producer-scoped stable run id." },
+        "title": { "$ref": "#/$defs/shortText" },
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "ended_at": { "$ref": "#/$defs/timestamp" },
+        "workspace": { "type": "string", "maxLength": 500, "description": "Opaque project/workspace locator for task-mix stratification (a name or hash, not necessarily a path)." },
+        "labels": { "$ref": "#/$defs/labels" },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "title": { "$ref": "#/$defs/shortText" },
+        "parent": { "type": "string", "maxLength": 200, "description": "Another group id; parent edges must be acyclic." },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Stable identity independent of any attempt. Never a runtime locator such as a pane id." },
+        "kind": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Open set. Recommended vocabulary: impl, review, test, gate, question, docs, ship, plan, ops. 'gate' marks an acceptance fan-in point."
+        },
+        "title": { "$ref": "#/$defs/shortText" },
+        "group": { "type": "string", "maxLength": 200, "description": "Optional group id; omitted means the run root." },
+        "state": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Producer's current projection over the node's attempts. Recommended vocabulary (from dagr contract v3): queued, working, review, blocked, done, failed, rejected, canceled, settled_unverified. Consumers learning from settled runs should trust attempt outcomes over this field."
+        },
+        "labels": { "$ref": "#/$defs/labels" },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string", "maxLength": 200, "description": "Source node id (the prerequisite / input / spawner)." },
+        "to": { "type": "string", "maxLength": 200, "description": "Target node id (the dependent / gate / spawned node)." },
+        "kind": {
+          "enum": ["dep", "fan_in", "spawn"],
+          "default": "dep",
+          "description": "dep: 'to' cannot start before 'from' settles. fan_in: 'from' is a member of gate 'to''s acceptance input set. spawn: node 'to' was dynamically created by work on 'from' (topology discovered at runtime)."
+        },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "modelRef": {
+      "type": "object",
+      "properties": {
+        "raw": { "type": "string", "maxLength": 200, "description": "The label exactly as the producer knew it, always preserved (e.g. 'fable·xhigh', 'opus5.xhigh'). Canonicalization is the consumer's job; the raw label is the ground truth." },
+        "id": { "type": "string", "maxLength": 200, "description": "Canonical provider model id when known, e.g. 'claude-fable-5'." },
+        "family": { "type": "string", "maxLength": 100, "description": "Coarse family label for arm grouping, e.g. 'fable', 'opus5', 'sol5.6'." },
+        "provider": { "type": "string", "maxLength": 100, "description": "e.g. 'anthropic', 'openai'." },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "description": "Token and money cost of one attempt, summed over all API requests the attempt made. Cached input is separated from uncached because the two are priced differently and blur cost comparisons when merged.",
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0, "description": "Uncached input tokens." },
+        "cached_input_tokens": { "type": "integer", "minimum": 0, "description": "Input tokens served from cache (cache reads)." },
+        "cache_creation_tokens": { "type": "integer", "minimum": 0, "description": "Input tokens written to cache, when the provider bills them separately." },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "reasoning_tokens": { "type": "integer", "minimum": 0, "description": "Thinking/reasoning tokens when the provider reports them separately from output." },
+        "requests": { "type": "integer", "minimum": 0, "description": "Number of model API requests aggregated into this record." },
+        "usd": { "type": "number", "minimum": 0, "description": "Billed cost in US dollars when the producer knows it. Consumers should prefer recomputing from tokens and a dated price table." },
+        "basis": {
+          "enum": ["measured", "allocated"],
+          "description": "How the counts were attributed to this attempt. measured: summed from usage records that identify this attempt exactly (e.g. a per-agent transcript or per-request usage tied to the attempt). allocated: apportioned from a coarser aggregate (per-session, per-day, or per-worktree usage) by a heuristic such as a time-window join; consumers should down-weight accordingly. Absent means unknown."
+        },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "cause": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["initial", "sent_back", "gate_failed", "followup", "superseded", "other"],
+          "description": "Why this attempt exists. initial: the first attempt for its node. sent_back: a review rejected earlier work. gate_failed: an acceptance gate failed. followup: continuation of earlier work. superseded: replaces an earlier attempt. other: a trigger that fits none of the named values."
+        },
+        "ref": { "type": "string", "maxLength": 200, "description": "The earlier attempt id this cause points back to." },
+        "by": { "type": "string", "maxLength": 200, "description": "Who triggered it (reviewer, operator, policy rule)." },
+        "reason": { "$ref": "#/$defs/shortText" },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["result"],
+      "properties": {
+        "result": {
+          "enum": ["done", "failed", "rejected", "canceled", "settled_unverified", "lost"],
+          "description": "Terminal result. done: accepted. failed: attempted and did not succeed. rejected: refused by a review or a gate. canceled: stopped before it settled on its own. settled_unverified: settled without a parseable acceptance signal. lost: the runtime vanished."
+        },
+        "evidence": {
+          "enum": ["verified", "reported", "heuristic", "asserted"],
+          "description": "How the result is known (dagr contract v3 tiers). verified: mechanically checked (tests, provenance receipt). reported: the actor asserted it through a typed envelope. heuristic: inferred. asserted: bare claim. Missing evidence must be treated as 'asserted', never upgraded."
+        },
+        "via": { "type": "string", "maxLength": 200, "description": "Node id of the gate or review that produced this acceptance signal, when one did." },
+        "receipt": { "$ref": "#/$defs/shortText" },
+        "reason": { "$ref": "#/$defs/shortText" },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "required": ["id", "node", "status"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Globally unique within the document." },
+        "node": { "type": "string", "maxLength": 200, "description": "The node this attempt tries." },
+        "n": { "type": "integer", "minimum": 1, "description": "1-based ordinal within the node." },
+        "actor": { "type": "string", "maxLength": 200, "description": "Logical agent/role that ran the attempt (not a volatile runtime locator)." },
+        "model": { "$ref": "#/$defs/modelRef" },
+        "effort": { "type": "string", "maxLength": 100, "description": "Reasoning-effort label as configured, e.g. low, medium, high, xhigh, max. Open set; producers must not fold it into the model label." },
+        "cause": { "$ref": "#/$defs/cause" },
+        "status": {
+          "enum": ["queued", "working", "done", "failed", "rejected", "canceled", "settled_unverified", "lost"],
+          "description": "Current or terminal status. queued: created, not started yet. working: running now. The terminal statuses are done, failed, rejected, canceled, settled_unverified and lost, each carrying the meaning outcome.result gives it. When terminal, an outcome record should be present and outcome.result must equal status."
+        },
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "ended_at": { "$ref": "#/$defs/timestamp" },
+        "outcome": { "$ref": "#/$defs/outcome" },
+        "cost": { "$ref": "#/$defs/cost" },
+        "session": { "type": "string", "maxLength": 500, "description": "Opaque correlate to the underlying harness session/transcript id, for producers that can join the two. Never transcript content." },
+        "labels": { "$ref": "#/$defs/labels" },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": ["at", "type"],
+      "properties": {
+        "at": { "$ref": "#/$defs/timestamp" },
+        "type": { "type": "string", "maxLength": 100, "description": "Open set. Recommended vocabulary: attempt_started, attempt_settled, promoted, directive, note." },
+        "node": { "type": "string", "maxLength": 200 },
+        "attempt": { "type": "string", "maxLength": 200 },
+        "actor": { "type": "string", "maxLength": 200 },
+        "detail": { "$ref": "#/$defs/shortText" },
+        "ext": { "$ref": "#/$defs/ext" }
+      }
+    }
+  }
+}

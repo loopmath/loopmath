@@ -1,0 +1,40 @@
+{
+ "workspaces": {
+  "ws-delta": {
+   "nodes": {
+    "delta-lead": {
+     "role": {"value": "lead", "tier": "verified", "source": "the only top-level session in ws-delta with a spawn edge"},
+     "phase": {"value": "build", "tier": "heuristic", "source": "graph rule: top-level session started at kickoff"},
+     "fine_role": {"value": "orchestrate", "tier": "hand", "source": "first prompt read: 'You are the delta lead'"}
+    },
+    "delta-impl": {
+     "parent": {"value": "delta-lead", "tier": "verified", "source": "spawn edge from the lead at tier verified (Task id toolu_impl)"},
+     "role": {"value": "dev", "tier": "heuristic", "source": "spawn description 'Implement the parser'"},
+     "phase": {"value": "build", "tier": "heuristic", "source": "subagent of the build lead"},
+     "fine_role": {"value": "implement", "tier": "hand", "source": "wrote src/parser.py, no send-back"}
+    },
+    "delta-reviewer": {
+     "role": {"value": "reviewer", "tier": "heuristic", "source": "first prompt starts with 'Review'"},
+     "phase": {"value": "post", "tier": "heuristic", "source": "started five minutes after the lead ended"},
+     "fine_role": {"value": "review", "tier": "hand", "source": "read the notes and gave a verdict"}
+    },
+    "delta-ghost": {
+     "role": {"value": "smoke", "tier": "heuristic", "source": "a session the label file names but the transcripts do not have"},
+     "parent": {"value": "delta-lead", "tier": "heuristic", "source": "a parent label whose node the graph lacks: the edge is counted as missing"}
+    }
+   },
+   "artifacts": {
+    "/ws/delta/notes.md": {
+     "producer": {"value": "delta-lead", "tier": "verified", "source": "heredoc write in the lead's Bash call at 12:04:00"},
+     "consumers": {"value": ["delta-reviewer"], "tier": "heuristic", "source": "Read at 12:15:10; heuristic here so the positive edge carries the weaker tier"},
+     "kind": {"value": "doc", "tier": "heuristic", "source": "markdown notes"}
+    },
+    "/ws/delta/src/parser.py": {
+     "producer": {"value": "delta-impl", "tier": "verified", "source": "Write tool call in the subagent"},
+     "consumers": {"value": ["delta-reviewer"], "tier": "reported", "source": "the reviewer said it read the parser; no Read call in its transcript, so the flow is missing from the graph"},
+     "kind": {"value": "code", "tier": "heuristic", "source": "path rule"}
+    }
+   }
+  }
+ }
+}
