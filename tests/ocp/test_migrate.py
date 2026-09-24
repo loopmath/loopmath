@@ -59,10 +59,18 @@ def test_migration_is_idempotent(path):
     assert migrate_doc(once, infer=None) == once
 
 
-@pytest.mark.parametrize("name", ["minimal.ocp.json", "herdr-run-assemble-v01.ocp.json", "swarm-v02.ocp.json"])
+@pytest.mark.parametrize("name", ["minimal.ocp.json", "review-loop-v01.ocp.json", "swarm-v02.ocp.json"])
 def test_every_shipped_older_example_migrates_cleanly(name):
     out = migrate_doc(load(EXAMPLES / name))
     assert [f for f in conformance.validate_doc(out) if f.level == "error"] == []
+
+
+def test_shipped_migration_example_is_the_migrate_output():
+    """spec/examples/review-loop-v03.ocp.json is `loopmath ocp migrate` of review-loop-v01.ocp.json."""
+    out = migrate_doc(load(EXAMPLES / "review-loop-v01.ocp.json"))
+    assert out == load(EXAMPLES / "review-loop-v03.ocp.json")
+    # No errors; W180 only, since a 0.1 producer declares no capabilities.
+    assert [f.code for f in conformance.validate_doc(out)] == ["W180"]
 
 
 def test_v03_documents_pass_through_unchanged():

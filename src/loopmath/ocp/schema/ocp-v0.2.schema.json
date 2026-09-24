@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ocp:run:0.2",
   "title": "OCP v0.2 run document",
-  "description": "Orchestration Context Protocol v0.2. One JSON document describes one orchestration run: DAG topology (nodes, edges), per-node attempts with model and reasoning-effort labels, token cost records, acceptance outcomes with evidence tiers, timestamps, producer identity, and a declared privacy profile. v0.2 adds, over v0.1: an 'artifacts' entity (files one attempt wrote and others read) with 'artifact' edges; the 'launch' edge kind (one harness starting another through its CLI, distinct from in-harness 'spawn'); attempt 'origin', 'role' and 'phase' records, each with an evidence tier; cost fields for the 5-minute and 1-hour cache-creation buckets; and a 'tier' on every edge. Unknown fields are ignored by consumers (forward compatibility); the sanctioned place for producer-specific data is the 'ext' object present on every entity, with dotted-namespace keys such as 'dev.dagr.graph'. String vocabularies are open sets with recommended lists except for evidence tier, privacy profile, attempt status and outcome result. Referential rules a consumer must check that JSON Schema cannot express: edge endpoints and attempt.node name existing node ids; group.parent edges are acyclic; dep and fan_in edges form a DAG (spawn, launch and artifact edges are exempt); event refs name existing nodes/attempts; terminal attempt statuses agree with outcome.result; artifact producer/writers/consumers and origin.launched_by name existing attempts; an 'artifact' edge names an existing artifact and its from_attempt/to_attempt (both required) belong to its from/to nodes, from_attempt is the artifact's producer and to_attempt is one of its consumers; artifact.producer equals writers[0], writers is non-empty with no duplicates, a non-null n_writes is at least the number of writers and a non-null n_reads at least the number of consumers (a null count is unknown and is neither checked nor counted as satisfying); attempts need not carry origin, role or phase, but each record present carries every listed field, with null for unknowns; an attempt whose origin names a launcher has a matching 'launch' edge, and origin.external true together with a non-null launched_by is a contradiction; cache_creation_5m_tokens + cache_creation_1h_tokens equals cache_creation_tokens when all three are present; every edge carries a tier, whoever the producer is; when the producer is the extractor (producer.name 'dagr', optionally suffixed after a non-word character) every cost record has basis 'measured'; under privacy profile 'metadata_only' no free-text field may contain prompt or transcript text. Every one of these is a conformance error, not a warning. Values outside recommended vocabularies produce warnings. The reference checker for these rules ships at spec/ocp_conformance.py.",
+  "description": "Orchestration Context Protocol v0.2. One JSON document describes one orchestration run: DAG topology (nodes, edges), per-node attempts with model and reasoning-effort labels, token cost records, acceptance outcomes with evidence tiers, timestamps, producer identity, and a declared privacy profile. v0.2 adds, over v0.1: an 'artifacts' entity (files one attempt wrote and others read) with 'artifact' edges; the 'launch' edge kind (one harness starting another through its CLI, distinct from in-harness 'spawn'); attempt 'origin', 'role' and 'phase' records, each with an evidence tier; cost fields for the 5-minute and 1-hour cache-creation buckets; and a 'tier' on every edge. Unknown fields are ignored by consumers (forward compatibility); the sanctioned place for producer-specific data is the 'ext' object present on every entity, with dotted-namespace keys such as 'com.example.graph'. String vocabularies are open sets with recommended lists except for evidence tier, privacy profile, attempt status and outcome result. Referential rules a consumer must check that JSON Schema cannot express: edge endpoints and attempt.node name existing node ids; group.parent edges are acyclic; dep and fan_in edges form a DAG (spawn, launch and artifact edges are exempt); event refs name existing nodes/attempts; terminal attempt statuses agree with outcome.result; artifact producer/writers/consumers and origin.launched_by name existing attempts; an 'artifact' edge names an existing artifact and its from_attempt/to_attempt (both required) belong to its from/to nodes, from_attempt is the artifact's producer and to_attempt is one of its consumers; artifact.producer equals writers[0], writers is non-empty with no duplicates, a non-null n_writes is at least the number of writers and a non-null n_reads at least the number of consumers (a null count is unknown and is neither checked nor counted as satisfying); attempts need not carry origin, role or phase, but each record present carries every listed field, with null for unknowns; an attempt whose origin names a launcher has a matching 'launch' edge, and origin.external true together with a non-null launched_by is a contradiction; cache_creation_5m_tokens + cache_creation_1h_tokens equals cache_creation_tokens when all three are present; every edge carries a tier, whoever the producer is; when the producer is the extractor (producer.name 'loopmath', or 'dagr' before the rename, optionally suffixed after a non-word character) every cost record has basis 'measured'; under privacy profile 'metadata_only' no free-text field may contain prompt or transcript text. Every one of these is a conformance error, not a warning. Values outside recommended vocabularies produce warnings. The reference checker for these rules ships at spec/ocp_conformance.py.",
   "type": "object",
   "required": ["ocp", "producer", "privacy", "run", "nodes"],
   "properties": {
@@ -16,7 +16,7 @@
     "groups": {
       "type": "array",
       "items": { "$ref": "#/$defs/group" },
-      "description": "Optional named visual/organizational scopes (contract v3 'projects'). Grouping is orthogonal to dependency structure."
+      "description": "Optional named visual/organizational scopes, such as projects. Grouping is orthogonal to dependency structure."
     },
     "nodes": {
       "type": "array",
@@ -63,7 +63,7 @@
     },
     "ext": {
       "type": "object",
-      "description": "Producer-specific extension data. Keys should be dotted-namespaced, e.g. 'dev.dagr.graph', 'langgraph.thread_id'. Consumers must ignore namespaces they do not understand."
+      "description": "Producer-specific extension data. Keys should be dotted-namespaced, e.g. 'com.example.graph', 'langgraph.thread_id'. Consumers must ignore namespaces they do not understand."
     },
     "evidenceTier": {
       "enum": ["verified", "heuristic", "reported"],
@@ -73,11 +73,11 @@
       "type": "object",
       "required": ["name"],
       "properties": {
-        "name": { "type": "string", "maxLength": 200, "description": "The emitting software (plugin or converter), e.g. 'ocp-from-contractv3'. The dagr extractor uses 'dagr' (optionally suffixed after a non-word character, e.g. 'dagr/graph'); that name switches on the extractor-only rule (cost.basis 'measured')." },
+        "name": { "type": "string", "maxLength": 200, "description": "The emitting software (plugin or converter), e.g. 'my-orchestrator-ocp'. loopmath's log extractor names itself 'loopmath' ('dagr' in documents written before its rename), optionally suffixed after a non-word character, e.g. 'loopmath/graph'; that name switches on the extractor-only rule E171 (cost.basis 'measured')." },
         "version": { "type": "string", "maxLength": 100 },
-        "framework": { "type": "string", "maxLength": 200, "description": "The orchestration framework the run executed under, e.g. 'herdr-dagr', 'claude-code', 'langgraph', 'crewai'." },
+        "framework": { "type": "string", "maxLength": 200, "description": "The orchestration framework the run executed under, e.g. 'my-orchestrator', 'claude-code', 'langgraph', 'crewai'." },
         "framework_version": { "type": "string", "maxLength": 100 },
-        "source_contract": { "type": "string", "maxLength": 200, "description": "Upstream native format this document was derived from, e.g. 'dagr/3' or 'dagr_graph/1'." },
+        "source_contract": { "type": "string", "maxLength": 200, "description": "Upstream native format this document was derived from, e.g. 'my-orchestrator/1.2'." },
         "emitted_at": { "$ref": "#/$defs/timestamp" },
         "capabilities": {
           "type": "object",
@@ -153,7 +153,7 @@
           "x-recommended": ["queued", "working", "review", "blocked", "done", "failed", "rejected", "canceled", "settled_unverified"],
           "$comment": "This list is recommended vocabulary; readers must accept other values.",
           "maxLength": 100,
-          "description": "Producer's current projection over the node's attempts. Recommended vocabulary (from dagr contract v3): queued, working, review, blocked, done, failed, rejected, canceled, settled_unverified. Consumers learning from settled runs should trust attempt outcomes over this field."
+          "description": "Producer's current projection over the node's attempts. Recommended vocabulary: queued, working, review, blocked, done, failed, rejected, canceled, settled_unverified. Consumers learning from settled runs should trust attempt outcomes over this field."
         },
         "labels": { "$ref": "#/$defs/labels" },
         "ext": { "$ref": "#/$defs/ext" }
@@ -161,7 +161,7 @@
     },
     "edge": {
       "type": "object",
-      "$comment": "'tier' is required on every edge of a v0.2 document, whatever its kind (dep, fan_in, spawn, launch, artifact) and whoever the producer is. EXTRACTOR-SPEC section 5, P1 amendment (b), settled 14:15 by the Analyst: attempts 2 and 4 were reviewed to opposite readings of the sentence; the stricter one stands. Its value is one of evidenceTier's three words and nothing else.",
+      "$comment": "'tier' is required on every edge of a v0.2 document, whatever its kind (dep, fan_in, spawn, launch, artifact) and whoever the producer is. Its value is one of evidenceTier's three words and nothing else.",
       "required": ["from", "to", "tier"],
       "properties": {
         "from": { "type": "string", "maxLength": 200, "description": "Source node id (the prerequisite / input / spawner / launcher / producer's node)." },
@@ -193,7 +193,7 @@
           "type": "object",
           "required": ["value", "tier"],
           "properties": {
-            "value": { "type": ["string", "null"], "x-recommended": ["plan", "review", "spec", "report", "code", "test", "config", "doc", "data", "log", "other"], "$comment": "This list is recommended vocabulary; readers must accept other values.", "maxLength": 100, "description": "Open set. Recommended vocabulary: plan, review, spec, report, code, test, config, doc, data, log, other. null when the kind is unknown (amendment (b), settled 14:15); the key is always present and the tier stays required beside it." },
+            "value": { "type": ["string", "null"], "x-recommended": ["plan", "review", "spec", "report", "code", "test", "config", "doc", "data", "log", "other"], "$comment": "This list is recommended vocabulary; readers must accept other values.", "maxLength": 100, "description": "Open set. Recommended vocabulary: plan, review, spec, report, code, test, config, doc, data, log, other. null when the kind is unknown; the key is always present and the tier stays required beside it." },
             "tier": { "$ref": "#/$defs/evidenceTier" },
             "evidence": { "$ref": "#/$defs/shortText", "description": "What the kind was inferred from, e.g. 'path pattern' or 'heredoc first line'." },
             "ext": { "$ref": "#/$defs/ext" }
@@ -213,7 +213,7 @@
           "items": { "type": "string", "maxLength": 200 },
           "description": "Attempt ids that read the artifact after a write by another attempt, in first-read order, each listed once. May be empty (written, never read by another attempt)."
         },
-        "first_write_at": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }], "description": "Timestamp of the first write event; null when the producer cannot compute it. The key is always present (amendment 13:10 (a)): unknown is an explicit null, never an absent key." },
+        "first_write_at": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }], "description": "Timestamp of the first write event; null when the producer cannot compute it. The key is always present: unknown is an explicit null, never an absent key." },
         "n_writes": { "type": ["integer", "null"], "minimum": 1, "description": "Number of write events across all writers; null when the producer cannot count them. A known count must be at least the number of writers; a smaller count undercounts and is a conformance error. A null count is unknown: it neither satisfies nor fails that check." },
         "n_reads": { "type": ["integer", "null"], "minimum": 0, "description": "Number of read events across all consumers; null when the producer cannot count them. A known count must be at least the number of consumers; a smaller count undercounts and is a conformance error. A null count is unknown: it neither satisfies nor fails that check." },
         "labels": { "$ref": "#/$defs/labels" },
@@ -241,7 +241,7 @@
       "description": "What the attempt did in the run. All three fields are present; evidence is null when there is nothing to cite.",
       "required": ["value", "tier", "evidence"],
       "properties": {
-        "value": { "type": ["string", "null"], "x-recommended": ["lead", "solo", "planner", "dev", "reviewer", "cli", "subagent"], "$comment": "This list is recommended vocabulary; readers must accept other values.", "maxLength": 100, "description": "Open set. Recommended vocabulary: lead (top-level session that spawned or launched others), solo (top-level session that did not), planner, dev, reviewer, cli (launched through a CLI with no role signal), subagent. null when the role is unknown (amendment (b), settled 14:15); the key is always present and the tier stays required beside it." },
+        "value": { "type": ["string", "null"], "x-recommended": ["lead", "solo", "planner", "dev", "reviewer", "cli", "subagent"], "$comment": "This list is recommended vocabulary; readers must accept other values.", "maxLength": 100, "description": "Open set. Recommended vocabulary: lead (top-level session that spawned or launched others), solo (top-level session that did not), planner, dev, reviewer, cli (launched through a CLI with no role signal), subagent. null when the role is unknown; the key is always present and the tier stays required beside it." },
         "tier": { "$ref": "#/$defs/evidenceTier" },
         "evidence": { "anyOf": [{ "$ref": "#/$defs/shortText" }, { "type": "null" }], "description": "What the label rests on, e.g. \"declared type 'Plan'\" or 'launch command mentions review'; null when nothing can be cited." },
         "ext": { "$ref": "#/$defs/ext" }
@@ -252,7 +252,7 @@
       "description": "When in the run the attempt happened. All three fields are present; evidence is null when there is nothing to cite.",
       "required": ["value", "tier", "evidence"],
       "properties": {
-        "value": { "type": ["string", "null"], "x-recommended": ["build", "post", "external"], "$comment": "This list is recommended vocabulary; readers must accept other values.", "maxLength": 100, "description": "Open set. Recommended vocabulary: build (during the lead's activity), post (after the lead ended, e.g. a post-build review), external (outside the run's workspace). null when the phase is unknown (amendment (b), settled 14:15); the key is always present and the tier stays required beside it." },
+        "value": { "type": ["string", "null"], "x-recommended": ["build", "post", "external"], "$comment": "This list is recommended vocabulary; readers must accept other values.", "maxLength": 100, "description": "Open set. Recommended vocabulary: build (during the lead's activity), post (after the lead ended, e.g. a post-build review), external (outside the run's workspace). null when the phase is unknown; the key is always present and the tier stays required beside it." },
         "tier": { "$ref": "#/$defs/evidenceTier" },
         "evidence": { "anyOf": [{ "$ref": "#/$defs/shortText" }, { "type": "null" }], "description": "What the label rests on; null when nothing can be cited." },
         "ext": { "$ref": "#/$defs/ext" }
@@ -319,7 +319,7 @@
           "type": "string",
           "x-recommended": ["verified", "reported", "heuristic", "asserted"],
           "$comment": "This list is recommended vocabulary; readers must accept other values.",
-          "description": "How the result is known (dagr contract v3 tiers). verified: mechanically checked (tests, provenance receipt). reported: the actor asserted it through a typed envelope. heuristic: inferred. asserted: bare claim. Missing evidence must be treated as 'asserted', never upgraded."
+          "description": "How the result is known. verified: mechanically checked (tests, provenance receipt). reported: the actor asserted it through a typed envelope. heuristic: inferred. asserted: bare claim. Missing evidence must be treated as 'asserted', never upgraded."
         },
         "via": { "type": "string", "maxLength": 200, "description": "Node id of the gate or review that produced this acceptance signal, when one did." },
         "receipt": { "$ref": "#/$defs/shortText" },
@@ -329,7 +329,7 @@
     },
     "attempt": {
       "type": "object",
-      "$comment": "origin, role and phase are deliberately NOT in 'required'. EXTRACTOR-SPEC section 5, P1 amendment 13:10 (a), Clarified 13:40: 'Attempts are NOT required to carry origin, role or phase at all (a v0.1 attempt has none); the extractor's own output always carries all three, and P2 is where that is enforced, not the schema.' Once one of the three records is present, every field listed for it is required inside that record (see the origin, role and phase definitions).",
+      "$comment": "origin, role and phase are deliberately NOT in 'required': an attempt need not carry origin, role or phase at all (a v0.1 attempt has none); the extractor's own output always carries all three, and the extractor, not the schema, enforces that. Once one of the three records is present, every field listed for it is required inside that record (see the origin, role and phase definitions).",
       "required": ["id", "node", "status"],
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Globally unique within the document." },

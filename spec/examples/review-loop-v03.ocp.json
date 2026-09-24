@@ -1,0 +1,556 @@
+{
+  "ocp": "0.3",
+  "producer": {
+    "name": "my-orchestrator-ocp",
+    "version": "1.0.0",
+    "framework": "my-orchestrator",
+    "framework_version": "1.2.0",
+    "source_contract": "my-orchestrator/1.2",
+    "emitted_at": "2026-08-30T15:05:00Z"
+  },
+  "privacy": {
+    "profile": "metadata_only",
+    "note": "synthetic example; short labels only"
+  },
+  "run": {
+    "id": "run-review-loop-01",
+    "title": "review loop: plan, build, review and test, still running",
+    "started_at": "2026-08-30T13:00:00Z",
+    "workspace": "example-project",
+    "labels": {
+      "task": "add-export-command",
+      "type": "feature",
+      "repo": "example-project"
+    },
+    "ext": {
+      "dev.loopmath.migration": {
+        "from": "0.1"
+      }
+    },
+    "task": {
+      "id": "add-export-command",
+      "type": "feature",
+      "repo": "example-project",
+      "labeled_by": {
+        "how": "inferred",
+        "tier": "heuristic"
+      }
+    },
+    "provenance": {
+      "kind": "logged",
+      "chooser": "habit"
+    },
+    "configuration": {
+      "id": "cfg_3d7a3c9691e3",
+      "workflow": {
+        "id": "plan_implement_review",
+        "version": 1,
+        "title": "Plan, implement, review",
+        "pieces": [
+          {
+            "id": "plan",
+            "role": "planner",
+            "width": 1
+          },
+          {
+            "id": "implement",
+            "role": "implementer",
+            "width": 1
+          },
+          {
+            "id": "review",
+            "role": "reviewer",
+            "width": 1
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "issue",
+            "kind": "issue"
+          },
+          {
+            "id": "repo",
+            "kind": "repo"
+          },
+          {
+            "id": "plan_doc",
+            "kind": "plan"
+          },
+          {
+            "id": "diff",
+            "kind": "diff"
+          },
+          {
+            "id": "verdict",
+            "kind": "verdict"
+          }
+        ],
+        "edges": [
+          [
+            "issue",
+            "plan"
+          ],
+          [
+            "repo",
+            "plan"
+          ],
+          [
+            "plan",
+            "plan_doc"
+          ],
+          [
+            "issue",
+            "implement"
+          ],
+          [
+            "repo",
+            "implement"
+          ],
+          [
+            "plan_doc",
+            "implement"
+          ],
+          [
+            "implement",
+            "diff"
+          ],
+          [
+            "diff",
+            "review"
+          ],
+          [
+            "issue",
+            "review"
+          ],
+          [
+            "plan_doc",
+            "review"
+          ],
+          [
+            "review",
+            "verdict"
+          ]
+        ],
+        "control": {
+          "gates": [
+            "review"
+          ],
+          "repair": {
+            "review": "implement"
+          },
+          "budget": 3,
+          "rescue": {
+            "kind": "configuration",
+            "ref": "usual"
+          }
+        }
+      },
+      "settings": {
+        "plan": {
+          "harness": "unknown",
+          "model": {
+            "raw": "model-a",
+            "id": "model-a"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "implement": {
+          "harness": "unknown",
+          "model": {
+            "raw": "model-b",
+            "id": "model-b"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "review": {
+          "harness": "unknown",
+          "model": {
+            "raw": "model-a",
+            "id": "model-a"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        }
+      },
+      "source": "habit",
+      "node_vertex": {
+        "P1": "plan",
+        "B1": "implement",
+        "B2": "implement",
+        "R1": "review",
+        "T1": "review",
+        "G1": "review"
+      },
+      "shape": "plan_implement_review",
+      "nearest_catalog": "plan_implement_review",
+      "confidence": 0.775,
+      "reasons": [
+        "1 session(s) outside the build (external or after it) do not shape the workflow",
+        "implementer sessions ran mixed settings; the piece takes the most common, model-b/high"
+      ],
+      "inferred_from": "ocp",
+      "ext": {
+        "dev.loopmath.inferred": {
+          "confidence": 0.775,
+          "tier": "heuristic"
+        }
+      }
+    }
+  },
+  "groups": [
+    {
+      "id": "build",
+      "title": "build"
+    },
+    {
+      "id": "checks",
+      "title": "checks"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "P1",
+      "kind": "plan",
+      "title": "plan the export command",
+      "group": "build",
+      "state": "done"
+    },
+    {
+      "id": "B1",
+      "kind": "impl",
+      "title": "implement the export command",
+      "group": "build",
+      "state": "done"
+    },
+    {
+      "id": "B2",
+      "kind": "docs",
+      "title": "document the export command",
+      "group": "build",
+      "state": "done"
+    },
+    {
+      "id": "R1",
+      "kind": "review",
+      "title": "review the export command",
+      "group": "checks",
+      "state": "done"
+    },
+    {
+      "id": "T1",
+      "kind": "test",
+      "title": "run the test suite",
+      "group": "checks",
+      "state": "working"
+    },
+    {
+      "id": "G1",
+      "kind": "gate",
+      "title": "merge gate",
+      "group": "checks",
+      "state": "queued"
+    }
+  ],
+  "edges": [
+    {
+      "from": "P1",
+      "to": "B1",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "P1",
+      "to": "B2",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "B1",
+      "to": "R1",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "B1",
+      "to": "T1",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "R1",
+      "to": "G1",
+      "kind": "fan_in",
+      "tier": "reported"
+    },
+    {
+      "from": "T1",
+      "to": "G1",
+      "kind": "fan_in",
+      "tier": "reported"
+    },
+    {
+      "from": "B2",
+      "to": "G1",
+      "kind": "fan_in",
+      "tier": "reported"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "P1.a1",
+      "node": "P1",
+      "n": 1,
+      "actor": "planner",
+      "model": {
+        "raw": "model-a",
+        "family": "model-a"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "started_at": "2026-08-30T13:00:00Z",
+      "ended_at": "2026-08-30T13:12:00Z",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 6000,
+        "cached_input_tokens": 22000,
+        "output_tokens": 2400,
+        "requests": 5,
+        "basis": "measured"
+      }
+    },
+    {
+      "id": "B1.a1",
+      "node": "B1",
+      "n": 1,
+      "actor": "builder",
+      "model": {
+        "raw": "model-b",
+        "family": "model-b"
+      },
+      "effort": "medium",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "failed",
+      "started_at": "2026-08-30T13:13:00Z",
+      "ended_at": "2026-08-30T13:40:00Z",
+      "outcome": {
+        "result": "failed",
+        "evidence": "verified",
+        "receipt": "tests failed 3 of 40"
+      },
+      "cost": {
+        "input_tokens": 14000,
+        "cached_input_tokens": 90000,
+        "output_tokens": 8800,
+        "requests": 16,
+        "basis": "measured"
+      }
+    },
+    {
+      "id": "B1.a2",
+      "node": "B1",
+      "n": 2,
+      "actor": "builder",
+      "model": {
+        "raw": "model-b",
+        "family": "model-b"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "followup",
+        "ref": "B1.a1",
+        "reason": "fix the failing tests"
+      },
+      "status": "rejected",
+      "started_at": "2026-08-30T13:41:00Z",
+      "ended_at": "2026-08-30T14:02:00Z",
+      "outcome": {
+        "result": "rejected",
+        "evidence": "reported",
+        "via": "R1",
+        "reason": "missing input validation"
+      },
+      "cost": {
+        "input_tokens": 9000,
+        "cached_input_tokens": 70000,
+        "output_tokens": 5100,
+        "requests": 11,
+        "basis": "measured"
+      }
+    },
+    {
+      "id": "R1.a1",
+      "node": "R1",
+      "n": 1,
+      "actor": "reviewer",
+      "model": {
+        "raw": "model-a",
+        "family": "model-a"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "started_at": "2026-08-30T14:02:00Z",
+      "ended_at": "2026-08-30T14:15:00Z",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 11000,
+        "cached_input_tokens": 30000,
+        "output_tokens": 1900,
+        "requests": 4,
+        "basis": "allocated"
+      }
+    },
+    {
+      "id": "B1.a3",
+      "node": "B1",
+      "n": 3,
+      "actor": "builder",
+      "model": {
+        "raw": "model-b",
+        "family": "model-b"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "sent_back",
+        "ref": "R1.a1",
+        "by": "reviewer",
+        "reason": "add input validation"
+      },
+      "status": "done",
+      "started_at": "2026-08-30T14:16:00Z",
+      "ended_at": "2026-08-30T14:31:00Z",
+      "outcome": {
+        "result": "done",
+        "evidence": "verified",
+        "receipt": "tests pass 42 of 42"
+      },
+      "cost": {
+        "input_tokens": 7000,
+        "cached_input_tokens": 64000,
+        "output_tokens": 3900,
+        "requests": 9,
+        "basis": "measured"
+      }
+    },
+    {
+      "id": "R1.a2",
+      "node": "R1",
+      "n": 2,
+      "actor": "reviewer",
+      "model": {
+        "raw": "model-a",
+        "family": "model-a"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "followup",
+        "ref": "B1.a3"
+      },
+      "status": "done",
+      "started_at": "2026-08-30T14:32:00Z",
+      "ended_at": "2026-08-30T14:40:00Z",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 26000,
+        "output_tokens": 1200,
+        "requests": 3,
+        "basis": "allocated"
+      }
+    },
+    {
+      "id": "B2.a1",
+      "node": "B2",
+      "n": 1,
+      "actor": "writer",
+      "model": {
+        "raw": "model-c"
+      },
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "started_at": "2026-08-30T13:13:00Z",
+      "ended_at": "2026-08-30T13:30:00Z",
+      "outcome": {
+        "result": "done",
+        "evidence": "asserted"
+      }
+    },
+    {
+      "id": "T1.a1",
+      "node": "T1",
+      "n": 1,
+      "actor": "tester",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "working",
+      "started_at": "2026-08-30T14:41:00Z"
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-08-30T13:00:00Z",
+      "type": "attempt_started",
+      "attempt": "P1.a1"
+    },
+    {
+      "at": "2026-08-30T13:40:00Z",
+      "type": "attempt_settled",
+      "attempt": "B1.a1",
+      "detail": "tests failed"
+    },
+    {
+      "at": "2026-08-30T14:10:00Z",
+      "type": "directive",
+      "node": "B1",
+      "actor": "operator",
+      "detail": "validate input before export"
+    },
+    {
+      "at": "2026-08-30T14:15:00Z",
+      "type": "attempt_settled",
+      "attempt": "R1.a1",
+      "detail": "sent back to B1"
+    },
+    {
+      "at": "2026-08-30T14:40:00Z",
+      "type": "promoted",
+      "node": "R1",
+      "detail": "review passed"
+    },
+    {
+      "at": "2026-08-30T14:41:00Z",
+      "type": "attempt_started",
+      "attempt": "T1.a1"
+    },
+    {
+      "at": "2026-08-30T15:00:00Z",
+      "type": "note",
+      "node": "G1",
+      "detail": "waiting for the test run"
+    }
+  ]
+}

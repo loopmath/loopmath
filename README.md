@@ -192,7 +192,7 @@ loopmath graph --workspace NAME --format html --out graph.html
 
 ## More
 
-- [OCP, the run format](spec/OCP.md), with its [schemas](spec/) and [versioning promise](spec/VERSIONING.md)
+- [OCP, the run format](spec/OCP.md): the normative note that goes with the [schemas](spec/), and the [versioning promise](spec/VERSIONING.md)
 - [Release policy](docs/release.md)
 - [Packaged model prices](src/loopmath/prices.toml)
 

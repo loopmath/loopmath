@@ -1,5 +1,5 @@
 """`graph --format ocp` writes OCP v0.3 under `dev.loopmath.` keys and still reads
-the graph documents written before 0.3 under `dev.dagr.` (spec/OCP.md 8.4)."""
+the graph documents written before 0.3 under `dev.dagr.` (spec/OCP.md section 8)."""
 
 import json
 

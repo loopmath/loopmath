@@ -67,12 +67,13 @@ Checks an OCP run document twice over:
    joins v0.1's advisories: dangling cause.ref / outcome.via, terminal attempts
    missing an outcome, outcomes on non-terminal attempts, and events not
    ascending in time.
-   v0.3 rules, run when `ocp` is at least "0.3" (OCP.md section 8):
+   v0.3 rules, run when `ocp` is at least "0.3" (OCP.md section 6.3):
      - E190 run.configuration.id is the canonical hash of its workflow and
        settings (loopmath.ocp.canonical); a workflow given by reference is
        resolved through the workflow catalog, and skipped when the catalog
        does not hold that id and version
-     - E191 every piece vertex with a role has a setting
+     - E191 every top-level piece has a setting, unless it holds a nested
+       workflow and has no role
      - E192 workflow edges join a piece and an artifact, name existing
        vertices, and form a DAG; piece and artifact ids do not collide
      - E193 control.gates name pieces; control.repair maps a gate to a piece

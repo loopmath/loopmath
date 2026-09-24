@@ -27,7 +27,7 @@ _spec.loader.exec_module(conf)
 
 EXAMPLE_FILES = [
     "minimal.ocp.json",
-    "herdr-run-assemble-v01.ocp.json",
+    "review-loop-v01.ocp.json",
     "swarm-v02.ocp.json",
 ]
 
@@ -649,7 +649,7 @@ def test_attempt_with_none_of_the_three_records_conforms(swarm):
     schema = json.loads((SPEC / "ocp-v0.2.schema.json").read_text())
     required = schema["$defs"]["attempt"]["required"]
     assert not {"origin", "role", "phase"} & set(required), required
-    assert "Clarified 13:40" in schema["$defs"]["attempt"]["$comment"]
+    assert "need not carry origin, role or phase at all" in schema["$defs"]["attempt"]["$comment"]
 
 
 @pytest.mark.parametrize("label", ["role", "phase"])
@@ -787,7 +787,7 @@ def test_tier_is_required_on_every_v02_edge_whatever_its_kind(swarm, kind):
     found = errors(conf.validate_doc(swarm))
     assert "E160" in found and "E010" in found, found
     schema = json.loads((SPEC / "ocp-v0.2.schema.json").read_text())
-    assert "settled 14:15" in schema["$defs"]["edge"]["$comment"]
+    assert "required on every edge of a v0.2 document, whatever its kind" in schema["$defs"]["edge"]["$comment"]
 
 
 @pytest.mark.parametrize("tier", ["asserted", "measured", "", "VERIFIED", None, 1])

@@ -1,13 +1,11 @@
 """Convert a herdr-dagr contract v1/v2/v3 run.json into an OCP v0.1 document.
 
-Moved into the package from spec/examples/ocp-from-contractv3.py (lane 01) so
-`loopmath ocp migrate` and the prior builder can convert contract run files;
-the spec example is now a thin CLI over `convert`. `loopmath.ocp.migrate`
-takes the v0.1 output on to v0.3.
+`loopmath ocp migrate` and the prior builder use it to convert contract run
+files; `loopmath.ocp.migrate` takes the v0.1 output on to v0.3.
 
 Stdlib only. Usage:
 
-    python3 spec/examples/ocp-from-contractv3.py IN_RUN_JSON [OUT_OCP_JSON]
+    python3 -m loopmath.ocp.contractv3 IN_RUN_JSON [OUT_OCP_JSON]
 
 Writes to stdout when OUT is omitted. The output is always the
 metadata_only privacy profile: task notes and criteria are dropped,

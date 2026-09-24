@@ -1,4 +1,4 @@
-"""Graph to OCP v0.3 (EXTRACTOR-SPEC.md section 5, task P2; spec/OCP.md section 8).
+"""Graph to OCP v0.3 (spec/ocp-v0.3.schema.json and spec/OCP.md).
 
 `to_ocp(graph, *, producer, privacy)` turns a `Graph` into one Orchestration
 Context Protocol v0.3 document (`spec/ocp-v0.3.schema.json`). The mapping is
@@ -13,7 +13,7 @@ v0.3 is a superset of v0.2, and the graph has no source for the fields v0.3
 adds (task, configuration, signals, receipt, vertices, `cost.tariff`: the
 graph's dollars carry no record of the table that priced them), so they are
 left out; attempts settled through `loopmath.logmatch` carry a tariff.
-Extension keys use loopmath's namespace `dev.loopmath.` (OCP.md 8.4);
+Extension keys use loopmath's namespace `dev.loopmath.` (spec/OCP.md section 8);
 readers still take the `dev.dagr.` keys of documents written before 0.3.
 
 What the graph does not know stays unknown here, and nothing is guessed:

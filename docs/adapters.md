@@ -1,7 +1,8 @@
 # ADE adapters
 
 Each adapter converts one agentic development environment (ADE) store to one
-OCP v0.2 document, whose specification is in `spec/OCP.md`. An adapter is a
+OCP v0.2 document, as defined by `spec/ocp-v0.2.schema.json` and the rules in
+`spec/OCP.md`. An adapter is a
 no-argument `Adapter` subclass in `src/loopmath/adapters/<name>.py`, sets its
 canonical lowercase kebab-case `name`,
 and uses `@register`. Its `discover()` and `sessions()` results are

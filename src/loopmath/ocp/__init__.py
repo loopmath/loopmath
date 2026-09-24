@@ -1,6 +1,6 @@
 """OCP v0.3: schema, conformance checker (moved from spec/), migration, emit helpers (spec 01).
 
-Owner: lane 01. Spec: spec/OCP.md (section 8 for v0.3).
+Owner: lane 01. Spec: the schemas and spec/OCP.md (section 6.3 for the v0.3 rules).
 
 - `conformance`: the checker (`validate_doc`, `validate_file`, `validate_many`).
 - `canonical`: the canonical JSON of a configuration and its `cfg_` id.

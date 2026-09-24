@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ocp:run:0.1",
   "title": "OCP v0 run document",
-  "description": "Orchestration Context Protocol v0. One JSON document describes one orchestration run: DAG topology (nodes, edges), per-node attempts with model and reasoning-effort labels, token cost records, acceptance outcomes with evidence tiers, timestamps, producer identity, and a declared privacy profile. Unknown fields are ignored by consumers (forward compatibility); the sanctioned place for producer-specific data is the 'ext' object present on every entity, with dotted-namespace keys such as 'dev.dagr.policy'. Referential rules a consumer must check that JSON Schema cannot express: edge endpoints and attempt.node name existing node ids, group.parent edges are acyclic, dep and fan_in edges form a DAG, event refs name existing nodes/attempts, terminal attempt statuses agree with outcome.result, and under privacy profile 'metadata_only' no free-text field may contain prompt or transcript text. A reference checker for these rules ships at spec/ocp_conformance.py.",
+  "description": "Orchestration Context Protocol v0. One JSON document describes one orchestration run: DAG topology (nodes, edges), per-node attempts with model and reasoning-effort labels, token cost records, acceptance outcomes with evidence tiers, timestamps, producer identity, and a declared privacy profile. Unknown fields are ignored by consumers (forward compatibility); the sanctioned place for producer-specific data is the 'ext' object present on every entity, with dotted-namespace keys such as 'com.example.policy'. Referential rules a consumer must check that JSON Schema cannot express: edge endpoints and attempt.node name existing node ids, group.parent edges are acyclic, dep and fan_in edges form a DAG, event refs name existing nodes/attempts, terminal attempt statuses agree with outcome.result, and under privacy profile 'metadata_only' no free-text field may contain prompt or transcript text. A reference checker for these rules ships at spec/ocp_conformance.py.",
   "type": "object",
   "required": ["ocp", "producer", "privacy", "run", "nodes"],
   "properties": {
@@ -16,7 +16,7 @@
     "groups": {
       "type": "array",
       "items": { "$ref": "#/$defs/group" },
-      "description": "Optional named visual/organizational scopes (contract v3 'projects'). Grouping is orthogonal to dependency structure."
+      "description": "Optional named visual/organizational scopes, such as projects. Grouping is orthogonal to dependency structure."
     },
     "nodes": {
       "type": "array",
@@ -58,17 +58,17 @@
     },
     "ext": {
       "type": "object",
-      "description": "Producer-specific extension data. Keys should be dotted-namespaced, e.g. 'dev.dagr.policy', 'langgraph.thread_id'. Consumers must ignore namespaces they do not understand."
+      "description": "Producer-specific extension data. Keys should be dotted-namespaced, e.g. 'com.example.policy', 'langgraph.thread_id'. Consumers must ignore namespaces they do not understand."
     },
     "producer": {
       "type": "object",
       "required": ["name"],
       "properties": {
-        "name": { "type": "string", "maxLength": 200, "description": "The emitting software (plugin or converter), e.g. 'ocp-from-contractv3'." },
+        "name": { "type": "string", "maxLength": 200, "description": "The emitting software (plugin or converter), e.g. 'my-orchestrator-ocp'." },
         "version": { "type": "string", "maxLength": 100 },
-        "framework": { "type": "string", "maxLength": 200, "description": "The orchestration framework the run executed under, e.g. 'herdr-dagr', 'langgraph', 'crewai'." },
+        "framework": { "type": "string", "maxLength": 200, "description": "The orchestration framework the run executed under, e.g. 'my-orchestrator', 'langgraph', 'crewai'." },
         "framework_version": { "type": "string", "maxLength": 100 },
-        "source_contract": { "type": "string", "maxLength": 200, "description": "Upstream native format this document was derived from, e.g. 'dagr/3'." },
+        "source_contract": { "type": "string", "maxLength": 200, "description": "Upstream native format this document was derived from, e.g. 'my-orchestrator/1.2'." },
         "emitted_at": { "$ref": "#/$defs/timestamp" },
         "ext": { "$ref": "#/$defs/ext" }
       }
@@ -123,7 +123,7 @@
         "state": {
           "type": "string",
           "maxLength": 100,
-          "description": "Producer's current projection over the node's attempts. Recommended vocabulary (from dagr contract v3): queued, working, review, blocked, done, failed, rejected, canceled, settled_unverified. Consumers learning from settled runs should trust attempt outcomes over this field."
+          "description": "Producer's current projection over the node's attempts. Recommended vocabulary: queued, working, review, blocked, done, failed, rejected, canceled, settled_unverified. Consumers learning from settled runs should trust attempt outcomes over this field."
         },
         "labels": { "$ref": "#/$defs/labels" },
         "ext": { "$ref": "#/$defs/ext" }
@@ -195,7 +195,7 @@
         },
         "evidence": {
           "enum": ["verified", "reported", "heuristic", "asserted"],
-          "description": "How the result is known (dagr contract v3 tiers). verified: mechanically checked (tests, provenance receipt). reported: the actor asserted it through a typed envelope. heuristic: inferred. asserted: bare claim. Missing evidence must be treated as 'asserted', never upgraded."
+          "description": "How the result is known. verified: mechanically checked (tests, provenance receipt). reported: the actor asserted it through a typed envelope. heuristic: inferred. asserted: bare claim. Missing evidence must be treated as 'asserted', never upgraded."
         },
         "via": { "type": "string", "maxLength": 200, "description": "Node id of the gate or review that produced this acceptance signal, when one did." },
         "receipt": { "$ref": "#/$defs/shortText" },

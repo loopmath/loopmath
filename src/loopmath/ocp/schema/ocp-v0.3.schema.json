@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ocp:run:0.3",
   "title": "OCP v0.3 run document",
-  "description": "Orchestration Context Protocol v0.3. A strict superset of v0.2: every field added here is optional, and a v0.2 document stays valid when its 'ocp' value is changed to '0.3'. One JSON document describes one orchestration run. v0.3 adds the whole observation a learner needs: the task (run.task), the configuration that ran it, meaning the workflow shape and a setting per piece (run.configuration), how it was chosen (run.provenance), timestamped signals such as verdicts, scores and late events (run.signals), the user's acceptance rule (run.acceptance_rule), slates of runs compared on one task (run.slate), pair preferences (run.preferences), the fallback used when a run ended without acceptance (run.rescue), the receipt of predicted against actual (run.receipt, written only by loopmath), the tariff used to price each attempt (cost.tariff), and links from nodes, attempts and artifacts to the workflow's vertices. Unknown fields are ignored by consumers at every level. Producer-specific data goes in 'ext' objects with registered reverse-domain keys; loopmath's own namespace is 'dev.loopmath.' ('dev.dagr.' stays readable with a warning). String vocabularies are open sets with recommended lists, except these closed enums: evidence tier, privacy profile, attempt status, outcome result, signal.kind, configuration.source, provenance.kind, and the typed switches signal.better and signal.scale. Rules JSON Schema cannot express are numbered in OCP.md and checked by loopmath.ocp.conformance: all v0.2 rules, plus E190 (configuration id is the canonical hash), E191 (every piece has a setting), E192 (workflow edges join a piece and an artifact and form a DAG), E193 (gates and repair targets exist), E194 (slate members share task.id and base_commit), E195 (signal values match their kind), W196 (a receipt from a producer other than loopmath) and W182 ('dev.dagr.' extension keys).",
+  "description": "Orchestration Context Protocol v0.3. A strict superset of v0.2: every field added here is optional, and a v0.2 document stays valid when its 'ocp' value is changed to '0.3'. One JSON document describes one orchestration run. v0.3 adds the whole observation a learner needs: the task (run.task), the configuration that ran it, meaning the workflow shape and a setting per piece (run.configuration), how it was chosen (run.provenance), timestamped signals such as verdicts, scores and late events (run.signals), the user's acceptance rule (run.acceptance_rule), slates of runs compared on one task (run.slate), pair preferences (run.preferences), the fallback used when a run ended without acceptance (run.rescue), the receipt of predicted against actual (run.receipt, written only by loopmath), the tariff used to price each attempt (cost.tariff), and links from nodes, attempts and artifacts to the workflow's vertices. Unknown fields are ignored by consumers at every level. Producer-specific data goes in 'ext' objects with registered reverse-domain keys; loopmath's own namespace is 'dev.loopmath.' ('dev.dagr.' stays readable with a warning). String vocabularies are open sets with recommended lists, except these closed enums: evidence tier, privacy profile, attempt status, outcome result, signal.kind, configuration.source, provenance.kind, and the typed switches signal.better and signal.scale. Rules JSON Schema cannot express are numbered in OCP.md and checked by loopmath.ocp.conformance: all v0.2 rules, plus E190 (configuration id is the canonical hash), E191 (every piece has a setting, unless it holds a nested workflow and has no role), E192 (workflow edges join a piece and an artifact and form a DAG), E193 (gates and repair targets exist), E194 (slate members share task.id and base_commit), E195 (signal values match their kind), W196 (a receipt from a producer other than loopmath) and W182 ('dev.dagr.' extension keys).",
   "type": "object",
   "required": [
     "ocp",
@@ -30,7 +30,7 @@
       "items": {
         "$ref": "#/$defs/group"
       },
-      "description": "Optional named visual/organizational scopes (contract v3 'projects'). Grouping is orthogonal to dependency structure."
+      "description": "Optional named visual/organizational scopes, such as projects. Grouping is orthogonal to dependency structure."
     },
     "nodes": {
       "type": "array",
@@ -111,7 +111,7 @@
         "name": {
           "type": "string",
           "maxLength": 200,
-          "description": "The emitting software (plugin or converter), e.g. 'ocp-from-contractv3'. The dagr extractor uses 'dagr' (optionally suffixed after a non-word character, e.g. 'dagr/graph'); that name switches on the extractor-only rule (cost.basis 'measured')."
+          "description": "The emitting software (plugin or converter), e.g. 'my-orchestrator-ocp'. loopmath's log extractor names itself 'loopmath' ('dagr' in documents written before its rename), optionally suffixed after a non-word character, e.g. 'loopmath/graph'; that name switches on the extractor-only rule E171 (cost.basis 'measured')."
         },
         "version": {
           "type": "string",
@@ -120,7 +120,7 @@
         "framework": {
           "type": "string",
           "maxLength": 200,
-          "description": "The orchestration framework the run executed under, e.g. 'herdr-dagr', 'claude-code', 'langgraph', 'crewai'."
+          "description": "The orchestration framework the run executed under, e.g. 'my-orchestrator', 'claude-code', 'langgraph', 'crewai'."
         },
         "framework_version": {
           "type": "string",
@@ -129,7 +129,7 @@
         "source_contract": {
           "type": "string",
           "maxLength": 200,
-          "description": "Upstream native format this document was derived from, e.g. 'dagr/3' or 'dagr_graph/1'."
+          "description": "Upstream native format this document was derived from, e.g. 'my-orchestrator/1.2'."
         },
         "emitted_at": {
           "$ref": "#/$defs/timestamp"
@@ -361,7 +361,7 @@
           ],
           "$comment": "This list is recommended vocabulary; readers must accept other values.",
           "maxLength": 100,
-          "description": "Producer's current projection over the node's attempts. Recommended vocabulary (from dagr contract v3): queued, working, review, blocked, done, failed, rejected, canceled, settled_unverified. Consumers learning from settled runs should trust attempt outcomes over this field."
+          "description": "Producer's current projection over the node's attempts. Recommended vocabulary: queued, working, review, blocked, done, failed, rejected, canceled, settled_unverified. Consumers learning from settled runs should trust attempt outcomes over this field."
         },
         "labels": {
           "$ref": "#/$defs/labels"
@@ -560,7 +560,7 @@
               ],
               "$comment": "This list is recommended vocabulary; readers must accept other values.",
               "maxLength": 100,
-              "description": "Open set. Recommended vocabulary: plan, review, spec, report, code, test, config, doc, data, log, commit, merge, issue, repo, diff, verdict, test_record, other (commit and merge from v0.3: a late event is matched to its run by its commit, decision D17; issue, repo, diff, verdict and test_record from v0.3: the artifact kinds of workflow pieces, decision D91). null when the kind is unknown; the key is always present and the tier stays required beside it."
+              "description": "Open set. Recommended vocabulary: plan, review, spec, report, code, test, config, doc, data, log, commit, merge, issue, repo, diff, verdict, test_record, other (commit and merge from v0.3: a late event is matched to its run by its commit; issue, repo, diff, verdict and test_record from v0.3: the artifact kinds of workflow pieces). null when the kind is unknown; the key is always present and the tier stays required beside it."
             },
             "tier": {
               "$ref": "#/$defs/evidenceTier"
@@ -607,7 +607,7 @@
               "type": "null"
             }
           ],
-          "description": "Timestamp of the first write event; null when the producer cannot compute it. The key is always present (amendment 13:10 (a)): unknown is an explicit null, never an absent key."
+          "description": "Timestamp of the first write event; null when the producer cannot compute it. The key is always present: unknown is an explicit null, never an absent key."
         },
         "n_writes": {
           "type": [
@@ -913,7 +913,7 @@
             "allocated"
           ],
           "$comment": "This list is recommended vocabulary; readers must accept other values.",
-          "description": "How the counts were attributed to this attempt. measured: summed from usage records that identify this attempt exactly (a per-session or per-agent transcript, or per-request usage tied to the attempt). allocated: apportioned from a coarser aggregate (per-day or per-worktree usage) by a heuristic such as a time-window join; consumers should down-weight accordingly. Absent means unknown. Required, and required to be 'measured', when the producer is the extractor."
+          "description": "How the counts were attributed to this attempt. measured: summed from usage records that identify this attempt exactly (a per-session or per-agent transcript, or per-request usage tied to the attempt). allocated: apportioned from a coarser aggregate (per-day or per-worktree usage) by a heuristic such as a time-window join; consumers should down-weight accordingly. Absent means unknown. Required, and required to be 'measured', when the producer is the extractor (rule E171); from v0.3 a document whose producer is loopmath may give 'allocated' when cost.ext['dev.loopmath.logmatch'] marks a heuristic log match or a shared session."
         },
         "ext": {
           "$ref": "#/$defs/ext"
@@ -986,7 +986,7 @@
             "asserted"
           ],
           "$comment": "This list is recommended vocabulary; readers must accept other values.",
-          "description": "How the result is known (dagr contract v3 tiers). verified: mechanically checked (tests, provenance receipt). reported: the actor asserted it through a typed envelope. heuristic: inferred. asserted: bare claim. Missing evidence must be treated as 'asserted', never upgraded."
+          "description": "How the result is known. verified: mechanically checked (tests, provenance receipt). reported: the actor asserted it through a typed envelope. heuristic: inferred. asserted: bare claim. Missing evidence must be treated as 'asserted', never upgraded."
         },
         "via": {
           "type": "string",
@@ -1181,7 +1181,7 @@
         "heuristic",
         "asserted"
       ],
-      "description": "How a signal or judgement is known (dagr contract v3 tiers). verified: mechanically checked (tests, CI, a provenance receipt). reported: a typed report from the orchestrator, user or tool. heuristic: inferred by a rule. asserted: a bare claim. Tiers are never upgraded without new mechanical evidence."
+      "description": "How a signal or judgement is known. verified: mechanically checked (tests, CI, a provenance receipt). reported: a typed report from the orchestrator, user or tool. heuristic: inferred by a rule. asserted: a bare claim. Tiers are never upgraded without new mechanical evidence."
     },
     "interval": {
       "type": "object",
@@ -1259,7 +1259,7 @@
       "required": [
         "id"
       ],
-      "description": "The task this run attempted (paper: tau, its features psi(tau) and its groups). Both members of a pair carry the same task.id and base_commit (E194).",
+      "description": "The task this run attempted, with its features and its groups. Both members of a pair carry the same task.id and base_commit (E194).",
       "properties": {
         "id": {
           "$ref": "#/$defs/id",
@@ -1389,7 +1389,7 @@
     },
     "setting": {
       "type": "object",
-      "description": "How one piece runs (paper: pi = (m, r, chi, options)): harness, model, reasoning effort, context policy and harness options.",
+      "description": "How one piece runs: harness, model, reasoning effort, context policy and harness options.",
       "properties": {
         "harness": {
           "type": "string",
@@ -1420,7 +1420,7 @@
             "default"
           ],
           "$comment": "This list is recommended vocabulary; readers must accept other values.",
-          "description": "Open string; 'fresh' when absent (decision D31)."
+          "description": "Open string; 'fresh' when absent."
         },
         "options": {
           "type": "object",
@@ -1483,12 +1483,12 @@
             "docs"
           ],
           "$comment": "This list is recommended vocabulary; readers must accept other values.",
-          "description": "What the piece does. loopmath writes planner, implementer, reviewer, tester, referee, worker (decision D32); readers never rewrite roles."
+          "description": "What the piece does. loopmath writes planner, implementer, reviewer, tester, referee, worker; readers never rewrite roles."
         },
         "width": {
           "type": "integer",
           "minimum": 1,
-          "description": "q_v: parallel copies of the piece (best of n). 1 when absent."
+          "description": "Parallel copies of the piece (best of n). 1 when absent."
         },
         "workflow": {
           "anyOf": [
@@ -1594,17 +1594,17 @@
         "budget": {
           "type": "integer",
           "minimum": 0,
-          "description": "K_max: rounds allowed, including the first (decision D30). 1 means no repair; a missing or 0 budget reads as 1."
+          "description": "Rounds allowed, including the first. 1 means no repair; a missing or 0 budget reads as 1."
         },
         "rescue": {
           "$ref": "#/$defs/rescue"
         },
         "ext": {
           "$ref": "#/$defs/ext",
-          "description": "Extension data. The key 'dev.loopmath.gate_rules' (piece id to a gate rule other than the role's default) is part of the configuration id (decision D29)."
+          "description": "Extension data. The key 'dev.loopmath.gate_rules' (piece id to a gate rule other than the role's default) is part of the configuration id."
         }
       },
-      "description": "The control policy Gamma: gates, the repair map, the repair budget and the rescue."
+      "description": "The control policy: gates, the repair map, the repair budget and the rescue."
     },
     "workflow": {
       "type": "object",
@@ -1665,16 +1665,16 @@
           "$ref": "#/$defs/ext"
         }
       },
-      "description": "A workflow shape W = (V, E, Gamma): piece and artifact vertices, typed edges, and the control policy."
+      "description": "A workflow shape: piece and artifact vertices, typed edges, and the control policy."
     },
     "configuration": {
       "type": "object",
-      "description": "What ran (paper: x = (W, pi)): a workflow and a setting per piece vertex.",
+      "description": "What ran: a workflow and a setting per piece vertex.",
       "properties": {
         "id": {
           "type": "string",
           "pattern": "^cfg_[0-9a-f]{12}$",
-          "description": "'cfg_' plus the first 12 hex digits of SHA-256 over the canonical JSON of {workflow, settings} (loopmath.ocp.canonical; OCP.md section 8): keys sorted, no whitespace, workflow id, version, title and ext excluded. Same shape and settings, same id, everywhere (E190)."
+          "description": "'cfg_' plus the first 12 hex digits of SHA-256 over the canonical JSON of {workflow, settings} (loopmath.ocp.canonical; the configuration id section of OCP.md): keys sorted, no whitespace, workflow id, version, title and ext excluded. Same shape and settings, same id, everywhere (E190)."
         },
         "workflow": {
           "anyOf": [
@@ -1793,7 +1793,7 @@
         "at_attempt": {
           "type": "string",
           "maxLength": 200,
-          "description": "The attempt after which the verdict applies (gives J_accept)."
+          "description": "The attempt after which the verdict applies; it locates the attempt at which the run was accepted."
         },
         "observed_at": {
           "$ref": "#/$defs/timestamp",

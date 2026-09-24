@@ -1,4 +1,4 @@
-"""spec/ocp_conformance.py and spec/examples/ocp-from-contractv3.py stay usable after the move."""
+"""spec/ocp_conformance.py stays usable after the move, and the contract converter runs as a module."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 
-from loopmath.ocp import conformance, contractv3
+from loopmath.ocp import conformance
 
 from ._common import MIGRATE_GOLDEN, ROOT, SPEC, V03_EXAMPLES, V03_GOLDEN
 
@@ -51,11 +51,9 @@ def test_shim_works_from_a_bare_checkout():
     assert result.returncode == 0, result.stderr
 
 
-def test_contract_example_cli_uses_the_package_converter(tmp_path):
-    example = _load(SPEC / "examples" / "ocp-from-contractv3.py", "lane01_contract_cli")
-    assert example.convert is contractv3.convert
+def test_contract_converter_runs_as_a_module(tmp_path):
     out = tmp_path / "out.ocp.json"
-    result = subprocess.run([sys.executable, str(SPEC / "examples" / "ocp-from-contractv3.py"),
+    result = subprocess.run([sys.executable, "-m", "loopmath.ocp.contractv3",
                              str(MIGRATE_GOLDEN / "contract-v3.run.json"), str(out)],
                             capture_output=True, text=True, env=_env())
     assert result.returncode == 0, result.stderr
