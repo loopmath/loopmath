@@ -4,7 +4,7 @@
 
 ### recommend
 
-- Every workflow you recorded for the task's type and repo (else its type) is a candidate, designed runs included, with its own shape and width; one-step edits of them are candidates too.
+- The workflows you recorded for the task's type and repo (else its type), designed runs included, are candidates with their own shape and width: up to 60, most runs first, and one-step edits of the first 30. A catalog or edited workflow that runs the same as a recorded one is listed once.
 - With no usual workflow, the baseline is a reference: your best recorded workflow by expected cost per accepted result, labelled as such ("no usual workflow; reference: your best recorded workflow (...)"). Text and JSON never call a workflow you did not run "your usual".
 - Codex offers `max` effort for the gpt-5.6 and gpt-6 models, and candidates use every effort you have run.
 - The rescue is named once at the top. Each workflow shows its run cost with the median beside the mean, the expected rescue, and the cost per accepted result; a score target's chance to reach carries its 80% range.
@@ -13,7 +13,7 @@
 
 ### fit, status and sources
 
-- Runs in your store are yours, whatever their `task.source` says. `fit --without SOURCE` leaves out shipped sources only. When a stored run has the same id as a shipped one, your copy is used, and `run import`, `fit` and `status` say so once.
+- Runs in your store are yours, whatever their `task.source` says. A shipped source name never matches them: `fit --without rq1` leaves out only the shipped RQ1 runs, while `--without user` and `--without shared` still leave out your runs and your shared imports. When a stored run has the same id as a shipped one, your copy is used, and `run import`, `fit` and `status` say so once.
 - `fit` is about four times faster (a block factorization, Newton steps, and lazy imports).
 - `status` names the current fit's options and counts, for example `fit: fit_..., 0 min old, --without rq1, runs 1469 prior + 44 yours`.
 - `posterior --subtype S --feature K=V` predicts for that task.
