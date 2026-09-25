@@ -40,3 +40,13 @@ def test_import_names_the_overlap_once(tmp_path, shipped, capsys):
     assert cli.main(["run", "import", str(shipped[1]), "--home", str(home), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["shipped_overlap"] == {}
+
+
+def test_import_brief_carries_the_overlap_line(tmp_path, shipped, capsys):
+    home = tmp_path / "home"
+    capsys.readouterr()
+    code = cli.main(["run", "import", *map(str, shipped), "--finish", "--no-fit", "--json", "--brief", "--home", str(home)])
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["shipped_overlap"] == {"rq1": 1}
+    assert out["overlap_note"] == "1 of your runs is also in the shipped rq1 prior (same run id): fits use your copy"

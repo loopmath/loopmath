@@ -35,6 +35,11 @@ HEURISTIC_COST_WEIGHT = 0.7  # spec 04 section 2 and D27: allocated (heuristic) 
 USER_SOURCES = ("live", "backlog", "history", "user", "orchestrator", "onboard", "habit", "")
 HORIZON_NODES = ("horizon:timebox", "horizon:log2h")  # fixed terms of a timeboxed run (spec 04 section 1)
 RQ1_EXT = "dev.loopmath.rq1"  # loopmath-exp's ext key; its horizon_s is the fallback for older RQ1 runs
+# 0.2.1 (F5, spec 04 section 1): in the cost and tokens rows of a timeboxed task the terms a timebox caps (effort
+# and shape) enter at this value, not 1. Set from the RQ1 2 h runs: open-ended effort terms gave max over low x2.64
+# (solo luna) and x2.23 (solo sol) against x1.34 and x1.27 observed; ln 1.34 / ln 2.64 = ln 1.27 / ln 2.23 = 0.30.
+TIMEBOX_EFFORT_COST = 0.3
+TIMEBOX_LEVELS = ("effort:", "family_effort:", "topology:", "position:")
 
 
 def other_design(meta: dict) -> str | None:
@@ -304,17 +309,36 @@ def structure(config: Configuration) -> Structure:
 
 # ---------------------------------------------------------------- rows
 
+def effort_weight(task: Task, timebox_effort: float | None = None) -> float:
+    """The value of the timebox-capped terms (TIMEBOX_LEVELS) in a cost or tokens row of `task`: `timebox_effort`
+    (default TIMEBOX_EFFORT_COST) when the task has a horizon, else 1 (spec 04 section 1, effort and shape under
+    a timebox)."""
+    if task_horizon(task) is None:
+        return 1.0
+    return float(TIMEBOX_EFFORT_COST if timebox_effort is None else timebox_effort)
+
+
+@lru_cache(maxsize=65536)
+def _effort_scaled(terms: tuple[Term, ...], weight: float) -> tuple[Term, ...]:
+    return tuple((n, p, v * weight) if n.startswith(TIMEBOX_LEVELS) else (n, p, v) for n, p, v in terms)
+
+
 def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None, *,
-              source: str | None = None) -> tuple[Term, ...]:
+              source: str | None = None, effort: float = 1.0) -> tuple[Term, ...]:
     """Cost and tokens rows without the task part: setting, role, topology, position, round, control,
     and with a `source` the position x source node `psrc:<shape>#<pos>|<source>` and the family x source
-    node `fsrc:<family>|<source>` (spec 04 section 1)."""
+    node `fsrc:<family>|<source>` (spec 04 section 1). `effort` is the value of the terms a timebox caps, the
+    effort and shape (topology, position) terms (`effort_weight`: below 1 under a timebox); the role, psrc and
+    fsrc terms stay at 1."""
     s = setting or st.settings[piece]
     h, m, e = _s(s)
     shape = st.shape or st.workflow_id
     position = f"{shape}#{st.pieces.index(piece)}"
-    terms = (setting_terms(h, m, e) + role_terms(st.roles[piece], m)
-             + ((f"topology:{shape}", None, 1.0), (f"position:{position}", f"topology:{shape}", 1.0)))
+    st_terms = setting_terms(h, m, e)
+    shape_terms = ((f"topology:{shape}", None, 1.0), (f"position:{position}", f"topology:{shape}", 1.0))
+    if effort != 1.0:
+        st_terms, shape_terms = _effort_scaled(st_terms, float(effort)), _effort_scaled(shape_terms, float(effort))
+    terms = st_terms + role_terms(st.roles[piece], m) + shape_terms
     if source is not None:
         fam = model_path(m)[1]
         terms += ((f"psrc:{position}|{source}", f"position:{position}", 1.0),
@@ -345,7 +369,8 @@ def run_rest(st: Structure) -> tuple[Term, ...]:
 
 def cost_row(task: Task, source: str, st: Structure, piece: str, k: int,
              setting: Setting | None = None, features: FeatureSet | None = None) -> list[Term]:
-    return task_terms(task, source, features) + list(cost_rest(st, piece, k, setting, source=source))
+    return task_terms(task, source, features) + list(cost_rest(st, piece, k, setting, source=source,
+                                                               effort=effort_weight(task)))
 
 
 def gate_row(task: Task, source: str, st: Structure, gate: GateInfo, k: int,

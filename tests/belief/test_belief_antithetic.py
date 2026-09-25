@@ -59,11 +59,13 @@ def test_p_reach_matches_the_probit_closed_form(sim_fit):
         assert s.predict(task, cfg, PERF_RULE).scores["perf"].p_reach == pytest.approx(closed, abs=0.01)
 
 
-def test_two_fits_with_different_seeds_give_the_same_score_means(tmp_path):
+def test_two_fits_with_different_seeds_give_the_same_score_means(tmp_path, monkeypatch):
     docs, _ = simdata.simulate(200, seed=5, source="live", n_tasks=40, score=SCORE)
     states = []
     for i, now in enumerate(("2026-09-24T12:00:00-07:00", "2026-09-24T12:05:00-07:00")):
         home = tmp_path / f"home{i}"
+        # since 0.2.1 the seed comes from the fit's input (spec 04 section 3): force two different seeds
+        monkeypatch.setattr(F, "input_key", lambda *a, _i=i, **k: f"key{_i}")
         F.fit(home, docs=docs, no_prior=True, now=datetime.fromisoformat(now))
         states.append(load_latest(home))
     a, b = states

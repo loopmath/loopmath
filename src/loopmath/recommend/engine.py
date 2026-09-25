@@ -19,12 +19,16 @@ from typing import Any, Callable, Sequence
 from ..types import AcceptanceRule, Candidate, Configuration, CurveRow, Prediction, Task
 from . import curve as curve_mod
 from . import search as search_mod
-from .curve import Rescue, default_pick, ell_key, goal_row, parse_goal, rescue_cost
+from .curve import (RETRY_DECAY, RETRY_MAX_ATTEMPTS, RETRY_MIN_CHANCE, Rescue, accepted_within, default_pick,
+                    ell_key, goal_row, parse_goal, rescue_cost, retry_rescue)
 from .gain import Exploration, explore
-from .message import compose, strategy as strategy_of
+from .message import compose, pick_payback, rescue_basis, rescue_text, strategy as strategy_of
 
 TOP_N = 200
 N_ALTERNATIVES = 5
+N_CHOICES = 5
+BAND_LEVELS = (50, 80, 90, 95)  # central intervals in `bands`; 80 is the prediction's lo and hi
+RESCUE_POOL = ("usual", "user", "recorded", "catalog")  # origins the `retry` rescue workflow is chosen from
 # Where the baseline came from: `--usual`, history or config name the user's usual; otherwise it is a reference.
 USUAL_FROM = ("flag", "history", "config")
 REFERENCE_KINDS = ("usual", "best_recorded", "default")
@@ -59,11 +63,16 @@ def reference_text(kind: str, label: str) -> str:
 
 def best_recorded(belief: Any, task: Task, rule: AcceptanceRule,
                   recorded: Sequence[Configuration]) -> Configuration | None:
-    """The recorded configuration with the lowest expected cost per accepted result when it is its own rescue:
-    `E[C_run] + (1 - g) E[C_run] / g = E[C_run] / g`. None when none has a positive chance."""
+    """With a score target, the recorded configuration with the highest mean chance to reach it (ties: the
+    lower run cost; F7). Otherwise the one with the lowest expected cost per accepted result when it is its
+    own rescue: `E[C_run] + (1 - g) E[C_run] / g = E[C_run] / g`. None when none has a positive chance."""
     if not recorded:
         return None
     preds = list(belief.predict_many(task, list(recorded), rule=rule, rescue_usd=None))
+    if rule.score is not None:
+        likely = [(-p.p_success.mean, p.cost.usd.mean, cfg.id, cfg)
+                  for cfg, p in zip(recorded, preds) if p.p_success.mean > 0]
+        return min(likely, key=lambda x: x[:3])[3] if likely else None
     scored = [(p.cost.usd.mean / p.p_success.mean, p.cost.usd.mean, cfg.id, cfg)
               for cfg, p in zip(recorded, preds) if p.p_success.mean > 0]
     return min(scored, key=lambda x: x[:3])[3] if scored else None
@@ -74,7 +83,10 @@ class Settings:
     """Config values the recommender reads (spec 02 section 3, spec 05)."""
 
     goal: str | None = None  # "default" | "pNN"
-    rescue_kind: str = "redo_usual"
+    rescue_kind: str = "retry"
+    rescue_decay: float = RETRY_DECAY  # rescue.decay: each retry's chance over the attempt before it
+    rescue_max_attempts: int = RETRY_MAX_ATTEMPTS  # rescue.max_attempts, counting the first run
+    rescue_min_chance: float = RETRY_MIN_CHANCE  # rescue.min_chance: the rescue workflow's chance to aim for
     person_usd_per_hour: float | None = None
     rescue_hours: float | None = None
     spend: float = 0.0  # recorded spend in the budget period
@@ -114,6 +126,9 @@ class Recommendation:
     wins: dict[str, dict[str, float]] = field(default_factory=dict)  # by id: objective -> share of draws it wins
     on_front: frozenset[str] = frozenset()
     strategy: dict[str, Any] | None = None  # goal.strategy (spec 05, the strategy sentence)
+    rescue_config: Configuration | None = None  # the `retry` rescue workflow
+    bands: dict[str, dict[str, dict[str, list[float]]]] = field(default_factory=dict)  # by id (`band_set`)
+    most_likely: Candidate | None = None  # with a score target, the highest mean chance (I19)
 
     def label(self, cfg: Configuration) -> str:
         return self.labels.get(cfg.id) or wide_label(cfg)
@@ -124,6 +139,15 @@ class Recommendation:
 
     def reference_text(self) -> str:
         return reference_text(self.reference_kind, self.label(self.usual.config))
+
+    def rescue_of(self) -> str | None:
+        """The label of the workflow that fixes a miss: the usual or reference for `redo_usual`, the rescue
+        workflow for `retry`, else None."""
+        if self.rescue.kind == "redo_usual":
+            return self.label(self.usual.config)
+        if self.rescue.kind == "retry" and self.rescue_config is not None:
+            return self.label(self.rescue_config)
+        return None
 
     def numbers(self, pred: Prediction) -> dict[str, Any]:
         """Run cost with its median, expected rescue, cost per accepted result and, for a score rule the fit
@@ -143,7 +167,16 @@ class Recommendation:
                                  "median_basis": basis},
                 "expected_rescue_usd": r6(max(0.0, ell.mean - cost.mean)),
                 "cost_per_accepted_usd": {"mean": r6(ell.mean), "lo": r6(ell.lo), "hi": r6(ell.hi)},
-                "p_reach": reach}
+                "p_reach": reach,
+                "p_accepted_within": self.within(pred),
+                "bands": self.bands.get(pred.config) or interval_bands(pred)}
+
+    def within(self, pred: Prediction) -> dict[str, Any]:
+        """`p_accepted_within`: the chance of an accepted result within the rescue's attempts (the ceiling),
+        `g + (1 - g) p_fix`, read end by end from `g`'s interval since it is affine and increasing in `g`."""
+        g = pred.p_success
+        return {"mean": r6(accepted_within(g.mean, self.rescue)), "lo": r6(accepted_within(g.lo, self.rescue)),
+                "hi": r6(accepted_within(g.hi, self.rescue)), "attempts": self.rescue.attempts}
 
     def candidate_dict(self, c: Candidate) -> dict[str, Any]:
         return {**c.to_dict(), "label": self.label(c.config), "numbers": self.numbers(c.prediction),
@@ -170,9 +203,11 @@ class Recommendation:
                 "of": of}
 
     def choices(self) -> list[dict[str, Any]]:
-        """At most four options an agent shows before asking one question (spec 02 section 2): the goal
-        (recommended), the goal with the exploration pick beside it, the usual or reference, and the cheapest
-        workflow on the curve. Each names its members, cost per accepted result and chance."""
+        """At most five options an agent shows before asking one question (spec 02 section 2): the goal
+        (recommended), the goal with the exploration pick beside it, the usual or reference, the cheapest
+        workflow on the curve and, with a score target, the workflow most likely to reach it (I19). Each names
+        its members, cost per accepted result, chance, the chance within the rescue's attempts, its bands and
+        `option`, its 1-based number in this order."""
         out: list[dict[str, Any]] = []
 
         def add(key: str, title: str, c: Candidate, members: list[str], label: str | None = None,
@@ -183,7 +218,8 @@ class Recommendation:
                         "members": members, "cost_per_accepted_usd": n["cost_per_accepted_usd"],
                         "chance": self.chance(c.prediction),
                         "run_cost_usd": {"mean": n["run_cost_usd"]["mean"], "median": n["run_cost_usd"]["median"]},
-                        "expected_rescue_usd": n["expected_rescue_usd"], **wins, **more})
+                        "expected_rescue_usd": n["expected_rescue_usd"],
+                        "p_accepted_within": n["p_accepted_within"], "bands": n["bands"], **wins, **more})
 
         goal = self.goal
         base = ("the usual workflow" if self.is_usual else
@@ -198,7 +234,7 @@ class Recommendation:
                 f"{self.label(goal.config)} + {self.label(pick.candidate.config)}", recommended=False,
                 explore_config=pick.candidate.config.id, price_now_usd=r6(pick.price.usd.mean),
                 gain_per_future_run_usd=r6(float(pick.gain_per_run.get("usd") or 0.0)),
-                p_beats_goal=r6(pick.p_beats_goal))
+                payback_runs=pick_payback(pick), p_beats_goal=r6(pick.p_beats_goal))
         if self.usual.config.id != goal.config.id:
             title = "Run your usual workflow" if self.is_usual else (
                 "Run the reference workflow: your best recorded workflow" if self.reference_kind == "best_recorded"
@@ -210,7 +246,15 @@ class Recommendation:
             if c is not None:
                 add("cheapest_run", f"Run the cheapest workflow with at least a {cheap.levels[0]}% chance", c,
                     [c.config.id], recommended=False)
-        return out[:4]
+        likely = self.most_likely
+        if likely is not None and likely.config.id not in {x["config"] for x in out}:
+            add("most_likely", "Run the workflow most likely to reach the target" if self.score_backed
+                else "Run the workflow most likely to give an accepted result", likely, [likely.config.id],
+                recommended=False)
+        out = out[:N_CHOICES]
+        for i, x in enumerate(out, 1):
+            x["option"] = i
+        return out
 
     @property
     def score_backed(self) -> bool:
@@ -245,7 +289,8 @@ class Recommendation:
             a.update(self.search_fields(c.config.id))
             alternatives.append(a)
         rescue = self.rescue.to_dict()
-        rescue["of"] = self.label(usual.config) if self.rescue.kind == "redo_usual" else None
+        rescue["of"] = self.rescue_of()
+        rescue["text"] = rescue_text(self.rescue, rescue["of"])
         return {
             "rule": self.rule.to_dict(),
             "reference": reference,
@@ -284,6 +329,29 @@ def row_dict(row: CurveRow, rec: Recommendation) -> dict[str, Any]:
 
 def r6(x: float | None) -> float | None:
     return None if x is None else round(float(x), 6)
+
+
+def band_set(chance: Any, run_usd: Any, ell_usd: Any) -> dict[str, dict[str, list[float]]]:
+    """`bands`: the 50, 80, 90 and 95 percent central intervals of the chance, run cost and cost per
+    accepted result draws, read as the belief reads its 80% interval (`np.percentile`, linear)."""
+    import numpy as np
+
+    qs = [q for lv in BAND_LEVELS for q in (50 - lv / 2, 50 + lv / 2)]
+    out: dict[str, dict[str, list[float]]] = {}
+    for name, draws in (("chance", chance), ("run_cost_usd", run_usd), ("cost_per_accepted_usd", ell_usd)):
+        a = np.asarray(draws, dtype=float)
+        if a.size == 0:
+            continue
+        v = np.nanpercentile(a, qs)
+        out[name] = {str(lv): [r6(v[2 * i]), r6(v[2 * i + 1])] for i, lv in enumerate(BAND_LEVELS)}
+    return out
+
+
+def interval_bands(pred: Prediction) -> dict[str, dict[str, list[float]]]:
+    """`bands` from the 80% intervals alone, for a belief that hands over no draws: the other levels are absent."""
+    return {name: {"80": [r6(iv.lo), r6(iv.hi)]}
+            for name, iv in (("chance", pred.p_success), ("run_cost_usd", pred.cost.usd),
+                             ("cost_per_accepted_usd", pred.ell.usd))}
 
 
 def interval_median(iv: Any) -> tuple[float, str]:
@@ -420,12 +488,14 @@ def predict_all(belief: Any, task: Task, configs: Sequence[Configuration], rule:
 
 
 def predict_with_medians(belief: Any, task: Task, configs: Sequence[Configuration], rule: AcceptanceRule,
-                         rescue: Rescue) -> tuple[list[Prediction], dict[str, tuple[float, str]]]:
+                         rescue: Rescue, bands: dict[str, Any] | None = None
+                         ) -> tuple[list[Prediction], dict[str, tuple[float, str]]]:
     """`predict_all`, and the median of each configuration's simulated run cost (I15), basis "draws".
 
     The fit's `_predict_many` returns the simulated runs its intervals are read from beside the predictions
     (`predict_many` is the same call without them), so the median costs no second pass. A belief without
-    it (a fake) gives no medians; `interval_median` then reads one from the interval.
+    it (a fake) gives no medians; `interval_median` then reads one from the interval. With `bands`, each
+    configuration's `band_set` from the same draws goes into it by id.
     """
     fn = getattr(belief, "_predict_many", None)
     if not callable(fn):
@@ -438,6 +508,8 @@ def predict_with_medians(belief: Any, task: Task, configs: Sequence[Configuratio
         sim = getattr((extra or {}).get("run"), "sim_usd", None)
         if sim is not None and len(sim):
             medians[pred.config] = (float(np.median(sim)), "draws")
+            if bands is not None and (extra or {}).get("g") is not None and extra.get("ell") is not None:
+                bands[pred.config] = band_set(extra["g"], sim, extra["ell"])
     return [p for p, _ in out], medians
 
 
@@ -477,17 +549,21 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     goal_level_wanted = parse_goal(st.goal)
     kind = reference_kind(usual_from)
 
-    usual_pred = predict_one(belief, task, usual, rule, None)
-    rescue = rescue_cost(st.rescue_kind, usual_pred, person_usd_per_hour=st.person_usd_per_hour,
-                         hours=st.rescue_hours)
-    if rescue.kind == "redo_usual" and kind != "usual":
-        rescue = dataclasses.replace(rescue, basis="reference workflow repeated until accepted")
-
     origin_of_usual = {"usual": "usual", "best_recorded": "recorded", "default": "catalog"}[kind]
     unique: dict[str, tuple[Configuration, str]] = {usual.id: (usual, origin_of_usual)}
     for cfg, origin in configs:
         if cfg.id not in unique:
             unique[cfg.id] = (cfg, origin)
+    rescue_cfg = None
+    if (st.rescue_kind or "retry") == "retry":
+        pool = [cfg for cfg, origin in unique.values() if origin in RESCUE_POOL]
+        rescue, rescue_cfg = retry_rescue_of(belief, task, rule, pool, st)
+    else:
+        usual_pred = predict_one(belief, task, usual, rule, None)
+        rescue = rescue_cost(st.rescue_kind, usual_pred, person_usd_per_hour=st.person_usd_per_hour,
+                             hours=st.rescue_hours)
+        if rescue.kind == "redo_usual" and kind != "usual":
+            rescue = dataclasses.replace(rescue, basis="reference workflow repeated until accepted")
     space = found = None
     if st.search and search_mod.searchable(belief):
         # spec 05 section 1a: the candidates' settings and shapes define the space; catalog and edit
@@ -500,11 +576,13 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
             for cfg, origin in found.configs:
                 unique.setdefault(cfg.id, (cfg, origin))
     cfgs = [c for c, _ in unique.values()]
-    preds, medians = predict_with_medians(belief, task, cfgs, rule, rescue)
+    bands: dict[str, Any] = {}
+    preds, medians = predict_with_medians(belief, task, cfgs, rule, rescue, bands)
     by_id = {c.id: c for c in cfgs}
     polished = 0
     if found is not None:
-        polished, preds = polish(belief, task, rule, rescue, space, by_id, preds, medians, goal_level_wanted)
+        polished, preds = polish(belief, task, rule, rescue, space, by_id, preds, medians, goal_level_wanted,
+                                 bands)
         for cfg in list(by_id.values())[len(cfgs):]:
             unique[cfg.id] = (cfg, "polish")
         cfgs = list(by_id.values())
@@ -514,7 +592,9 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     all_preds = [c.prediction for c in cands]
     share = draw_share(belief, task, rule, all_preds, by_id)
     rows = curve_mod.curve(all_preds, share=share)  # every prediction; the top-200 cut is the stored list only
+    likely = most_likely_of(cands) if rule.score is not None else None
     kept_ids = {usual.id, *keep, *(r.config for r in rows if r.config is not None)}
+    kept_ids |= {c.id for c in (rescue_cfg, likely.config if likely else None) if c is not None}
     top = cands[:TOP_N]
     top_ids = {c.config.id for c in top}
     top += [c for c in cands if c.config.id in kept_ids and c.config.id not in top_ids]
@@ -540,6 +620,7 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
                           cap=st.cap, auto_payback_runs=st.auto_payback_runs, screen_size=st.screen_size)
     explore_kind = st.default_pick if st.default_pick in ("best_value", "max_gain") else "best_value"
     shown = [usual, default_c.config, goal_c.config, *(c.config for c in alternatives)]
+    shown += [c for c in (rescue_cfg, likely.config if likely else None) if c is not None]
     shown += [by_id[r.config] for r in rows if r.config is not None]
     for slot in (exploration.best_value, exploration.max_gain):
         if slot.pick is not None:
@@ -547,13 +628,14 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     labels = shown_labels(shown)
     backed = score_backed(rule, usual_c.prediction)
     label_of = lambda cfg: labels.get(cfg.id) or wide_label(cfg)  # noqa: E731
+    rescue_label = label_of(rescue_cfg) if rescue_cfg is not None else None
     strategy = strategy_of(pick=goal_c.config, pick_pred=goal_c.prediction, pick_label=label_of(goal_c.config),
                            ref=usual, ref_pred=usual_c.prediction, reference=kind, rescue_kind=rescue.kind,
-                           rescue_usd=rescue.usd)
+                           rescue_usd=rescue.usd, rescue=rescue, rescue_label=rescue_label)
     message = compose(usual=usual, usual_pred=usual_c.prediction, goal=goal_c.config, goal_pred=goal_c.prediction,
                       goal_level=goal_level, goal_note=goal_note, exploration=exploration,
                       rule=rule if backed else None, label=label_of, reference=kind,
-                      strategy_text=strategy["text"] if strategy else None)
+                      strategy_text=strategy["text"] if strategy else None, rescue=rescue, rescue_label=rescue_label)
     notes = []
     if not backed:
         notes.append(UNBACKED.format(score=rule.score.name, rule=rule.definition))
@@ -567,21 +649,89 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     if found is not None:
         wins, on_front = found.wins, frozenset(found.on_front)
         search_json = search_payload(found, len(cfgs), polished, labels)
+    likely_c = next((c for c in top if c.config.id == likely.config.id), None) if likely else None
     return Recommendation(task, rule, usual_c, usual_from, top, rows, default_c, goal_c, goal_level, choice,
                           goal_note, alternatives, exploration, rescue, message, explore_kind, notes, labels,
-                          kind, medians, search_json, wins, on_front, strategy)
+                          kind, medians, search_json, wins, on_front, strategy, rescue_cfg, bands, likely_c)
+
+
+def most_likely_of(cands: Sequence[Candidate]) -> Candidate | None:
+    """The candidate with the highest mean chance (ties: the lower cost per accepted result; I19)."""
+    if not cands:
+        return None
+    return min(cands, key=lambda c: (-c.prediction.p_success.mean, c.prediction.ell.usd.mean, c.config.id))
+
+
+def retry_rescue_of(belief: Any, task: Task, rule: AcceptanceRule, pool: Sequence[Configuration],
+                    st: Settings) -> tuple[Rescue, Configuration]:
+    """`rescue.kind` retry (spec 05 section 2): the rescue workflow and `C_rescue`.
+
+    Every configuration in `pool` is predicted with `rescue_usd=None`. The rescue workflow is the one with
+    the lowest mean run cost whose mean chance (of reaching the score target, else of an accepted result)
+    is at least `rescue.min_chance`; when none reaches it, the one with the highest mean chance, and
+    `basis` says so. `C_rescue` comes from its draws of the chance and the expected run cost
+    (`retry_rescue`); the run cost draws are scaled to the prediction's mean, so the rescue's run cost is
+    the one its row shows. A belief without draws gives one draw at the means."""
+    if not pool:
+        raise ValueError("rescue.kind retry needs at least one workflow to rescue with")
+    fn = getattr(belief, "_predict_many", None)
+    if callable(fn):
+        out = fn(task, list(pool), rule, None)
+        preds, extras = [p for p, _ in out], [e for _, e in out]
+    else:
+        preds = list(belief.predict_many(task, list(pool), rule=rule, rescue_usd=None))
+        extras = [None] * len(preds)
+    idx = range(len(pool))
+    ok = [i for i in idx if preds[i].p_success.mean >= st.rescue_min_chance]
+    if ok:
+        i = min(ok, key=lambda i: (preds[i].cost.usd.mean, -preds[i].p_success.mean, pool[i].id))
+    else:
+        i = min(idx, key=lambda i: (-preds[i].p_success.mean, preds[i].cost.usd.mean, pool[i].id))
+    cfg, pred, extra = pool[i], preds[i], extras[i] or {}
+    q, c, t = retry_draws(belief, task, rule, cfg, pred, extra)
+    usd, tokens, fixes = retry_rescue(q, c, t, decay=st.rescue_decay, max_attempts=st.rescue_max_attempts)
+    g = pred.p_success
+    return Rescue("retry", usd, tokens,
+                  rescue_basis(reached=bool(ok), min_chance=st.rescue_min_chance, decay=st.rescue_decay,
+                               attempts=st.rescue_max_attempts),
+                  config=cfg.id, chance={"mean": r6(g.mean), "lo": r6(g.lo), "hi": r6(g.hi)},
+                  run_cost_usd=r6(pred.cost.usd.mean), decay=float(st.rescue_decay),
+                  max_attempts=int(st.rescue_max_attempts), min_chance=float(st.rescue_min_chance),
+                  p_accepted=r6(fixes)), cfg
+
+
+def retry_draws(belief: Any, task: Task, rule: AcceptanceRule, cfg: Configuration, pred: Prediction,
+                extra: dict[str, Any]) -> tuple[list[float], list[float], list[float]]:
+    """The rescue workflow's draws of the chance, run cost and tokens (see `retry_rescue_of`)."""
+    g = extra.get("g")
+    run = extra.get("run")
+    exp_usd, exp_tok = getattr(run, "exp_usd", None), getattr(run, "exp_tokens", None)
+    if g is None:
+        fn = getattr(belief, "success_draws", None)
+        rows = fn(task, [cfg], rule=rule) if callable(fn) else None
+        g = [float(v) for v in list(rows[0])] if rows is not None and len(rows) else [pred.p_success.mean]
+    q = [float(v) for v in list(g)]
+
+    def scaled(draws: Any, mean: float) -> list[float]:
+        if draws is None or len(draws) != len(q):
+            return [mean] * len(q)
+        a = [float(v) for v in list(draws)]
+        m = sum(a) / len(a)
+        return [v * mean / m for v in a] if m > 0 else [mean] * len(q)
+
+    return q, scaled(exp_usd, pred.cost.usd.mean), scaled(exp_tok, pred.cost.tokens.mean)
 
 
 def polish(belief: Any, task: Task, rule: AcceptanceRule, rescue: Rescue, space: Any,
            by_id: dict[str, Configuration], preds: list[Prediction], medians: dict[str, tuple[float, str]],
-           goal_level: int | None) -> tuple[int, list[Prediction]]:
+           goal_level: int | None, bands: dict[str, Any] | None = None) -> tuple[int, list[Prediction]]:
     """Spec 05 section 1a, step 4: predict the default pick's one-piece neighbours until the pick stops moving,
     then the goal row's when the goal is a level, then every other reached row's. Adds to `by_id` and `medians`;
     returns the count and all predictions."""
     n0 = len(by_id)
 
     def predict_more(new: list[Configuration]) -> list[Prediction]:
-        more, med = predict_with_medians(belief, task, new, rule, rescue)
+        more, med = predict_with_medians(belief, task, new, rule, rescue, bands)
         medians.update(med)
         return more
 

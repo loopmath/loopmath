@@ -4,19 +4,26 @@
 The recommender sets `C_rescue` from config `rescue.kind` and always hands it to
 the belief as `rescue_usd=`, so the belief's `ell` is the one
 source of truth.
+
+`retry` (the default, 0.2.1, F7 and T2): a miss is fixed by retrying with the rescue workflow, each
+further attempt on the same task with `rescue.decay` times the chance of the one before, up to
+`rescue.max_attempts` attempts in all counting the first run (`retry_rescue`).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from ..types import CurveRow, Prediction
 from .stats import p_at_least
 
 LEVELS: tuple[int, ...] = (50, 70, 80, 90, 95, 99)
 UNCERTAIN_BELOW = 0.8  # a row is uncertain when fewer than 80 percent of draws reach its level
-RESCUE_KINDS = ("redo_usual", "person", "none")
+RESCUE_KINDS = ("retry", "redo_usual", "person", "none")
+RETRY_DECAY = 0.5  # rescue.decay
+RETRY_MAX_ATTEMPTS = 3  # rescue.max_attempts, counting the first run
+RETRY_MIN_CHANCE = 0.70  # rescue.min_chance
 
 
 @dataclass(frozen=True)
@@ -27,26 +34,100 @@ class Rescue:
     usd: float
     tokens: float
     basis: str = ""
+    # `retry` only: the rescue workflow and the retry model (spec 05 section 2)
+    config: str | None = None
+    chance: dict[str, float] | None = None  # the rescue workflow's chance in one run: mean, lo, hi
+    run_cost_usd: float | None = None
+    decay: float | None = None
+    max_attempts: int | None = None
+    min_chance: float | None = None
+    p_accepted: float | None = None  # mean over draws of the chance the retries fix a miss
 
     def to_dict(self) -> dict:
-        return {"kind": self.kind, "usd": self.usd, "tokens": self.tokens, "basis": self.basis}
+        out: dict[str, Any] = {"kind": self.kind, "usd": self.usd, "tokens": self.tokens, "basis": self.basis}
+        if self.kind == "retry":
+            out.update({"config": self.config, "chance": self.chance, "run_cost_usd": self.run_cost_usd,
+                        "decay": self.decay, "max_attempts": self.max_attempts, "min_chance": self.min_chance,
+                        "p_accepted": self.p_accepted})
+        return out
+
+    @property
+    def fixes(self) -> float:
+        """The chance that the rescue fixes a miss within the attempts it models: `p_accepted` for `retry`,
+        0 for the other kinds (they model no bounded retries, so `p_accepted_within` is the one-run chance)."""
+        return float(self.p_accepted or 0.0) if self.kind == "retry" else 0.0
+
+    @property
+    def attempts(self) -> int:
+        return int(self.max_attempts or 1) if self.kind == "retry" else 1
 
 
 class NoFiniteRescue(ValueError):
     """`redo_usual` when the usual workflow's chance is zero: repeating it never gets an accepted result."""
 
 
+def retry_rescue(q: Sequence[float], c: Sequence[float], t: Sequence[float] | None = None, *,
+                 decay: float = RETRY_DECAY, max_attempts: int = RETRY_MAX_ATTEMPTS) -> tuple[float, float, float]:
+    """`(C_rescue usd, C_rescue tokens, p_accepted)` for `retry` from the rescue workflow's draws: chance `q_s`,
+    run cost `c_s` and tokens `t_s`. With K = `max_attempts` and d = `decay`, retry j = 1 .. K-1 has chance
+    `q_s d^j` and runs only when the retries before it missed:
+
+        spend_s = sum_{j=1..K-1} c_s prod_{i<j} (1 - q_s d^i)
+        succ_s  = 1 - prod_{j=1..K-1} (1 - q_s d^j)
+        C_rescue = mean_s(spend_s) / mean_s(succ_s)
+
+    dollars per accepted rescue across tasks, a ratio of means, so draws near zero chance do not blow it up.
+    `p_accepted` is `mean_s(succ_s)`. K = 1 means no retries: all three are zero. `NoFiniteRescue` when
+    no draw can fix a miss."""
+    k = int(max_attempts)
+    d = float(decay)
+    if not 0 < d <= 1:
+        raise ValueError(f"rescue.decay must be above 0 and at most 1; got {decay!r}")
+    if k < 1:
+        raise ValueError(f"rescue.max_attempts must be a whole number of at least 1; got {max_attempts!r}")
+    n = len(q)
+    if n == 0 or len(c) != n or (t is not None and len(t) != n):
+        raise ValueError("retry_rescue needs one run cost (and token count) per chance draw")
+    if k == 1:
+        return 0.0, 0.0, 0.0
+    spend = spend_t = succ = 0.0
+    for s in range(n):
+        qs = min(1.0, max(0.0, float(q[s])))
+        miss = 1.0
+        paid = 0.0
+        for j in range(1, k):
+            paid += miss
+            miss *= 1.0 - qs * d ** j
+        spend += float(c[s]) * paid
+        spend_t += (float(t[s]) if t is not None else 0.0) * paid
+        succ += 1.0 - miss
+    if not succ > 0:
+        raise NoFiniteRescue("rescue.kind retry has no finite cost here: the rescue workflow has no chance of "
+                             "an accepted result under this rule; set rescue.kind to person or none")
+    return spend / succ, spend_t / succ, succ / n
+
+
+def accepted_within(g: float, rescue: "Rescue") -> float:
+    """`p_accepted_within`: `g + (1 - g) p_fix`, the chance of an accepted result within the rescue's attempts.
+    Affine and increasing in `g`, so a draw interval of `g` maps to its interval end by end."""
+    p = rescue.fixes
+    return g + (1.0 - g) * p
+
+
 def rescue_cost(kind: str | None, usual: Prediction | None, *, person_usd_per_hour: float | None = None,
                 hours: float | None = None) -> Rescue:
-    """C_rescue for `rescue.kind`.
+    """C_rescue for `rescue.kind` other than `retry` (the recommender prices that one from the rescue
+    workflow's draws, `retry_rescue`).
 
-    - `redo_usual` (default): `E[C_run(usual)] / g(usual)`, the expected cost of an
+    - `redo_usual`: `E[C_run(usual)] / g(usual)`, the expected cost of an
       accepted result by repeating the usual workflow, for every positive `g`;
       `NoFiniteRescue` (a ValueError, exit 1) when `g` is zero;
     - `person`: `person_usd_per_hour` times `hours` (default 1); no tokens;
     - `none`: zero, so success is shown but not priced.
     """
     kind = kind or "redo_usual"
+    if kind == "retry":
+        raise ValueError("rescue.kind retry is priced by the recommender (`retry_rescue`), not `rescue_cost`")
     if kind == "none":
         return Rescue("none", 0.0, 0.0, "not priced")
     if kind == "person":

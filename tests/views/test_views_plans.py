@@ -96,9 +96,9 @@ def test_every_option_row_opens_its_graph_and_command(variant, tmp_path, probe):
     assert "default pick" in marks[data["default_pick"]["config"]] and "your usual" in marks[usual]
     assert "best value to try" in marks[best] and "biggest gain to try" in marks[most]
     assert [row["cfg"] for row in r["rows"] if "pick" in row["cls"].split()] == [data["goal"]["config"]]
-    assert f"--config {usual} --source usual --rec {data['rec']}" in r["opened"][usual]["cmd"]
-    assert "--source exploration" in r["opened"][best]["cmd"] and "--type feature --repo loopmath/loopmath" in r["opened"][best]["cmd"]
-    assert f"--config {data['goal']['config']} --source alternative" in r["pickCmd"]
+    # P4 (0.2.1): no numbered options in this fixture, so every button copies `workflow <config id>: <label>`
+    assert all(o["cmd"].startswith(f"workflow {cfg}: ") for cfg, o in r["opened"].items())
+    assert r["pickCmd"].startswith(f"workflow {data['goal']['config']}: ") and "loopmath run start" not in r["pickCmd"]
     # cheapest per accepted result first
     ells = [money(row["cells"][4]) for row in r["rows"]]
     assert ells == sorted(ells)
@@ -135,7 +135,7 @@ def test_pick_cards_and_headers_read_plainly(tmp_path, probe):
     r = read_page(tmp_path, probe, data, "plans-words")
     best, most = r["cards"]
     assert "pays for itself afterabout 1 similar run" in best and "0.821" not in best  # whole runs, at least one
-    assert "about 4 similar runs" in most
+    assert "about 5 similar runs" in most  # I20 (0.2.1): ceil(price now / gain), as the message rounds it
     # The expected saving in dollars, as lane 6's message words it; its parts stay in the JSON
     assert "trying it onceexpected to save about $0.42 per future similar run" in best
     assert "expected to save about $0.95 per future similar run" in most
@@ -146,7 +146,8 @@ def test_pick_cards_and_headers_read_plainly(tmp_path, probe):
     assert "chance it beats the recommended pick" in best and "chance to beat the goal" not in best
     assert "chance of reaching heldout_perf >= 2400" in best and "Not the chance of reaching heldout_perf >= 2400" in best
     assert "ell" not in r["heads"] and r["heads"].count("cost per accepted result") == 1
-    assert all("--source exploration" in c for c in r["betCmds"]) and len(r["betCmds"]) == 2
+    ids = [data["exploration"][k]["candidate"]["config"]["id"] for k in ("best_value", "max_gain")]
+    assert [c.split(": ")[0] for c in r["betCmds"]] == [f"workflow {i}" for i in ids]  # P4 (0.2.1): Copy option
 
 
 def test_two_hundred_candidates_stay_under_one_and_a_half_megabytes(tmp_path, probe):

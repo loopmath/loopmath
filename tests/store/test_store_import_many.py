@@ -117,3 +117,52 @@ def test_many_files_keep_the_summary_within_25_lines(capsys, home, tmp_path, spa
     code, out, err = cli(capsys, home, "run", "import", str(folder), "--finish", "--no-fit")
     assert code == 0, err
     assert out.splitlines() == ["30 runs imported, 0 failed; 30 finished", "refit: not started (--no-fit)"]
+
+
+BRIEF_KEYS = {"schema", "imported", "failed", "finished", "already_finished", "failures", "more_failures",
+              "shipped_overlap", "overlap_note", "fit", "next"}
+
+
+def test_brief_is_counts_failures_overlap_and_the_next_step(capsys, home, tmp_path, spawned):
+    good = _write(tmp_path / "ocp", "run-a", "run-b")
+    bad = tmp_path / "ocp" / "bad.ocp.json"
+    bad.write_text("{not json")
+    code, out, err = cli(capsys, home, "run", "import", str(tmp_path / "ocp"), "--finish", "--no-fit", "--json",
+                         "--brief")
+    assert code == 1, err  # a failed file still exits 1, as without --brief
+    assert set(out) == BRIEF_KEYS and out["schema"] == "loopmath.run.import/1"
+    assert (out["imported"], out["failed"], out["finished"], out["already_finished"]) == (2, 1, 2, 0)
+    assert len(out["failures"]) == 1 and out["failures"][0]["file"] == str(bad)
+    assert set(out["failures"][0]) == {"file", "error"} and "not JSON" in out["failures"][0]["error"]
+    assert out["more_failures"] == 0 and out["shipped_overlap"] == {} and out["overlap_note"] is None
+    assert out["fit"] == {"started": False, "reason": "--no-fit"} and out["next"] == "loopmath fit --json"
+    assert spawned == [] and set(Store(home).index_rows()) == {"run-a", "run-b"} and len(good) == 2
+
+
+def test_brief_stays_short_for_many_files_and_takes_one_file_too(capsys, home, tmp_path, spawned):
+    folder = tmp_path / "ocp"
+    _write(folder, *[f"run-{i:02d}" for i in range(30)])
+    for i in range(12):
+        (folder / f"bad-{i:02d}.ocp.json").write_text("{not json")
+    capsys.readouterr()
+    from store_helpers import main
+    code = main(["run", "import", str(folder), "--finish", "--no-fit", "--json", "--brief", "--home", str(home)])
+    text = capsys.readouterr().out
+    assert code == 1 and len(text.splitlines()) < 70  # without --brief: every file with its run and cost
+    out = json.loads(text)
+    assert out["imported"] == 30 and out["failed"] == 12 and len(out["failures"]) == 10 and out["more_failures"] == 2
+    (one,) = _write(tmp_path / "one", "run-one")
+    code, out, err = cli(capsys, home, "run", "import", str(one), "--finish", "--json", "--brief")
+    assert code == 0, err
+    assert set(out) == BRIEF_KEYS and out["imported"] == 1 and out["finished"] == 1
+    assert out["fit"]["started"] is True and out["next"].startswith("loopmath posterior --html")
+
+
+def test_brief_says_when_runs_stay_open_or_nothing_imported(capsys, home, tmp_path, spawned):
+    paths = _write(tmp_path / "ocp", "run-a")
+    code, out, err = cli(capsys, home, "run", "import", str(paths[0]), str(tmp_path / "none.ocp.json"), "--json",
+                         "--brief")
+    assert code == 2 and out["imported"] == 1 and out["failed"] == 1
+    assert out["next"] == "1 run stored open: finish each with loopmath run finish --run RUN --json"
+    code, out, err = cli(capsys, home, "run", "import", str(tmp_path / "none.ocp.json"), "--json", "--brief")
+    assert code == 2 and out["imported"] == 0 and out["next"].startswith("nothing was imported")

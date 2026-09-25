@@ -25,7 +25,8 @@ def nums(**over) -> dict:
 
 def run(settings: Settings | None = None, usual_from: str = "history", **over):
     return recommend(FakeBelief(nums(**over)), TASK, DEFAULT_RULE, usual=USUAL, usual_from=usual_from,
-                     configs=[(c, "catalog") for c in (CHEAP, MID)], settings=settings or Settings())
+                     configs=[(c, "catalog") for c in (CHEAP, MID)],
+                     settings=settings or Settings(rescue_kind="redo_usual"))
 
 
 def pred(config, g: float, usd: float, rescue: float):
@@ -87,7 +88,7 @@ def test_a_reference_that_is_not_the_usual_is_named_as_such():
 
 
 def test_a_level_goal_is_followed_by_the_sentence():
-    rec = run(Settings(goal="p70"))
+    rec = run(Settings(goal="p70", rescue_kind="redo_usual"))
     assert rec.goal_level == 70 and rec.goal.config.id == MID.id
     s = rec.strategy
     assert s is not None and "if it misses (about 3 in 10 tasks)" in s["text"]

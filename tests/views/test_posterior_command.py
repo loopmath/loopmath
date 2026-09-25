@@ -292,7 +292,10 @@ def test_terminal_summary(store, capsys):
     lines = capsys.readouterr().out.splitlines()
     assert 3 < len(lines) <= 25
     assert lines[0].startswith("Current estimates (the posterior) from fit fit_20260923160000")
-    assert lines[1].startswith("Graph: implement_review:")
+    # I10: what your own runs support leads, then the graph
+    graph = next(i for i, line in enumerate(lines) if line.startswith("Graph: implement_review:"))
+    assert lines[1].startswith("Score: heldout_perf") and lines[2].startswith("Your workflows (2)")
+    assert graph > 2
     # Implement costs $1 per round over 1.4 rounds, review $2; shares from the run totals 1.4 and 2.8
     implement = next(line for line in lines if line.startswith("  implement:"))
     assert implement.startswith("  implement: $1.00 ($0.60 to $1.60) per round, $1.40 ($0.84 to $2.24) per run,")

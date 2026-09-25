@@ -89,6 +89,7 @@ ARGV = ["recommend", "--type", "feature", "--repo", "acme/app"]
 
 
 def test_designed_runs_are_candidates_and_the_best_recorded_one_is_the_reference(env, capsys):
+    env[0].joinpath("config.toml").write_text('[rescue]\nkind = "redo_usual"\n')  # the 0.2.0 rescue
     home, state = env
     write_runs(home, [(c, "designed", "acme/app") for c in DESIGNED for _ in range(2)])
     code, obj = run(capsys, [*ARGV, "--json"])
@@ -115,6 +116,7 @@ def test_designed_runs_are_candidates_and_the_best_recorded_one_is_the_reference
 
 
 def test_a_habit_stays_the_usual_and_designed_runs_are_still_candidates(env, capsys):
+    env[0].joinpath("config.toml").write_text('[rescue]\nkind = "redo_usual"\n')  # the 0.2.0 rescue
     home, state = env
     write_runs(home, [(GOAL, "usual", "acme/app")] + [(c, "designed", "acme/app") for c in DESIGNED for _ in range(3)])
     code, obj = run(capsys, [*ARGV, "--json"])
@@ -145,6 +147,7 @@ def test_without_habit_or_recorded_runs_the_default_is_a_reference(env, capsys):
 
 def test_numbers_add_up_and_carry_the_median(env, capsys):
     """I13: run cost plus P(fail) x rescue is the cost per accepted result. I15: the median beside the mean."""
+    env[0].joinpath("config.toml").write_text('[rescue]\nkind = "redo_usual"\n')  # the 0.2.0 rescue
     code, obj = run(capsys, [*ARGV, "--json"])
     rescue = obj["rescue"]["usd"]
     rows = [obj["reference"]] + obj["alternatives"] + [r for r in obj["curve"] if r.get("prediction")]

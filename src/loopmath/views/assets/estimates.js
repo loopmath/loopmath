@@ -144,11 +144,16 @@
     var s = '<svg class="bar" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(fmtDisplay(n)) + '">';
     var z = (ax.zero - ax.a) / (ax.b - ax.a) * W;
     s += '<line x1="' + z.toFixed(1) + '" x2="' + z.toFixed(1) + '" y1="1" y2="' + (H - 1) + '" stroke="var(--neutral)" stroke-width="1" stroke-dasharray="2 2"/>';
-    if (fin(d.lo) && fin(d.hi)) {
-      var x0 = x(d.lo), x1 = x(d.hi);
-      s += '<rect x="' + Math.min(x0, x1).toFixed(1) + '" y="6" width="' + Math.max(2, Math.abs(x1 - x0)).toFixed(1) + '" height="6" rx="3" fill="var(--band)"/>';
-    }
-    if (fin(d.mean)) s += '<circle cx="' + x(d.mean).toFixed(1) + '" cy="9" r="4" fill="var(--dot)" stroke="#fff" stroke-width="2"/>';
+    // P6: a dot for the mean on lines for the 80%, 90% and 95% ranges (95% the thinnest). Node summaries carry
+    // no draws in the view, so the 90% and 95% ranges are derived from the 80% one (LM.bands).
+    var b = typeof LM !== 'undefined' && LM.bands ? LM.bands(d, {log: ax.log}) : (fin(d.lo) && fin(d.hi) ? {'80': [d.lo, d.hi]} : null);
+    var widths = {'95': 1, '90': 2, '80': 4};
+    if (b) ['95', '90', '80'].forEach(function (k) {
+      if (!b[k]) return;
+      s += '<line x1="' + x(b[k][0]).toFixed(1) + '" x2="' + x(b[k][1]).toFixed(1) + '" y1="9" y2="9" stroke="var(--dot)" stroke-width="' + widths[k] +
+        '" class="v-band v-b' + k + '"/>';
+    });
+    if (fin(d.mean)) s += '<circle cx="' + x(d.mean).toFixed(1) + '" cy="9" r="4" fill="var(--ink)" stroke="#fff" stroke-width="1.5" class="v-mdot"/>';
     return s + '</svg>';
   }
 
@@ -214,7 +219,7 @@
     var axes = opts.axes || pageAxes(nodes);
     var depth = depthMap(nodes), showHead = heads.length > 1 || opts.showHead;
     var s = '<div class="scroll"><table class="nodes"><colgroup><col class="c-node"><col class="c-eff"><col class="c-bar bar"><col class="c-sup">' +
-      '<col class="c-mix"></colgroup><thead><tr><th>Estimate</th><th>Effect (80% range)</th><th class="bar">Range</th>' +
+      '<col class="c-mix"></colgroup><thead><tr><th>Estimate</th><th data-first="desc">Effect (80% range)</th><th class="bar" data-nosort>Range</th>' +
       '<th class="num">Runs</th><th>Sources</th></tr></thead><tbody>';
     nodes.forEach(function (n) {
       var pad = depth(n) * 18, notes = '';

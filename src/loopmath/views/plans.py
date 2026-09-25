@@ -5,7 +5,9 @@ object plus `candidates` (the top 200 with predictions) and `graphs` (one workfl
 configuration the page can open, with per-piece predictions). The page renders from that
 object only; `plans.js` draws it as the 0.2 planning page (D119 Z3): the pick first, with
 `goal.strategy.text` verbatim when set, then the rest in details sections, on the shared
-`viz.js` and `viz.css`.
+`viz.js` and `viz.css`. 0.2.1 (lane 21B) adds the chance-against-cost chart at the top, dot-and-line intervals
+from 21M's `bands`, a sortable options table, "Copy option" (`option <n>: <label>`, no CLI command) and info icons
+on the two costs; the view object is unchanged and carries 21M's new fields as given.
 
 Lane 6 owns the recommend command. It calls `build_view(payload, candidates)` and then
 `render(view)`, and prints `build_view(...)` for `--json` together with `--html`.

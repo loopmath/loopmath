@@ -217,3 +217,17 @@ table.v-t td.nw { white-space: nowrap; }
 .v-cmd code { flex: 1; display: block; background: var(--code-bg); color: var(--code-ink); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--mono); }
 .v-cmd button { font: 600 13px var(--sans); border: 1px solid var(--rule); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 0 12px; cursor: pointer; min-height: 36px; }
 @media (max-width: 520px) { .v-cmd { flex-direction: column; } .v-cmd button { align-self: flex-start; } }
+
+/* P6 (0.2.1): an estimate is a dot for the mean on a line for the 80% range, with thinner lines for 90% and 95% */
+.v-band { stroke: var(--dist-line); stroke-linecap: butt; }
+.v-b95 { stroke-width: 1; opacity: 0.6; }
+.v-b90 { stroke-width: 2; opacity: 0.8; }
+.v-b80 { stroke-width: 4; }
+.v-mdot { fill: var(--ink); stroke: var(--surface); stroke-width: 1.5; }
+.v-band.acc, .v-row.pick .v-band { stroke: var(--accent); }
+.v-mdot.acc, .v-row.pick .v-mdot { fill: var(--accent); }
+.v-cbar { vertical-align: middle; margin-right: 6px; }
+.v-ctrack { stroke: var(--track); stroke-width: 1; }
+.v-legend svg.dl { vertical-align: -3px; margin-right: 5px; }
+.v-legend .dt.run { width: 6px; height: 6px; }
+.v-mb .er > span.c { display: block; min-width: 0; }

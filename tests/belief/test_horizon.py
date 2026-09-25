@@ -331,7 +331,7 @@ def test_a_task_at_the_reference_horizon_gets_a_zero_log2h_term(aliased):
     assert "horizon:log2h prior N(0.69, 0.35^2)" in cost and not any("timebox" in f for f in cost)
 
 
-def test_one_horizon_prices_other_horizons_from_the_prior_and_says_so(aliased):
+def test_one_horizon_prices_other_horizons_from_the_prior_and_says_so(aliased, monkeypatch):
     cfg = simdata.all_configs()[0]
     usd = {h: aliased.predict(_bench(horizon_s=h), cfg).cost.usd.mean for h in ("2h", "8h")}
     assert 3.0 < usd["8h"] / usd["2h"] < 7.0  # two doublings at the prior's elasticity of 1
@@ -341,6 +341,9 @@ def test_one_horizon_prices_other_horizons_from_the_prior_and_says_so(aliased):
     none = _bench(horizon_s="none")
     assert aliased.task_notes(none)[0] == ("horizon open-ended (given); priced as 2 h, the fit's reference: no source "
                                            "has both timeboxed and open-ended runs")
+    # the horizon terms price open-ended as the reference; since 0.2.1 the effort terms of an open-ended task
+    # enter at 1 and a timeboxed task's at timebox_effort (spec 04 section 1), so compare with that set to 1
+    monkeypatch.setattr(aliased, "timebox_effort", 1.0)
     assert aliased.predict(none, cfg).cost.usd.mean == pytest.approx(aliased.predict(_bench(), cfg).cost.usd.mean)
 
 
@@ -355,11 +358,15 @@ def test_the_fit_line_names_the_reference_and_the_prior_slope(aliased, fitted):
     assert "; reference 2 h" in line and "prior" not in line and "open-ended" not in line
 
 
-def test_held_out_task_costs_the_same_with_and_without_the_horizon(tmp_path):
+def test_held_out_task_costs_the_same_with_and_without_the_horizon(tmp_path, monkeypatch):
     """The HORIZON-CHECK regression: fit without one of the user's two tasks and predict it as a new task.
     With every timeboxed run at one horizon in one source, the horizon terms must not move its cost. The
     posterior mean of each cost row is compared, free of draw noise; the coding of 422873a (log2 of the
-    horizon over 1 h, and the timebox flag) moved it by +0.10 here, and by +0.33 to +0.43 on RQ1."""
+    horizon over 1 h, and the timebox flag) moved it by +0.10 here, and by +0.33 to +0.43 on RQ1. The
+    effort weight under a timebox (0.2.1) is set to 1 here, so only the horizon terms are compared."""
+    from loopmath.belief import design as D
+
+    monkeypatch.setattr(D, "TIMEBOX_EFFORT_COST", 1.0)
     cfg = simdata.all_configs()[0]
     eta = {}
     for horizons in (True, False):

@@ -85,5 +85,89 @@ const LM = (() => {
   const uniq = xs => [...new Set(xs.filter(x => x != null && x !== ''))].sort();
   const options = (values, current, all) => `<option value="">${esc(all)}</option>` + values.map(v => `<option value="${esc(v)}"${String(v) === String(current) ? ' selected' : ''}>${esc(v)}</option>`).join('');
 
-  return { esc, num, data, $, fmt, money, iv, ivPlain, moneyIv, TAIL_NOTE, pulledUp, tailHtml, tailPlain, arrow, ivBar, support, shared, tier, zBadge, tip, copy, shq, uniq, options, ts, byTime };
+  // P6: an interval's 80%, 90% and 95% ranges, {"80": [lo, hi], "90": [...], "95": [...]}. The view sends
+  // `bands` where it has them (from the draws, or from the 80% range); without them they are derived here from
+  // the 80% range the same way as views/posterior.py _derived_bands: a split normal through the mean and the
+  // 80% ends, in log space around the range's geometric middle when `log` (money, multipliers).
+  const Z80 = 1.2815516, ZS = [['90', 1.6448536], ['95', 1.959964]];
+  function bands(x, o = {}) {
+    if (!x || !num(x.lo) || !num(x.hi) || x.hi < x.lo) return null;
+    let out = x.bands && x.bands['80'] ? x.bands : null;
+    if (!out) {
+      out = { '80': [x.lo, x.hi] };
+      if (o.log && x.lo > 0) {
+        const a = Math.log(x.lo), b = Math.log(x.hi), c = (a + b) / 2, s = (b - a) / (2 * Z80);
+        ZS.forEach(([k, z]) => { out[k] = [Math.min(x.lo, Math.exp(c - z * s)), Math.max(x.hi, Math.exp(c + z * s))]; });
+      } else {
+        const m = num(x.mean) && x.mean >= x.lo && x.mean <= x.hi ? x.mean : (x.lo + x.hi) / 2, sl = (m - x.lo) / Z80, sh = (x.hi - m) / Z80;
+        ZS.forEach(([k, z]) => { out[k] = [Math.min(x.lo, m - z * sl), Math.max(x.hi, m + z * sh)]; });
+      }
+    }
+    if (o.clip) out = Object.fromEntries(Object.entries(out).map(([k, v]) => [k, [Math.max(o.clip[0], v[0]), Math.min(o.clip[1], v[1])]]));
+    return out;
+  }
+
+  // P7: sortable columns. A click on a header sorts by that column, a second click reverses. A cell's
+  // `data-sort` holds its value (a number or text; empty for none); without it the cell's leading number
+  // ($1.42, x1.28, 42%, +5 pp, 252k, 1.2M), else its text. Rows without a value stay last either way.
+  function sortValue(c) {
+    if (!c) return null;
+    const d = c.getAttribute('data-sort');
+    if (d != null) { if (d === '') return null; const n = Number(d); return Number.isFinite(n) ? n : d.toLowerCase(); }
+    const t = c.textContent.trim();
+    if (!t || /^(n\/a|none|not predicted)\b/i.test(t)) return null;
+    if (/^\d{4}-\d\d-\d\d/.test(t)) return t;  // dates sort as text
+    const m = t.match(/^[$x~]?\s*([+-]?\d[\d,]*(?:\.\d+)?)\s*([kM])?/);
+    if (m) return Number(m[1].replace(/,/g, '')) * (m[2] === 'k' ? 1e3 : m[2] === 'M' ? 1e6 : 1);
+    return t.toLowerCase();
+  }
+  function sortCmp(a, b, dir) {
+    if (a === null || b === null) return a === null ? (b === null ? 0 : 1) : -1;
+    const na = typeof a === 'number', nb = typeof b === 'number';
+    if (na && nb) return (a - b) * dir;
+    if (na !== nb) return na ? -1 : 1;
+    return String(a).localeCompare(String(b), 'en', { numeric: true }) * dir;
+  }
+  // root: a table (headers in its thead, rows in its tbody) or any list with o.head and o.rows selectors;
+  // o.cell(row, col) finds a row's cell when it is not the col-th child; o.onSort(col, dir, th) replaces the
+  // DOM sort (for lists that render themselves). A header with data-first="desc" sorts high to low first.
+  function sortable(root, o = {}) {
+    if (!root || root.dataset.lmSortable) return;
+    root.dataset.lmSortable = '1';
+    const heads = [...root.querySelectorAll(o.head || ':scope > thead > tr:last-child > th')];
+    heads.forEach((th, col) => {
+      if (th.hasAttribute('data-nosort') || !th.textContent.trim()) return;
+      th.classList.add('lm-sort'); th.tabIndex = 0;
+      if (!th.title) th.title = 'sort by this column; click again to reverse';
+      const go = () => {
+        const s = root._lmSort, dir = s && s.col === col ? -s.dir : th.dataset.first === 'desc' ? -1 : 1;
+        root._lmSort = { col, dir };
+        heads.forEach(x => x.removeAttribute('aria-sort'));
+        th.setAttribute('aria-sort', dir > 0 ? 'ascending' : 'descending');
+        if (o.onSort) { o.onSort(col, dir, th); return; }
+        const rows = [...root.querySelectorAll(o.rows || ':scope > tbody > tr')];
+        if (!rows.length) return;
+        const parent = rows[0].parentNode, anchor = rows[rows.length - 1].nextSibling;
+        rows.map((r, i) => ({ r, i, v: sortValue(o.cell ? o.cell(r, col) : r.children[col]) }))
+          .sort((a, b) => sortCmp(a.v, b.v, dir) || a.i - b.i)
+          .forEach(k => parent.insertBefore(k.r, anchor));
+      };
+      th.addEventListener('click', e => { e.stopPropagation(); go(); });
+      th.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); go(); } });
+    });
+  }
+  // Every data table under root (key and value tables excepted) becomes sortable; tables drawn later too.
+  const sortTables = root => (root || document).querySelectorAll('table:not(.kv)').forEach(t => { if (t.tHead) sortable(t); });
+  let watching = false;
+  function autoSort() {
+    sortTables(document);
+    if (watching || typeof MutationObserver === 'undefined') return;
+    watching = true;
+    let pending = false;
+    new MutationObserver(() => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; sortTables(document); }); })
+      .observe(document.body, { childList: true, subtree: true });
+  }
+
+  return { esc, num, data, $, fmt, money, iv, ivPlain, moneyIv, TAIL_NOTE, pulledUp, tailHtml, tailPlain, arrow, ivBar, support, shared, tier, zBadge, tip, copy, shq, uniq, options, ts, byTime,
+    bands, sortValue, sortCmp, sortable, sortTables, autoSort };
 })();

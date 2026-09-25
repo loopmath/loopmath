@@ -165,7 +165,7 @@ def _prepare(state: FitState, task: Task, configs: list[Configuration], rule: Ac
     tt = state.task_terms(task)
     cost_rows, coef, owner_r, owner_c, run_rows, plans = [], [], [], [], [], []
     for ci, (cfg, (_, d)) in enumerate(zip(configs, out)):
-        plan = state._plan(cfg)
+        plan = state._plan(cfg, state.effort_for(task))
         plans.append(plan)
         st = plan["st"]
         reach = d["reach"]  # E[r(k)] with the unseen task effect on the gates integrated out
@@ -193,7 +193,7 @@ def _prepare(state: FitState, task: Task, configs: list[Configuration], rule: Ac
 def _explore_cost_obs(state: FitState, task: Task, config: Configuration) -> tuple[list[tuple], int]:
     """Composite observation: the mean of the round-1 cost rows of the configuration's pieces,
     and the number of pieces (the observation's noise variance is sigma^2 / n)."""
-    plan = state._plan(config)
+    plan = state._plan(config, state.effort_for(task))
     st = plan["st"]
     tt = state.task_terms(task)
     acc: dict[str, list] = {}
@@ -385,7 +385,7 @@ def _condition_head(head: HeadState, terms: Sequence[tuple], tau2: float) -> Hea
     draws = mean[:, None] + U @ Z
     meta = dict(head.meta) or {"engine": head.engine, "kind": head.kind, "sigma": head.sigma}
     out = HeadState(head.name, meta, head.nodes + new_nodes, None, head.fit_id, mean=mean, U=U, draws=draws,
-                    unit=Z)
+                    unit=Z, seed_key=head.seed_key)
     out.fitted = head.fitted
     out.phi = dict(head.phi)
     return out

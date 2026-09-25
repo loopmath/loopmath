@@ -155,7 +155,7 @@ def test_message_follows_the_template():
                         "Your goal is the 90% row: plan_implement_review")
     assert ("Trying solo: gpt-6-luna/low alongside it costs $0.40 (72,000 tokens) now. There is a 30% chance "
             "it beats the recommended pick. Trying it once is expected to save about $0.30 on each future "
-            "similar run, so it pays for itself after about 1 similar run.") in m
+            "similar run, so it pays for itself after about 2 similar runs.") in m  # ceil(0.40 / 0.30), I20
     assert m.endswith(" The option with the biggest gain is solo: claude-opus-5-5/xhigh: it costs $5.00 "
                       "(900,000 tokens) now, has a 45% chance to beat the recommended pick, is expected to "
                       "save about $1.00 per future similar run, and pays for itself after about 5 runs.")
@@ -255,3 +255,20 @@ def test_the_plain_diff_names_the_round_limit_as_lane_04_does():
     b = cfg(dataclasses.replace(IR, control=dataclasses.replace(IR.control, budget_rounds=n + 1)),
             implement="opus", review="astra")
     assert simple_diff(a, b) == (f"round limit: {n} to {n + 1}",)
+
+
+def test_payback_is_one_whole_number_rounded_up():
+    from loopmath.recommend.message import payback_count
+
+    assert payback_count(0.52, 0.36) == 2  # FINDINGS-0.2 I20: the message said 1, the skill 2
+    assert payback_count(0.40, 0.30) == 2 and payback_count(5.0, 1.0) == 5
+    assert payback_count(1.1, 0.1) == 11  # a float quotient just above a whole number stays whole
+    assert payback_count(0.01, 5.0) == 1  # at least 1
+    assert payback_count(1.0, 0.0) is None and payback_count(1.0, None) is None
+
+
+def test_pair_choice_and_message_carry_the_same_payback():
+    rec = run()
+    pair = next(c for c in rec.choices() if c["key"] == "pair")
+    assert pair["payback_runs"] == 2 and isinstance(pair["payback_runs"], int)
+    assert f"pays for itself after about {pair['payback_runs']} similar runs." in rec.message

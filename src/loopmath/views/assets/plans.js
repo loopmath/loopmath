@@ -1,8 +1,12 @@
 // Planning page (lane 2E, 0.2; D119 Z3 direction C in the paper look): `loopmath recommend --html`. It leads with one
 // decision, the pick, then puts the rest in details sections whose closed line still answers the question.
 // Renders `loopmath.view.plans/1` from the embedded object only; recommend/1 objects (no `numbers`) still render.
+// 0.2.1 (lane 21B): the chance-against-cost chart at the top (P9), dot-and-line intervals from `bands` instead of
+// distribution shapes (P6), a sortable options table (P7), "Copy option" buttons that copy `option <n>: <label>` (P4)
+// and info icons on run cost and cost per accepted result (P5). Without `bands`, `option`, `p_accepted_within` or the
+// retry rescue fields (0.2.0 objects), the page falls back to the 80% range and the 0.2.0 wording.
 (() => {
-  const V = LM.Viz, { esc, num, fmt, shq, TAIL_NOTE, pulledUp } = LM;
+  const V = LM.Viz, { esc, num, fmt, TAIL_NOTE, pulledUp } = LM;
   const D = LM.data(), app = document.getElementById('app');
   const rule = D.rule || {}, target = rule.score || null, isScore = !!target;
   const task = D.task || {}, fit = D.fit || {}, EX = D.exploration || {}, RESCUE = D.rescue || null;
@@ -87,17 +91,50 @@
     const run = nb && nb.run_cost_usd ? nb.run_cost_usd : p.cost && p.cost.usd ? p.cost.usd : null;
     const ell = nb && nb.cost_per_accepted_usd ? nb.cost_per_accepted_usd : p.ell && p.ell.usd ? p.ell.usd : null;
     const rescue = nb && num(nb.expected_rescue_usd) ? nb.expected_rescue_usd : priced && gg && num(gg.mean) ? (1 - gg.mean) * RESCUE.usd : null;
-    return { id, c, label: labelOf(id), g: gg, sr: scoreReach(p, nb), run, ell, rescue, support: num(p.support) ? p.support : null, origin: c.origin || '', tokens: p.cost && p.cost.tokens };
+    const ch = CHOSEN[id] || {}, bands = (nb && nb.bands) || ch.bands || null, pw = (nb && nb.p_accepted_within) || ch.p_accepted_within;
+    return { id, c, label: labelOf(id), g: gg, sr: scoreReach(p, nb), run, ell, rescue, support: num(p.support) ? p.support : null, origin: c.origin || '', tokens: p.cost && p.cost.tokens,
+      bands, paw: pw && num(pw.mean) ? pw : null };
   }
+  // 21M (0.2.1): each choice has `option`, its 1-based number (else its place in `choices`); the page and the plan
+  // skill number options the same way. The pair runs two options side by side.
+  const OPTS = (D.choices || []).map((c, i) => c && c.key ? { n: num(c.option) ? c.option : i + 1, key: c.key, config: c.config, label: c.label || '', c } : null).filter(Boolean);
+  const CHOSEN = {}, OPT = {};
+  OPTS.forEach(o => { if (o.key !== 'pair' && o.config && !(o.config in OPT)) { OPT[o.config] = o; CHOSEN[o.config] = o.c; } });
+  const pairOpt = OPTS.find(o => o.key === 'pair' && (o.c.members || []).length === 2) || null;
   const ROWS = [...BY.keys()].map(row).filter(r => r && r.ell && num(r.ell.mean)).sort((a, b) => a.ell.mean - b.ell.mean);
   const R = new Map(ROWS.map(r => [r.id, r]));
   const pick = R.get(goalId) || null, ref = refId ? R.get(refId) || null : null;
+  // p_accepted_within: the chance of an accepted result within K attempts, shown as its own column when present.
+  const PAW = ROWS.some(r => r.paw);
+  const K = (ROWS.find(r => r.paw && num(r.paw.attempts)) || { paw: {} }).paw.attempts || (RESCUE && num(RESCUE.max_attempts) ? RESCUE.max_attempts : 3);
+  const pawHead = `chance within ${K} attempt${K === 1 ? '' : 's'}`;
+  // P7 (0.2.1): the options table sorts by any column; the first click takes the useful direction (chances and
+  // runs high first, costs low first), the next reverses it. Missing values stay last either way.
+  const COLS = [
+    { k: 'label', h: 'workflow', dir: 1, v: r => r.label.toLowerCase() },
+    { k: 'g', h: gShort, dir: -1, v: r => r.g && num(r.g.mean) ? r.g.mean : null },
+    ...(PAW ? [{ k: 'paw', h: pawHead, dir: -1, v: r => r.paw ? r.paw.mean : null }] : []),
+    { k: 'run', h: 'cost per run', num: true, info: 'run', dir: 1, v: r => r.run && num(r.run.mean) ? r.run.mean : null },
+    { k: 'rescue', h: 'expected rescue', num: true, dir: 1, v: r => num(r.rescue) ? r.rescue : null },
+    { k: 'ell', h: 'cost per accepted result', num: true, info: 'ell', dir: 1, v: r => r.ell.mean },
+    { k: 'support', h: 'runs behind it', num: true, dir: -1, v: r => r.support },
+  ];
+  let sortKey = 'ell', sortDir = 1;
+  function sorted() {
+    const col = COLS.find(c => c.k === sortKey) || COLS[0];
+    return ROWS.map((r, i) => [r, col.v(r), i]).sort((a, b) => {
+      const x = a[1], y = b[1];
+      if (x == null || y == null) return x == null && y == null ? a[2] - b[2] : x == null ? 1 : -1;
+      return (x < y ? -1 : x > y ? 1 : 0) * sortDir || a[2] - b[2];
+    }).map(e => e[0]);
+  }
 
   // ------------------------------------------------------------ marks and commands
   const tryKinds = id => ['best_value', 'max_gain'].filter(k => { const p = pickFor(k); return p && pickCid(p) === id; });
   const TITLE = { best_value: 'best value to try', max_gain: 'biggest gain to try' };
   function marks(id) {
     const m = [];
+    if (OPT[id]) m.push(['opt', 'option ' + OPT[id].n]);
     if (id === goalId) m.push(['pick', 'recommended' + (D.goal && num(D.goal.level) ? ` (${D.goal.level}% row)` : '')]);
     if (D.default_pick && D.default_pick.config === id && id !== goalId) m.push(['other', 'default pick']);
     if (id === refId) m.push(['ref', refShort]);
@@ -105,32 +142,13 @@
     return m;
   }
   const markHtml = id => marks(id).map(([k, t]) => `<span class="v-mk ${k}">${esc(t)}</span>`).join('');
-  const sourceFor = id => id === refId && isUsual ? 'usual' : id !== goalId && tryKinds(id).length ? 'exploration' : 'alternative';
-  function command(id, source, extra) {
-    const parts = ['loopmath run start'];
-    if (task.type) parts.push('--type', shq(task.type));
-    if (task.repo) parts.push('--repo', shq(task.repo));
-    if (task.subtype) parts.push('--subtype', shq(task.subtype));
-    if (task.title) parts.push('--title', shq(task.title));
-    // Lane 2C (0.2): the run's time budget goes as --horizon, and it is the one the prediction used, given or filled
-    // in from the fit, as `run start --rec` stores it (rec_features), so the run is recorded under the budget it was priced for.
-    const hz = task.horizon ? (!task.horizon.from || task.horizon.from === 'none' ? null : num(task.horizon.seconds) && task.horizon.seconds > 0 ? String(task.horizon.seconds) : 'none')
-      : (task.features || {}).horizon_s != null ? String(task.features.horizon_s) : null;
-    Object.entries(task.features || {}).filter(([k]) => k !== 'horizon_s').forEach(([k, v]) => parts.push('--feature', shq(`${k}=${v}`)));
-    if (hz) parts.push('--horizon', shq(hz));
-    if (task.base_commit) parts.push('--base-commit', shq(task.base_commit));
-    parts.push('--config', shq(id), '--source', source || sourceFor(id));
-    if (D.rec) parts.push('--rec', shq(D.rec));
-    return parts.concat(extra || []).join(' ');
-  }
-  // Lane 2D (0.2): an option the stored recommendation names in `choices` starts with `run start --rec REC
-  // --choice KEY`, which takes the task, configuration, source and rule from the recommendation. Every other
-  // option keeps the full command above.
-  const CHOICE = {};
-  (D.choices || []).forEach(c => { if (c && c.key && c.key !== 'pair' && c.config && !(c.config in CHOICE)) CHOICE[c.config] = c.key; });
-  const pairChoice = (D.choices || []).find(c => c && c.key === 'pair' && (c.members || []).length === 2);
-  const byChoice = key => `loopmath run start --rec ${shq(D.rec)} --choice ${shq(key)}`;
-  const startCmd = id => D.rec && CHOICE[id] ? byChoice(CHOICE[id]) : command(id);
+  // P4 (0.2.1): a copy button hands over the option, not a command: the user pastes it into the conversation with
+  // their agent, which types the commands. A numbered option copies `option <n>: <label>`; any other workflow copies
+  // `workflow <config id>: <label>`, which the agent can start with `--config`.
+  const COPY = 'Copy option';
+  const copyText = id => OPT[id] ? `option ${OPT[id].n}: ${OPT[id].label || labelOf(id)}` : `workflow ${id}: ${labelOf(id)}`;
+  const pairText = (a, b) => pairOpt && pairOpt.c.members[0] === a && pairOpt.c.members[1] === b ? `option ${pairOpt.n}: ${pairOpt.label || labelOf(a) + ' + ' + labelOf(b)}`
+    : `${copyText(a)}, and beside it ${copyText(b)}`;
 
   // ------------------------------------------------------------ text helpers
   const usd = V.usd, pct = V.pct;
@@ -140,10 +158,43 @@
   const supportText = n => !num(n) ? 'n/a' : n === 0 ? 'none' : fmt.int(n);
   // D96/D102: the look-ahead value in dollars, as lane 6's recommend message words it.
   const savingText = gp => !gp || !num(gp.usd) ? 'n/a' : `expected to save about ${gp.usd > 0 && gp.usd < 0.01 ? 'under $0.01' : '$' + gp.usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} per future similar run`;
-  const paybackText = n => { if (!num(n)) return 'n/a'; const k = Math.max(1, Math.round(n)); return `about ${k} similar run${k === 1 ? '' : 's'}`; };
+  // I20 (0.2.1, lane 21A): one payback number everywhere: ceil(price now / gain), at least 1, as message.py words it.
+  const paybackText = n => { if (!num(n)) return 'n/a'; const k = Math.max(1, Math.ceil(n - 1e-9)); return `about ${k} similar run${k === 1 ? '' : 's'}`; };
   // D119 Z2: lane 2A's sentence, shown verbatim; the page checks only that it is set.
   const strategy = (D.goal && D.goal.strategy) || ((D.choices || []).find(c => c && c.key === 'goal') || {}).strategy || null;
   const strategyText = strategy && typeof strategy.text === 'string' && strategy.text ? strategy.text : null;
+
+  // P5 (0.2.1): what run cost and cost per accepted result mean, on hover and tap of a small info icon. 21M's
+  // `rescue.text` is quoted when set; else the sentence is built from the retry fields; else the 0.2.0 wording.
+  const RETRY = !!(RESCUE && RESCUE.kind === 'retry');
+  function rescueSentence() {
+    if (!RESCUE) return '';
+    if (typeof RESCUE.text === 'string' && RESCUE.text) return RESCUE.text;
+    if (RETRY) {
+      const d = num(RESCUE.decay) ? RESCUE.decay : 0.5, n = num(RESCUE.max_attempts) ? RESCUE.max_attempts : K;
+      const each = d === 0.5 ? 'half the chance' : d === 1 ? 'the same chance' : `${fmt.x(d)} times the chance`;
+      const ch = RESCUE.chance && num(RESCUE.chance.mean) ? ` (chance per run ${pct(RESCUE.chance.mean)})` : '';
+      return `A miss is fixed by retrying with ${RESCUE.of || 'the rescue workflow'}${ch}. Each extra attempt has ${each} of the one before, up to ${n} attempts in all, counting the first run.`;
+    }
+    if (!priced) return 'No rescue is priced (rescue: none), so the cost per accepted result is the cost per run.';
+    return `A miss is rescued by ${RESCUE.basis || RESCUE.kind}${RESCUE.of ? ` (${RESCUE.of})` : ''}: about ${usd(RESCUE.usd)}.`;
+  }
+  const INFO = {
+    run: 'Run cost: what the agents cost for one run of this workflow (the mean of the fitted cost). It leaves out fixing a miss.',
+    ell: (() => {
+      if (!RESCUE || !priced) return 'Cost per accepted result: the run cost plus the expected cost of fixing a miss. ' + (rescueSentence() || 'No rescue is priced here, so it equals the run cost.');
+      // 21M's rescue.text may already say what cost per accepted result is; then it stands alone.
+      const own = typeof RESCUE.text === 'string' && /cost per accepted result/i.test(RESCUE.text);
+      let s = (own ? '' : 'Cost per accepted result: the run cost plus the expected cost of fixing a miss. ') + rescueSentence();
+      if (RETRY) s += ` The cost of those retries is divided by the chance that they end in an accepted result${num(RESCUE.p_accepted) ? ` (${pct(RESCUE.p_accepted)})` : ''}, then weighted by the chance that the first run misses.`;
+      else s += ' The rescue is weighted by the chance of a miss: cost per run + chance of a miss x the rescue.';
+      if (PAW) s += ` The chance of an accepted result within ${K} attempts is its own column; the chance column is for one run.`;
+      return s;
+    })(),
+  };
+  // A legend entry per interval level, drawn as a short line of the width the chart uses.
+  const bandKey = levels => levels.map(([lv, w]) => `<span><svg width="22" height="8" aria-hidden="true"><line x1="1" x2="21" y1="4" y2="4" stroke="currentColor" stroke-width="${w}" stroke-linecap="round"/></svg>${lv}% range</span>`).join('');
+  const info = k => `<button type="button" class="v-info" data-info="${k}" aria-label="${esc(INFO[k])}">i</button>`;
 
   // Three ways to run the task: the pick, the reference, the best option to try.
   const THREE = (() => {
@@ -163,9 +214,31 @@
   else if (rule.name) bits.push(`<span>rule <b>${esc(rule.name)}</b></span>`);
   bits.push(`<span>${ROWS.length} options priced</span>`);
   let h = `<div class="v-wrap"><div class="v-top">${bits.join('')}</div>`;
-  h += pick ? hero() + threeBlock() + details() : `<section class="v-hero"><p class="v-kicker">Recommended</p><h1>No pick in this recommendation.</h1><p class="v-lede">${esc(D.message || '')}</p></section>`;
-  h += `<p class="v-foot">loopmath recommend ${esc(D.rec || '')}, fit ${esc(fit.id || 'n/a')}${D.generated_at ? ', page written ' + esc(fmt.dt(D.generated_at)) : ''}. Ranges are 80%. The page runs nothing: copy a command to start a run.</p></div>`;
+  h += pick ? chartBlock() + hero() + threeBlock() + details() : `<section class="v-hero"><p class="v-kicker">Recommended</p><h1>No pick in this recommendation.</h1><p class="v-lede">${esc(D.message || '')}</p></section>`;
+  h += `<p class="v-foot">loopmath recommend ${esc(D.rec || '')}, fit ${esc(fit.id || 'n/a')}${D.generated_at ? ', page written ' + esc(fmt.dt(D.generated_at)) : ''}. Ranges are 80% unless marked. The page runs nothing: copy an option and paste it into the conversation with your agent.</p></div>`;
   app.innerHTML = h;
+
+  // P9 (0.2.1): chance against cost at the top, every numbered option as a point (the pair runs two of them).
+  function chartOpts() {
+    const out = [], seen = new Set();
+    OPTS.forEach(o => {
+      if (o.key === 'pair' || !o.config || seen.has(o.config)) return;
+      seen.add(o.config);
+      const r = R.get(o.config), c = o.c;
+      const x = r || { id: o.config, label: o.label || labelOf(o.config), g: c.chance || null, run: c.run_cost_usd || null, ell: c.cost_per_accepted_usd || null,
+        rescue: num(c.expected_rescue_usd) ? c.expected_rescue_usd : null, support: null, bands: c.bands || null, paw: c.p_accepted_within && num(c.p_accepted_within.mean) ? c.p_accepted_within : null };
+      out.push({ o, r: x });
+    });
+    return out;
+  }
+  function chartBlock() {
+    const n = chartOpts().length;
+    if (!n) return '';
+    return `<section class="v-block v-cc" id="cc"><p class="v-kicker">Your options</p><h2>${esc(isScore && !FB ? `Chance to reach ${fmt.x(target.target)}` : 'Chance of an accepted result')} against cost</h2>` +
+      `<p class="v-sub">${n} numbered option${n === 1 ? '' : 's'}${pairOpt ? `; option ${pairOpt.n} runs two of them side by side` : ''}. Up and to the left is better. The faint dots are the other priced workflows.</p>` +
+      `<div class="v-seg" role="group" aria-label="cost axis"><button type="button" data-x="ell" aria-pressed="true">cost per accepted result</button><button type="button" data-x="run" aria-pressed="false">run cost</button></div>` +
+      `<div id="ccplot"></div><div class="v-legend" id="cclegend">${bandKey([['50', 2.4], ['80', 1.2], ['90', 0.6]])}<span><span class="dt" style="background:var(--accent)"></span>recommended</span><span><span class="dt" style="background:var(--dot);opacity:.6;width:6px;height:6px"></span>other workflows</span></div></section>`;
+  }
 
   function hero() {
     const [gName, gSettings] = splitLabel(pick.id);
@@ -174,9 +247,10 @@
       (strategyText ? `<p class="v-strategy" id="strategy">${esc(strategyText)}</p>` : '') +
       `<div class="v-gfull" id="pg"></div><p class="v-gcap" id="pgcap"></p>` +
       `<div class="v-nums" id="nums">` +
-      `<div class="lead"><div class="n">${usd(pick.ell.mean)}</div><div class="l">per accepted result</div><div class="r">${rng(pick.ell, usd)}${tail(pick.ell)}</div></div>` +
-      `<div><div class="n">${pick.g && num(pick.g.mean) ? pct(pick.g.mean) : 'n/a'}</div><div class="l">${esc(gShort)}</div><div class="r">${rng(pick.g, pct)}</div></div>` +
-      `<div><div class="n">${pick.run ? usd(pick.run.mean) : 'n/a'}</div><div class="l">a run</div><div class="r">${median(pick)}${tail(pick.run)}</div></div></div>`;
+      `<div class="lead"><div class="n">${usd(pick.ell.mean)}</div><div class="l">per accepted result ${info('ell')}</div><div class="r">${rng(pick.ell, usd)}${tail(pick.ell)}</div></div>` +
+      `<div><div class="n">${pick.g && num(pick.g.mean) ? pct(pick.g.mean) : 'n/a'}</div><div class="l">${esc(gShort)}${pick.paw ? ' in one run' : ''}</div><div class="r">${rng(pick.g, pct)}</div>` +
+      (pick.paw ? `<div class="r" id="paw">${pct(pick.paw.mean)} within ${esc(K)} attempts${num(pick.paw.lo) ? ` (${rng(pick.paw, pct)})` : ''}</div>` : '') + `</div>` +
+      `<div><div class="n">${pick.run ? usd(pick.run.mean) : 'n/a'}</div><div class="l">a run ${info('run')}</div><div class="r">${median(pick)}${tail(pick.run)}</div></div></div>`;
     if (num(pick.support) && pick.support < 3) {
       s += `<div class="v-warn" id="thin"><i>!</i><span><b>${pick.support === 0 ? 'No runs of this workflow yet.' : `Only ${V.runs(pick.support)} of this workflow.`}</b> The estimate comes mostly from the fitted model, not from runs of this workflow${pick.g && num(pick.g.lo) ? `, so the ${esc(gWords)} ranges from ${pct(pick.g.lo)} to ${pct(pick.g.hi)}` : ''}.</span></div>`;
     }
@@ -190,18 +264,17 @@
     if (FB) vs += ` <span id="fallback">${esc(fbNote)}${num(pick.sr) ? ` The score estimate gives the pick a ${pct(pick.sr)} chance to reach ${esc(fmt.x(target.target))}; no total uses it.` : ''}</span>`;
     if (priced) vs += ` A miss is rescued by ${esc(RESCUE.basis || RESCUE.kind)}${RESCUE.of ? ` (${esc(RESCUE.of)})` : ''}: about <b>${usd(RESCUE.usd)}</b>.`;
     else if (RESCUE) vs += ' No rescue is priced (rescue: none), so the cost per accepted result is the cost per run.';
-    return s + `<p class="v-vs" id="vs">${vs.trim()}</p>` + V.copyBtn(startCmd(pick.id), 'copy command') + `</section>`;
+    return s + `<p class="v-vs" id="vs">${vs.trim()}</p>` + V.copyBtn(copyText(pick.id), COPY) + `</section>`;
   }
 
   function threeBlock() {
     let s = `<section class="v-block" id="ways"><h2>${THREE.length === 3 ? 'Three' : THREE.length === 2 ? 'Two' : 'One'} way${THREE.length === 1 ? '' : 's'} to run this task</h2>` +
-      `<p class="v-sub">Cost per accepted result, log scale. The shape spans the 80% range; the tick is the mean.</p><div id="three"></div>`;
+      `<p class="v-sub">Cost per accepted result, log scale. The dot is the mean; the lines are the 80%, 90% and 95% ranges, thinner as they widen.</p><div id="three"></div>`;
     if (D.pair && (D.pair.members || []).length === 2) {
       const [a, b] = D.pair.members, bet = pickFor(D.pair.explore_pick || 'best_value');
       s += `<p class="v-pairline" id="pairline">Or run the pick and <b>${esc(labelOf(b))}</b> side by side, then let a blinded referee choose.` +
         (bet && bet.price && bet.price.usd ? ` It costs ${usd(bet.price.usd.mean)} more now; trying it once is ${esc(savingText(bet.gain_per_run))}; there is a ${pct(bet.p_beats_goal)} chance it beats the recommended pick.` : '') + `</p>` +
-        V.copyBtn(D.rec && pairChoice && pairChoice.members[0] === a && pairChoice.members[1] === b ? byChoice('pair')
-          : command(a, sourceFor(a), ['--new-slate']) + '\n' + command(b, 'exploration', ['--slate', 'SLT']), 'copy both');
+        V.copyBtn(pairText(a, b), COPY);
     }
     return s + `</section>`;
   }
@@ -214,7 +287,8 @@
     const eq = [['cost per run', pick.run ? usd(pick.run.mean) : 'n/a', `mean of the fitted cost${median(pick) ? '; ' + median(pick) : ''}${pick.run && num(pick.run.lo) ? `; 80% range ${rng(pick.run, usd)}` : ''}`]];
     if (priced) {
       eq.push(['chance of a miss', num(miss) ? pct(miss) : 'n/a', `1 minus the ${pick.g ? pct(pick.g.mean) : 'n/a'} ${esc(gWords)}`]);
-      eq.push(['rescue', usd(RESCUE.usd), `${esc(RESCUE.basis || RESCUE.kind)}${RESCUE.of ? ': ' + esc(RESCUE.of) : ''}`]);
+      eq.push(['rescue', usd(RESCUE.usd), RETRY ? `per fixed miss: retrying with ${esc(RESCUE.of || 'the rescue workflow')}, up to ${esc(num(RESCUE.max_attempts) ? RESCUE.max_attempts : K)} attempts in all`
+        : `${esc(RESCUE.basis || RESCUE.kind)}${RESCUE.of ? ': ' + esc(RESCUE.of) : ''}`]);
       eq.push(['expected rescue', usd(pick.rescue), `${num(miss) ? pct(miss) : 'n/a'} x ${usd(RESCUE.usd)}`]);
     }
     const tot = ['per accepted result', usd(pick.ell.mean), `80% range ${rng(pick.ell, usd)}${pulledUp(pick.ell) ? '; ' + esc(TAIL_NOTE) : ''}`];
@@ -223,13 +297,14 @@
       `<p class="v-note">Cost per accepted result = cost per run + chance of a miss x the rescue. Parts are rounded to the cent, so they may not add up exactly.${FB ? ' ' + esc(fbNote) : ''}</p>`);
     // every option
     out += sec('d-all', `All ${ROWS.length} options`, ROWS.length ? `cheapest per accepted result first; ${esc(ROWS[0].label)} leads at ${usd(ROWS[0].ell.mean)}` : 'none',
-      `<div class="v-scroll"><table class="v-t" id="tall"><thead><tr><th>workflow</th><th>${esc(gShort)}</th><th class="num">cost per run</th><th class="num">expected rescue</th><th class="num">cost per accepted result</th><th class="num">runs behind it</th></tr></thead><tbody></tbody></table></div>` +
+      `<div class="v-scroll"><table class="v-t" id="tall"><thead><tr>${COLS.map(c => `<th class="v-sort${c.num ? ' num' : ''}" data-sort="${c.k}" aria-sort="${c.k === sortKey ? (sortDir > 0 ? 'ascending' : 'descending') : 'none'}" tabindex="0">` +
+        `${esc(c.h)}${c.info ? ' ' + info(c.info) : ''}<span class="v-arr" aria-hidden="true"></span></th>`).join('')}</tr></thead><tbody></tbody></table></div>` +
       (ROWS.length > 12 ? `<button type="button" class="v-btn" id="more">Show all ${ROWS.length}</button>` : '') +
-      `<p class="v-note">Click a row for its graph and command. Ranges are 80%.</p>`);
+      `<p class="v-note">Click a column head to sort, again to reverse. Click a row for its graph and to copy it. Ranges are 80%.</p>`);
     // how wide
     const widest = ROWS.filter(r => r.g && num(r.g.lo) && num(r.g.hi) && r.g.hi - r.g.lo > 0.8).length;
     out += sec('d-wide', 'How wide the estimates are', `${widest} of ${ROWS.length} chances span more than 80 points; the pick runs from ${rng(pick.ell, usd) || 'n/a'}`,
-      `<div class="v-legend"><span><span class="sw" style="background:var(--accent)"></span>recommended</span><span><span class="dt no"></span>${esc(refShort)}</span><span><span class="sw" style="background:var(--ink2);opacity:.5"></span>others; each range fades to its ends</span></div><div id="forest"></div>`);
+      `<div class="v-legend"><span><span class="dt" style="background:var(--accent)"></span>recommended</span><span><span class="dt no"></span>${esc(refShort)}</span>${bandKey([['80', 2.6], ['90', 1.3], ['95', 0.6]])}</div><div id="forest"></div>`);
     // exploration
     const bets = betList().filter(b => !b.none), bv = bets.find(b => b.kind === 'best_value') || bets[0];
     out += sec('d-try', 'Worth trying something new', bv ? `${esc(bv.label)}: ${usd(bv.price.mean)} now, pays for itself after ${paybackText(bv.payback)}` : exploreNone(),
@@ -284,7 +359,7 @@
         `<dt>price now</dt><dd>${p.price && p.price.usd ? usd(p.price.usd.mean) + ` <span class="m">(${rng(p.price.usd, usd)})</span>` + tail(p.price.usd, p.price.tokens) : 'n/a'}</dd>` +
         `<dt>trying it once</dt><dd>${esc(savingText(p.gain_per_run))}</dd>` +
         `<dt>pays for itself after</dt><dd>${esc(paybackText(p.payback_runs))}</dd></dl>` +
-        V.copyBtn(command(id, 'exploration'), 'copy command');
+        V.copyBtn(copyText(id), COPY);
     }
     return `<div class="v-bet" data-kind="${kind}"><h3>${title}${paused(kind) ? ' (paused)' : ''}</h3><p class="v-note">${note}</p>${body}</div>`;
   }
@@ -295,12 +370,13 @@
   let showAll = false, openRow = null;
   function table() {
     const body = document.querySelector('#tall tbody');
-    const list = showAll ? ROWS : ROWS.filter((r, i) => i < 12 || marks(r.id).length);
+    const all = sorted(), list = showAll ? all : all.filter((r, i) => i < 12 || marks(r.id).length);
     const ORIGIN = { catalog: 'catalog', edit: 'edit of the reference', recorded: 'recorded', front: 'found by the search', thompson: 'found in a search draw', polish: 'near the pick' };
     body.innerHTML = list.map(r => {
       const cls = r.id === goalId ? 'pick' : r.id === refId ? 'ref' : '';
       return `<tr class="v-opt ${cls}" data-cfg="${esc(r.id)}" tabindex="0"><td><span class="v-row-name">${D.graphs && D.graphs[r.id] ? V.miniGraph(D.graphs[r.id]) : ''}<span class="lbl">${esc(r.label)}<span class="sub">${markHtml(r.id)}${esc(ORIGIN[r.origin] || r.origin)}</span></span></span></td>` +
         `<td class="nw">${r.g && num(r.g.mean) ? V.chanceBar(r.g, cls) + pct(r.g.mean) : 'n/a'}<span class="sub">${rng(r.g, pct)}</span></td>` +
+        (PAW ? `<td class="nw v-paw">${r.paw ? V.chanceBar(r.paw, cls) + pct(r.paw.mean) : 'n/a'}<span class="sub">${rng(r.paw, pct)}</span></td>` : '') +
         `<td class="num">${r.run ? usd(r.run.mean) : 'n/a'}<span class="sub">${median(r)}</span>${tail(r.run)}</td>` +
         `<td class="num">${num(r.rescue) ? usd(r.rescue) : 'n/a'}</td>` +
         `<td class="num"><b>${usd(r.ell.mean)}</b><span class="sub">${rng(r.ell, usd)}</span>${tail(r.ell)}</td>` +
@@ -310,15 +386,40 @@
   }
   function detailRow(r) {
     const diff = ((r.c && r.c.diff_vs_usual) || []).filter(Boolean);
-    return `<tr class="v-opt-detail" data-for="${esc(r.id)}"><td colspan="6"><div class="v-gfull v-opt-graph" data-cfg="${esc(r.id)}"></div>` +
+    return `<tr class="v-opt-detail" data-for="${esc(r.id)}"><td colspan="${COLS.length}"><div class="v-gfull v-opt-graph" data-cfg="${esc(r.id)}"></div>` +
       (diff.length ? `<p class="v-note">Against ${esc(refShort)}: ${diff.map(esc).join('; ')}.</p>` : '') +
       (num(r.sr) ? `<p class="v-note v-sr">Score estimate: a ${pct(r.sr)} chance to reach ${esc(fmt.x(target.target))}, from too few scores; no total uses it.</p>` : '') +
-      V.copyBtn(startCmd(r.id), 'copy command') + `</td></tr>`;
+      V.copyBtn(copyText(r.id), COPY) + `</td></tr>`;
   }
   const toggleRow = tr => { openRow = openRow === tr.dataset.cfg ? null : tr.dataset.cfg; table(); };
+  const sortBy = th => {
+    const col = COLS.find(c => c.k === th.dataset.sort);
+    if (!col) return;
+    sortDir = sortKey === col.k ? -sortDir : col.dir; sortKey = col.k;
+    tall.querySelectorAll('th.v-sort').forEach(x => x.setAttribute('aria-sort', x.dataset.sort === sortKey ? (sortDir > 0 ? 'ascending' : 'descending') : 'none'));
+    table();
+  };
   const tall = document.getElementById('tall');
-  tall.addEventListener('click', e => { if (e.target.closest('[data-copy]')) return; const tr = e.target.closest('tr.v-opt'); if (tr) toggleRow(tr); });
-  tall.addEventListener('keydown', e => { if (e.key !== 'Enter') return; const tr = e.target.closest('tr.v-opt'); if (tr) toggleRow(tr); });
+  tall.addEventListener('click', e => {
+    if (e.target.closest('[data-copy]') || e.target.closest('.v-info')) return;
+    const th = e.target.closest('th.v-sort'); if (th) { sortBy(th); return; }
+    const tr = e.target.closest('tr.v-opt'); if (tr) toggleRow(tr);
+  });
+  tall.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.target.closest('.v-info')) return;
+    const th = e.target.closest('th.v-sort'); if (th) { sortBy(th); return; }
+    const tr = e.target.closest('tr.v-opt'); if (tr) toggleRow(tr);
+  });
+  // P5: the info icons show their text on hover, and on a tap or click (again to hide).
+  let infoOpen = null;
+  const infoAt = b => { const r = b.getBoundingClientRect(); LM.tip(esc(INFO[b.dataset.info]), r.left + r.width / 2, r.bottom); };
+  document.addEventListener('mouseover', e => { const b = e.target.closest && e.target.closest('.v-info'); if (b) infoAt(b); });
+  document.addEventListener('mouseout', e => { const b = e.target.closest && e.target.closest('.v-info'); if (b && b !== infoOpen) LM.tip(null); });
+  document.addEventListener('click', e => {
+    const b = e.target.closest && e.target.closest('.v-info');
+    if (b) { e.preventDefault(); if (infoOpen === b) { infoOpen = null; LM.tip(null); } else { infoOpen = b; infoAt(b); } return; }
+    if (infoOpen) { infoOpen = null; LM.tip(null); }
+  });
   const more = document.getElementById('more');
   if (more) more.addEventListener('click', () => { showAll = !showAll; more.textContent = showAll ? 'Show fewer' : `Show all ${ROWS.length}`; table(); });
   table();
@@ -336,15 +437,95 @@
         (wide ? ' A piece of width n is drawn as n workers.' : '') + (loops ? ' The dashed loop sends failed work back.' : '');
     }
     const host = document.getElementById('three');
-    V.ridge(host, THREE.map(t => ({ key: t.r.id, label: t.label, sub: t.r.label, x: t.r.ell, mark: t.mark, tip: tipFor(t.r) })),
-      { domain: V.logDomain(THREE.flatMap(t => [t.r.ell.lo, t.r.ell.hi, t.r.ell.mean])), log: true, fmt: V.usd0, rowH: 54, labelW: Math.min(230, Math.max(128, (host.clientWidth || 600) * 0.3)) });
+    ivRows(host, THREE.map(t => ivRow(t.r, { key: t.r.id, label: t.label, sub: t.r.label, mark: t.mark })), { rowH: 54, labelW: Math.min(230, Math.max(128, (host.clientWidth || 600) * 0.3)) });
+    drawCC();
   }
+
+  // ------------------------------------------------------------ intervals (P6, P9): a dot for the mean, lines for ranges
+  // `bands` (21M, 0.2.1) holds central intervals by level; without a level, the 80% range is the lo/hi pair. Wider
+  // ranges get thinner lines, so a 0 to 100% range stays light and the dots stay readable.
+  const BANDKEY = { ell: 'cost_per_accepted_usd', run: 'run_cost_usd', g: 'chance' };
+  const W6 = { '80': 2.6, '90': 1.3, '95': 0.6 }, W9 = { '50': 2.2, '80': 1, '90': 0.5 };
+  function levels(r, k, want) {
+    const b = r.bands && r.bands[BANDKEY[k]], x = r[k], out = [];
+    want.forEach(lv => {
+      const iv = b && Array.isArray(b[lv]) && num(b[lv][0]) && num(b[lv][1]) ? b[lv] : lv === '80' && x && num(x.lo) && num(x.hi) ? [x.lo, x.hi] : null;
+      if (iv) out.push([lv, iv[0], iv[1]]);
+    });
+    return out;
+  }
+  const lvText = (r, k, f, want) => { const l = levels(r, k, want || ['50', '80', '90']); return l.length ? ` <span class="m">(${l.map(([lv, a, b]) => `${lv}%: ${f(a)} to ${f(b)}`).join('; ')})</span>` : ''; };
+  const ivRow = (r, o) => ({ ...o, mean: r.ell.mean, levels: levels(r, 'ell', ['95', '90', '80']), tip: tipFor(r) });
+  function ivRows(host, rows, o) {
+    host.innerHTML = '';
+    const rowH = o.rowH || 24, cw = host.clientWidth || 600;
+    const labelW = o.labelW != null ? o.labelW : Math.min(270, Math.max(110, cw * 0.36));
+    const dom = V.logDomain(rows.flatMap(r => [r.mean, ...r.levels.flatMap(l => [l[1], l[2]])]));
+    const top = 22, H = top + rows.length * rowH + 10, { svg, W } = V.frame(host, H);
+    const sx = V.log(dom[0], dom[1], labelW + 8, W - 14);
+    V.axisX(svg, sx, top, V.logTicks(sx.d[0], sx.d[1]), V.usd0, [top, H - 8], true);
+    rows.forEach((r, i) => {
+      const y = top + i * rowH + rowH / 2 + 2, g = V.el('g', { class: 'v-row v-ivrow' + (r.mark ? ' ' + r.mark : ''), 'data-key': r.key }, svg);
+      const hit = V.el('rect', { x: 0, y: y - rowH / 2, width: W, height: rowH, class: 'v-hit' }, g);
+      if (r.label) V.el('text', { x: 4, y: y + (r.sub ? -2 : 4), class: 'v-rl' }, g, V.clip(r.label, Math.floor(labelW / 6.6)));
+      if (r.sub) V.el('text', { x: 4, y: y + 11, class: 'v-rs' }, g, V.clip(r.sub, Math.floor(labelW / 5.6)));
+      r.levels.forEach(([lv, lo, hi]) => V.el('line', { x1: sx(lo), x2: sx(hi), y1: y, y2: y, class: 'v-ivl', 'data-level': lv, 'stroke-width': W6[lv] }, g));
+      if (num(r.mean)) V.el('circle', { cx: sx(r.mean), cy: y, r: r.mark ? 5 : 4, class: 'v-ivdot' }, g);
+      if (r.tip) V.hover(hit, r.tip);
+    });
+  }
+
+  // ------------------------------------------------------------ chance against cost (P9)
+  let xMode = 'ell';
+  const ccTip = (o, r) => `<b>option ${o.n}: ${esc(o.label || r.label)}</b><br>${esc(gWords)}: ${r.g && num(r.g.mean) ? pct(r.g.mean) : 'n/a'}${lvText(r, 'g', pct)}` +
+    (r.paw ? `<br>${pct(r.paw.mean)} within ${esc(K)} attempts` : '') +
+    `<br>cost per accepted result: ${usd(r.ell && r.ell.mean)}${lvText(r, 'ell', usd)}<br>run cost: ${r.run ? usd(r.run.mean) : 'n/a'}${lvText(r, 'run', usd)}` +
+    (num(r.support) ? `<br>${r.support ? V.runs(r.support) + ' behind it' : 'no runs of this workflow yet'}` : '');
+  function drawCC() {
+    const host = document.getElementById('ccplot');
+    if (!host) return;
+    host.innerHTML = '';
+    const k = xMode, LV = ['90', '80', '50'], xv = r => r[k] && num(r[k].mean) ? r[k].mean : null;
+    const pts = chartOpts().filter(({ r }) => num(xv(r)) && r.g && num(r.g.mean));
+    const bg = ROWS.filter(r => !OPT[r.id] && num(xv(r)) && r.g && num(r.g.mean)).slice(0, CAP);
+    const dom = V.logDomain([...pts.flatMap(({ r }) => [xv(r), ...levels(r, k, LV).flatMap(l => [l[1], l[2]])]), ...bg.map(xv)]);
+    const H = Math.round(Math.max(260, Math.min(380, (host.clientWidth || 600) * 0.5))), { svg, W } = V.frame(host, H);
+    const L = 44, RR = 16, T = 12, B = 38, sx = V.log(dom[0], dom[1], L, W - RR), sy = V.lin(0, 1, H - B, T), el = V.el;
+    [0, 0.25, 0.5, 0.75, 1].forEach(v => { el('line', { x1: L, x2: W - RR, y1: sy(v), y2: sy(v), class: 'v-grid' }, svg); el('text', { x: L - 6, y: sy(v) + 4, 'text-anchor': 'end', class: 'v-tick' }, svg, pct(v)); });
+    V.logTicks(sx.d[0], sx.d[1]).forEach(t => { el('line', { x1: sx(t), x2: sx(t), y1: T, y2: H - B, class: 'v-grid' }, svg); el('text', { x: sx(t), y: H - B + 15, 'text-anchor': 'middle', class: 'v-tick' }, svg, V.usd0(t)); });
+    el('text', { x: (L + W - RR) / 2, y: H - 4, 'text-anchor': 'middle', class: 'v-axis-t' }, svg, (k === 'ell' ? 'cost per accepted result' : 'run cost') + ', log scale');
+    bg.forEach(r => { const c = el('circle', { cx: sx(xv(r)), cy: sy(r.g.mean), r: 2.2, class: 'v-ccbg' }, svg); V.hover(c, `<b>${esc(r.label)}</b><br>${pct(r.g.mean)} ${esc(gWords)}<br>${usd(xv(r))} ${k === 'ell' ? 'per accepted result' : 'a run'}<br>not a numbered option: copy it from the table`); });
+    const placed = [];
+    pts.forEach(({ o, r }) => {
+      const x = sx(xv(r)), y = sy(r.g.mean), g = el('g', { class: 'v-ccpt' + (r.id === goalId ? ' pick' : ''), 'data-opt': o.n, 'data-key': r.id }, svg);
+      levels(r, k, LV).forEach(([lv, lo, hi]) => el('line', { x1: sx(lo), x2: sx(hi), y1: y, y2: y, class: 'v-ccl', 'data-level': lv, 'data-axis': 'x', 'stroke-width': W9[lv] }, g));
+      levels(r, 'g', LV).forEach(([lv, lo, hi]) => el('line', { x1: x, x2: x, y1: sy(V.clamp01(lo)), y2: sy(V.clamp01(hi)), class: 'v-ccl', 'data-level': lv, 'data-axis': 'y', 'stroke-width': W9[lv] }, g));
+      el('circle', { cx: x, cy: y, r: 5.5, class: 'v-ccdot' }, g);
+      V.hover(el('circle', { cx: x, cy: y, r: 13, class: 'v-hit' }, g), ccTip(o, r));
+      placed.push({ o, x, y, g });
+    });
+    // Option numbers beside their points, moved round the point until they clear the other labels and points.
+    const boxes = [], OFF = [[9, -6, 'start'], [9, 14, 'start'], [-9, -6, 'end'], [-9, 14, 'end'], [0, -11, 'middle'], [0, 21, 'middle']];
+    const hits = (b) => boxes.some(q => b.x0 < q.x1 && q.x0 < b.x1 && b.y0 < q.y1 && q.y0 < b.y1) || placed.some(p => p.x > b.x0 - 5 && p.x < b.x1 + 5 && p.y > b.y0 - 5 && p.y < b.y1 + 5);
+    placed.forEach(p => {
+      const t = String(p.o.n), w = 7 * t.length + 2;
+      const box = ([dx, dy, a]) => { const x0 = a === 'start' ? p.x + dx : a === 'end' ? p.x + dx - w : p.x - w / 2; return { x0, x1: x0 + w, y0: p.y + dy - 10, y1: p.y + dy + 1 }; };
+      const at = OFF.find(off => !hits(box(off))) || OFF[0];
+      boxes.push(box(at));
+      el('text', { x: p.x + at[0], y: p.y + at[1], 'text-anchor': at[2], class: 'v-cclbl' }, p.g, t);
+    });
+  }
+  const CAP = 200;
+  document.querySelectorAll('#cc .v-seg button').forEach(b => b.addEventListener('click', () => {
+    xMode = b.dataset.x;
+    document.querySelectorAll('#cc .v-seg button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    drawCC();
+  }));
   const draw = {
     'd-wide': () => {
       const list = ROWS.slice(0, 16);
       [pick, ref].forEach(r => { if (r && !list.includes(r)) list.push(r); });
-      V.forest(document.getElementById('forest'), list.map(r => ({ key: r.id, label: r.label, x: r.ell, mark: r.id === goalId ? 'pick' : r.id === refId ? 'ref' : '', tip: tipFor(r) })),
-        { domain: V.logDomain(list.flatMap(r => [r.ell.lo, r.ell.hi, r.ell.mean])), fmt: V.usd0 });
+      ivRows(document.getElementById('forest'), list.map(r => ivRow(r, { key: r.id, label: r.label, mark: r.id === goalId ? 'pick' : r.id === refId ? 'ref' : '' })), {});
     },
     'd-try': () => { const host = document.getElementById('pay'), bets = betList().filter(b => !b.none); if (host && bets.length) V.payback(host, bets, { height: 230 }); },
   };

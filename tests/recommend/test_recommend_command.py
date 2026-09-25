@@ -333,6 +333,7 @@ def test_task_file_and_usual_errors_say_what_to_give(env, capsys, tmp_path):
     assert capsys.readouterr().err.endswith("not found in earlier recommendations or stored runs\n")
 
 def test_redo_usual_with_a_usual_that_never_succeeds_is_a_user_error(env, capsys):
+    env[0].joinpath("config.toml").write_text('[rescue]\nkind = "redo_usual"\n')  # the 0.2.0 rescue
     _, state = env
     state["belief"].nums[USUAL.id] = Num(0.0, 2.00, g_half=0.0)
     assert cli.main(["recommend", "--type", "feature", "--repo", "acme/app", "--json"]) == 1
@@ -405,6 +406,7 @@ def test_the_text_says_when_the_fit_cannot_predict_the_score_rule(env, capsys):
 def test_a_mean_above_its_interval_says_the_average_is_pulled_up(env, capsys):
     """A mean above its interval's upper end is a real heavy tail. The text keeps the mean
     and says so in the value's parentheses, though it prints no interval; the JSON gains no field or number."""
+    env[0].joinpath("config.toml").write_text('[rescue]\nkind = "redo_usual"\n')  # the 0.2.0 rescue
     from loopmath.recommend.message import TAIL
 
     home, state = env
@@ -451,6 +453,7 @@ def test_a_mean_above_its_interval_says_the_average_is_pulled_up(env, capsys):
 
 def test_the_text_says_what_ell_is_once_and_alternatives_differ_in_words(env, capsys):
     """`ell $41.32` and `ell -30.74 USD` meant nothing to a newcomer."""
+    env[0].joinpath("config.toml").write_text('[rescue]\nkind = "redo_usual"\n')  # the 0.2.0 rescue
     from loopmath.recommend.commands import delta_words
 
     argv = ["recommend", "--type", "feature", "--repo", "acme/app"]

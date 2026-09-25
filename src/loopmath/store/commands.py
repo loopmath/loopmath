@@ -329,8 +329,10 @@ def piece_settings(cfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def config_label(cfg: dict[str, Any]) -> str:
-    """'implement_review: claude-opus-5-5/high, gpt-6-astra/xhigh', as Configuration.label() writes it."""
-    parts = [f"{p['model']}/{p['effort']}" for p in piece_settings(cfg) if p["model"]]
+    """'implement_review: claude-opus-5-5/high, gpt-6-astra/xhigh', with each piece's width when it runs more than
+    one agent ('best_of_n: 2 x gpt-5.6-sol/xhigh'), as the recommender's choices and the pages write it (0.2.1)."""
+    parts = [f"{p['width']} x {p['model']}/{p['effort']}" if (p.get("width") or 1) > 1 else f"{p['model']}/{p['effort']}"
+             for p in piece_settings(cfg) if p["model"]]
     return f"{(cfg.get('workflow') or {}).get('id')}: " + ", ".join(parts)
 
 
@@ -611,7 +613,7 @@ def run_import(args: argparse.Namespace) -> int:
     from .finish import finish_run
 
     store = _store(args)
-    if len(args.files) != 1 or Path(args.files[0]).expanduser().is_dir():
+    if len(args.files) != 1 or Path(args.files[0]).expanduser().is_dir() or _brief(args):
         return _import_many(args, store, _import_items(args.files))
     payload = _read_import(store, Path(args.files[0]).expanduser(), args.files[0])
     run = payload["run"]
@@ -629,6 +631,35 @@ def run_import(args: argparse.Namespace) -> int:
 
 
 FAILED_SHOWN = 10
+
+
+def _brief(args: argparse.Namespace) -> bool:
+    """`run import --json --brief`: the short object, with one file too."""
+    return bool(getattr(args, "brief", False) and args.json)
+
+
+def _import_next(payload: dict[str, Any]) -> str:
+    """The one step to take after an import, for `--brief`."""
+    if not payload["imported"]:
+        return "nothing was imported: fix the failed files and import them again"
+    open_runs = sum(1 for f in payload["files"] if f["ok"] and f.get("state") == R.OPEN)
+    if open_runs:
+        return f"{_count(open_runs, 'run')} stored open: finish each with loopmath run finish --run RUN --json"
+    if payload["fit"].get("started"):
+        return "loopmath posterior --html once the background fit ends (loopmath status --json: fit.running)"
+    return "loopmath fit --json"
+
+
+def _import_brief(payload: dict[str, Any], failed: list[dict[str, Any]], note: str | None) -> dict[str, Any]:
+    """Counts, failures (file and error), the overlap with the shipped prior and the next step (I18)."""
+    fit = payload["fit"]
+    return {"imported": payload["imported"], "failed": payload["failed"], "finished": payload["finished"],
+            "already_finished": payload["already_finished"],
+            "failures": [{"file": f["file"], "error": f["error"]} for f in failed[:FAILED_SHOWN]],
+            "more_failures": max(0, len(failed) - FAILED_SHOWN),
+            "shipped_overlap": payload["shipped_overlap"], "overlap_note": note,
+            "fit": {k: fit[k] for k in ("started", "reason") if k in fit},
+            "next": _import_next(payload)}
 
 
 def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, Path | None]]) -> int:
@@ -686,6 +717,10 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
 
     payload["shipped_overlap"] = shipped_overlap(imported_runs)  # once for the whole import
     code = EXIT_NOT_FOUND if any(f["exit"] == EXIT_NOT_FOUND for f in failed) else EXIT_USER if failed else EXIT_OK
+    if _brief(args):
+        brief = _import_brief(payload, failed, overlap_note(payload["shipped_overlap"]))
+        emit_json(_schema("run.import"), brief)
+        return code
     if args.json:
         emit_json(_schema("run.import"), payload)
         return code

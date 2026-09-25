@@ -44,9 +44,10 @@
 
   // Shared axes: one score axis and one log cost axis for every figure on the page.
   const span = (vals, pad) => { const v = vals.filter(num); if (!v.length) return null; let lo = Math.min(...v), hi = Math.max(...v); const d = (hi - lo) || Math.abs(hi) || 1; return [lo - d * pad, hi + d * pad]; };
-  const PD = span([...W.flatMap(w => w.perf ? [w.perf.lo, w.perf.hi] : []), ...U.flatMap(u => u.perf ? [u.perf.lo, u.perf.hi] : []),
+  // P6: the axes hold each estimate's 95% range, the thinnest line
+  const PD = span([...W.flatMap(w => V.extent(w.perf)), ...U.flatMap(u => V.extent(u.perf)),
     ...RUNS.map(r => r.score), T ? T.target : null], 0.04) || [0, 1];
-  const CD = V.logDomain([...W.flatMap(w => w.cost ? [w.cost.lo, w.cost.hi] : []), ...U.flatMap(u => u.cost ? [u.cost.lo, u.cost.hi] : []),
+  const CD = V.logDomain([...W.flatMap(w => V.extent(w.cost, true)), ...U.flatMap(u => V.extent(u.cost, true)),
     ...RUNS.map(r => r.cost_usd)].filter(v => num(v) && v > 0));
   const runTip = r => `${r.run}${r.subtype ? ' (' + r.subtype + ')' : ''}: ${num(r.score) ? score(r.score) + ' ' + scoreWord + ', ' : ''}${usd(r.cost_usd)}${r.reached === true ? ', reached' : r.reached === false ? ', missed' : ''}`;
   const scoreDots = cfgs => runsOf(cfgs).filter(r => num(r.score)).map(r => ({ v: r.score, cls: r.reached === false ? 'no' : '', t: runTip(r), tip: esc(runTip(r)) }));
@@ -95,15 +96,17 @@
     if (most <= 3) s += ` No workflow has more than ${V.runs(most)} behind it, so the ranges are wide.`;
     return s;
   }
-  const legend = `<div class="v-legend"><span><span class="sw" style="background:var(--dist);border:1px solid var(--dist-line)"></span>estimate, 80% range under the shape</span>` +
-    (T ? `<span><span class="dt"></span>your run, reached ${esc(tgt)}</span><span><span class="dt no"></span>your run, missed</span><span><span class="ln"></span>target ${esc(tgt)}</span>` : '<span><span class="dt"></span>your run</span>') + '</div>';
+  // P6: the key to the dot and its three lines
+  const dlKey = `<svg class="dl" viewBox="0 0 64 12" width="64" height="12" aria-hidden="true">${V.dotLineSvg({ mean: 32, lo: 18, hi: 46, bands: { '80': [18, 46], '90': [11, 53], '95': [4, 60] } }, V.lin(0, 64, 0, 64), 6)}</svg>`;
+  const legend = `<div class="v-legend"><span>${dlKey}predicted mean (dot), 80% range (thick line), 90% and 95% (thinner)</span>` +
+    (T ? `<span><span class="dt run"></span>your run, reached ${esc(tgt)}</span><span><span class="dt run no"></span>your run, missed</span><span><span class="ln"></span>target ${esc(tgt)}</span>` : '<span><span class="dt run"></span>your run</span>') + '</div>';
   const TOP = 8;
   h += `<section class="v-q" id="q1"><p class="v-qno">1</p><h2>Which workflow for this kind of task?</h2><p class="v-answer" id="a1">${answer1()}</p>`;
   if (W.length) {
     h += `<div class="v-fig">${SN ? legend : ''}<div class="v-wl" id="wl"></div>` +
       (W.length > TOP ? `<button type="button" class="v-btn" id="wlmore">Show all ${W.length} workflows</button>` : '') +
       `<p class="v-figcap"><b>Figure 1.</b> Every workflow recorded for this task type and repo, ranked by the ${esc(chanceWords)}, then by cost. ` +
-      `Boxes are workers: a piece of width n is n boxes. ${SN ? 'The shape is the predicted ' + esc(scoreWord) + ' of one run, drawn from its mean and 80% range. ' : ''}` +
+      `Boxes are workers: a piece of width n is n boxes. ${SN ? 'The dot is the predicted mean ' + esc(scoreWord) + ' of one run; the thick line is its 80% range, the thinner lines 90% and 95%. Small dots under it are your runs. ' : ''}Click a column header to sort, again to reverse. ` +
       `${RES ? `Per accepted result is the run cost plus the chance of a miss times the rescue (${esc(RES.basis || RES.kind || 'rescue')}${RES.of ? ', ' + esc(RES.of) : ''}: ${usd(RES.usd)}). ` : ''}Click a row to see that workflow in full.</p></div>`;
   }
   h += `<details class="v-more" id="d-wf"><summary><span class="st">One workflow in full</span><span class="sa">Its graph with each piece's cost, rounds and gates, and the estimates behind each setting.</span></summary><div class="v-body est" id="est-graph"></div></details></section>`;
@@ -137,12 +140,13 @@
       const alone = m.units.filter(u => u.runs > 0).length;
       let s = `<div class="v-mb" data-model="${esc(m.model)}"><h3>${esc(m.model)}</h3><div class="prov">${esc(m.provider || '')} &middot; ${esc(m.harness || '')} &middot; ` +
         (m.user ? `${alone} of ${m.units.length} efforts run alone here` : 'never run on this task') + '</div>' +
-        `<div class="er h"><span>effort</span><span>${SN ? esc(scoreWord) : 'chance of an accepted result'}</span><span>cost per run</span></div>`;
+        `<div class="er h"><span>effort</span><span${better === 'lower' && SN ? '' : ' data-first="desc"'}>${SN ? esc(scoreWord) : 'chance of an accepted result'}</span><span>cost per run</span></div>`;
       m.units.forEach(u => {
         s += `<div class="er${u.effort === m.best ? ' best' : ''}" data-effort="${esc(u.effort)}" title="${esc(`${u.model}/${u.effort}: ${SN && u.perf ? score(u.perf.mean) + ' ' + scoreWord + ' (' + rng(u.perf, score) + '), ' : ''}${usd(mean(u.cost))} a run (${rng(u.cost, usd)}${tailWord(u.cost)})`)}">` +
-          `<span class="ef">${esc(u.effort)}<span class="sub">${u.runs ? esc(V.runs(u.runs)) + ' alone' : m.user ? 'not run alone' : ''}</span></span>` +
-          (SN ? V.miniDist(u.perf, PD, { w: 150, h: 26, target: T ? T.target : null, dots: scoreDots(u.configs || []), cls: u.effort === m.best ? 'acc' : '' }) : `<span>${V.chanceBar(u.success)} ${pct(mean(u.success))}</span>`) +
-          V.miniDist(u.cost, CD, { w: 150, h: 26, log: true, dots: costDots(u.configs || []) }) + '</div>';
+          `<span class="ef" data-sort="${effortRank(u.effort)}">${esc(u.effort)}<span class="sub">${u.runs ? esc(V.runs(u.runs)) + ' alone' : m.user ? 'not run alone' : ''}</span></span>` +
+          (SN ? `<span class="c" data-sort="${num(mean(u.perf)) ? mean(u.perf) : ''}">${V.miniDist(u.perf, PD, { w: 150, h: 26, target: T ? T.target : null, dots: scoreDots(u.configs || []), cls: u.effort === m.best ? 'acc' : '' })}</span>`
+            : `<span class="c" data-sort="${num(mean(u.success)) ? mean(u.success) : ''}">${V.chanceBar(u.success)} ${pct(mean(u.success))}</span>`) +
+          `<span class="c" data-sort="${num(mean(u.cost)) ? mean(u.cost) : ''}">${V.miniDist(u.cost, CD, { w: 150, h: 26, log: true, dots: costDots(u.configs || []) })}</span></div>`;
       });
       const bu = m.units.find(u => u.effort === m.best);
       if (bu) s += `<p class="v-note">${bestWord === 'lowest' ? 'Lowest' : 'Highest'} mean: <b>${esc(m.best)}</b>, ${esc(score(bu.perf.mean))} at ${usd(mean(bu.cost))}.` +
@@ -153,7 +157,7 @@
   h += `<section class="v-q" id="q2"><p class="v-qno">2</p><h2>Which model and effort?</h2><p class="v-answer" id="a2">${answer2()}</p>`;
   if (mine.length) h += `<div class="v-models" id="models">${modelBlocks(mine)}</div>`;
   if (never.length) h += `<details class="v-more" id="d-never"><summary><span class="st">Models you have not run here (${never.length})</span><span class="sa">Their estimates come from shipped runs and the prior alone.</span></summary><div class="v-body"><div class="v-models" id="never">${modelBlocks(never)}</div></div></details>`;
-  if (models.length) h += `<p class="v-figcap"><b>Figure 2.</b> Grouped by model, efforts low to max. ${SN ? 'Left: ' + esc(scoreWord) + ', target dashed. ' : 'Left: the chance of an accepted result. '}Right: cost per run on a log scale. Dots are your runs of one agent alone at that setting. Shapes are drawn from the mean and the 80% range.</p>`;
+  if (models.length) h += `<p class="v-figcap"><b>Figure 2.</b> Grouped by model, efforts low to max. ${SN ? 'Left: ' + esc(scoreWord) + ', target dashed. ' : 'Left: the chance of an accepted result. '}Right: cost per run on a log scale. The dot is the predicted mean, the thick line the 80% range, the thinner lines 90% and 95%. Small dots under the line are your runs of one agent alone at that setting. Click a column header to sort a model's efforts.</p>`;
   h += '</section>';
 
   // ------------------------------------------------------------ 3. is more spend worth it
@@ -204,16 +208,28 @@
     <dt>Dropped</dt><dd>${dropped || 'nothing'}</dd></dl>`;
   if (RUNS.length) h += `<div class="v-fig"><div id="runsplot"></div><p class="v-figcap"><b>Figure 5.</b> Your ${fmt.int(RUNS.length)} runs ${SN && RUNS.some(r => num(r.score)) ? 'by ' + esc(scoreWord) : 'by cost, log scale'}, one row per ${RUNS.some(r => r.subtype) ? 'subtype' : 'task type'}. Hover a dot for the run.</p></div>`;
   h += `<details class="v-more" id="d-data"><summary><span class="st">Data behind the fit</span><span class="sa">Rows per source and head, dropped rows, the scale of each level, and the sensitivity to the benchmark prior.</span></summary><div class="v-body est" id="est-data"></div></details></section>`;
-  h += `<p class="v-foot">loopmath posterior, fit ${esc(fit.id || 'n/a')}${D.generated_at ? ', page written ' + esc(fmt.dt(D.generated_at)) : ''}. Ranges are 80%; shapes are drawn from the mean and the 80% range. The same numbers are in <code>loopmath posterior --json</code>.</p></div>`;
+  h += `<p class="v-foot">loopmath posterior, fit ${esc(fit.id || 'n/a')}${D.generated_at ? ', page written ' + esc(fmt.dt(D.generated_at)) : ''}. Ranges are 80%; each estimate is drawn as a dot for its mean on lines for its 80%, 90% and 95% ranges. The same numbers are in <code>loopmath posterior --json</code>.</p></div>`;
   app.innerHTML = h;
 
   // ------------------------------------------------------------ figures
-  let all = false;
+  // P7: a click on a column header sorts the whole list (not only the rows shown), a second click reverses.
+  let all = false, order = null;
+  const SORTS = { name: [w => w.name, 1], chance: [w => mean(chanceOf(w), null), -1], score: [w => mean(w.perf, null), better === 'lower' ? 1 : -1],
+    cost: [w => RES && w.ell ? mean(w.ell, null) : mean(w.cost, null), 1] };
+  const sorted = () => !order ? ranked : ranked.map((w, i) => ({ w, i, v: SORTS[order.key][0](w) }))
+    .sort((a, b) => LM.sortCmp(typeof a.v === 'string' ? a.v.toLowerCase() : a.v, typeof b.v === 'string' ? b.v.toLowerCase() : b.v, order.dir) || a.i - b.i).map(o => o.w);
+  const sh = (key, label, cls) => `<span class="lm-sort${cls ? ' ' + cls : ''}" data-sk="${key}" tabindex="0" role="button" title="sort by this column; click again to reverse"${order && order.key === key ? ` aria-sort="${order.dir > 0 ? 'ascending' : 'descending'}"` : ''}>${label}</span>`;
+  function sortBy(key) {
+    order = order && order.key === key ? { key, dir: -order.dir } : { key, dir: SORTS[key][1] };
+    listRows();
+    const h = document.querySelector(`#wl [data-sk="${key}"]`);
+    if (h) h.focus();
+  }
   function listRows() {
     const host = document.getElementById('wl');
     if (!host) return;
-    const list = all ? ranked : ranked.slice(0, TOP);
-    let s = `<div class="r h"><span>graph</span><span>workflow</span><span>${esc(chanceWords)}</span><span>${SN ? esc(scoreWord) : ''}</span><span class="cs">${RES ? 'per accepted result' : 'cost per run'}</span></div>`;
+    const list = all ? sorted() : sorted().slice(0, TOP);
+    let s = `<div class="r h"><span>graph</span>${sh('name', 'workflow')}${sh('chance', esc(chanceWords))}${SN ? sh('score', esc(scoreWord)) : '<span></span>'}${sh('cost', RES ? 'per accepted result' : 'cost per run', 'cs')}</div>`;
     list.forEach(w => {
       const c = chanceOf(w), rs = runsOf([w.key]), reached = rs.filter(r => r.reached).length;
       const money = RES && w.ell ? `<b>${usd(w.ell.mean)}</b><span class="sub">${rng(w.ell, usd)}</span><span class="sub">${usd(mean(w.cost))} a run</span>${tail(w.ell, w.cost)}`
@@ -236,8 +252,17 @@
   const wl = document.getElementById('wl');
   if (wl) {
     listRows();
-    wl.addEventListener('click', e => { const r = e.target.closest('.r[data-wf]'); if (r) openWorkflow(+r.getAttribute('data-wf')); });
-    wl.addEventListener('keydown', e => { const r = e.target.closest('.r[data-wf]'); if (r && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openWorkflow(+r.getAttribute('data-wf')); } });
+    wl.addEventListener('click', e => {
+      const k = e.target.closest('[data-sk]');
+      if (k) { sortBy(k.getAttribute('data-sk')); return; }
+      const r = e.target.closest('.r[data-wf]'); if (r) openWorkflow(+r.getAttribute('data-wf'));
+    });
+    wl.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const k = e.target.closest('[data-sk]');
+      if (k) { e.preventDefault(); sortBy(k.getAttribute('data-sk')); return; }
+      const r = e.target.closest('.r[data-wf]'); if (r) { e.preventDefault(); openWorkflow(+r.getAttribute('data-wf')); }
+    });
   }
   const more = document.getElementById('wlmore');
   if (more) more.addEventListener('click', () => { all = !all; listRows(); more.textContent = all ? `Show the top ${TOP}` : `Show all ${W.length} workflows`; });
@@ -270,6 +295,9 @@
   }
   drawSpend();
   drawRuns();
+  // P7: each model's efforts sort by effort, score or chance, and cost; every data table on the page sorts too
+  document.querySelectorAll('.v-mb').forEach(mb => LM.sortable(mb, { head: ':scope > .er.h > span', rows: ':scope > .er:not(.h)' }));
+  LM.autoSort();
   V.onResize(() => { drawSpend(); drawRuns(); });
   if (window.LMPosterior) window.LMPosterior.init();
   if (location.hash === '#open') document.querySelectorAll('details.v-more').forEach(d => { d.open = true; });

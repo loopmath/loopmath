@@ -824,6 +824,92 @@ def _iv3(d: Any) -> dict[str, Any] | None:
     return {k: (round(float(d[k]), 6) if isinstance(d.get(k), (int, float)) else None) for k in ("mean", "lo", "hi")}
 
 
+# P6 (0.2.1): the page draws every estimate as a dot for the mean, a line for the 80% range and two thinner
+# lines for the 90% and 95% ranges. An interval gains `bands` {"80": [lo, hi], "90": [...], "95": [...]} and
+# `bands_from`: "draws" when the view has the prediction's draws, else "80" (derived from the 80% range).
+Z80, Z90, Z95 = 1.2815516, 1.6448536, 1.9599640
+
+
+def _derived_bands(d: dict[str, Any], log: bool) -> dict[str, list[float]] | None:
+    """The 90% and 95% ranges from the 80% one, as a split normal through the mean and the 80% ends (in log
+    space for money and multipliers, around the geometric middle of the range). They contain the 80% range."""
+    lo, hi, mean = d.get("lo"), d.get("hi"), d.get("mean")
+    if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in (lo, hi)) or hi < lo:
+        return None
+    out: dict[str, list[float]] = {"80": [float(lo), float(hi)]}
+    if log and lo > 0:
+        a, b = math.log(lo), math.log(hi)
+        c, s = (a + b) / 2, (b - a) / (2 * Z80)
+        for key, z in (("90", Z90), ("95", Z95)):
+            out[key] = [min(float(lo), math.exp(c - z * s)), max(float(hi), math.exp(c + z * s))]
+        return out
+    m = float(mean) if isinstance(mean, (int, float)) and lo <= mean <= hi else (lo + hi) / 2
+    sl, sh = (m - lo) / Z80, (hi - m) / Z80
+    for key, z in (("90", Z90), ("95", Z95)):
+        out[key] = [min(float(lo), m - z * sl), max(float(hi), m + z * sh)]
+    return out
+
+
+def _draw_bands(draws: Any, d: dict[str, Any]) -> dict[str, list[float]] | None:
+    """The central 90% and 95% ranges of the same draws the 80% range came from (plain percentiles)."""
+    import numpy as np
+
+    lo, hi = d.get("lo"), d.get("hi")
+    if draws is None or not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+        return None
+    a = np.asarray(draws, dtype=float).ravel()
+    a = a[np.isfinite(a)]
+    if a.size < 20:
+        return None
+    q = np.percentile(a, [2.5, 5.0, 95.0, 97.5])
+    return {"80": [float(lo), float(hi)], "90": [min(float(lo), float(q[1])), max(float(hi), float(q[2]))],
+            "95": [min(float(lo), float(q[0])), max(float(hi), float(q[3]))]}
+
+
+def with_bands(d: dict[str, Any] | None, draws: Any = None, *, log: bool = False,
+               clip: tuple[float, float] | None = None) -> dict[str, Any] | None:
+    """`d` with `bands` and `bands_from` added in place: from `draws` when given and usable, else from the
+    80% range. `clip` bounds the ranges (a chance stays in 0 to 1)."""
+    if not isinstance(d, dict):
+        return d
+    bands, src = _draw_bands(draws, d), "draws"
+    if bands is None:
+        bands, src = _derived_bands(d, log), "80"
+    if bands is None:
+        return d
+    if clip is not None:
+        bands = {k: [max(clip[0], v[0]), min(clip[1], v[1])] for k, v in bands.items()}
+    d["bands"] = {k: [round(v[0], 6), round(v[1], 6)] for k, v in bands.items()}
+    d["bands_from"] = src
+    return d
+
+
+def _predict_draws(state: Any, task: Task, configs: list[Configuration], rule: Any,
+                   rescue_usd: float | None = None) -> tuple[list[Any], list[dict[str, Any] | None]]:
+    """Predictions and, when the fitted state exposes them (FitState._predict_many), each one's draws: the
+    run's simulated cost (`run.sim_usd`), the chance (`g`) and the cost per accepted result (`ell`). Other
+    states give predictions only, and their bands come from the 80% range."""
+    fn = getattr(state, "_predict_many", None)
+    if callable(fn):
+        try:
+            out = fn(task, list(configs), rule, rescue_usd)
+            return [p for p, _ in out], [d if isinstance(d, dict) else None for _, d in out]
+        except (TypeError, ValueError):
+            pass
+    preds = state.predict_many(task, configs, rule, rescue_usd=rescue_usd)
+    return preds, [None] * len(preds)
+
+
+def _draw(draws: dict[str, Any] | None, key: str) -> Any:
+    """One draw array from `_predict_draws`, or None."""
+    if not draws:
+        return None
+    try:
+        return draws["run"].sim_usd if key == "cost" else draws[key]
+    except (KeyError, AttributeError, TypeError):
+        return None
+
+
 def _rec_rule(rec: dict[str, Any]) -> Any:
     """A stored recommendation's rule when it has a score target, else None."""
     from ..recommend.commands import UserError, parse_target
@@ -910,16 +996,20 @@ def results_block(state: Any, task: Task, configs: list[Configuration], rule: An
     if rule is None or rule.score is None:
         return {"target": None, "rescue": None, "workflows": {}, "chance_from": None}
     name = rule.score.name
-    preds = state.predict_many(task, configs, rule, rescue_usd=rescue["usd"] if rescue else None) if configs else []
+    preds, draws = (_predict_draws(state, task, configs, rule, rescue["usd"] if rescue else None)
+                    if configs else ([], []))
     rows = {}
-    for cfg, p in zip(configs, preds):
+    for cfg, p, dr in zip(configs, preds, draws):
         s = (p.scores or {}).get(name)
-        rows[cfg.id] = {"reach": _chance_to_reach(p, name), "reach_from": p.success_from,
-                        "p_accepted": _iv3(p.p_success),
-                        "score": _iv3(s.value) if s is not None else None,
-                        "cost_usd": _iv3(p.cost.usd),
+        g = _draw(dr, "g")
+        reach = _chance_to_reach(p, name)
+        rows[cfg.id] = {"reach": with_bands(reach, g if p.success_from == "score_head" else None, clip=(0.0, 1.0)),
+                        "reach_from": p.success_from,
+                        "p_accepted": with_bands(_iv3(p.p_success), g, clip=(0.0, 1.0)),
+                        "score": with_bands(_iv3(s.value)) if s is not None else None,  # no score draws here
+                        "cost_usd": with_bands(_iv3(p.cost.usd), _draw(dr, "cost"), log=True),
                         "expected_rescue_usd": round(max(0.0, p.ell.usd.mean - p.cost.usd.mean), 6) if rescue else None,
-                        "cost_per_accepted_usd": _iv3(p.ell.usd) if rescue else None,
+                        "cost_per_accepted_usd": with_bands(_iv3(p.ell.usd), _draw(dr, "ell"), log=True) if rescue else None,
                         "support": p.support}
     target = {"rule": rule.name, "definition": rule.definition, "score": name, "target": float(rule.score.target),
               "better": rule.score.better or "higher", **(source or {})}
@@ -971,16 +1061,18 @@ def units_block(state: Any, home: Path, task: Task, configs: list[Configuration]
             units.append(make_config(solo, settings_for_shape(solo, setting)))
     if not units:
         return []
-    preds = state.predict_many(task, units, rule)
+    preds, draws = _predict_draws(state, task, units, rule)
     out = []
-    for setting, cfg, p in zip(keys, units, preds):
+    for setting, cfg, p, dr in zip(keys, units, preds, draws):
         s = (p.scores or {}).get(score_name) if score_name else None
         ids = mine.get((setting.model, setting.effort), [])
         out.append({"provider": provider_of(setting.model), "harness": setting.harness, "model": setting.model,
-                    "effort": setting.effort, "config": cfg.id, "cost": _iv3(p.cost.usd),
-                    "perf": _iv3(s.value) if s is not None else None,
+                    "effort": setting.effort, "config": cfg.id,
+                    "cost": with_bands(_iv3(p.cost.usd), _draw(dr, "cost"), log=True),
+                    "perf": with_bands(_iv3(s.value)) if s is not None else None,  # no score draws here
                     "reach": _chance_to_reach(p, score_name) if rule is not None and score_name else None,
-                    "success": _iv3(p.p_success), "support": p.support, "user_model": setting.model in used,
+                    "success": with_bands(_iv3(p.p_success), _draw(dr, "g"), clip=(0.0, 1.0)),
+                    "support": p.support, "user_model": setting.model in used,
                     "runs": sum(counts.get(i, 0) for i in ids), "configs": ids})
     return out
 
@@ -1233,21 +1325,127 @@ def _support_text(n: dict[str, Any]) -> str:
     return f"{support} run{'' if support == 1 else 's'}{shared}"
 
 
-def summary_lines(data: dict[str, Any], limit: int = TERMINAL_LINES) -> list[str]:
-    """At most `limit` plain lines: the fit, the workflow graph when there is one, then the levels."""
+# I10 (0.2.1): rows about providers and models with none of your runs behind them are hidden unless --all.
+_MODEL_ROW_LEVELS = frozenset({"provider", "family", "version", "model", "family_effort", "role_family", "fsrc"})
+LEAD_WORKFLOWS = 5
+
+
+def not_run_here(n: dict[str, Any]) -> bool:
+    """A level row about a provider or model that none of your runs is behind (I10)."""
+    level = str(n.get("level", "")).replace(" x ", "_")  # older fits name interactions `family x effort`
+    return level in _MODEL_ROW_LEVELS and not (n.get("source_mix") or {}).get("user")
+
+
+def _score_text(d: Any, name: str) -> str:
+    if not isinstance(d, dict) or not isinstance(d.get("mean"), (int, float)):
+        return f"{name} n/a"
+    f = lambda v: f"{v:,.0f}" if abs(v) >= 100 else _num(v, 2)  # noqa: E731
+    return f"{name} {_iv(d, f)}"
+
+
+def _lead_lines(data: dict[str, Any], show_all: bool = False) -> tuple[list[str], int]:
+    """What your own runs support, first (I10): the target score and your workflows by their chance, then the
+    models you ran at their best effort. Returns the lines and how many unrun models were left out."""
+    res = data.get("results") if isinstance(data.get("results"), dict) else {}
+    target, rows = res.get("target"), res.get("workflows") or {}
+    name = data.get("score_name") or (target or {}).get("score")
+    # the score's direction: the target's, else the head's metadata (as the page does), else higher is better
+    better = (target or {}).get("better") or ((data.get("heads") or {}).get(f"score:{name}") or {}).get("better")
+    lower = bool(name) and better == "lower"
+    lines: list[str] = []
+    if target:
+        lines.append(f"Target: {target.get('definition') or target.get('rule')}"
+                     + (" (from --target)" if target.get("from") == "argument" else
+                        f" (from recommendation {target['rec']})" if target.get("rec") else ""))
+    elif name:
+        lines.append(f"Score: {name}; no target (pass --target '{name}{'<=' if lower else '>='}X' for the chance to reach it)")
+    fallback = any((r or {}).get("reach_from") == "success_head" for r in rows.values())
+    chance_word = "chance of an accepted result" if not target or fallback else f"chance to reach {target['target']:g}"
+
+    def chance(w: dict[str, Any]) -> Any:
+        r = rows.get(w.get("config")) or {}
+        return r.get("p_accepted") or ((w.get("prediction") or {}).get("p_success"))
+
+    def score(w: dict[str, Any]) -> Any:
+        r = rows.get(w.get("config")) or {}
+        return r.get("score") or ((((w.get("prediction") or {}).get("scores") or {}).get(name) or {}).get("value"))
+
+    mine = [w for w in data.get("workflows") or [] if int(w.get("runs") or 0) > 0]
+    if mine:
+        mine.sort(key=lambda w: -_mean(chance(w), -1.0))
+        shown = mine if show_all else mine[:LEAD_WORKFLOWS]
+        lines.append(f"Your workflows ({len(mine)}), by {chance_word}"
+                     + (f"; the top {len(shown)} (all: --all)" if len(shown) < len(mine) else "") + ":")
+        for w in shown:
+            c, cost = chance(w), ((rows.get(w.get("config")) or {}).get("cost_usd")
+                                  or ((w.get("prediction") or {}).get("cost") or {}).get("usd"))
+            parts = [_score_text(score(w), name)] if name and _mean(score(w), math.nan) == _mean(score(w), 0.0) else []
+            if isinstance(c, dict) and isinstance(c.get("mean"), (int, float)):
+                parts.append(f"{_pct(c['mean'])} chance")
+            if isinstance(cost, dict) and isinstance(cost.get("mean"), (int, float)):
+                parts.append(f"{_usd(cost['mean'])} a run{_mean_tail(cost)}")
+            n = int(w.get("runs") or 0)
+            parts.append(f"{n} run{'' if n == 1 else 's'}")
+            lines.append(f"  {w.get('label') or w.get('config')}: {', '.join(parts)}")
+    units = [u for u in data.get("units") or [] if isinstance(u, dict)]
+    models: dict[str, list[dict[str, Any]]] = {}
+    for u in units:
+        models.setdefault(str(u.get("model")), []).append(u)
+    ran = [m for m, us in models.items() if any(u.get("user_model") for u in us)]
+    unrun = [m for m in models if m not in ran]
+    listed = ran + (unrun if show_all else [])
+    if listed:
+        lines.append("Your models, one agent alone at its best effort" + (f" for {name}" if name else "") + ":"
+                     if ran else "Models, one agent alone at its best effort:")
+    for m in listed:
+        us = models[m]
+        key = (lambda u: _mean(u.get("perf"), -math.inf)) if name else (lambda u: _mean(u.get("success"), -1.0))
+        if lower:
+            key = lambda u: -_mean(u.get("perf"), math.inf)  # noqa: E731
+        best = max(us, key=key)
+        alone = sum(int(u.get("runs") or 0) for u in us)
+        has_perf = name and isinstance((best.get("perf") or {}).get("mean"), (int, float))
+        text = f"  {m}/{best.get('effort')}: " + (_score_text(best.get("perf"), name) if has_perf else
+                                                  f"{_pct(_mean(best.get('success')))} accepted")
+        cost = best.get("cost")
+        if isinstance(cost, dict) and isinstance(cost.get("mean"), (int, float)):
+            text += f", {_usd(cost['mean'])} a run{_mean_tail(cost)}"
+        text += f"; {alone} solo run{'' if alone == 1 else 's'} here" if m in ran else "; never run here"
+        lines.append(text)
+    return lines, 0 if show_all else len(unrun)
+
+
+def summary_lines(data: dict[str, Any], limit: int = TERMINAL_LINES, show_all: bool = False) -> list[str]:
+    """At most `limit` plain lines (any number with `show_all`): the fit, what your own runs support (the target
+    score, your workflows, your models), the workflow graph when there is one, then the levels. Rows about
+    providers and models none of your runs is behind are hidden unless `show_all`, with one line that says so."""
     heads = data.get("heads") or {}
-    lines = [_fit_line(data)] + _workflow_lines(data)
+    lead, unrun_models = _lead_lines(data, show_all)
+    lines = [_fit_line(data)] + lead + _workflow_lines(data)
     levels = data.get("levels") or {}
     many = len(heads_in(levels)) > 1
+    first = f"score:{data.get('score_name')}" if data.get("score_name") else None
     sections: list[tuple[str, list[str]]] = []
+    not_run = 0
     for name, nodes in levels.items():
         body = []
-        for n in nodes:
+        keep = [n for n in nodes if show_all or not not_run_here(n)]
+        not_run += len(nodes) - len(keep)
+        keep.sort(key=lambda n: n.get("head") != first)  # the target score's rows first, else in order
+        for n in keep:
             tag = f"[{n['head']}] " if many else ""
             body.append(f"  {tag}{_LEVEL_WORDS.get(n['level'], n['level'])} {key_text(n)}: {fmt_display(n, heads)}, "
                         f"{_support_text(n)}")
-        sections.append((name, body or ["  no estimates at this level yet"]))
-    room = limit - len(lines) - 1
+        if body or not nodes:
+            sections.append((name, body or ["  no estimates at this level yet"]))
+    notes = []
+    if not_run or unrun_models:
+        what = [f"{not_run} row{'' if not_run == 1 else 's'} about providers and models you have not run"] if not_run else []
+        what += [f"{unrun_models} model{'' if unrun_models == 1 else 's'} never run here"] if unrun_models else []
+        notes.append(f"{' and '.join(what)} hidden: use --all")
+    if show_all:
+        limit = 10 ** 9
+    room = limit - len(lines) - 1 - len(notes)
     total = sum(len(body) for _, body in sections)
     hidden = 0
     for name, body in sections:
@@ -1259,9 +1457,10 @@ def summary_lines(data: dict[str, Any], limit: int = TERMINAL_LINES) -> list[str
         lines.extend(body[:take])
         hidden += len(body) - take
         room -= 1 + take
+    lines = lines[:limit - len(notes) - (1 if hidden else 0)] + notes
     if hidden:
         lines.append(f"{hidden} of {total} rows not shown: use --level, --head, --json or --html")
-    return lines[:limit]
+    return lines
 
 
 # ---------------------------------------------------------------- page
@@ -1333,5 +1532,5 @@ def command(args: argparse.Namespace) -> int:
     if args.json:
         emit_json(SCHEMA, data)
     elif target is None:
-        print("\n".join(summary_lines(data)))
+        print("\n".join(summary_lines(data, show_all=bool(getattr(args, "all", False)))))
     return EXIT_OK

@@ -29,6 +29,7 @@ import numpy as np
 from scipy import sparse
 
 from ..taskmodel import FeatureConfigError, FeatureSet
+from . import design as design_rows
 from . import priors as prior_data
 from .design import (DESIGN_VERSION, Term, Unusable, cost_row, gate_row, parse_run, run_row, structure,
                      task_features, task_terms)
@@ -362,7 +363,25 @@ def _support(hr: HeadRows, X: sparse.csr_matrix, node_ids: list[str]) -> dict[st
 
 
 def seed_for(fit_id: str, head: str) -> int:
+    """A head's seed from the fit's `seed_key` (its fit id before 0.2.1)."""
     return int.from_bytes(hashlib.sha256(f"{fit_id}/{head}".encode()).digest()[:4], "little")
+
+
+def input_key(heads_rows: dict[str, HeadRows], specs: list, settings: dict) -> str:
+    """The fit's `seed_key` (spec 04 section 3): the sha256 of the design version, the settings that change the
+    posterior, the prior factors and every head's rows (terms, response, weight, run, source), each head's rows
+    sorted, so the same data and settings seed the same draws whatever the store's reading order."""
+    h = hashlib.sha256()
+    h.update(repr((DESIGN_VERSION, design_rows.TIMEBOX_EFFORT_COST, design_rows.TIMEBOX_LEVELS,
+                   sorted(settings.items()))).encode())
+    for spec in specs:
+        h.update(repr((spec.head, spec.terms, spec.mean, spec.var)).encode())
+    for name in sorted(heads_rows):
+        hr = heads_rows[name]
+        h.update(f"\n{name}:{len(hr.rows)}".encode())
+        for line in sorted(repr((t, y, w, r, src)) for t, y, w, r, src in zip(hr.rows, hr.y, hr.w, hr.runs, hr.sources)):
+            h.update(line.encode())
+    return h.hexdigest()
 
 
 def fit_head(hr: HeadRows, forest: Forest, factor_specs: list, *, eb: bool = True) -> dict:
@@ -502,6 +521,8 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         specs = []
         if not no_prior and "benchmark" not in without:
             specs = prior_data.benchmark_factors(benchmarks, weight=weight)
+        seed_key = input_key(heads_rows, specs, {"no_prior": no_prior, "without": sorted(without), "eb": eb,
+                                                  "benchmark_prior_weight": weight})
         forest = Forest()
         fitted = {}
         for name, hr in heads_rows.items():
@@ -546,6 +567,8 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         _atomic_json(partial / "design.json", design)
         meta = {
             "fit": fit_id, "created_at": now.isoformat(timespec="seconds"), "code_version": _code_version(),
+            "seed_key": seed_key, "timebox_effort": design_rows.TIMEBOX_EFFORT_COST,
+            "timebox_terms": list(design_rows.TIMEBOX_LEVELS),
             "options": {"no_prior": no_prior, "without": list(without), "full": full, "eb": eb,
                         "benchmark_prior_weight": weight},
             "runs_by_source": runs_by_source,
@@ -562,7 +585,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
                              "center": h["center"], "scale": h["scale"], "baseline": h["baseline"],
                              "iterations": h["fit"].iterations, "optimizer": h["fit"].info,
                              "log_evidence": _finite(h["fit"].log_evidence), "factors": h["factors"],
-                             "seed": seed_for(fit_id, name)}
+                             "seed": seed_for(seed_key, name)}
                       for name, h in fitted.items()},
             "scores": score_info,
             "draws": N_DRAWS,

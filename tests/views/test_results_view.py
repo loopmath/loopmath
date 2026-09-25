@@ -240,7 +240,7 @@ READ = r"""(() => {
     heads: qa('#wl .r.h span').map(s => s.textContent),
     rows: qa('#wl .r[data-wf]').map(r => ({cfg: r.getAttribute('data-cfg'), wf: +r.getAttribute('data-wf'), best: r.classList.contains('best'),
       name: r.querySelector('.nm').firstChild.textContent, chance: r.querySelector('.ch b') ? r.querySelector('.ch b').textContent : null,
-      money: r.querySelector('.cs b') ? r.querySelector('.cs b').textContent : null, dots: r.querySelectorAll('.dist circle').length,
+      money: r.querySelector('.cs b') ? r.querySelector('.cs b').textContent : null, dots: r.querySelectorAll('.dist circle.v-dot').length,
       boxes: r.querySelectorAll('.g rect').length})),
     mine: qa('#models .v-mb').map(m => ({model: m.getAttribute('data-model'), efforts: Array.from(m.querySelectorAll('.er[data-effort]')).map(e => e.getAttribute('data-effort'))})),
     never: qa('#never .v-mb').map(m => m.getAttribute('data-model')), panels: qa('#spend .v-mult').length,
@@ -290,7 +290,7 @@ def test_the_page_answers_the_five_questions_from_the_data(home, tmp_path, probe
         want = res[row["cfg"]]
         assert row["chance"] == f"{round(want['reach']['mean'] * 100)}%"
         assert row["money"] == f"${want['cost_per_accepted_usd']['mean']:.2f}"  # the page shows the JSON's number
-        assert row["dots"] == 2  # this workflow's runs, as dots on its score shape
+        assert row["dots"] == 2  # this workflow's runs, as dots under its score estimate
         chances.append(want["reach"]["mean"])
     assert chances == sorted(chances, reverse=True)
     assert next(x for x in r["rows"] if x["cfg"] == CONFIGS["bo3"].id)["boxes"] >= 3  # width 3 drawn as three workers

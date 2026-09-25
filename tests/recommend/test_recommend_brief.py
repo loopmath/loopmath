@@ -32,12 +32,18 @@ def test_brief_keeps_the_listed_keys_as_the_full_json_has_them(env, capsys):
     full = {k: v for k, v in _stored(env, brief["rec"]).items() if k != "candidates"}
     assert list(brief)[0] == "schema" and brief["schema"] == full["schema"] == "loopmath.recommend/2"
     assert set(brief) == {"schema", *(k for k in BRIEF_KEYS if k in full)}
-    for key in set(brief) - {"reference"}:
+    for key in set(brief) - {"reference", "choices"}:
         assert brief[key] == full[key], key
-    assert brief["reference"] == {k: v for k, v in full["reference"].items() if k != "prediction"}
+    ref = {k: v for k, v in full["reference"].items() if k != "prediction"}
+    ref["numbers"] = {k: v for k, v in ref["numbers"].items() if k != "bands"}
+    assert brief["reference"] == ref and "bands" in full["reference"]["numbers"]
+    # 0.2.1: the brief leaves out `bands` (the pages read them from the full JSON)
+    assert brief["choices"] == [{k: v for k, v in c.items() if k != "bands"} for c in full["choices"]]
+    assert all("bands" in c for c in full["choices"])
     assert brief["choices"] and all("key" in c for c in brief["choices"])
     assert "curve" not in brief and "alternatives" not in brief and "exploration" not in brief
-    assert len(brief_text) < len(json.dumps(full)) / 2 and len(brief_text) < 10_000
+    # 0.2.1 adds p_accepted_within and option to each choice and numbers object: 12,000 from 10,000
+    assert len(brief_text) < len(json.dumps(full)) / 2 and len(brief_text) < 12_000
 
 
 def test_the_goal_strategy_survives_the_projection(env, capsys):
@@ -52,7 +58,10 @@ def test_the_goal_strategy_survives_the_projection(env, capsys):
 def test_the_stored_recommendation_keeps_everything(env, capsys):
     brief, _, _ = _run(capsys, "--brief")
     stored = _stored(env, brief["rec"])
-    assert "curve" in stored and "candidates" in stored and stored["choices"] == brief["choices"]
+    assert "curve" in stored and "candidates" in stored
+    # the stored choices keep `bands` (0.2.1); the brief leaves them out
+    assert all("bands" in c for c in stored["choices"])
+    assert [{k: v for k, v in c.items() if k != "bands"} for c in stored["choices"]] == brief["choices"]
 
 
 @pytest.mark.parametrize("extra", [[], ["--brief"]])

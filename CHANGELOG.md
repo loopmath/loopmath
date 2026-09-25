@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.2.1 (2026-09-25)
+
+### recommend: cost per accepted result and the rescue
+
+- A missed run is priced by retrying with a rescue workflow (rescue kind `retry`, the new default). Each further attempt on the same task has half the chance of the one before (`rescue.decay`, default 0.5), up to 3 attempts in all, counting the first run (`rescue.max_attempts`). The rescue cost is the mean spend of those retries over their mean chance of success, so draws near zero no longer hide behind the mean chance. `rescue.max_attempts = 1` means no retries. The kinds `redo_usual`, `person` and `none` stay as config options.
+- The rescue workflow is the cheapest candidate whose chance is at least `rescue.min_chance` (default 0.70). When none reaches it, it is the most likely one, and `rescue.basis` says so. `rescue` gains `config`, `chance`, `run_cost_usd`, `decay`, `max_attempts`, `min_chance` and `p_accepted`.
+- With a score target and no usual workflow, the reference is the recorded workflow with the highest chance to reach the target (ties: the lower run cost), no longer the one with the lowest cost per success.
+- Every `numbers` object and every choice gain `p_accepted_within` (the chance of an accepted result within `attempts` attempts) and `bands` (50, 80, 90 and 95% central intervals for the chance, the run cost and the cost per accepted result).
+- With a score target, `choices` gains `most_likely`, the workflow most likely to reach the target, unless it is already another choice. There are up to five choices, each with `option`, its number from 1 in array order.
+- `recommend --brief` leaves `bands` out; the full `--json`, the stored recommendation and the page data keep them.
+- The message and the plan skill say it plainly: the run cost is what the agents cost for one run; the cost per accepted result adds the expected cost of fixing a miss by retrying with the rescue workflow. The chance of one run and the chance within the attempts are shown apart.
+
+### fit
+
+- Two fits of the same data give the same output: every head's draws are seeded from the fit's data and settings, not from the fit id.
+- Under a time box, effort and the workflow's shape (topology, position) move the predicted cost of a run less, since a timeboxed run's cost depends mostly on its horizon. The search prices timeboxed tasks with the same weights. Fits made before 0.2.1 keep their old weights.
+
+### Skills and CLI
+
+- The plan skill works outside a git repo: a repo the user names becomes `--repo`, and with no git checkout it leaves out `--base-commit` and says so in one line.
+- The import and update-fit skills say once when your runs are also in a shipped prior (`shipped_overlap` in the `run import` and `fit` JSON).
+- `run import --brief`: counts, failures, the overlap and the next step, in a few lines of JSON.
+- Payback is one number: `payback_runs` (at least 1), used by the message and the skill.
+- The plan skill lists the choices by option number, with the chance of one run, the run cost, the cost per accepted result and the chance within the attempts. You can paste "option 2" from the planning page.
+- Top-level help: `run` lists `record`; `recommend` says it gives choices.
+- `run start --choice` accepts `most_likely`, and run labels name each piece's width (`2 x model/effort`), as the choices and pages do.
+
+### Workflow builder
+
+- `loopmath builder` starts a local server on 127.0.0.1 for building your own workflow: `GET /api/context` gives the task, the choices, the candidates and the catalog of models and harnesses; `POST /api/predict` estimates a workflow you send, with the same numbers as `recommend`. The page it serves is a plain placeholder in this release.
+
+### Pages and posterior text
+
+- The planning page opens with a chart of chance against cost: every option as a point, numbered, with thin interval lines on both axes. Toggle between the cost per accepted result and the run cost.
+- Where a page drew a distribution shape, it now shows a dot for the mean, a line for the 80% range and thinner lines for the 90% and 95% ranges.
+- Tables on the planning, results and runs pages sort by a click on a column head.
+- The planning page's button says "Copy option" and copies `option <n>: <label>`, to paste into the conversation with your agent. An info icon beside the run cost and the cost per accepted result explains the two, and a column shows the chance within the attempts.
+- `loopmath posterior` (text) leads with the target metric and the models you ran. Rows about models never run here are hidden, with one line saying how many; `--all` shows them. `--json` is unchanged.
+
 ## 0.2.0 (2026-09-25)
 
 ### Upgrading from 0.1

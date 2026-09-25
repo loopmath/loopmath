@@ -1,11 +1,9 @@
 """The 0.2 planning page (lane 2E, D119): one decision first, lane 2A's strategy sentence verbatim (Z2 A), copy
-commands that the real `run start` parser accepts, and a page that fits a phone."""
+buttons that hand over an option (0.2.1 P4, lane 21B), and a page that fits a phone."""
 
 from __future__ import annotations
 
-import argparse
 import copy
-import shlex
 from pathlib import Path
 
 import pytest
@@ -35,20 +33,6 @@ def _strategy(data: dict) -> dict:
             "cost_per_accepted_usd": 11.21, "reference_cost_per_accepted_usd": 24.01}
 
 
-def _run_start_parser() -> argparse.ArgumentParser:
-    from loopmath import cli_registry
-
-    parser = argparse.ArgumentParser(prog="loopmath")
-    cli_registry.register(parser.add_subparsers(dest="command", required=True))
-    return parser
-
-
-def _parse(parser, line: str) -> argparse.Namespace:
-    words = shlex.split(line)
-    assert words[0] == "loopmath"
-    return parser.parse_args(words[1:])
-
-
 @pytest.mark.parametrize("where", ["goal", "choice"])
 def test_the_strategy_sentence_is_shown_verbatim_under_the_heading(where, tmp_path, probe):
     data = recommend2(_score())
@@ -75,49 +59,41 @@ def test_no_strategy_sentence_when_it_is_null(tmp_path, probe):
     assert got["exceptions"] == [] and got["result"]["text"] is None and got["result"]["count"] == 0
 
 
-def test_every_copy_command_parses_with_run_start(tmp_path, probe):
+def test_every_copy_button_hands_over_an_option(tmp_path, probe):
+    """P4 (0.2.1): no CLI commands on the page; every button says "Copy option" and copies what the user pastes into
+    the conversation with their agent: `option <n>: <label>` for a numbered option, else `workflow <config id>: <label>`."""
     data = recommend2(_score())
     data["task"]["title"] = "Fix the 'quoted' thing"
-    data["task"]["features"] = {"size": "large files"}
     data["pair"] = {"members": [data["goal"]["config"], data["exploration"]["best_value"]["candidate"]["config"]["id"]],
                     "explore_pick": "best_value", "instructions": ["run start --new-slate, then run start --slate SLT"]}
-    r = read_page(tmp_path, probe, data, "plans-commands")
-    parser = _run_start_parser()
-    lines = [r["pickCmd"], *r["betCmds"], *(o["cmd"] for o in r["opened"].values()), *r["pairCmd"].split("\n")]
-    assert len(lines) >= 8
-    for line in lines:
-        args = _parse(parser, line)
-        assert (args.command, args.run_command) == ("run", "start") and args.rec == data["rec"]
-        assert args.title == "Fix the 'quoted' thing" and args.feature == ["size=large files"] and args.task_type == "feature"
-    first, second = (_parse(parser, x) for x in r["pairCmd"].split("\n"))
-    assert first.config == data["goal"]["config"] and first.new_slate and first.source == "alternative"
-    assert second.config == data["pair"]["members"][1] and second.slate == "SLT" and second.source == "exploration"
-    assert _parse(parser, r["pickCmd"]).config == data["goal"]["config"]
+    r = read_page(tmp_path, probe, data, "plans-copies")
+    lines = [r["pickCmd"], *r["betCmds"], *(o["cmd"] for o in r["opened"].values()), r["pairCmd"]]
+    assert len(lines) >= 8 and not any("loopmath" in x or "--" in x for x in lines), lines
+    assert all(o["cmd"].startswith(f"workflow {cfg}: ") for cfg, o in r["opened"].items())
+    assert r["pickCmd"].startswith(f"workflow {data['goal']['config']}: ")
+    assert r["pairCmd"].startswith(f"workflow {data['goal']['config']}: ") and ", and beside it workflow " in r["pairCmd"]
+    assert r["copyLabels"] == ["Copy option"]
 
 
-def test_the_options_a_stored_recommendation_names_start_with_choice(tmp_path, probe):
-    """Lane 2D's `run start --rec REC --choice KEY` for the goal, the reference, the cheapest run and the pair;
-    any other option keeps the full `--config` command."""
+def test_numbered_options_copy_their_number_and_label(tmp_path, probe):
+    """The choices are numbered options (21M's `option`, else their place): the goal, the pair, the reference and the
+    cheapest run copy `option <n>: <label>`; any other workflow copies its configuration id."""
     data = recommend2(_score())
     goal, ref = data["goal"]["config"], data["reference"]["config"]["id"]
     other = next(c["config"]["id"] for c in data["candidates"] if c["config"]["id"] not in (goal, ref))
     explore = data["exploration"]["best_value"]["candidate"]["config"]["id"]
     data["pair"] = {"members": [goal, explore], "explore_pick": "best_value", "instructions": []}
-    data["choices"] = [{"key": "goal", "config": goal, "members": [goal]},
-                       {"key": "pair", "config": goal, "members": [goal, explore]},
-                       {"key": "reference", "config": ref, "members": [ref]},
-                       {"key": "cheapest_run", "config": other, "members": [other]}]
+    data["choices"] = [{"key": "goal", "config": goal, "members": [goal], "label": "the goal label"},
+                       {"key": "pair", "config": goal, "members": [goal, explore], "label": "goal + explore"},
+                       {"key": "reference", "config": ref, "members": [ref], "label": "the reference label"},
+                       {"key": "cheapest_run", "config": other, "members": [other], "label": "the cheap label"}]
     r = read_page(tmp_path, probe, data, "plans-choice")
-    parser = _run_start_parser()
-    want = {goal: "goal", ref: "reference", other: "cheapest_run"}
-    for cfg, key in [(None, "goal"), *want.items()]:
-        line = r["pickCmd"] if cfg is None else r["opened"][cfg]["cmd"]
-        args = _parse(parser, line)
-        assert (args.choice, args.rec, args.config, args.source) == (key, data["rec"], None, None), line
-    pair = _parse(parser, r["pairCmd"])
-    assert "\n" not in r["pairCmd"] and (pair.choice, pair.rec, pair.new_slate, pair.slate) == ("pair", data["rec"], False, None)
-    rest = [c for c in r["opened"] if c not in want]
-    assert rest and all(_parse(parser, r["opened"][c]["cmd"]).config == c for c in rest)
+    assert r["pickCmd"] == "option 1: the goal label" and r["pairCmd"] == "option 2: goal + explore"
+    assert r["opened"][ref]["cmd"] == "option 3: the reference label" and r["opened"][other]["cmd"] == "option 4: the cheap label"
+    marks = {row["cfg"]: row["marks"] for row in r["rows"]}
+    assert marks[goal][0] == "option 1" and marks[ref][0] == "option 3" and marks[other][0] == "option 4"
+    rest = [c for c in r["opened"] if c not in (goal, ref, other)]
+    assert rest and all(r["opened"][c]["cmd"].startswith(f"workflow {c}: ") for c in rest)
 
 
 def test_search_origins_read_as_words(tmp_path, probe):
@@ -131,29 +107,6 @@ def test_search_origins_read_as_words(tmp_path, probe):
     for word in ("found by the search", "found in a search draw", "near the pick"):
         assert word in subs and word in r["body"]
     assert not any(w in subs for w in ("front", "thompson", "polish"))
-
-
-@pytest.mark.parametrize("horizon,features,want", [
-    ({"seconds": 5400.0, "from": "given", "used": True}, {"size": "large", "horizon_s": "5400"}, "5400"),
-    ({"seconds": None, "from": "given", "used": False}, {"size": "large", "horizon_s": "none"}, "none"),
-    ({"seconds": 7200.0, "from": "repo", "used": True}, {"size": "large"}, "7200"),
-    ({"seconds": None, "from": "none", "used": False}, {"size": "large"}, None),
-    (None, {"size": "large", "horizon_s": "1800"}, "1800"),
-])
-def test_the_copy_command_carries_the_horizon_the_prediction_used(horizon, features, want, tmp_path, probe):
-    """Lane 2C's horizon goes as `--horizon`, never as a feature: the one given, or the one the fit filled in, so the
-    run is recorded under the time budget it was priced for; none when the prediction had none."""
-    parser = _run_start_parser()
-    data = recommend2(_score())
-    data["task"]["features"] = features
-    if horizon is None:
-        data["task"].pop("horizon", None)
-    else:
-        data["task"]["horizon"] = horizon
-    r = read_page(tmp_path, probe, data, f"plans-horizon-{want}")
-    for line in [r["pickCmd"], *(o["cmd"] for o in r["opened"].values())]:
-        args = _parse(parser, line)
-        assert args.horizon == want and args.feature == ["size=large"], line
 
 
 def test_the_arithmetic_and_the_order_hold_on_the_page(tmp_path, probe):

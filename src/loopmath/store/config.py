@@ -2,7 +2,7 @@
 
 Keys are dotted paths into the TOML tables: `org`, `acceptance_rule`,
 `rules.<name>`, `goal`, `rescue.kind`, `rescue.person_usd_per_hour`,
-`rescue.hours`, `models.allowed`, `harnesses`, `subtypes`, `labeler`,
+`rescue.hours`, `rescue.decay`, `rescue.max_attempts`, `rescue.min_chance`, `models.allowed`, `harnesses`, `subtypes`, `labeler`,
 `benchmark_prior_weight`, `explore.default_pick`, `explore.auto_payback_runs`,
 `referee.model`, `budget.usd`, `budget.period`, `outcome.q.<tier>`,
 `onboard.labeler` (Analyst D39: `claude:<model>`, `codex:<model>`,
@@ -35,7 +35,7 @@ _MISSING = object()
 DEFAULTS: dict[str, Any] = {
     "acceptance_rule": "tests",
     "goal": "default",
-    "rescue": {"kind": "redo_usual", "hours": 1},
+    "rescue": {"kind": "retry", "hours": 1, "decay": 0.5, "max_attempts": 3, "min_chance": 0.7},
     "models": {"allowed": []},
     "harnesses": ["claude-code", "codex"],
     "subtypes": [],
@@ -47,7 +47,7 @@ DEFAULTS: dict[str, Any] = {
 
 CHOICES: dict[str, tuple[str, ...]] = {
     "goal": ("default", "p50", "p70", "p80", "p90", "p95", "p99"),
-    "rescue.kind": ("redo_usual", "person", "none"),
+    "rescue.kind": ("retry", "redo_usual", "person", "none"),
     "explore.default_pick": ("best_value", "max_gain"),
     "budget.period": ("week", "month", "none"),
 }
@@ -58,6 +58,7 @@ NUMBER_KEYS = ("rescue.person_usd_per_hour", "rescue.hours", "benchmark_prior_we
                "explore.auto_payback_runs", "budget.usd", "plan.time_budget_s")
 POSITIVE_KEYS = ("plan.time_budget_s",)
 COUNT_KEYS = ("plan.exact_picks",)  # whole numbers >= 0; lane 6 owns the defaults of the plan keys
+RESCUE_KEYS = ("rescue.decay", "rescue.max_attempts", "rescue.min_chance")  # `check_rescue`
 KNOWN_ROOTS = ("org", "acceptance_rule", "rules", "goal", "rescue", "models", "harnesses", "subtypes",
                "labeler", "benchmark_prior_weight", "explore", "referee", "budget", "outcome", "usual",
                "usual_meta", "research", "onboard", "plan", "efforts", "features")
@@ -230,6 +231,19 @@ def _coerce_feature(parts: list[str], value: str) -> Any:
                       "description")
 
 
+def check_rescue(key: str, value: Any) -> Any:
+    """A `retry` rescue key's value, or ConfigError: `rescue.decay` in (0, 1], `rescue.max_attempts` a whole
+    number of at least 1 (1: no retries), `rescue.min_chance` in [0, 1]."""
+    number = not isinstance(value, bool) and isinstance(value, (int, float))
+    if key == "rescue.decay" and not (number and 0 < value <= 1):
+        raise ConfigError(f"rescue.decay takes a number above 0 and at most 1, got {value!r}")
+    if key == "rescue.max_attempts" and not (number and float(value).is_integer() and value >= 1):
+        raise ConfigError(f"rescue.max_attempts takes a whole number of 1 or more, got {value!r}")
+    if key == "rescue.min_chance" and not (number and 0 <= value <= 1):
+        raise ConfigError(f"rescue.min_chance takes a number from 0 to 1, got {value!r}")
+    return int(value) if key == "rescue.max_attempts" else value
+
+
 def coerce(key: str, value: str) -> Any:
     """A `config set` value: JSON when it parses, comma lists for list keys, numbers for number keys."""
     parts = split_key(key)
@@ -270,6 +284,8 @@ def coerce(key: str, value: str) -> Any:
             raise ConfigError(f"{dotted} takes a number in [0.5, 1], got {value!r}")
     if dotted in CHOICES and parsed is not None and parsed not in CHOICES[dotted]:
         raise ConfigError(f"{dotted} is one of {', '.join(CHOICES[dotted])}; got {value!r}")
+    if dotted in RESCUE_KEYS and parsed is not None:
+        parsed = check_rescue(dotted, parsed)
     return parsed
 
 

@@ -74,7 +74,7 @@ def plan(belief, tasks, home, budget, max_slates=None, slate_size=2, **limits):
     limits = limits or {"exact_picks": 100}
     return B.plan_goal_explore(belief, [(t, {}) for t in tasks], DEFAULT_RULE, budget_usd=budget,
                                max_slates=max_slates, slate_size=slate_size, home=home, conf=Conf.load(home),
-                               models=None, settings=Settings(goal="p90"), **limits)
+                               models=None, settings=Settings(goal="p90", rescue_kind="redo_usual"), **limits)
 
 
 def explore_ids(result):

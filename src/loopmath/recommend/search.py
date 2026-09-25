@@ -417,10 +417,10 @@ def _multiset_take(row: Sequence[tuple], common: Counter) -> list:
     return out
 
 
-def cost_terms(st: Structure, piece: str, k: int, setting: Setting) -> tuple:
+def cost_terms(st: Structure, piece: str, k: int, setting: Setting, effort: float = 1.0) -> tuple:
     """A piece's cost row without the task part, as `FitState._plan` builds it (with the psrc and fsrc nodes of
-    the source a prediction is for)."""
-    return cost_rest(st, piece, k, setting, source=PREDICT_SOURCE)
+    the source a prediction is for, and the effort terms at `effort`, `FitState.effort_for(task)`)."""
+    return cost_rest(st, piece, k, setting, source=PREDICT_SOURCE, effort=effort)
 
 
 class _Varied:
@@ -450,6 +450,7 @@ class Tables:
         self.fs, self.task, self.obj, self.settings, self.copies = fs, task, obj, list(settings), copies
         self.S = len(self.settings)
         self.tp = fs._task_parts(task)
+        self.effort = fs.effort_for(task) if hasattr(fs, "effort_for") else 1.0  # spec 04 section 1, under a timebox
         self.half_u = 0.5 * fs.heads["cost"].sigma ** 2
         self.draw_idx = draw_idx
         tg = self.tp["gate"]
@@ -484,13 +485,13 @@ class Tables:
         round's setting parts; the rows are checked on the last setting."""
         base = self._memo.get(("cost_split", id(st), piece, 1))
         if base is None:
-            base = split_rows([cost_terms(st, piece, 1, s) for s in self.settings])
+            base = split_rows([cost_terms(st, piece, 1, s, self.effort) for s in self.settings])
             self._memo[("cost_split", id(st), piece, 1)] = base
         if k == 1:
             return base
         parts = base[1]
-        case = _minus(cost_terms(st, piece, k, self.settings[0]), Counter(parts[0]))
-        check = cost_terms(st, piece, k, self.settings[-1])
+        case = _minus(cost_terms(st, piece, k, self.settings[0], self.effort), Counter(parts[0]))
+        check = cost_terms(st, piece, k, self.settings[-1], self.effort)
         if Counter(case) + Counter(parts[-1]) != Counter(check):
             raise NotExact(f"the setting part of {piece}'s cost row changes with the round")
         if {t[0] for t in case} & {t[0] for p in parts for t in p}:

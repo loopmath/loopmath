@@ -1,5 +1,5 @@
 // Shared visual system for the results page and the planning page (lane 2E, 0.2): number formats, linear and
-// log scales, distribution shapes, workflow graphs (a piece of width n drawn as n worker boxes), ridges, forests,
+// log scales, dot-and-line intervals (P6, 0.2.1; they replace 0.2.0's distribution shapes), workflow graphs (a piece of width n drawn as n worker boxes), ridges, forests,
 // score against cost, the payback chart, inline bars, tooltips and copy buttons. Pages render from #data only.
 LM.Viz = (() => {
   const { esc, num, fmt } = LM;
@@ -93,6 +93,28 @@ LM.Viz = (() => {
     }
     return `M${P(keep[0][0], yBase)}L` + keep.map(p => P(p[0], yBase - p[1] * hgt)).join('L') + `L${P(keep[keep.length - 1][0], yBase)}Z`;
   }
+
+  // ---------------------------------------------------------------- dot and line (P6, 0.2.1)
+  // An estimate as a dot for the mean on a line for its 80% range, with two thinner lines for the 90% and 95%
+  // ranges (95% the thinnest), from LM.bands (the view's bands, else derived from the 80% range).
+  // o: {cls, r, clip: [0, 1] for a chance}. dotLine draws into an SVG element, dotLineSvg returns markup.
+  const BANDS = ['95', '90', '80'];
+  function dotLine(g, x, sx, y, o = {}) {
+    const b = LM.bands(x, { log: !!sx.log, clip: o.clip }), cls = o.cls ? ' ' + o.cls : '';
+    if (b) BANDS.forEach(k => { if (b[k]) el('line', { x1: sx(b[k][0]).toFixed(1), x2: sx(b[k][1]).toFixed(1), y1: y, y2: y, class: `v-band v-b${k}${cls}` }, g); });
+    if (x && num(x.mean)) el('circle', { cx: sx(x.mean).toFixed(1), cy: y, r: o.r || 4.2, class: 'v-mdot' + cls }, g);
+    return b;
+  }
+  function dotLineSvg(x, sx, y, o = {}) {
+    const b = LM.bands(x, { log: !!sx.log, clip: o.clip }), cls = o.cls ? ' ' + o.cls : '';
+    let s = '';
+    if (b) BANDS.forEach(k => { if (b[k]) s += `<line x1="${sx(b[k][0]).toFixed(1)}" x2="${sx(b[k][1]).toFixed(1)}" y1="${y}" y2="${y}" class="v-band v-b${k}${cls}"/>`; });
+    if (x && num(x.mean)) s += `<circle cx="${sx(x.mean).toFixed(1)}" cy="${y}" r="${o.r || 4.2}" class="v-mdot${cls}"/>`;
+    return s;
+  }
+  // The values an axis must hold to show an estimate's 95% range.
+  const extent = (x, log) => { const b = LM.bands(x, { log }); return b ? [b['95'] ? b['95'][0] : x.lo, b['95'] ? b['95'][1] : x.hi, x.mean].filter(num) : []; };
+  const bandText = (x, f, o = {}) => { const b = LM.bands(x, o); return !b ? '' : ['80', '90', '95'].filter(k => b[k]).map(k => `${k}%: ${f(b[k][0])} to ${f(b[k][1])}`).join('; '); };
 
   // ---------------------------------------------------------------- tooltips and copy buttons
   const hover = (node, html) => {
@@ -219,12 +241,11 @@ LM.Viz = (() => {
       const hit = el('rect', { x: 0, y: y - rowH / 2, width: W, height: rowH, class: 'v-hit' }, g);
       if (r.label) el('text', { x: 4, y: y + (r.sub ? -2 : 4), class: 'v-rl' }, g, clip(r.label, Math.floor(labelW / 6.6)));
       if (r.sub) el('text', { x: 4, y: y + 11, class: 'v-rs' }, g, clip(r.sub, Math.floor(labelW / 5.6)));
-      if (r.x && num(r.x.lo) && num(r.x.hi)) {
-        el('path', { d: shapePath(r.x, sx, base, rowH * 0.62, o.mode || 'up'), class: 'v-dist' }, g);
-        el('line', { x1: sx(r.x.lo), x2: sx(r.x.hi), y1: base, y2: base, class: 'v-iv' }, g);
-        if (num(r.x.mean)) el('line', { x1: sx(r.x.mean), x2: sx(r.x.mean), y1: base - 7, y2: base + 1, class: 'v-mean' }, g);
-      }
-      (r.dots || []).forEach(d => { const c = el('circle', { cx: sx(d.v), cy: base, r: 4, class: 'v-dot' + (d.cls ? ' ' + d.cls : '') }, g); if (d.tip) hover(c, d.tip); });
+      // P6: the estimate as a dot and lines on the row's middle; the runs' own dots sit just under it
+      const hasX = r.x && num(r.x.lo) && num(r.x.hi);
+      if (hasX) dotLine(g, r.x, sx, y, { r: 4.6 });
+      const dy = hasX ? Math.min(base, y + 9) : base;
+      (r.dots || []).forEach(d => { const c = el('circle', { cx: sx(d.v), cy: dy, r: hasX ? 3 : 4, class: 'v-dot' + (d.cls ? ' ' + d.cls : '') }, g); if (d.tip) hover(c, d.tip); });
       if (r.tip) hover(hit, r.tip);
       if (o.onClick) hit.addEventListener('click', () => o.onClick(r));
     });
@@ -319,29 +340,33 @@ LM.Viz = (() => {
     return svg;
   }
 
-  // Inline bars: a chance (0 to 1) and money on a log scale; the mean as a tick, the 80% range as a light band.
-  const chanceBar = (x, cls) => !x || !num(x.mean) ? '' : `<span class="v-bar ${cls || ''}" title="${esc(pct(x.mean) + (num(x.lo) ? ` (${pct(x.lo)} to ${pct(x.hi)})` : ''))}">` +
-    (num(x.lo) && num(x.hi) ? `<i class="r" style="left:${(clamp01(x.lo) * 100).toFixed(1)}%;width:${Math.max(1, (clamp01(x.hi) - clamp01(x.lo)) * 100).toFixed(1)}%"></i>` : '') +
-    `<i class="m" style="left:${(clamp01(x.mean) * 100).toFixed(1)}%"></i></span>`;
+  // Inline bars: a chance (0 to 1) and money on a log scale. P6: a chance is a dot for the mean on lines for
+  // its 80%, 90% and 95% ranges; money keeps the mean as a tick and the 80% range as a light band.
+  function chanceBar(x, cls) {
+    if (!x || !num(x.mean)) return '';
+    const sx = lin(0, 1, 4, 80), t = pct(x.mean) + (num(x.lo) ? ` (${bandText(x, pct, { clip: [0, 1] })})` : '');
+    // the ranges are in the wrapper's title, so the cell's text stays the numbers beside the bar
+    return `<span class="v-cbarw" title="${esc(t)}"><svg class="v-cbar ${cls || ''}" viewBox="0 0 84 12" width="84" height="12" role="img" aria-label="${esc(t)}">` +
+      `<line x1="4" x2="80" y1="6" y2="6" class="v-ctrack"/>${dotLineSvg(x, sx, 6, { clip: [0, 1], r: 3.6, cls: cls === 'pick' ? 'acc' : '' })}</svg></span>`;
+  }
   const moneyBar = (x, d0, d1, cls) => {
     if (!x || !num(x.mean)) return '';
     const f = v => Math.max(0, Math.min(100, (Math.log(Math.max(v, d0)) - Math.log(d0)) / (Math.log(d1) - Math.log(d0)) * 100));
     return `<span class="v-bar ${cls || ''}">` + (num(x.lo) && num(x.hi) ? `<i class="r" style="left:${f(x.lo).toFixed(1)}%;width:${Math.max(1, f(x.hi) - f(x.lo)).toFixed(1)}%"></i>` : '') + `<i class="m" style="left:${f(x.mean).toFixed(1)}%"></i></span>`;
   };
-  // One distribution as an inline SVG on a fixed domain, with run dots and the target line (for rows and cells).
+  // One estimate as an inline SVG on a fixed domain (P6: dot and lines, no shape), with the runs' own dots under
+  // it and the target line (for rows and cells). The name stays from 0.2.0.
   function miniDist(x, dom, o = {}) {
-    const W = o.w || 180, H = o.h || 30, base = H - 8, sx = (o.log ? log : lin)(dom[0], dom[1], 3, W - 3);
-    let s = `<svg class="v-mini" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-hidden="true">`;
+    const W = o.w || 180, H = o.h || 30, mid = Math.round(H * 0.4), under = H - 5, sx = (o.log ? log : lin)(dom[0], dom[1], 5, W - 5);
+    const f = o.fmt || (o.log ? usd : score), t = x && num(x.mean) ? `${f(x.mean)} (${bandText(x, f, { log: !!o.log })})` : '';
+    let s = `<svg class="v-mini" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(t)}"><title>${esc(t)}</title>`;  // hover: mean and ranges
     if (num(o.target)) s += `<line x1="${sx(o.target).toFixed(1)}" x2="${sx(o.target).toFixed(1)}" y1="1" y2="${H - 1}" class="v-target"/>`;
-    if (x && num(x.lo) && num(x.hi)) {
-      s += `<path d="${shapePath(x, sx, base, H - 12)}" class="v-dist${o.cls ? ' ' + o.cls : ''}"/>`;
-      s += `<line x1="${sx(x.lo).toFixed(1)}" x2="${sx(x.hi).toFixed(1)}" y1="${base}" y2="${base}" class="v-iv"/>`;
-    }
-    if (x && num(x.mean)) s += `<line x1="${sx(x.mean).toFixed(1)}" x2="${sx(x.mean).toFixed(1)}" y1="${base - 7}" y2="${base + 1}" class="v-mean"/>`;
-    (o.dots || []).forEach(d => { if (num(d.v)) s += `<circle cx="${sx(d.v).toFixed(1)}" cy="${base}" r="3.4" class="v-dot${d.cls ? ' ' + d.cls : ''}"><title>${esc(d.t || '')}</title></circle>`; });
+    if (x && num(x.lo) && num(x.hi)) s += dotLineSvg(x, sx, mid, { cls: o.cls });
+    else if (x && num(x.mean)) s += `<circle cx="${sx(x.mean).toFixed(1)}" cy="${mid}" r="4.2" class="v-mdot${o.cls ? ' ' + o.cls : ''}"/>`;
+    (o.dots || []).forEach(d => { if (num(d.v)) s += `<circle cx="${sx(d.v).toFixed(1)}" cy="${under}" r="2.8" class="v-dot small${d.cls ? ' ' + d.cls : ''}"><title>${esc(d.t || '')}</title></circle>`; });
     return s + '</svg>';
   }
 
   return { el, h, esc, num, usd, usd0, pct, int, score, runs, range, clamp01, modelName, clip, lin, log, niceTicks, logTicks, logDomain,
-    density, shapePath, hover, copyBtn, onResize, graph, miniGraph, frame, axisX, ridge, forest, scoreCost, payback, chanceBar, moneyBar, miniDist };
+    density, shapePath, dotLine, dotLineSvg, extent, bandText, hover, copyBtn, onResize, graph, miniGraph, frame, axisX, ridge, forest, scoreCost, payback, chanceBar, moneyBar, miniDist };
 })();

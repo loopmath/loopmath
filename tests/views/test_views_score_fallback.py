@@ -130,6 +130,9 @@ def test_the_planning_page_prices_with_the_models_chance(journey, capsys, probe)
     got = probe(root / "plan.html", PLAN)
     assert got["exceptions"] == [] and got["console_errors"] == []
     r = got["result"]
+    # the columns by their heading: a "chance within K attempts" column follows the chance when p_accepted_within is present
+    run_at, rescue_at, total_at = (next(i for i, h in enumerate(r["heads"]) if h.startswith(name))
+                                   for name in ("cost per run", "expected rescue", "cost per accepted result"))
     checked = 0
     for row in r["rows"]:
         c = preds.get(row["cfg"])
@@ -138,7 +141,8 @@ def test_the_planning_page_prices_with_the_models_chance(journey, capsys, probe)
         g, nb = _g(c["prediction"]), c["numbers"]
         # the model's totals, unchanged: run cost + (1 - g) x rescue = cost per accepted result
         assert nb["run_cost_usd"]["mean"] + (1 - g) * R == pytest.approx(nb["cost_per_accepted_usd"]["mean"], abs=1e-4)
-        shown, run, rescue, total = _pct(row["cells"][1]), money(row["cells"][2]), money(row["cells"][3]), money(row["cells"][4])
+        shown, run, rescue, total = (_pct(row["cells"][1]), money(row["cells"][run_at]), money(row["cells"][rescue_at]),
+                                     money(row["cells"][total_at]))
         assert shown == pytest.approx(g, abs=0.006), row
         assert abs(run + (1 - shown) * R - total) <= 0.006 * R + 0.02, row
         assert abs(run + rescue - total) <= 0.015, row

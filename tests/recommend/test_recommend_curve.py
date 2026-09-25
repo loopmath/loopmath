@@ -97,7 +97,8 @@ def test_changing_the_rescue_kind_changes_the_default_pick():
     cheap, sure = solo("luna"), cfg(IR, implement="opus", review="astra")
     b = FakeBelief({cheap.id: Num(0.50, 0.50), sure.id: Num(0.95, 2.00)})
     configs = [(cheap, "catalog"), (sure, "catalog")]
-    redo = recommend(b, TASK, DEFAULT_RULE, usual=sure, usual_from="history", configs=configs)
+    redo = recommend(b, TASK, DEFAULT_RULE, usual=sure, usual_from="history", configs=configs,
+                     settings=Settings(rescue_kind="redo_usual"))
     assert redo.rescue.usd == pytest.approx(2.0 / 0.95)
     assert redo.default.config.id == cheap.id  # 0.5 + 0.5 * 2.105 < 2.0 + 0.05 * 2.105
     person = recommend(b, TASK, DEFAULT_RULE, usual=sure, usual_from="history", configs=configs,
@@ -111,7 +112,8 @@ def test_changing_the_rescue_kind_changes_the_default_pick():
 
 def test_rescue_usd_is_passed_to_the_belief():
     b = belief()
-    rec = recommend(b, TASK, DEFAULT_RULE, usual=IRC, usual_from="history", configs=[(c, "catalog") for c in ALL])
+    rec = recommend(b, TASK, DEFAULT_RULE, usual=IRC, usual_from="history", configs=[(c, "catalog") for c in ALL],
+                    settings=Settings(rescue_kind="redo_usual"))
     kinds = [c for c in b.calls if c[0] == "predict_many"]
     assert kinds and kinds[0][2] == pytest.approx(rec.rescue.usd)
     looks = [c for c in b.calls if c[0] == "lookahead"]

@@ -5,4 +5,4 @@ The command line (`loopmath`, or its alias `loop`) is the interface; see the
 README and `loopmath --help`.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

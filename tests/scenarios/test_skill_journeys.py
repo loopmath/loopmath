@@ -240,9 +240,11 @@ def test_plan_brief_has_what_the_skill_reads_and_the_page(planned):
     assert brief["schema"] == "loopmath.recommend/2"
     assert {"rec", "reference", "choices", "goal", "rescue", "page"} <= set(brief)
     assert "curve" not in brief and "candidates" not in brief
-    assert [c["key"] for c in brief["choices"]][0] == "goal" and len(brief["choices"]) <= 4
+    assert [c["key"] for c in brief["choices"]][0] == "goal" and len(brief["choices"]) <= 5  # 0.2.1: most_likely
     assert brief["reference"]["kind"] == "best_recorded" and "your usual" not in json.dumps(brief).lower()
-    assert Path(brief["page"]).is_file() and len(planned["brief"][1]) < 10_000
+    # 0.2.1: p_accepted_within and option on up to five choices (bands stay out of the brief): 12,000 from 10,000
+    assert Path(brief["page"]).is_file() and len(planned["brief"][1]) < 12_000
+    assert all("bands" not in c for c in brief["choices"]) and "bands" not in brief["reference"]["numbers"]
 
 
 def test_plan_starts_the_goal_choice_with_its_settings(planned):

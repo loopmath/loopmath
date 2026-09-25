@@ -236,4 +236,5 @@
   if (hash && byRun.has(decodeURIComponent(hash[1]))) selected = decodeURIComponent(hash[1]);
   draw();
   renderDetail();
+  LM.autoSort();  // P7: every table sorts by a click on its column header, again to reverse
 })();

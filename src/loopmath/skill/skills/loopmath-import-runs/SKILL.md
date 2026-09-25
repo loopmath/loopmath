@@ -27,10 +27,10 @@ Read `passed`, `failed`, `files[]` (`path`, `ok`, `findings[]` (`code`, `message
 ## 3. Import all, without a refit per file
 
 ```sh
-loopmath run import DIR --finish --no-fit --json
+loopmath run import DIR --finish --no-fit --json --brief
 ```
 
-With only some files valid, pass those files instead of `DIR`. Read `imported`, `failed`, `files[]` (`file`, `ok`, `error`). Report each file whose `ok` is false. With exactly one file the JSON is `{run, path, state, finished}` instead: count it as 1 imported.
+With only some files valid, pass those files instead of `DIR`. Read `imported`, `failed`, `failures[]` (`file`, `error`), `more_failures`, `overlap_note`, `next`. Report each failure with its file and error; when `more_failures` is above 0, say how many more failed. When `overlap_note` is not null, keep it for the summary, where it is said once, word for word (for example "44 of your runs are also in the shipped rq1 prior (same run ids): fits use your copies"). `next` is the step after the import: here it is the fit below.
 
 ## 4. Fit once
 
@@ -38,7 +38,7 @@ With only some files valid, pass those files instead of `DIR`. Read `imported`, 
 loopmath fit --json
 ```
 
-Read `fit.id`, `fit.n_runs.user`, `fit.n_runs.prior`, `runs_by_source`, `seconds`. If stderr says store runs share ids with shipped runs, repeat that sentence to the user.
+Read `fit.id`, `fit.n_runs.user`, `fit.n_runs.prior`, `runs_by_source`, `seconds`. The fit's `shipped_overlap` is the same overlap as `overlap_note`: do not name it a second time.
 
 ## 5. Show the results page
 
@@ -50,9 +50,10 @@ It prints the page path. Open it (`open PATH` on macOS, `xdg-open PATH` on Linux
 
 ## 6. Summary
 
-End with at most 6 lines, then stop:
+End with at most 6 lines, then stop (the overlap line only when `overlap_note` is not null):
 
 > Validated 44 files: 44 passed. Imported 44 runs (0 failed).
+> 44 of your runs are also in the shipped rq1 prior (same run ids): fits use your copies.
 > Fit fit_20260924170512: 44 of your runs plus 1,469 shipped runs, 3.3 s.
 > Results page: /Users/me/.loopmath/views/posterior-20260924-170515.html
 > Next: plan a task with these runs ("plan this task: ...").

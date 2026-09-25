@@ -19,7 +19,7 @@ loopmath helps choose the workflow, models and effort for coding agent tasks, an
    | set up, onboard, start, try | `loopmath-onboard` |
    | names OCP files, a folder of runs, an experiment's output | `loopmath-import-runs` |
    | update, refresh or rerun the fit; what did loopmath learn | `loopmath-update-fit` |
-   | a task to do, or which workflow, model or effort to use | `loopmath-plan-task` |
+   | a task to do, which workflow, model or effort to use, or `option N: ...` pasted from a planning page | `loopmath-plan-task` |
    | a task is done, or record, log or save a run | `loopmath-record-run` |
    | nothing specific, and `exists` is false or `counts.runs` is 0 | `loopmath-onboard` |
    | nothing specific, and `open_runs` is not empty | `loopmath-record-run` for those runs |

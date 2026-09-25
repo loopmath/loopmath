@@ -72,7 +72,7 @@ def test_recommend2_fields_reach_the_page(tmp_path, probe):
     ref = data["reference"]["config"]["id"]
     assert "your usual" not in r["body"].lower() and "the reference" in _row(r, ref)["marks"]
     assert "your best recorded workflow stands in" in r["body"] and "your best recorded workflow stands in" in r["vs"]
-    assert "--source alternative" in r["opened"][ref]["cmd"] and "--source usual" not in r["body"]
+    assert r["opened"][ref]["cmd"].startswith(f"workflow {ref}: ") and "--source usual" not in r["body"]
     # P3a: renamed, with one line on how it differs from the chance to reach the target
     assert all("chance it beats the recommended pick" in c and "Not the chance of reaching heldout_perf >= 2400" in c for c in r["cards"])
 

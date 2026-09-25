@@ -105,7 +105,7 @@ def _add_planning(sub) -> None:
     _common(q)
     q.set_defaults(func=_lazy("loopmath.workflows.commands:diff"))
 
-    p = sub.add_parser("recommend", help="usual workflow, success-cost curve, alternatives, exploration pick")
+    p = sub.add_parser("recommend", help="choices for one task (options 1 to 5) with chance and cost, the success-cost curve")
     _task_args(p)
     rule = p.add_mutually_exclusive_group()
     rule.add_argument("--rule", default=None, metavar="RULE", help="a named acceptance rule from config")
@@ -146,7 +146,7 @@ TIER_CHOICES = ["verified", "reported", "heuristic", "asserted"]
 
 
 def _add_recording(sub) -> None:
-    p = sub.add_parser("run", help="record a run: start, attempt, artifact, finish, import")
+    p = sub.add_parser("run", help="record a run: start, record, import, attempt, artifact, finish")
     rs = p.add_subparsers(dest="run_command", required=True)
 
     q = rs.add_parser("start", help="open a run (OCP v0.3 skeleton in the store)")
@@ -158,7 +158,7 @@ def _add_recording(sub) -> None:
     q.add_argument("--source", default=None, choices=SOURCES, help="why this configuration was chosen (not with --choice)")
     q.add_argument("--rec", default=None, metavar="REC", help="the recommend id this run follows (stores a before-receipt)")
     q.add_argument("--choice", default=None, metavar="KEY", help="start a choice from recommend's choices (goal, pair, "
-                   "reference, cheapest_run) with --rec: the task, configuration and source come from it; a pair "
+                   "reference, most_likely, cheapest_run) with --rec: the task, configuration and source come from it; a pair "
                    "opens a slate with both runs")
     slate = q.add_mutually_exclusive_group()
     slate.add_argument("--slate", default=None, metavar="SLT", help="add the run to this slate")
@@ -206,6 +206,8 @@ def _add_recording(sub) -> None:
     q.add_argument("files", nargs="+", metavar="FILE.ocp.json|DIR", help="OCP documents, or a directory of *.ocp.json files")
     q.add_argument("--finish", action="store_true", help="also finish each run once stored; one background refit at the end")
     q.add_argument("--no-fit", action="store_true", help="do not start the background refit")
+    q.add_argument("--brief", action="store_true", help="with --json: a short object for agents (counts, failures with "
+                   "file and error, the overlap with the shipped prior, the next step)")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.store.commands:run_import"))
 
@@ -372,6 +374,7 @@ def _add_viewing(sub) -> None:
     p.add_argument("--feature", action="append", default=[], metavar="K=V", help="task feature for the workflow graph (repeatable), as for recommend")
     p.add_argument("--horizon", default=None, metavar="TIME", help=HORIZON_HELP)
     p.add_argument("--fit", default=None, metavar="ID", help=FIT_HELP)
+    p.add_argument("--all", action="store_true", help="also show the rows about providers and models you have not run, and every row")
     _common(p, html=True)
     p.set_defaults(func=_lazy("loopmath.views.posterior:command"))
 
@@ -435,6 +438,7 @@ def register(sub) -> None:
     _add_recording(sub)
     _add_learning(sub)
     _add_viewing(sub)
+    importlib.import_module("loopmath.builder.cli").add(sub)  # `builder` (0.2.1 lane 21W)
 
 
 # Handler targets, for the registry test: every one must import and be callable.

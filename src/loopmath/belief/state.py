@@ -152,7 +152,7 @@ class HeadState:
     `loader(part)` returns a stored array or None when the fit did not store it."""
 
     def __init__(self, name: str, meta: dict, nodes: Sequence[str], loader: Callable[[str], np.ndarray] | None,
-                 fit_id: str, *, mean=None, U=None, draws=None, unit=None):
+                 fit_id: str, *, mean=None, U=None, draws=None, unit=None, seed_key: str | None = None):
         base = BASE_HEADS.get(name, ("gaussian", "score"))
         self.name = name
         self.engine = meta.get("engine") or base[0]
@@ -165,6 +165,7 @@ class HeadState:
         self.seed = int(meta.get("seed", 0))
         self.meta = meta
         self.fit_id = fit_id
+        self.seed_key = seed_key or fit_id  # spec 04 section 3: the fit's input hash; the fit id before 0.2.1
         self.nodes = list(nodes)
         self.index = {n: j for j, n in enumerate(self.nodes)}
         self._loader = loader
@@ -252,7 +253,7 @@ class HeadState:
         """Standard normal draws of an unseen node, fixed by the fit, the head and the node id."""
         z = self._virtual.get(node)
         if z is None:
-            z = np.random.default_rng(_seed(self.fit_id, self.name, node)).standard_normal(N_DRAWS)
+            z = np.random.default_rng(_seed(self.seed_key, self.name, node)).standard_normal(N_DRAWS)
             self._virtual[node] = z
         return z
 
@@ -332,16 +333,21 @@ class FitState:
         self._design = design
         self._npz = None
         self._cache: dict = {}
-        self.sim_seed = _seed(self.fit_id, "simulate")
+        # spec 04 section 3: every draw is seeded from the fit's input hash, so identical fits give identical
+        # output; fits before 0.2.1 have no `seed_key` and keep their fit id
+        self.seed_key: str = self.meta.get("seed_key") or self.fit_id
+        self.sim_seed = _seed(self.seed_key, "simulate")
+        # spec 04 section 1: the value of the timebox-capped terms (effort, shape) in a timeboxed task's cost rows
+        self.timebox_effort = float(self.meta.get("timebox_effort", 1.0))
         if heads is None:
             heads = {}
             for name, hmeta in (self.meta.get("heads") or {}).items():
                 key = name.replace(":", "@")
                 ids = [str(x) for x in self._array(f"{key}__ids")]
-                heads[name] = HeadState(name, hmeta, ids, self._loader(key), self.fit_id)
+                heads[name] = HeadState(name, hmeta, ids, self._loader(key), self.fit_id, seed_key=self.seed_key)
         for name in BASE_HEADS:
             if name not in heads:
-                heads[name] = HeadState(name, {}, [], None, self.fit_id)
+                heads[name] = HeadState(name, {}, [], None, self.fit_id, seed_key=self.seed_key)
         self.heads = heads
         # the fit's feature declarations (the built-ins for fits before 0.2), so predictions read
         # features the way the fit did
@@ -397,13 +403,22 @@ class FitState:
     def _row(self, head: HeadState, rest: tuple) -> Row:
         return self._cached(head, [rest])[0]
 
-    def _plan(self, config: Configuration) -> dict:
+    def effort_for(self, task: Task) -> float:
+        """The value of the timebox-capped terms (effort and shape, `design.TIMEBOX_LEVELS`) in the task's cost
+        rows: the fit's `timebox_effort` when the task's resolved horizon (given, else recorded) is a timebox the
+        fit uses (it has timeboxed runs), else 1 (spec 04 section 1)."""
+        if self.timebox_effort == 1.0:
+            return 1.0
+        return self.timebox_effort if self.resolve_task(task)[1]["horizon"]["used"] else 1.0
+
+    def _plan(self, config: Configuration, effort: float = 1.0) -> dict:
+        """The configuration's rows without the task part; `effort` from `effort_for(task)`."""
         st = structure(config)
         cost = {}
         for piece in st.pieces:
             rounds = st.k_max if st.piece_loop.get(piece) is not None else 1
             for k in range(1, rounds + 1):
-                cost[(piece, k)] = cost_rest(st, piece, k, source=PREDICT_SOURCE)
+                cost[(piece, k)] = cost_rest(st, piece, k, source=PREDICT_SOURCE, effort=effort)
         gate = {}
         for gi, g in enumerate(st.gates):
             for k in range(1, (st.k_max if st.gate_loop.get(gi) is not None else 1) + 1):
@@ -790,7 +805,8 @@ class FitState:
 
     def _predict_many(self, task: Task, configs: Sequence[Configuration], rule: AcceptanceRule | None,
                       rescue_usd: float | None) -> list[tuple[Prediction, dict]]:
-        plans = [self._plan(c) for c in configs]
+        effort = self.effort_for(task)
+        plans = [self._plan(c, effort) for c in configs]
         tparts = self._task_parts(task)
         self._warm(plans)
         return [self._predict(task, p, tparts, rule, rescue_usd) for p in plans]

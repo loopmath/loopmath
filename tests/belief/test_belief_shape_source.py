@@ -211,7 +211,7 @@ def test_run_cost_is_the_sum_over_pieces_of_width_times_the_row(sim_fit):
 def test_a_new_users_pick_is_not_decided_by_the_source_gap(tmp_path_factory, monkeypatch):
     """A new user, a shipped-style bundle (PI only in the cheap source) and a score target. PI costs twice
     solo in truth, for the same score. PI stays a candidate, unflagged, and the pick is solo; without psrc
-    the source gap makes PI the pick, with a narrower cost interval (7.5x from lo to hi, 12x with fsrc,
+    the source gap makes PI the pick, with a narrower cost interval (7.6x from lo to hi, 10.6x with fsrc,
     against 4.3x here)."""
     from loopmath.recommend.engine import recommend
     from loopmath.recommend.engine import Settings
@@ -223,6 +223,9 @@ def test_a_new_users_pick_is_not_decided_by_the_source_gap(tmp_path_factory, mon
     task = simdata.make_task(np.random.default_rng(9), 0, n_tasks=40)
     pi, solo = simdata.config(PI, OPUS), simdata.config(simdata.SOLO, OPUS)
     docs = _bundle(score=SCORE)
+    # the three fits below differ in their rows; one seed key keeps their draws paired, as the shared fit id
+    # did before 0.2.1 (spec 04 section 3), so the intervals compare without Monte Carlo noise
+    monkeypatch.setattr(F, "input_key", lambda *args, **kwargs: "shape-source")
 
     def pick(state, search=False):
         rec = recommend(state, task, rule, usual=solo, usual_from="default", configs=[(pi, "catalog")],
@@ -237,7 +240,7 @@ def test_a_new_users_pick_is_not_decided_by_the_source_gap(tmp_path_factory, mon
     rec_s, _ = pick(state, search=True)
     assert rec_s.search is not None and rec_s.default.config.id == solo.id
     assert not any("source" in note for note in rec_s.notes)
-    # psrc alone (fsrc kept) widens PI's interval (12x against 10.2x), but fsrc alone keeps the pick at
+    # psrc alone (fsrc kept) widens PI's interval (10.6x against 7.6x), but fsrc alone keeps the pick at
     # solo; "without psrc" above is the rows as before 0.2, psrc and fsrc stripped (4.3x, PI picked)
     wide = cands[pi.id].prediction.cost.usd
     with pytest.MonkeyPatch.context() as mp:

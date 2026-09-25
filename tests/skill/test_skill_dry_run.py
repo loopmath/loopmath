@@ -238,6 +238,10 @@ def journey(tmp_path_factory) -> dict[str, list]:
         lm.env["LOOPMATH_HOME"] = str(tmp_path / "store3")  # the whole folder: each file says how it went
         got = lm("run", "import", str(folder), "--finish", "--no-fit", "--json", ok=(1,))
         assert got["imported"] == 2 and [f["error"] for f in got["files"] if not f["ok"]]
+        lm.env["LOOPMATH_HOME"] = str(tmp_path / "store4")  # the short form the import skill reads (I18)
+        got = lm("run", "import", str(folder), "--finish", "--no-fit", "--json", "--brief", ok=(1,))
+        assert got["imported"] == 2 and got["failed"] == 1 and got["failures"][0]["file"].endswith("broken.ocp.json")
+        assert got["next"] == "loopmath fit --json" and got["overlap_note"] is None
         lm.env["LOOPMATH_HOME"] = str(tmp_path / "store")
 
         # What the reference sends the agent to when a command fails.

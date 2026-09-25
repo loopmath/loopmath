@@ -25,6 +25,7 @@ from ..types import (
     DEFAULT_RULE, TASK_TYPE_IDS, AcceptanceRule, Configuration, ScoreTarget, Setting, Task,
 )
 from . import engine, storeread
+from .curve import RESCUE_KINDS, RETRY_DECAY, RETRY_MAX_ATTEMPTS, RETRY_MIN_CHANCE
 from .engine import Recommendation, Settings
 from .message import TAIL, heavy, noted, pct, tail, tokens as fmt_tokens, usd as fmt_usd
 from .storeread import Conf
@@ -69,17 +70,23 @@ def task_from_args(args: argparse.Namespace) -> tuple[Task, bool]:
     return task_from_dict({"type": args.task_type, "repo": args.repo}, overrides=args), False
 
 
-def question_task(task: Task, fit_id: str, rule: AcceptanceRule, configs: Sequence[Configuration]) -> Task:
+def question_task(task: Task, fit_key: str, rule: AcceptanceRule, configs: Sequence[Configuration]) -> Task:
     """The task as the belief sees it when its id was made up for this call.
 
     The belief draws an unseen task's effect from a seed of the node id, so a fresh id gave
     the same question on the same fit new numbers on every call. This id is a hash of the
-    question instead: fit id, task type, repo, rule and the sorted candidate ids. The output
-    keeps the made-up id, so runs started from the recommendation get a task of their own.
+    question instead: the fit's seed key (`question_key`), task type, repo, rule and the sorted
+    candidate ids, so two fits of the same data ask the same question. The output keeps the
+    made-up id, so runs started from the recommendation get a task of their own.
     """
-    key = json.dumps([fit_id, task.type, task.repo, rule.to_dict(), sorted({c.id for c in configs})],
+    key = json.dumps([fit_key, task.type, task.repo, rule.to_dict(), sorted({c.id for c in configs})],
                      sort_keys=True)
     return dataclasses.replace(task, id="tsk_q" + hashlib.sha256(key.encode()).hexdigest()[:21])
+
+
+def question_key(belief: Any) -> str:
+    """The fit's seed key (0.2.1, spec 04 section 3); the fit id for older fits."""
+    return getattr(belief, "seed_key", None) or belief.fit_id
 
 
 def task_from_dict(data: dict[str, Any], overrides: argparse.Namespace | None = None) -> Task:
@@ -202,10 +209,24 @@ def settings_from(conf: Conf, args: argparse.Namespace, spend: float, cap: float
     default_pick = conf.get("explore.default_pick", "best_value") or "best_value"
     if default_pick not in ("best_value", "max_gain"):
         raise UserError(f"explore.default_pick must be best_value or max_gain; got {default_pick!r}")
-    return Settings(goal=str(goal), rescue_kind=conf.get("rescue.kind", "redo_usual") or "redo_usual",
+    from ..store.config import ConfigError, check_rescue
+
+    kind = conf.get("rescue.kind", "retry") or "retry"
+    if kind not in RESCUE_KINDS:
+        raise UserError(f"rescue.kind must be one of {', '.join(RESCUE_KINDS)}; got {kind!r}")
+    retry: dict[str, Any] = {}
+    for key, name, default in (("rescue.decay", "rescue_decay", RETRY_DECAY),
+                               ("rescue.max_attempts", "rescue_max_attempts", RETRY_MAX_ATTEMPTS),
+                               ("rescue.min_chance", "rescue_min_chance", RETRY_MIN_CHANCE)):
+        value = conf.get(key, default)
+        try:
+            retry[name] = check_rescue(key, default if value is None else value)
+        except ConfigError as exc:
+            raise UserError(str(exc)) from None
+    return Settings(goal=str(goal), rescue_kind=kind,
                     person_usd_per_hour=conf.float("rescue.person_usd_per_hour"),
                     rescue_hours=conf.float("rescue.hours"), spend=spend, cap=cap,
-                    auto_payback_runs=conf.float("explore.auto_payback_runs"), default_pick=default_pick)
+                    auto_payback_runs=conf.float("explore.auto_payback_runs"), default_pick=default_pick, **retry)
 
 
 def model_list(text: str | None) -> list[str] | None:
@@ -524,10 +545,18 @@ def baseline_line(rec: Recommendation, named: str, numbers: str) -> str:
 
 
 def rescue_line(rec: Recommendation) -> str:
-    """The rescue, named once at the top (I13): cost per accepted result is run cost plus P(fail) x rescue."""
+    """The rescue, named once at the top (I13): cost per accepted result is run cost plus P(fail) x rescue;
+    for `retry`, the rescue workflow, its chance in one run and the chance its retries fix a miss (P5)."""
     r = rec.rescue
     if r.kind == "none":
         return "Rescue: none (rescue.kind none), so cost per accepted result is the run cost"
+    if r.kind == "retry":
+        chance = (r.chance or {}).get("mean")
+        of = rec.rescue_of()
+        return (f"Rescue when a run fails: {fmt_usd(r.usd)} per fixed miss, retrying with {of}"
+                f"{f' ({pct(chance)} chance in one run)' if chance is not None else ''}, {r.basis}; the retries "
+                f"fix {pct(r.p_accepted or 0.0)} of misses; cost per accepted result = run cost "
+                f"+ chance of failure x rescue")
     return (f"Rescue when a run fails: {fmt_usd(r.usd)} ({r.basis}); cost per accepted result = run cost "
             f"+ chance of failure x rescue")
 
@@ -592,13 +621,13 @@ def recommend(args: argparse.Namespace) -> int:
         usual, usual_from = resolve_usual(home, conf, task, getattr(args, "usual", None), models)
         recorded = [c for c, _ in storeread.recorded_configs(home, task.type, task.repo)[0]]
         if usual_from == "default" and recorded:
-            asked = task if id_given else question_task(task, belief.fit_id, rule, recorded)
+            asked = task if id_given else question_task(task, question_key(belief), rule, recorded)
             best = reference_for(belief, asked, rule, recorded, models)
             if best is not None:
                 usual, usual_from = best, "recorded"
         user = [workflow_file_config(p, usual) for p in getattr(args, "workflow", None) or []]
         configs = candidate_configs(task, usual, conf, models, user + store_user_configs(home, usual), recorded)
-        asked = task if id_given else question_task(task, belief.fit_id, rule, [usual, *(c for c, _ in configs)])
+        asked = task if id_given else question_task(task, question_key(belief), rule, [usual, *(c for c, _ in configs)])
         rec = engine.recommend(belief, asked, rule, usual=usual, usual_from=usual_from, configs=configs,
                                settings=settings, diff=diff_fn(), keep=[*(u.id for u in user),
                                                                         *(r.id for r in recorded)])
@@ -629,10 +658,17 @@ def recommend(args: argparse.Namespace) -> int:
 
 
 def brief(payload: dict[str, Any]) -> dict[str, Any]:
-    """The `--brief` projection: BRIEF_KEYS, and the reference without its prediction draws."""
+    """The `--brief` projection: BRIEF_KEYS, the reference without its prediction draws, and no `bands` (0.2.1:
+    the pages read them from the full JSON; an agent reads the chance's range and `p_accepted_within`)."""
     out = {k: payload[k] for k in BRIEF_KEYS if k in payload}
     if isinstance(out.get("reference"), dict):
-        out["reference"] = {k: v for k, v in out["reference"].items() if k != "prediction"}
+        ref = {k: v for k, v in out["reference"].items() if k != "prediction"}
+        if isinstance(ref.get("numbers"), dict):
+            ref["numbers"] = {k: v for k, v in ref["numbers"].items() if k != "bands"}
+        out["reference"] = ref
+    if isinstance(out.get("choices"), list):
+        out["choices"] = [{k: v for k, v in c.items() if k != "bands"} if isinstance(c, dict) else c
+                          for c in out["choices"]]
     return out
 
 

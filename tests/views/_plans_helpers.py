@@ -24,11 +24,11 @@ READ = r"""
   const more = q('#more'); if (more) more.click();
   const text = s => q(s) ? q(s).textContent : null, copyOf = s => q(s) ? q(s).dataset.copy : null;
   const out = { h1: text('h1'), strategy: text('#strategy'), nums: text('#nums'), vs: text('#vs'), thin: text('#thin'),
-    body: document.getElementById('app').textContent, heads: qa('#tall thead th').map(e => e.textContent),
+    body: document.getElementById('app').textContent, heads: qa('#tall thead th').map(e => [...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim()),
     rows: qa('#tall tbody tr.v-opt').map(tr => ({ cfg: tr.dataset.cfg, cls: tr.className, cells: [...tr.children].map(td => td.textContent),
       tail: [...tr.children].map(td => !!td.querySelector('.v-tail')), marks: [...tr.querySelectorAll('.v-mk')].map(e => e.textContent) })),
     cards: qa('.v-bet').map(e => e.textContent), cardTail: qa('.v-bet').map(e => !!e.querySelector('.v-tail')),
-    betCmds: qa('.v-bet [data-copy]').map(e => e.dataset.copy), pickCmd: copyOf('#pick [data-copy]'), pairCmd: copyOf('#ways [data-copy]'),
+    betCmds: qa('.v-bet [data-copy]').map(e => e.dataset.copy), pickCmd: copyOf('#pick [data-copy]'), copyLabels: [...new Set(qa('[data-copy]').map(e => e.textContent))], pairCmd: copyOf('#ways [data-copy]'),
     three: qa('#three .v-row').map(g => g.dataset.key), threeLabels: qa('#three .v-rl').map(e => e.textContent),
     forest: qa('#forest .v-row').length, pay: qa('#pay .v-betline').length, graphBoxes: qa('#pg .v-box').length,
     summaries: qa('details.v-more > summary').map(e => e.textContent), width: document.documentElement.scrollWidth, opened: {} };

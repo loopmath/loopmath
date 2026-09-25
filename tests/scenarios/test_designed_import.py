@@ -200,7 +200,12 @@ def test_the_reference_is_the_best_recorded_workflow_and_nothing_is_your_usual(j
     assert rec["schema"] == "loopmath.recommend/2" and rec["usual"] is None  # designed runs are not a habit
     ref = rec["reference"]
     recorded = [c for c in journey["stored"]["candidates"] if c["origin"] == "recorded"]
-    best = min(recorded, key=lambda c: c["prediction"]["cost"]["usd"]["mean"] / c["prediction"]["p_success"]["mean"])
+    if rec["rule"].get("score"):  # 0.2.1 (F7): with a score target, the most likely one, ties by run cost
+        best = min(recorded, key=lambda c: (-c["prediction"]["p_success"]["mean"],
+                                            c["prediction"]["cost"]["usd"]["mean"]))
+    else:
+        best = min(recorded,
+                   key=lambda c: c["prediction"]["cost"]["usd"]["mean"] / c["prediction"]["p_success"]["mean"])
     assert ref["kind"] == "best_recorded" and ref["from"] == "recorded"
     assert ref["config"]["id"] == best["config"]["id"]
     assert ref["text"] == f"no usual workflow; reference: your best recorded workflow ({ref['label']})"
