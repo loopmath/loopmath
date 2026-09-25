@@ -1,4 +1,4 @@
-"""Canonical JSON of a configuration and its `cfg_` id (spec 01 section 2.2, decision D2).
+"""Canonical JSON of a configuration and its `cfg_` id (spec 01 section 2.2).
 
 This is the one definition of the configuration id. It works on the OCP v0.3
 form of a workflow (section 2.3) and of the settings (section 2.4), so a
@@ -10,14 +10,14 @@ settings, so ids, titles, versions, `ext` and unknown fields never change it:
 
 - workflow: `pieces` (`id`, `role`, `width` default 1, nested `workflow`),
   `artifacts` (`id`, `kind`), `edges`, `control` (`gates`, `repair`,
-  `budget` read as max(1, budget) with 1 when absent since it counts round 1
-  (D30), `rescue` `kind` and `ref`, and the one extension key
-  `dev.loopmath.gate_rules` when present, since a non-default gate rule
-  changes behaviour (D29)); pieces and artifacts sorted by id, edges and
+  `budget` read as max(1, budget) with 1 when absent since it counts round 1,
+  `rescue` `kind` and `ref`, and the one extension key
+  `dev.loopmath.gate_rules` when nonempty, since a non-default gate rule
+  changes behaviour); pieces and artifacts sorted by id, edges and
   gates sorted; workflow `id`, `version`, `title` and every other `ext` key
   excluded;
 - settings: piece id to `harness`, `model` (the model's `id`, else its `raw`),
-  `effort` default "default", `context_policy` default "fresh" (D31),
+  `effort` default "default", `context_policy` default "fresh",
   `options` default {};
 - JSON with sorted keys, no whitespace, UTF-8.
 

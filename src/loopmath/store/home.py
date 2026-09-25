@@ -51,7 +51,7 @@ class Conflict(StoreError):
 
 
 class EndBeforeStart(StoreError):
-    """`--ended-at` before the attempt's `started_at` (exit code 2, Analyst D87)."""
+    """`--ended-at` before the attempt's `started_at` (exit code 2)."""
 
 
 class Store:
@@ -391,7 +391,7 @@ class Store:
                 self.write_receipt(receipt)
 
     def import_run(self, doc: dict[str, Any], *, finished: bool = True, check: bool = True) -> str:
-        """Analyst D4: store a whole OCP v0.3 document (strict check, atomic write, index row under the lock).
+        """Store a whole OCP v0.3 document (strict check, atomic write, index row under the lock).
 
         A document with the same run id replaces the stored one. `finished=True` marks it finished as is
         (no log matching; that is `run import --finish`). A document loopmath already finished (its store

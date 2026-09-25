@@ -26,7 +26,7 @@ def _walk(obj: Any):
 
 
 def rec_payload() -> dict[str, Any]:
-    """The recommend fixture with every configuration id recomputed by this tree's `config_id` (D2), so the
+    """The recommend fixture with every configuration id recomputed by this tree's `config_id`, so the
     tests hold before and after lanes 1 and 4 change the canonical form."""
     from loopmath.workflows.ids import config_id
 

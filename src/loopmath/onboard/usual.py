@@ -1,11 +1,8 @@
 """Usual workflow per (type, repo).
 
-Owner: lane 03. Spec: design/0.1/08-lanes.md section 3, 05-recommender.md section 1;
-decision D5 in the lane questions log.
-
 The usual workflow for a (type, repo) is the configuration its runs used most often;
 a tie goes to the one used most recently. The type level (`"*"`) counts every repo.
-Config layout (D5):
+Config layout:
 
     [usual.bug_fix]
     "*" = "cfg_3f2a9c1b0d4e"
@@ -23,6 +20,8 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable
+
+from ..taskmodel import UNKNOWN_TYPE
 
 TYPE_LEVEL = "*"
 
@@ -49,7 +48,7 @@ def usual_picks(rows: Iterable[dict]) -> list[UsualPick]:
     labels: dict[str, str] = {}
     for row in rows:
         kind, repo, config = row.get("type"), row.get("repo"), row.get("config")
-        if not kind or not config:
+        if not kind or not config or kind == UNKNOWN_TYPE:  # untyped work has no usual workflow
             continue
         labels.setdefault(config, str(row.get("label") or config))
         when = str(row.get("started_at") or "")

@@ -1,7 +1,5 @@
 """Dated tariffs from prices.toml: {id, date, source}.
 
-Owner: lane 02. Spec: design/0.1/ (01 section 2.5, 03 section 6).
-
 A tariff names the rates an attempt was priced at, so a run file stays
 traceable after the table changes:
 

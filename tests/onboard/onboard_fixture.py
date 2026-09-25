@@ -149,7 +149,7 @@ def build_history(root: Path, *, now: dt.datetime | None = None) -> FixtureHisto
 
 # ---------------------------------------------------------------- fakes for lanes 4, 5 and 7
 def configuration(shape: str, *, node_vertex: dict | None = None):
-    """A real `types.Configuration` of the kind lane 4's `infer` returns (D25), on a catalog shape."""
+    """A real `types.Configuration` of the kind lane 4's `infer` returns, on a catalog shape."""
     from loopmath.types import Configuration, Setting
     from loopmath.workflows.format import catalog
     from loopmath.workflows.ids import config_id

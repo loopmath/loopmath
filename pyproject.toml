@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopmath"
-version = "0.1.1"
+version = "0.2.0"
 description = "Plan agent workflows, record how they went, and learn from your own Claude Code and Codex logs"
 readme = "README.md"
 license = "MIT"
@@ -88,7 +88,8 @@ where = ["src"]
 loopmath = [
     "prices.toml",
     "workflows/catalog/*.toml",
-    "skill/SKILL.md",
+    "skill/skills/*.md",
+    "skill/skills/*/SKILL.md",
     "priors/*.toml",
     "priors/bundle/*",
     "views/assets/*",

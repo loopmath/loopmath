@@ -1,4 +1,4 @@
-"""The batch labeller: the user's choice (D39), the cost estimate, the calls, the answers."""
+"""The batch labeller: the user's choice, the cost estimate, the calls, the answers."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def codex_ok(argv, stdin):
     return subprocess.CompletedProcess(argv, 0, "\n".join(json.dumps(e) for e in events), "")
 
 
-# ---------------------------------------------------------------- the choice (D39)
+# ---------------------------------------------------------------- the choice
 def test_parse_labeler_forms():
     lab = L.parse_labeler("codex:gpt-6-luna", which=WHICH)
     assert (lab.name, lab.model, lab.executable, lab.spec, lab.title) == (

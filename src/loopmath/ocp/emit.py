@@ -1,10 +1,10 @@
 """Build OCP v0.3 documents and records for the store (spec 01, spec 03 section 4).
 
-Owner: lane 01. Every helper accepts a `loopmath.types` dataclass or its
+Every helper accepts a `loopmath.types` dataclass or its
 `to_dict()` form and returns plain JSON-ready dicts. Unknown keys a `types`
 record carries in `extra` are kept, so a newer writer's fields survive.
 
-The `types` to OCP mapping follows decisions D2, D3 and D29 to D32:
+The `types` to OCP mapping:
 
 - pieces `{id, role, width}`, roles written verbatim (planner, implementer, ...);
 - artifacts `{id, kind}`, kind from `Workflow.extra["artifact_kinds"]`, else the
@@ -55,7 +55,7 @@ CAPABILITIES = {
 
 
 class WorkflowCycleError(ValueError):
-    """A workflow whose edges form a cycle; the repair loop belongs in control.repair (D3)."""
+    """A workflow whose edges form a cycle; the repair loop belongs in control.repair."""
 
 
 def now() -> str:
@@ -158,7 +158,7 @@ def workflow_to_ocp(workflow: Any) -> dict[str, Any]:
     control["rescue"] = copy.deepcopy(RESCUE_TO_OCP.get(rescue, {"kind": rescue})) if isinstance(rescue, str) \
         else copy.deepcopy(rescue)
     extras = {k: v for k, v in control_in.items() if k not in ("gates", "budget_rounds", "rescue")}
-    # D41: merge the control's own ext with the gate rules; the gates are the truth for the rules
+    # Merge the control's own ext with the gate rules; the gates are the truth for the rules
     ext = dict(extras.pop("ext", None) or {})
     ext.pop(GATE_RULES_KEY, None)
     if rules:
@@ -184,7 +184,7 @@ def workflow_to_ocp(workflow: Any) -> dict[str, Any]:
 
 def setting_to_ocp(setting: Any) -> dict[str, Any]:
     s = _as_dict(setting)
-    # D52: a model object kept by setting_from_ocp (extra["model_ref"]) goes back into `model`
+    # A model object kept by setting_from_ocp (extra["model_ref"]) goes back into `model`
     ref = s.pop("model_ref", None)
     model = s.get("model")
     if isinstance(model, str):

@@ -39,23 +39,25 @@ def home(tmp_path, monkeypatch, spawned):
     return h
 
 
-def _start(capsys, home, *extra):
+def _start(capsys, home, *extra, rule=("--rule", "tests")):
+    """A run from the fixture recommendation, judged by `tests` alone unless `rule=()` keeps the rule the
+    recommendation was made for (tests+review)."""
     code, out, err = cli(capsys, home, "run", "start", "--type", "feature", "--repo", "loopmath/loopmath",
                          "--title", "Add --since", "--config", EXPLORE_CFG, "--rec", REC_ID, "--source", "exploration",
-                         *extra, "--json")
+                         *rule, *extra, "--json")
     assert code == 0, err
     return out
 
 
 def test_run_start_writes_skeleton_index_row_and_before_receipt(capsys, home):
-    out = _start(capsys, home, "--base-commit", "672fd0d")
+    out = _start(capsys, home, "--base-commit", "672fd0d", rule=())
     assert list(out)[0] == "schema" and out["schema"] == "loopmath.run.start/1"
     assert out["config"] == EXPLORE_CFG and out["pieces"] == ["implement", "review"]
     doc = json.loads((home / "runs" / f"{out['run']}.ocp.json").read_text())
     assert doc["ocp"] == "0.3" and doc["privacy"] == {"profile": "metadata_only"}
     run = doc["run"]
     assert run["configuration"]["source"] == "exploration" and run["configuration"]["rec"] == REC_ID
-    assert run["provenance"]["kind"] == "designed" and run["acceptance_rule"]["name"] == "tests"
+    assert run["provenance"]["kind"] == "designed" and run["acceptance_rule"]["name"] == "tests+review"
     assert run["task"]["base_commit"] == "672fd0d"
     assert [n["id"] for n in doc["nodes"]] == ["implement", "review"]
     assert all("gate" not in n for n in doc["nodes"])
@@ -68,7 +70,7 @@ def test_run_start_writes_skeleton_index_row_and_before_receipt(capsys, home):
 
 def test_run_start_resolves_config_from_stored_run_and_reports_unknown(capsys, home):
     first = _start(capsys, home)
-    (home / "recs" / f"{REC_ID}.json").unlink()  # D13: a config seen in a stored run still resolves
+    (home / "recs" / f"{REC_ID}.json").unlink()  # A config seen in a stored run still resolves
     code, out, err = cli(capsys, home, "run", "start", "--type", "feature", "--repo", "loopmath/loopmath",
                          "--config", EXPLORE_CFG, "--source", "alternative", "--json")
     assert code == 0, err
@@ -79,7 +81,7 @@ def test_run_start_resolves_config_from_stored_run_and_reports_unknown(capsys, h
 
 
 def test_run_start_takes_the_settings_in_a_workflow_file(capsys, home, tmp_path):
-    """D81: a workflow file's `[settings.<piece>]` are the run's settings, `--set` overrides per piece and is
+    """A workflow file's `[settings.<piece>]` are the run's settings, `--set` overrides per piece and is
     needed only for pieces the file leaves unset. The file alone gives the id `workflows validate` prints."""
     from loopmath.types import Setting
     from loopmath.workflows import format as wf_format
@@ -155,7 +157,7 @@ def test_attempts_session_self_and_errors(capsys, home, monkeypatch):
     assert out["session"] == "0f0e0d0c-1111-2222-3333-444455556666"
     code, _, err = cli(capsys, home, "run", "attempt", "--run", run, "--piece", "implement", "--harness", "codex",
                        "--model", "gpt-6-sol", "--session", "self")
-    assert code == 1 and "codex" in err  # D26: never guessed for Codex
+    assert code == 1 and "codex" in err  # Never guessed for Codex
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
     code, _, err = cli(capsys, home, "run", "attempt", "--run", run, "--piece", "review", "--harness", "claude-code",
                        "--model", "claude-opus-5-5", "--session", "self")
@@ -176,7 +178,7 @@ def test_attempts_session_self_and_errors(capsys, home, monkeypatch):
 
 
 def test_an_end_before_the_start_exits_2(capsys, home):
-    """D87: `--ended-at` before the attempt's `started_at` was accepted without a word."""
+    """`--ended-at` before the attempt's `started_at` was accepted without a word."""
     run = _start(capsys, home)["run"]
     _, att, _ = cli(capsys, home, "run", "attempt", "--run", run, "--piece", "implement", "--harness", "codex",
                     "--model", "m", "--cwd", str(home), "--started-at", "2026-09-23T19:00:25-07:00", "--json")
@@ -233,7 +235,7 @@ def test_full_flow_finish_costs_receipt_and_refit(capsys, home, spawned):
                        "--model", "m", "--cwd", "/tmp")
     assert code == 1 and "its attempts can no longer change" in err
     code, _, err = cli(capsys, home, "run", "artifact", "--run", run, "--kind", "commit", "--path", "fedcba9876",
-                       "--by", a1["attempt"])  # a later commit, so late events find the run (D17)
+                       "--by", a1["attempt"])  # a later commit, so late events find the run
     assert code == 0, err
     code, _, err = cli(capsys, home, "run", "finish", "--run", run)
     assert code == 1 and "already finished" in err
@@ -361,7 +363,7 @@ def test_import_of_a_run_loopmath_finished_keeps_it_finished(capsys, home, tmp_p
 
 
 def test_store_import_run_api_marks_finished(tmp_path):
-    """Analyst D4: import_run(doc, finished=True) for onboard history."""
+    """Import_run(doc, finished=True) for onboard history."""
     store = Store(tmp_path / "lm")
     doc = finished_doc("run_hist1", source="habit", started="2026-09-01T10:00:00-07:00")
     del doc["run"]["started_at"]
@@ -545,7 +547,7 @@ def _shared_settle(session):
 
 
 def test_finish_names_a_session_that_two_attempts_share(capsys, home, monkeypatch):
-    """D87: a sent-back round 2 resumes the session round 1 named; lane 2 reports it shared, finish says so."""
+    """A sent-back round 2 resumes the session round 1 named; lane 2 reports it shared, finish says so."""
     session = "0a0b0c0d-1111-2222-3333-444455556666"
     monkeypatch.setattr(finish_mod, "default_settle", lambda: _shared_settle(session))
 
@@ -567,7 +569,7 @@ def test_finish_names_a_session_that_two_attempts_share(capsys, home, monkeypatc
     assert code == 0, err
     assert "matched: 3 verified, 1 heuristic, 0 unmatched" in text
     assert (f"  session {session} is shared by attempts {atts[0]} and {atts[1]}; its cost is counted once in the run total"
-            in text)  # D100: not "split" while the attempts keep whole costs
+            in text)  # Not "split" while the attempts keep whole costs
     from loopmath.store.commands import _finish_lines
 
     three = {**res, "shared": [{"session": "S", "attempts": ["A", "B", "C"], "split": True}]}
@@ -575,7 +577,7 @@ def test_finish_names_a_session_that_two_attempts_share(capsys, home, monkeypatc
 
 
 def test_a_shared_session_is_split_only_when_its_attempts_carry_allocated_shares():
-    """D100: lane 2's split marks the attempts `allocated` with `shared_session`; the fallback keeps them whole."""
+    """Lane 2's split marks the attempts `allocated` with `shared_session`; the fallback keeps them whole."""
     mark = {"session": "S", "attempts": ["a1", "a2"]}
 
     def doc(basis):
@@ -589,7 +591,7 @@ def test_a_shared_session_is_split_only_when_its_attempts_carry_allocated_shares
 
 
 def test_match_counts_reads_the_logmatch_tier_before_the_basis():
-    """D88: lane 2's split of a shared verified session has basis `allocated` but tier verified."""
+    """Lane 2's split of a shared verified session has basis `allocated` but tier verified."""
     def att(i, basis, tier=None):
         ext = {"ext": {"dev.loopmath.logmatch": {"tier": tier}}} if tier else {}
         return {"id": f"att_{i}", "cost": {"input_tokens": 10, "usd": 0.1, "basis": basis, **ext}}

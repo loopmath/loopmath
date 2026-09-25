@@ -28,7 +28,7 @@ os.environ["PYTHON_COLORS"] = "0"
 
 
 # Tests that need parts of the private development tree. The public export
-# (scripts/export-public.sh, decision D38) leaves these paths out, so there
+# (scripts/export-public.sh) leaves these paths out, so there
 # the tests skip, and the not-run line below names them.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEEDS_PRIVATE_PATH = {

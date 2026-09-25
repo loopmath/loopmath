@@ -1,16 +1,16 @@
 """RQ1 phase 1 (lane 11): lane 10's OCP v0.3 conversion, made consistent with the rest of the bundle.
 
 Input: a folder of `*.ocp.json` documents, the experiment repository's
-`out/rq1-phase1-ocp/` (lane 10, D15), read only. Lane 10 owns the conversion;
+`out/rq1-phase1-ocp/` (lane 10), read only. Lane 10 owns the conversion;
 this module only:
 
-- checks the D15 labels (type `feature`, repo `ale-bench`, subtype
+- checks the labels (type `feature`, repo `ale-bench`, subtype
   `ahc/<problem>`, source kind `rq1`, the `heldout_perf` score rule) and
   refuses a document that does not carry them;
-- recomputes `configuration.id` with the bundle's canonical form (D2), so one
+- recomputes `configuration.id` with the bundle's canonical form, so one
   shape and settings have one id across sources; lane 10's id is kept in
   `dev.loopmath.prior.lane10_config_id`;
-- writes each attempt's role as its piece's role (D32 words; lane 10 writes
+- writes each attempt's role as its piece's role (words; lane 10 writes
   `dev` and `solo`);
 - reprices every attempt from its four token streams with the packaged price
   table, like the other sources (lane 10's list-price total is kept as
@@ -37,7 +37,7 @@ _RQ1_EXT = "dev.loopmath.rq1"
 
 
 def check_labels(doc: dict) -> list[str]:
-    """D15 problems with a lane 10 document (empty when it is right)."""
+    """Problems with a lane 10 document (empty when it is right)."""
     run = doc.get("run") or {}
     task = run.get("task") or {}
     problems = []
@@ -62,7 +62,7 @@ def normalize(doc: dict, *, prices=None, producer_version: str = "") -> dict:
         raise ValueError(f"{(doc.get('run') or {}).get('id')}: " + "; ".join(problems))
     out = copy.deepcopy(doc)
     # The bundle re-emits the document, as for the sweep and E0: lane 10's contract stays as the
-    # source contract, its tool and repository names do not (D70).
+    # source contract, its tool and repository names do not.
     lane10 = out.get("producer") or {}
     out["producer"] = {k: v for k, v in {
         "name": ocpdoc.PRODUCER_NAME, "version": producer_version, "emitted_at": lane10.get("emitted_at"),

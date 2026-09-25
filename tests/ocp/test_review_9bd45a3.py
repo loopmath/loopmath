@@ -42,7 +42,7 @@ def test_repro_d27_allocated_cost_is_accepted_in_v03():
      "requests": 3},
 ], ids=["shared-tier-only", "full-record"])
 def test_d56_the_logmatch_record_needs_only_its_tier(record):
-    """D56: a shared record carries exactly cost.ext = {logmatch: {tier: heuristic}}; the store's has more."""
+    """A shared record carries exactly cost.ext = {logmatch: {tier: heuristic}}; the store's has more."""
     doc = allocated(example("solo"), logmatch=False)
     doc["attempts"][0]["cost"]["ext"] = {"dev.loopmath.logmatch": record}
     assert errors(doc) == []
@@ -53,7 +53,7 @@ def test_d56_the_logmatch_record_needs_only_its_tier(record):
     {"tier": "verified", "shared_session": True},
 ], ids=["store", "shared"])
 def test_d88_a_split_shared_session_may_be_allocated_at_any_tier(record):
-    """D88: a session several attempts name is split among them; the store keeps an object, share keeps true."""
+    """A session several attempts name is split among them; the store keeps an object, share keeps true."""
     doc = allocated(example("solo"), logmatch=False)
     doc["attempts"][0]["cost"]["ext"] = {"dev.loopmath.logmatch": record}
     assert errors(doc) == []

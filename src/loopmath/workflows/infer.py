@@ -1,15 +1,15 @@
-"""Map an extracted session graph (or a run file) to the nearest shape with its settings (D25, D33).
+"""Map an extracted session graph (or a run file) to the nearest shape with its settings.
 
 `infer(source) -> (Configuration, confidence)`. The configuration's workflow is
 the exact composed shape (`plan_team`, `implement_review`, ...); `extra` holds
 
 - `node_vertex`: every node id of the input to a piece id of the returned
-  workflow (D25). Nodes that do not decide the shape (sessions outside the
+  workflow. Nodes that do not decide the shape (sessions outside the
   build phase, external launchers, harness gates) go to the nearest piece by
   role. For a declared configuration the targets are its own pieces, found by
   `node.vertex`, then attempt vertices, then role, and `node_vertex_basis`
   says which (see `declared_node_vertex`);
-- `shape`, `nearest_catalog` (D33), `confidence`, `reasons` (one line each)
+- `shape`, `nearest_catalog`, `confidence`, `reasons` (one line each)
   and `inferred_from` (`graph`, `ocp`, `sweep`, `rq1`, `configuration`).
 
 Sources, one agent list for all of them:
@@ -17,8 +17,8 @@ Sources, one agent list for all of them:
 - `graph.schema.Graph` or its dict (extractor payload);
 - an OCP document of any version: a declared `run.configuration` is taken as
   is; a v0.2 document, or one carrying the graph writer's extension
-  (`dev.loopmath.graph`, or `dev.dagr.graph` from before 0.3) at any version
-  (D65), goes through `ingest.ocp.from_ocp`; anything else is read from its
+  (`dev.loopmath.graph`, or `dev.dagr.graph` from before 0.3) at any version,
+  goes through `ingest.ocp.from_ocp`; anything else is read from its
   nodes and attempts;
 - a contract v3 sweep run file (`ext.experiment` declares arm, planner, reviewer);
 - an RQ1 run `config.json` (`topology`, `agents`).
@@ -119,7 +119,7 @@ def _canonical(model: str | None) -> str | None:
     return canonical_model(str(model)) or str(model)
 
 
-# Graph labeller words that mean something to the classifier; everything else folds by D32.
+# Graph labeller words that mean something to the classifier; other roles pass through normalize_role.
 _GRAPH_ROLES = {"lead": "lead", "solo": "solo", "cli": "cli", "external": "external", "dev": "worker",
                 "developer": "worker", "harness": "gate", "gate": "gate"}
 
@@ -315,7 +315,7 @@ def _mode(settings: list[Setting], weights: list[float] | None = None) -> tuple[
 # ------------------------------------------------------------------ the classifier
 
 def _nearest_piece(role: str | None, params: ShapeParams) -> str:
-    """The piece a session with this role belongs to (D25: unmatched nodes go to the nearest piece by role)."""
+    """The piece a session with this role belongs to (unmatched nodes go to the nearest piece by role)."""
     work = work_piece(params)
     prefs = {
         "planner": ["plan"], "lead": ["plan"], "external": ["plan"],
@@ -567,7 +567,7 @@ GRAPH_EXT_KEYS = ("dev.loopmath.graph", "dev.dagr.graph")
 
 
 def is_graph_document(doc: Mapping[str, Any]) -> bool:
-    """True when an OCP document carries the graph extension on itself, a node or an attempt (D65)."""
+    """True when an OCP document carries the graph extension on itself, a node or an attempt."""
     def carries(record: Any) -> bool:
         ext = record.get("ext") if isinstance(record, Mapping) else None
         return isinstance(ext, Mapping) and any(isinstance(ext.get(k), Mapping) for k in GRAPH_EXT_KEYS)
@@ -608,7 +608,7 @@ def infer_detail(source: Any) -> Inference:
 
 
 def infer(graph: Any) -> tuple[Configuration, float]:
-    """(configuration, confidence) for a graph or run file (D25); `extra["node_vertex"]` maps every node."""
+    """(configuration, confidence) for a graph or run file; `extra["node_vertex"]` maps every node."""
     result = infer_detail(graph)
     return result.configuration, result.confidence
 

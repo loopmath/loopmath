@@ -1,6 +1,6 @@
 """`run finish`: settle attempts against their logs, validate, receipt, mark finished, refit.
 
-Order (design/0.1/02-commands.md section 3; Analyst D16, D27 and the settle_run note):
+Order:
 
 1. lane 2 `loopmath.logmatch.settle.settle_run(doc, roots=default_roots())` matches every
    attempt to its session log and fills four-stream tokens, dollars, the tariff
@@ -82,7 +82,7 @@ def _unmatched_reasons(summary: Any) -> dict[str, str]:
 
 
 def _match_tier(cost: dict[str, Any]) -> str | None:
-    """Lane 2's `cost.ext["dev.loopmath.logmatch"].tier` first, then the basis (D88: a verified session
+    """Lane 2's `cost.ext["dev.loopmath.logmatch"].tier` first, then the basis (a verified session
     shared by several attempts has basis `allocated`, a split, but its match is still verified)."""
     ext = (cost.get("ext") or {}).get("dev.loopmath.logmatch") if isinstance(cost.get("ext"), dict) else None
     tier = ext.get("tier") if isinstance(ext, dict) else None
@@ -92,7 +92,7 @@ def _match_tier(cost: dict[str, Any]) -> str | None:
 
 
 def match_counts(doc: dict[str, Any], summary: Any = None) -> dict[str, Any]:
-    """D27: a verified or heuristic match by lane 2's tier (else basis `measured` or `allocated`); no cost is unmatched."""
+    """A verified or heuristic match by lane 2's tier (else basis `measured` or `allocated`); no cost is unmatched."""
     reasons = _unmatched_reasons(summary)
     verified = heuristic = reported = 0
     unmatched: list[dict[str, str]] = []
@@ -115,9 +115,9 @@ def match_counts(doc: dict[str, Any], summary: Any = None) -> dict[str, Any]:
 
 
 def _shared_sessions(summary: Any, doc: dict[str, Any]) -> list[dict[str, Any]]:
-    """D87: lane 2's `summary["shared"]`, each `{session, attempts}` a session several attempts name.
+    """Lane 2's `summary["shared"]`, each `{session, attempts}` a session several attempts name.
 
-    `split` (D100) says whether its attempts carry allocated shares (lane 2's split, basis `allocated`);
+    `split` says whether its attempts carry allocated shares (lane 2's split, basis `allocated`);
     otherwise they keep whole costs and the run total counts the session once.
     """
     raw = summary.get("shared") if isinstance(summary, dict) else None

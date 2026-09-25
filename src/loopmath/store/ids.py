@@ -101,13 +101,13 @@ class SinceError(ValueError):
 
 
 class AmbiguousSince(SinceError):
-    """`--since 3m`: months or minutes? Refused (exit code 2, Analyst D89)."""
+    """`--since 3m`: months or minutes? Refused (exit code 2)."""
 
     exit_code = 2
 
 
 def parse_since(text: str | None, now: datetime | None = None) -> datetime | None:
-    """The one `--since` reader (Analyst D89) for report, onboard, runs and share.
+    """The one `--since` reader for report, onboard, runs and share.
 
     `36h`, `90d` or `12w` (a whole or decimal number, any case, a space allowed) before `now`, or an ISO
     date or time (local time when it has no offset). None when absent. `m` raises `AmbiguousSince`
@@ -122,7 +122,7 @@ def parse_since(text: str | None, now: datetime | None = None) -> datetime | Non
         raise AmbiguousSince(f"--since {raw}: ambiguous: use 90d, 12w or a date")
     hint = f"--since {raw}: use 36h, 90d, 12w or a date such as 2026-09-01"
     if m and m.group(2).lower() in _SINCE_UNITS:
-        try:  # a length past year 1 (99999999999d) overflows timedelta or the date (D109 note)
+        try:  # a length past year 1 (99999999999d) overflows timedelta or the date
             span = timedelta(seconds=float(m.group(1)) * _SINCE_UNITS[m.group(2).lower()])
             return (now or datetime.now().astimezone()) - span
         except OverflowError:

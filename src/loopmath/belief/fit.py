@@ -28,15 +28,18 @@ from typing import Iterable, Iterator
 import numpy as np
 from scipy import sparse
 
+from ..taskmodel import FeatureConfigError, FeatureSet
 from . import priors as prior_data
-from .design import Term, Unusable, cost_row, gate_row, parse_run, run_row, structure, task_terms
+from .design import (DESIGN_VERSION, Term, Unusable, cost_row, gate_row, parse_run, run_row, structure,
+                     task_features, task_terms)
+from .features import FeatureTally, add_horizon, drop_features, horizon_nodes, horizon_specs
 from .block import leaf_split
 from .forest import Forest, default_scale, fixed_sd, scale_group
 from .gaussian import N_DRAWS, Factors, GaussianHead, HeadFit, LogisticHead, Prior
 from .state import SCORE_CLAMP, inverse_transform, transform  # noqa: F401  (re-exported)
 
 FIT_LOCK = ".fit.lock"
-KEEP_FITS = 5  # D91: the newest fits kept, besides the ones a receipt or stored recommendation names
+KEEP_FITS = 5  # The newest fits kept, besides the ones a receipt or stored recommendation names
 TASK_LEVELS = ("org", "type", "repo", "subtype", "task")
 MIN_SCORE_RUNS = 3  # spec 04 section 2: a score head needs at least 3 measured runs
 HEAD_KIND = {"cost": ("gaussian", "cost"), "tokens": ("gaussian", "cost"),
@@ -48,7 +51,7 @@ class FitBusy(RuntimeError):
 
 
 class UnknownSource(ValueError):
-    """`--without` named a source that matches no run; no fit was written (D86)."""
+    """`--without` named a source that matches no run; no fit was written."""
 
 
 class NothingToFit(ValueError):
@@ -76,7 +79,7 @@ REASON_NOTES = {
 
 
 def reason_note(reason: str) -> str | None:
-    """Plain words for a dropped reason in meta.json, for the terminal summary (D86)."""
+    """Plain words for a dropped reason in meta.json, for the terminal summary."""
     if reason in REASON_NOTES:
         return REASON_NOTES[reason]
     if reason.startswith("without "):
@@ -158,7 +161,7 @@ class HeadRows:
     runs: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     types: list[str] = field(default_factory=list)
-    not_repriced: int = 0  # cost rows on recorded dollars, not the current tariff (D67)
+    not_repriced: int = 0  # cost rows on recorded dollars, not the current tariff
 
     def add(self, terms, y, w, run, source, ttype):
         self.rows.append(terms)
@@ -177,22 +180,26 @@ def _excluded(source: str, without: tuple[str, ...]) -> bool:
 
 
 def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tuple[str, ...] = (),
-                 now: datetime | None = None):
+                 now: datetime | None = None, features: FeatureSet | None = None):
     """Rows of every head from run documents, plus counts of what was used and dropped.
 
     `docs` yields documents, or `(origin, document)` pairs from `fit()`: `user` for the store
     (read first), the manifest source for a shipped run, None to read the document's label
-    (spec 04 section 1, D118 N2). A shipped run whose id is in the store is left out as
+    (spec 04 section 1). A shipped run whose id is in the store is left out as
     `shipped copy of a stored run`, and a shipped source named in `without` is counted
     without being parsed.
 
     Returns (heads, score_info, dropped, runs_by_source, config_support, checks,
-    shipped_overlap, user_labels); `checks` counts the non-model check attempts by check name,
-    which are neither evidence nor dropped (D86); `shipped_overlap` counts, per shipped source,
+    shipped_overlap, user_labels, tally); `checks` counts the non-model check attempts by check name,
+    which are neither evidence nor dropped; `shipped_overlap` counts, per shipped source,
     the user's runs that are also in it; `user_labels` counts the user's runs by the source
-    their document names, when that is not `user`.
+    their document names, when that is not `user`. Features are read with `features` (the
+    built-ins by default); only admitted values keep their `feature:` terms, and `tally`
+    (features.FeatureTally) holds the support, the admitted values and the recorded horizons.
     """
     now = now or datetime.now().astimezone()
+    features = features or FeatureSet()
+    tally = FeatureTally(features)
     heads = {name: HeadRows(name, *HEAD_KIND[name]) for name in HEAD_KIND}
     score_raw: dict[str, list] = defaultdict(list)
     score_meta: dict[str, Counter] = defaultdict(Counter)
@@ -202,7 +209,7 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
     runs_by_source: Counter = Counter()
     config_support: dict[str, Counter] = defaultdict(Counter)
     seen: set[str] = set()
-    stored: set[str] = set()  # run ids of the user's store, whose copy wins (D118 N2)
+    stored: set[str] = set()  # run ids of the user's store, whose copy wins
     overlap: Counter = Counter()
     labels: Counter = Counter()
     for item in docs:
@@ -240,21 +247,22 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
             dropped[reason] += n
         checks.update(pr.checks)
         runs_by_source[pr.source] += 1
+        tally.add(pr.task, task_features(pr.task, features), pr.run_id, pr.source)
         chain = [n for n, _, _ in task_terms(pr.task, pr.source) if n.split(":", 1)[0] in TASK_LEVELS]
         config_support[pr.config.id].update(chain + ["all"])
         st = structure(pr.config)
         ttype = pr.task.type
         for a in pr.attempts:
-            terms = cost_row(pr.task, pr.source, st, a.piece, a.round, a.setting)
+            terms = cost_row(pr.task, pr.source, st, a.piece, a.round, a.setting, features)
             if a.usd:
                 heads["cost"].add(terms, math.log(a.usd), a.weight, pr.run_id, pr.source, ttype)
                 heads["cost"].not_repriced += not a.repriced
             if a.tokens:
                 heads["tokens"].add(terms, math.log(a.tokens), a.weight, pr.run_id, pr.source, ttype)
         for gi, k, passed in pr.gates:
-            heads["gate"].add(gate_row(pr.task, pr.source, st, st.gates[gi], k), 1.0 if passed else 0.0, 1.0,
-                              pr.run_id, pr.source, ttype)
-        row = run_row(pr.task, pr.source, st)
+            heads["gate"].add(gate_row(pr.task, pr.source, st, st.gates[gi], k, features), 1.0 if passed else 0.0,
+                              1.0, pr.run_id, pr.source, ttype)
+        row = run_row(pr.task, pr.source, st, features)
         ev = pr.evidence
         if ev is not None and ev.z is not None:
             heads["success"].add(row, float(ev.z), float(ev.q), pr.run_id, pr.source, ttype)
@@ -276,8 +284,12 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
             score_info[name] = {"scale": scale, "better": better, "unit": unit}
         else:
             dropped[f"score {name} below {MIN_SCORE_RUNS} runs"] += len(hr.runs)
+    tally.nodes, tally.report = tally.admit()
+    coding = tally.horizon_coding()  # the horizon terms need every run's horizon first (spec 04 section 1)
+    for hr in heads.values():
+        hr.rows = add_horizon(drop_features(hr.rows, tally.nodes), hr.runs, tally.run_horizon, coding)
     return (heads, score_info, dict(dropped), dict(runs_by_source), {c: dict(n) for c, n in config_support.items()},
-            dict(checks), dict(overlap), dict(labels))
+            dict(checks), dict(overlap), dict(labels), tally)
 
 
 # ---------------------------------------------------------------- matrices and priors
@@ -464,6 +476,10 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         remove_partials(home)
         config = _read_config(home)
         weight = float(config.get("benchmark_prior_weight", prior_data.BENCHMARK_PRIOR_WEIGHT))
+        try:
+            features, features_error = FeatureSet.from_config(config.get("features")), None
+        except FeatureConfigError as exc:  # a hand-edited config.toml: fit with the built-ins, say why
+            features, features_error = FeatureSet(), str(exc)
 
         def all_docs() -> Iterator[dict | tuple[str | None, dict]]:
             if docs is not None:
@@ -476,7 +492,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
                 yield from prior_data.shared_docs(home)
 
         (heads_rows, score_info, dropped, runs_by_source, config_support, checks, overlap,
-         labels) = collect_rows(all_docs(), without=without, now=now)
+         labels, tally) = collect_rows(all_docs(), without=without, now=now, features=features)
         removed = {k[len("without "):] for k in dropped if k.startswith("without ")}
         unknown, known = unknown_sources(without, set(runs_by_source) | removed, bundle_dir)
         if unknown:
@@ -492,6 +508,9 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             head_specs = [s for s in specs if s.head == name]
             if not hr.rows:
                 continue
+            nodes = horizon_nodes(hr.rows)
+            if nodes:  # the horizon priors, --no-prior included (spec 04 section 1)
+                head_specs += horizon_specs(name, hr.kind, nodes)
             fitted[name] = fit_head(hr, forest, head_specs, eb=eb)
         fit_id = new_fit_id(fits, now)
         partial = fits / f"{fit_id}.partial"
@@ -503,7 +522,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             arrays[f"{key}__nodes"] = np.array([forest.index[n] for n in h["node_ids"]], dtype=np.int64)
             arrays[f"{key}__ids"] = np.array(h["node_ids"], dtype=str)
             arrays[f"{key}__mean"] = res.mean
-            # D94: the sparse posterior precision, not its dense factor or the draws; the state
+            # The sparse posterior precision, not its dense factor or the draws; the state
             # rebuilds both on first use (a dense 4,808-node factor was 185 MB per head)
             arrays[f"{key}__P_data"] = res.precision.data
             arrays[f"{key}__P_indices"] = res.precision.indices.astype(np.int32)
@@ -522,7 +541,8 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         design = {"nodes": forest.to_json(),
                   "support": {name: h["support"] for name, h in fitted.items()},
                   "task_support": task_support, "score_support_by_type": score_types,
-                  "config_support": config_support}
+                  "config_support": config_support,
+                  "task_features": tally.task_values(tally.report["admitted"])}
         _atomic_json(partial / "design.json", design)
         meta = {
             "fit": fit_id, "created_at": now.isoformat(timespec="seconds"), "code_version": _code_version(),
@@ -546,6 +566,9 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
                       for name, h in fitted.items()},
             "scores": score_info,
             "draws": N_DRAWS,
+            "design_version": DESIGN_VERSION,
+            "features": {**tally.report, **({"error": features_error} if features_error else {})},
+            "horizons": tally.horizon_report(),
         }
         if full:
             meta["full"] = _full_check(fitted)
@@ -602,10 +625,16 @@ def fit_folder(home: Path, fit_id: str) -> Path:
 
 
 def load_fit(home: Path, fit_id: str):
-    """The belief state of a kept fit, for `recommend --fit ID` and `posterior --fit ID`."""
-    from .state import load
+    """The belief state of a kept fit, for `recommend --fit ID` and `posterior --fit ID`; raises UnknownFit
+    for a fit from another design version."""
+    from .state import FitState, other_design
 
-    return load(fit_folder(home, fit_id))
+    folder = fit_folder(home, fit_id)
+    meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    why = other_design(meta)
+    if why is not None:
+        raise UnknownFit(why)
+    return FitState(folder, meta=meta)
 
 
 # ---------------------------------------------------------------- background
@@ -639,7 +668,7 @@ def named_fits(home: Path) -> set[str] | None:
 
 
 def prune_fits(home: Path, keep: int = KEEP_FITS) -> list[str]:
-    """D91: delete the complete fits other than the newest `keep`, the one `fits/latest` points at
+    """Delete the complete fits other than the newest `keep`, the one `fits/latest` points at
     and any a receipt or stored recommendation names (called under the fit lock). Nothing is
     deleted when a receipt or recommendation cannot be read. Returns the deleted ids."""
     fits = Path(home) / "fits"

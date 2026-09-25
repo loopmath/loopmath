@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..belief.design import other_design
 from . import runs as R
 from .budget import budget_state
 from .config import ConfigError
@@ -23,7 +24,7 @@ STALE_OPEN_H = 24
 
 
 def _size(home: Path) -> dict[str, Any]:
-    """The store's bytes and files, and how many of the bytes are fits (D91: fits are the bulk)."""
+    """The store's bytes and files, and how many of the bytes are fits (fits are the bulk)."""
     total = files = fits = 0
     fits_dir = os.path.join(str(home), "fits")
     for root, _dirs, names in os.walk(home):
@@ -43,7 +44,8 @@ def fit_summary(home: Path, fit_id: str | None) -> dict[str, Any]:
     """What the fit behind `fits/latest` used (I8): its options, run counts and overlap with the prior.
 
     `runs` splits the fit's runs into `prior` (shipped sources), `user` and `shared` (imports);
-    empty for a fit written before 0.1.1 or with an unreadable meta.json.
+    empty for a fit written before 0.1.1 or with an unreadable meta.json. `problem` says why this
+    loopmath cannot use the fit (another design version), or is None.
     """
     if not fit_id:
         return {}
@@ -61,7 +63,8 @@ def fit_summary(home: Path, fit_id: str | None) -> dict[str, Any]:
                         "full": bool(options.get("full"))},
             "runs": {"prior": sum(int(v) for v in by_source.values()) - user - shared, "user": user, "shared": shared},
             "shipped_overlap": dict(meta.get("shipped_overlap") or {}),
-            "user_labels": dict(meta.get("user_labels") or {})}
+            "user_labels": dict(meta.get("user_labels") or {}),
+            "problem": other_design(meta)}
 
 
 def fit_options_text(options: dict[str, Any]) -> str:
@@ -139,6 +142,10 @@ def status_payload(store: Store, now: datetime | None = None) -> dict[str, Any]:
 
     fit = fit_state(home)
     fit.update(fit_summary(home, fit.get("latest")))
+    fit.setdefault("problem", None)
+    fit["usable"] = bool(fit["latest"]) and fit["problem"] is None
+    if fit["problem"]:
+        warn("fit_unusable", fit["problem"])
     job = fit.get("job") or {}
     if job.get("status") == "failed" and not fit["running"]:
         warn("fit_failed", f"the last background fit failed: {job.get('error')}")
@@ -198,6 +205,8 @@ def status_lines(p: dict[str, Any]) -> list[str]:
             text += f", {opts}"
         if runs:
             text += f", runs {runs['prior']} prior + {runs['user']} yours" + (f" + {runs['shared']} shared" if runs["shared"] else "")
+        if not fit.get("usable", True):
+            text += ", not usable"
         lines.append(text)
         note = overlap_note(fit.get("shipped_overlap"))
         if note:

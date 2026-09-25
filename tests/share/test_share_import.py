@@ -151,7 +151,7 @@ def _bad(obj, tmp_path, name="bad.json.gz"):
      ".configuration.workflow"),
     (lambda o: o["runs"][0]["run"]["ext"][EXT_KEY]["outcome"].update(q=2), ".outcome.q"),
     (lambda o: o["runs"].append(copy.deepcopy(o["runs"][0])), "same run id"),
-    # D56: the only cost ext is the log match tier, on an allocated cost
+    # The only cost ext is the log match tier, on an allocated cost
     (lambda o: _allocated(o)["ext"][LOGMATCH].update(session=PLANTED["claude session"]),
      f".cost.ext.{LOGMATCH}.<key>"),
     (lambda o: _allocated(o)["ext"][LOGMATCH].update(clip={"from": "2026-09-20T10:00:00-07:00"}),
@@ -163,7 +163,7 @@ def _bad(obj, tmp_path, name="bad.json.gz"):
     (lambda o: o["runs"][0]["attempts"][0]["cost"].update(basis="expected"), ".cost.basis"),
     (lambda o: _allocated(o)["ext"].pop(LOGMATCH), f".cost.ext.{LOGMATCH}"),
     (lambda o: o["runs"][0]["attempts"][0]["cost"].update(ext={}), ".cost.ext"),
-    # D71: a split is {model id: the four OCP token counts}, nothing more
+    # A split is {model id: the four OCP token counts}, nothing more
     (lambda o: _allocated(o)["ext"][SPLIT]["gpt-6-astra"].update(session=PLANTED["codex session"]),
      f".cost.ext.{SPLIT}.gpt-6-astra.<key>"),
     (lambda o: _allocated(o)["ext"][SPLIT]["gpt-6-astra"].update(reasoning_tokens=5),
@@ -175,7 +175,7 @@ def _bad(obj, tmp_path, name="bad.json.gz"):
     (lambda o: _allocated(o)["ext"][SPLIT].update({PLANTED["model label"]: _allocated(o)["ext"][SPLIT]["gpt-6-astra"]}),
      f".cost.ext.{SPLIT}.<key>"),
     (lambda o: _allocated(o)["ext"].update({SPLIT: [["gpt-6-astra", 1]]}), f".cost.ext.{SPLIT}"),
-    # D88: a shared session adds a bare `shared_session: true`, and only then may the tier be verified
+    # A shared session adds a bare `shared_session: true`, and only then may the tier be verified
     (lambda o: _allocated(o)["ext"][LOGMATCH].update(shared_session=1), f".cost.ext.{LOGMATCH}.shared_session"),
     (lambda o: _allocated(o)["ext"][LOGMATCH].update(shared_session="true"), f".cost.ext.{LOGMATCH}.shared_session"),
     (lambda o: _allocated(o)["ext"][LOGMATCH].update(shared_session=False), f".cost.ext.{LOGMATCH}.shared_session"),
@@ -214,8 +214,8 @@ def test_allocated_cost_survives_the_round_trip(store, tmp_path, capsys):
 
 @pytest.mark.parametrize("tier", ["heuristic", "verified"])
 def test_shared_session_survives_the_round_trip(tmp_path, capsys, tier):
-    """D88: attempts that split one session share their tier and `shared_session: true`, and import takes exactly
-    that; which session and which attempts stay home. A verified split needs lane 1's E171 change (D88)."""
+    """Attempts that split one session share their tier and `shared_session: true`, and import takes exactly
+    that; which session and which attempts stay home. A verified split needs lane 1's E171 change."""
     docs = planted_docs()
     (cost,) = [a["cost"] for a in docs[0]["attempts"] if a["cost"]["basis"] == "allocated"]
     cost["ext"][LOGMATCH].update(tier=tier, shared_session={"session": PLANTED["codex session"],
@@ -235,7 +235,7 @@ def test_shared_session_survives_the_round_trip(tmp_path, capsys, tier):
 
 
 def test_model_token_splits_survive_the_round_trip(store, tmp_path, capsys):
-    """D71: a split with an unknown part, a hashed private label, and `{}` (mixed, no split) all import as shared."""
+    """A split with an unknown part, a hashed private label, and `{}` (mixed, no split) all import as shared."""
     path, obj = _share(tmp_path, store)
     shared = [a["cost"]["ext"][SPLIT] for d in obj["runs"] for a in d["attempts"] if SPLIT in a["cost"].get("ext", {})]
     assert {} in shared and any("unknown" in s for s in shared)
@@ -248,7 +248,7 @@ def test_model_token_splits_survive_the_round_trip(store, tmp_path, capsys):
 
 
 def test_allocated_cost_round_trip_passes_the_ocp_checker(store, tmp_path, capsys):
-    """Review of 0990dd5: an allocated share goes through lane 1's checker (D48) on import and after it."""
+    """Review of 0990dd5: an allocated share goes through lane 1's checker on import and after it."""
     path, obj = _share(tmp_path, store)
     assert import_.ocp_problems(obj) == []
     ours = tmp_path / "ours"
@@ -289,7 +289,7 @@ def test_import_refuses_files_over_the_size_limit(store, tmp_path, capsys, monke
 
 
 def test_import_runs_the_ocp_checker(store, tmp_path, capsys):
-    """D46: a file whose configuration id is not the hash of its content is refused, by place and rule only."""
+    """A file whose configuration id is not the hash of its content is refused, by place and rule only."""
     _, obj = _share(tmp_path, store)
     doc = next(d for d in obj["runs"] if "pieces" in d["run"]["configuration"]["workflow"])
     doc["run"]["configuration"]["id"] = "cfg_000000000000"

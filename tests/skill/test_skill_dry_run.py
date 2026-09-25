@@ -1,271 +1,309 @@
-"""Spec 07 section 3: a scripted dry run of the skill's flow with fake agents.
+"""Spec 07 section 3: a scripted dry run of every skill's job, with fake agents.
 
-The dry run follows SKILL.md as an orchestrator would, in process, on a temp store with empty
-log folders: `recommend` saved to rec.json, a pair started from it (`--new-slate`, then
-`--slate`), one `--harness command` attempt per piece, verdicts, the blinded preference, and
-`run finish` for both. It must leave two valid OCP v0.3 runs, two receipts and a refit that
-started and stamped them. It skips, naming the command, while a verb is still a lane stub.
+The dry run types the commands the six skills show, as an agent following them would, on the
+synthetic history of tests/onboard/onboard_fixture.py: onboard with a `command:` labeller, plan a
+task and start the pair it offers, record both runs from the folders they worked in, judge the
+pair blind, report a late incident, refit, bring the two runs into a second store as OCP files,
+and run doctor. A second, shorter dry run plans with exploration off, so there is no pair, and
+starts the goal.
+Every command runs as `python -m loopmath` with HOME, the store and the caches in
+tmp_path, so no real session is ever read.
 
-A second test checks that every `loopmath ...` command the skill and the README show names a
-real command and only flags that command has; two more check that the shell hands each shown
-argument to loopmath intact (a bare `--target heldout_perf>=2400` is a redirection).
+Then every JSON field a skill or the reference tells the agent to read ("Read `a`, `b[]` (`c`)")
+must be in the output of the command shown before it, and every field a skill reads must be in
+the reference.
 """
 
 from __future__ import annotations
 
-import argparse
+import importlib.util
 import json
 import os
-import re
-import shlex
-import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from loopmath import cli
+import loopmath
 from loopmath.skill import install as inst
+from skill_texts import key, names, parser, read_fields, resolve, texts
 
-ROOT = Path(__file__).resolve().parents[2]
-BASE = "a" * 40
+_spec = importlib.util.spec_from_file_location(
+    "onboard_fixture_for_skill", Path(__file__).resolve().parents[1] / "onboard" / "onboard_fixture.py")
+fixture = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = fixture  # its dataclasses look their module up while the class is built
+_spec.loader.exec_module(fixture)
+
+SRC = Path(loopmath.__file__).resolve().parents[1]
 FIT_WAIT_S = 180
+# Fields a skill reads that a lane still to merge adds; each entry names the lane.
+PENDING: dict[str, str] = {}
+# A fit seeds its draws from its id, a timestamp, so whether `recommend` offers a pair depends on
+# when the fit ran: on this history about one fresh fit in six has no second workflow worth
+# trying. The journey refits under PAIR_FIT, a pinned id that offers a pair.
+PAIR_FIT = "fit_20260101000010"
+# `loopmath ARGS` in a process with one seam pinned by argv[1]: `fit_id=ID` pins the id of the fit
+# it writes; `no_gain` zeroes the look-ahead's gain, so no exploration pick qualifies and there is
+# no pair, whatever the fit.
+PINNED = """\
+import dataclasses
+import importlib
+import sys
+pin = sys.argv.pop(1)
+if pin.startswith("fit_id="):
+    fit = importlib.import_module("loopmath.belief.fit")
+    fit.new_fit_id = lambda fits, now, fit_id=pin[len("fit_id="):]: fit_id
+elif pin == "no_gain":
+    la = importlib.import_module("loopmath.belief.lookahead")
+    real = la.lookahead
+    def lookahead(*args, **kwargs):
+        res = real(*args, **kwargs)
+        return dataclasses.replace(res, gain_per_run={**res.gain_per_run, "usd": 0.0})
+    la.lookahead = lookahead
+else:
+    raise SystemExit(f"unknown pin {pin!r}")
+from loopmath.cli import main
+sys.exit(main(sys.argv[1:]))
+"""
+RECOMMEND = ("recommend", "--type", "bug_fix", "--repo", "acme/app", "--title", "Fix the crash on empty input",
+             "--feature", "size=s", "--feature", "lang=python")
+LABELER = """\
+import json, sys
+req = json.load(sys.stdin)
+print(json.dumps({"labels": [{"id": it["id"], "type": "bug_fix", "subtype": None, "confidence": 0.8,
+                              "features": {"size": "s", "lang": "python"}, "title": "Fix the crash"}
+                             for it in req["items"]]}))
+"""
 
 
-# ---------------------------------------------------------------- the commands the text shows
-class _Parser(Exception):
-    pass
+class Agent:
+    """Types `loopmath ...` commands in a clean environment and files each JSON output under its
+    command key."""
+
+    def __init__(self, tmp: Path, store: Path):
+        self.tmp, self.top, self.seen = tmp, parser(), {}
+        self.env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp / "home"), "LOOPMATH_HOME": str(store),
+                    "LOOPMATH_CACHE_DIR": str(tmp / "cache"), "PYTHONPATH": str(SRC),
+                    "PYTHONDONTWRITEBYTECODE": "1", "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8"}
+
+    def __call__(self, *argv: str, ok: tuple[int, ...] = (0,), pin: str | None = None):
+        res = self.run(*argv, pin=pin)
+        assert res.returncode in ok, f"loopmath {' '.join(argv)} exited {res.returncode}: {res.stderr[-800:]}"
+        if "--json" not in argv:
+            return res.stdout.strip()
+        obj = json.loads(res.stdout)
+        self.seen.setdefault(key(self.top, list(argv)), []).append(obj)
+        return obj
+
+    def run(self, *argv: str, pin: str | None = None) -> subprocess.CompletedProcess:
+        """`python -m loopmath ARGV`, or with PIN the same with that seam pinned (see PINNED)."""
+        how = ["-m", "loopmath"] if pin is None else ["-c", PINNED, pin]
+        return subprocess.run([sys.executable, *how, *argv], env=self.env, cwd=self.tmp, text=True,
+                              capture_output=True, stdin=subprocess.DEVNULL, timeout=FIT_WAIT_S)
+
+    def git(self, *argv: str, cwd: Path) -> str:
+        env = {**self.env, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com",
+               "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com"}
+        return subprocess.run(["git", *argv], cwd=cwd, env=env, check=True, capture_output=True,
+                              text=True).stdout.strip()
 
 
-def _parser(monkeypatch) -> argparse.ArgumentParser:
-    """The real top-level parser, as `cli.main` builds it."""
-    def grab(self, *a, **k):
-        raise _Parser(self)
-
-    with monkeypatch.context() as m:
-        m.setattr(argparse.ArgumentParser, "parse_args", grab)
-        try:
-            cli.main(["--help"])
-        except _Parser as got:
-            return got.args[0]
-    raise AssertionError("cli.main did not build a parser")
-
-
-def _choices(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
-    for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            return dict(action.choices)
-    return {}
-
-
-def _commands(text: str) -> list[str]:
-    """`loopmath ...` lines in sh blocks (backslash continuations joined) and inline code spans."""
-    found = []
-    for block in re.findall(r"```sh\n(.*?)```", text, re.S):
-        for line in block.replace("\\\n", " ").splitlines():
-            line = line.split("#", 1)[0].strip()
-            if line.startswith("loopmath "):
-                found.append(line)
-    found += re.findall(r"`(loopmath [^`]+)`", text)
-    return found
-
-
-@pytest.mark.parametrize("source", ["skill", "README.md"])
-def test_every_command_shown_parses(monkeypatch, source):
-    text = inst.skill_text() if source == "skill" else (ROOT / "README.md").read_text(encoding="utf-8")
-    top = _parser(monkeypatch)
-    commands = _commands(text)
-    assert len(commands) >= 10, commands
-    problems = []
-    for command in commands:
-        words = command.replace("[", " ").replace("]", " ").split()[1:]
-        parser, chain = top, []
-        while words and words[0] in _choices(parser):
-            chain.append(words[0])
-            parser = _choices(parser)[words.pop(0)]
-        if words and words[0].startswith("<"):
-            continue  # `loopmath <command> --help`
-        if not chain and not (words and words[0].startswith("--")):
-            problems.append(f"{command}: no such command")
-            continue
-        known = {s for a in parser._actions for s in a.option_strings}
-        for flag in re.findall(r"(?<![\w-])--[a-z][a-z0-9-]*", " ".join(words)):
-            if flag not in known:
-                problems.append(f"{command}: `loopmath {' '.join(chain)}` has no {flag}")
-    assert not problems, "\n".join(problems)
-
-
-def _texts() -> dict[str, str]:
-    return {"skill": inst.skill_text(), "README.md": (ROOT / "README.md").read_text(encoding="utf-8")}
-
-
-def _shell_snippets(text: str) -> list[str]:
-    """Everything a reader may paste into a shell: sh block lines, and inline spans that are a
-    `loopmath ...` command or start with a flag."""
-    found = []
-    for block in re.findall(r"```sh\n(.*?)```", text, re.S):
-        found += [ln.split("#", 1)[0] for ln in block.replace("\\\n", " ").splitlines()]
-    found += [s for s in re.findall(r"`([^`\n]+)`", text) if s.startswith(("loopmath ", "--"))]
-    return [s.strip() for s in found if s.strip()]
-
-
-# `<` or `>` inside a word, outside quotes: the shell takes it as a redirection and the word
-# is cut there. A placeholder (`<command>`) and a spaced redirect (`> rec.json`) are fine.
-IN_WORD_REDIRECT = re.compile(r"[\w\])][<>]=?[\w.]")
-
-
-@pytest.mark.parametrize("source", ["skill", "README.md"])
-def test_no_example_hands_the_shell_a_comparison(source):
-    bad = [s for s in _shell_snippets(_texts()[source])
-           if IN_WORD_REDIRECT.search(re.sub(r"'[^']*'|\"[^\"]*\"", "''", s))]
-    assert not bad, "quote these, the shell would redirect: " + " | ".join(bad)
-
-
-def _through_bash(bash: str, cwd: Path, words: str) -> list[str]:
-    """The argv bash hands to `loopmath` for `loopmath WORDS`, run in `cwd`."""
-    out = cwd.parent / "argv"
-    script = f'loopmath() {{ printf "%s\\0" "$@" > {shlex.quote(str(out))}; }}; loopmath {words}'
-    subprocess.run([bash, "--noprofile", "--norc", "-c", script], cwd=cwd, check=True,
-                   env={"PATH": "/usr/bin:/bin"}, stdin=subprocess.DEVNULL, capture_output=True)
-    return out.read_bytes().decode().split("\0")[:-1]
-
-
-def test_target_examples_reach_the_parser_intact(monkeypatch, tmp_path):
-    """Each `--target` rule example, pasted into bash, gives argparse the whole expression and
-    writes no file."""
-    bash = shutil.which("bash") or pytest.skip("no bash on PATH")
-    top = _parser(monkeypatch)
-    raws = [m for text in _texts().values() for s in _shell_snippets(text)
-            if not s.startswith("loopmath skill")
-            for m in re.findall(r"--target\s+('[^']*'|\"[^\"]*\"|[^\s`\]]+)", s) if re.search("[<>]", m)]
-    assert len(raws) >= 4, raws  # two in the skill, two in the README (`outcome --target X` is a number)
-    task = "recommend --type feature --repo acme/web --target "
-    for n, raw in enumerate(raws):
-        cwd = tmp_path / f"cwd{n}"
-        cwd.mkdir()
-        argv = _through_bash(bash, cwd, task + raw)
-        assert not list(cwd.iterdir()), f"--target {raw} made files: {sorted(p.name for p in cwd.iterdir())}"
-        want = shlex.split(raw)[0]
-        assert re.fullmatch(r"\w+(>=|<=|>|<)[\d.]+", want), want
-        assert top.parse_args(argv).target == want, (raw, argv)
-
-    # The probe itself: the same expression unquoted loses its tail and leaves a file.
-    cwd = tmp_path / "bare"
-    cwd.mkdir()
-    argv = _through_bash(bash, cwd, task + "heldout_perf>=2400")
-    assert argv[-1] == "heldout_perf" and [p.name for p in cwd.iterdir()] == ["=2400"]
-
-
-# ---------------------------------------------------------------- the dry run
-@pytest.fixture
-def lm(tmp_path, monkeypatch, capsys):
-    """Run `loopmath ARGV` in process on a temp store; JSON output parsed. Skips on a lane stub."""
-    for name in ("home", "claude", "codex", "cache"):
-        (tmp_path / name).mkdir()
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("LOOPMATH_HOME", str(tmp_path / "store"))
-    monkeypatch.setenv("LOOPMATH_CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-
-    def run(*argv: str):
-        capsys.readouterr()
-        try:
-            code = cli.main(list(argv))
-        except SystemExit as exc:
-            code = exc.code if isinstance(exc.code, int) else 2
-        out, err = capsys.readouterr()
-        if code == 3 and "not implemented yet" in err:
-            pytest.skip(f"`loopmath {' '.join(argv[:2])}` is still a stub in this tree: {err.strip()}")
-        assert code == 0, f"loopmath {' '.join(argv)} exited {code}: {err.strip()[-800:]}"
-        try:
-            return json.loads(out)
-        except ValueError:
-            return out
-
-    return run
-
-
-def _wait(pid: int) -> None:
-    """Wait for a detached fit this process started (it is our child), within FIT_WAIT_S."""
+def _wait(pids: list[int]) -> None:
+    """Wait for detached refits (not our children) to end, within FIT_WAIT_S."""
     end = time.monotonic() + FIT_WAIT_S
-    while time.monotonic() < end:
-        try:
-            done, _ = os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:  # already reaped
-            return
-        if done:
-            return
-        time.sleep(0.2)
-    raise AssertionError(f"the refit (pid {pid}) did not end within {FIT_WAIT_S} s")
-
-
-def test_skill_dry_run_pair_with_command_agents(lm, tmp_path):
-    types = lm("task-types", "--json")
-    assert "bug_fix" in json.dumps(types)
-    lm("fit", "--json")  # stands in for onboard's first fit
-
-    # Plan: recommend, saved where run start reads the task from (SKILL.md steps 2 and 5).
-    rec = lm("recommend", "--type", "bug_fix", "--repo", "acme/api", "--feature", "size=s",
-             "--feature", "lang=python", "--json")
-    assert rec["message"] and rec["curve"] and rec["rec"]
-    members = rec["pair"]["members"]
-    assert len(members) == 2 and members[0] != members[1]
-    rec_file = tmp_path / "rec.json"
-    rec_file.write_text(json.dumps(rec), encoding="utf-8")
-
-    # Record: the pair from one rec.json and one base commit.
-    usual = rec["usual"] or {}  # null without a habit (recommend/2); the baseline is then `reference`
-    first_source = "usual" if members[0] == (usual.get("config") or {}).get("id") else "alternative"
-    starts = [lm("run", "start", "--task-file", str(rec_file), "--base-commit", BASE, "--config", members[0],
-                 "--source", first_source, "--rec", rec["rec"], "--new-slate", "--json")]
-    slate = starts[0]["slate"]
-    starts.append(lm("run", "start", "--task-file", str(rec_file), "--base-commit", BASE, "--config", members[1],
-                     "--source", "exploration", "--rec", rec["rec"], "--slate", slate, "--json"))
-    assert starts[1]["slate"] == slate
-    assert starts[0]["task"] == starts[1]["task"] == rec["task"]["id"]
-
-    for i, start in enumerate(starts):
-        worktree = tmp_path / f"wt{i}"
-        worktree.mkdir()
-        doc = json.loads(Path(start["path"]).read_text(encoding="utf-8"))
-        settings = doc["run"]["configuration"].get("settings") or {}
-        last = None
-        for piece in start["pieces"]:
-            s = settings.get(piece) or {}
-            model = s.get("model") if isinstance(s.get("model"), str) else (s.get("model") or {}).get("id")
-            att = lm("run", "attempt", "--run", start["run"], "--piece", piece, "--harness", "command",
-                     "--model", str(model), "--effort", str(s.get("effort")), "--cwd", str(worktree), "--json")
-            lm("run", "attempt", "--run", start["run"], "--end", att["attempt"], "--status", "done", "--json")
-            last = att["attempt"]
-        lm("outcome", "--run", start["run"], "--signal", "tests=pass", "--kind", "verdict", "--at-attempt", last,
-           "--source", "ci", "--tier", "verified", "--json")
-
-    # Pair: the blinded referee's preference, then finish both (each may trigger the refit).
-    pref = lm("outcome", "--slate", slate, "--prefer", starts[0]["run"], "--judge", "referee", "--blinded", "--json")
-    assert pref["winner"] == starts[0]["run"]
-    finishes = [lm("run", "finish", "--run", s["run"], "--json") for s in starts]
-
-    pids = [f["fit"]["pid"] for f in finishes if isinstance(f.get("fit"), dict) and f["fit"].get("started")]
-    assert pids, [f.get("fit") for f in finishes]
     for pid in pids:
-        _wait(pid)
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            assert time.monotonic() < end, f"the refit (pid {pid}) did not end within {FIT_WAIT_S} s"
+            time.sleep(0.2)
 
-    # Two valid OCP v0.3 runs.
-    check = lm("ocp", "validate", *(s["path"] for s in starts), "--json")
-    assert check["ok"], check
-    assert [(f["ocp"], f["errors"]) for f in check["files"]] == [("0.3", 0), ("0.3", 0)]
 
-    # Two receipts, both stamped by the refit that finish started.
-    store = tmp_path / "store"
-    job = json.loads((store / "fits" / "job.json").read_text(encoding="utf-8"))
-    assert job["status"] == "done", job
-    receipts = sorted((store / "receipts").glob("rct_*.json"))
-    assert [f["receipt"] for f in finishes] and len(receipts) == 2
-    for path in receipts:
-        receipt = json.loads(path.read_text(encoding="utf-8"))
-        assert receipt["rec"] == rec["rec"]
-        after = receipt["after"].get("fit_after")
-        assert after and after != receipt["fit"] and (store / "fits" / after).is_dir(), receipt["after"]
+def _page(path: str) -> Path:
+    page = Path(path)
+    assert page.suffix == ".html" and page.is_file(), path
+    return page
+
+
+def _new_user(tmp_path: Path) -> Agent:
+    """The synthetic history in the default log folders, a labeller script, and an empty store."""
+    hist = fixture.build_history(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".claude").symlink_to(hist.logs)  # the default log folders, inside tmp_path
+    (home / ".codex").symlink_to(hist.logs)
+    (tmp_path / "labeler.py").write_text(LABELER, encoding="utf-8")
+    return Agent(tmp_path, tmp_path / "store")
+
+
+def _base_repo(lm: Agent) -> tuple[Path, str]:
+    """A repo at its base commit, and that commit."""
+    repo = lm.tmp / "repo"
+    repo.mkdir()
+    lm.git("init", "-q", cwd=repo)
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    lm.git("add", "app.py", cwd=repo)
+    lm.git("commit", "-q", "-m", "base", cwd=repo)
+    return repo, lm.git("rev-parse", "HEAD", cwd=repo)
+
+
+@pytest.fixture(scope="module")
+def journey(tmp_path_factory) -> dict[str, list]:
+    """Every job, in the order a new user meets them; returns the JSON outputs by command key."""
+    tmp_path = tmp_path_factory.mktemp("journey")
+    lm = _new_user(tmp_path)
+    pids: list[int] = []
+    try:
+        # loopmath: the router's one command, on an empty machine.
+        assert lm("status", "--json")["exists"] is False
+
+        # loopmath-onboard: look, then onboard with the user's labeller, then the results page.
+        dry = lm("onboard", "--dry-run", "--json")
+        assert dry["groups"]["to_label"] == 2 and [o["spec"] for o in dry["labeler"]["options"]] == ["none"]
+        done = lm("onboard", "--labeler", f"command:{sys.executable} {tmp_path / 'labeler.py'}", "--yes", "--json")
+        assert done["runs"]["written"] == 2 and done["usual"] and done["fit"]["id"] and not done["fit"]["error"]
+        # The same fit once more, under the pinned id that offers a pair.
+        assert lm("fit", "--json", pin=f"fit_id={PAIR_FIT}")["fit"]["id"] == PAIR_FIT
+        _page(lm("posterior", "--html"))
+
+        # loopmath-plan-task: a repo at its base commit, recommend, start the pair.
+        repo, base = _base_repo(lm)
+        rec = lm(*RECOMMEND, "--base-commit", base, "--json", "--brief", "--html")
+        _page(rec["page"])
+        by_key = {c["key"]: c for c in rec["choices"]}
+        assert rec["fit"]["id"] == PAIR_FIT and "pair" in by_key, f"{PAIR_FIT} no longer offers a pair; pin another id"
+        assert {"goal", "pair", "reference"} <= set(by_key) and by_key["goal"]["recommended"] is True
+        start = lm("run", "start", "--rec", rec["rec"], "--choice", "pair", "--base-commit", base, "--json")
+        runs = start["runs"]
+        assert start["slate"] and len(runs) == 2 and all(r["piece_settings"] for r in runs)
+        assert [r["config"] for r in runs] == by_key["pair"]["members"]
+        assert {o["run"] for o in lm("status", "--json")["open_runs"]} == {r["run"] for r in runs}
+
+        # loopmath-record-run: each run worked in its own clone. The first run's implementer is the
+        # fixture's Claude Code session lead-1 (from before the run, so counted whole, with a note);
+        # every other piece had no session id, so it is recorded by its folder and stays uncosted.
+        shas = []
+        for i, run in enumerate(runs):
+            wt = tmp_path / f"wt{i}"
+            lm.git("clone", "-q", str(repo), str(wt), cwd=tmp_path)
+            (wt / "app.py").write_text(f"x = {i + 2}\n", encoding="utf-8")
+            lm.git("commit", "-q", "-am", f"fix {i}", cwd=wt)
+            shas.append(lm.git("rev-parse", "HEAD", cwd=wt))
+            how = [("--session", f"{s['piece']}=lead-1") if i == 0 and s["piece"] == "implement"
+                   else ("--cwd", f"{s['piece']}={wt}") for s in run["piece_settings"]]
+            out = lm("run", "record", "--run", run["run"], *[w for pair in how for w in pair], "--verified",
+                     "tests=pass", "--json")
+            assert out["outcome"] == "accepted" and [c["sha"] for c in out["commits"]] == [shas[-1]]
+            assert (out["cost"]["attempts_costed"], len(out["notes"])) == ((1, 1) if i == 0 else (0, 0)), out
+            assert out["receipt"]["line"].startswith("predicted $")
+            if out["fit"]["started"]:  # a refit already running takes this run too
+                pids.append(out["fit"]["pid"])
+            _page(lm("runs", "--run", run["run"], "--html"))
+        assert pids and lm("status", "--json")["open_runs"] == []
+
+        # The pair, judged blind; then a late incident on the kept commit.
+        assert lm("config", "get", "referee.model", "--json")["value"] is None
+        pref = lm("outcome", "--slate", start["slate"], "--prefer", runs[0]["run"], "--judge", "referee",
+                  "--blinded", "--json")
+        assert pref["winner"] == runs[0]["run"]
+        lm("outcome", "--commit", shas[0], "--signal", "incident=INC-1", "--kind", "event", "--source", "user",
+           "--json")
+
+        # loopmath-update-fit, once the refits the records started are done.
+        _wait(pids)
+        fit = lm("fit", "--json")
+        assert fit["fit"]["n_runs"]["user"] == 4, fit["fit"]
+        _page(lm("posterior", "--html"))
+
+        # loopmath-import-runs: the two runs as OCP files, and one broken file, into a second store.
+        folder = tmp_path / "ocp"
+        folder.mkdir()
+        for run in runs:
+            src = Path(run["path"])
+            (folder / src.name).write_bytes(src.read_bytes())
+        (folder / "broken.ocp.json").write_text('{"ocp": "0.3"}\n', encoding="utf-8")
+        check = lm("ocp", "validate", *sorted(str(p) for p in folder.glob("*.ocp.json")), "--json", ok=(0, 1))
+        good = [f["path"] for f in check["files"] if f["ok"]]
+        assert check["failed"] == 1 and len(good) == 2
+        assert [f["findings"][0]["code"] for f in check["files"] if not f["ok"]]
+        lm.env["LOOPMATH_HOME"] = str(tmp_path / "store2")
+        got = lm("run", "import", *good, "--finish", "--no-fit", "--json")
+        assert got["imported"] == 2 and got["failed"] == 0
+        assert lm("fit", "--json")["fit"]["n_runs"]["user"] == 2
+        _page(lm("posterior", "--html"))
+        lm.env["LOOPMATH_HOME"] = str(tmp_path / "store3")  # the whole folder: each file says how it went
+        got = lm("run", "import", str(folder), "--finish", "--no-fit", "--json", ok=(1,))
+        assert got["imported"] == 2 and [f["error"] for f in got["files"] if not f["ok"]]
+        lm.env["LOOPMATH_HOME"] = str(tmp_path / "store")
+
+        # What the reference sends the agent to when a command fails.
+        assert lm("doctor", "--json", ok=(0, 1))["checks"]
+    finally:
+        _wait(pids)
+    return lm.seen
+
+
+def test_with_no_pair_the_plan_task_path_starts_the_goal(tmp_path):
+    """With exploration off (no gain anywhere, so no pair): the other choices, `message` saying none is worth
+    trying, `run start` refusing `pair` with the keys there are, and the goal started and recorded as the
+    skills say."""
+    lm = _new_user(tmp_path)
+    done = lm("onboard", "--labeler", f"command:{sys.executable} {tmp_path / 'labeler.py'}", "--yes", "--json")
+    assert done["fit"]["id"] and not done["fit"]["error"]
+    repo, base = _base_repo(lm)
+    rec = lm(*RECOMMEND, "--base-commit", base, "--json", "--brief", pin="no_gain")
+    by_key = {c["key"]: c for c in rec["choices"]}
+    assert "pair" not in by_key
+    assert list(by_key)[0] == "goal" and by_key["goal"]["recommended"] is True
+    assert "No workflow is worth trying alongside it" in rec["message"]
+
+    refused = lm.run("run", "start", "--rec", rec["rec"], "--choice", "pair", "--base-commit", base, "--json")
+    assert refused.returncode == 1 and f"(its choices: {', '.join(by_key)})" in refused.stderr
+
+    start = lm("run", "start", "--rec", rec["rec"], "--choice", "goal", "--base-commit", base, "--json")
+    (run,) = start["runs"]
+    assert start["slate"] is None and run["config"] == by_key["goal"]["config"]
+    wt = tmp_path / "wt"
+    lm.git("clone", "-q", str(repo), str(wt), cwd=tmp_path)
+    (wt / "app.py").write_text("x = 2\n", encoding="utf-8")
+    lm.git("commit", "-q", "-am", "fix", cwd=wt)
+    cwds = [w for s in run["piece_settings"] for w in ("--cwd", f"{s['piece']}={wt}")]
+    # --no-fit: the journey covers the refit; this run only has to record.
+    out = lm("run", "record", "--run", run["run"], *cwds, "--verified", "tests=pass", "--no-fit", "--json")
+    assert out["outcome"] == "accepted" and out["fit"]["started"] is False
+    assert out["receipt"]["line"].startswith("predicted $")
+    assert lm("status", "--json")["open_runs"] == []
+
+
+def test_every_field_a_skill_reads_is_in_the_output_of_its_command(journey):
+    top = parser()
+    problems, pending = [], set()
+    for name, text in texts().items():
+        for command, tree in read_fields(text, top):
+            if command is None:
+                problems.append(f"{name}: a Read sentence with no loopmath command before it")
+                continue
+            outputs = journey.get(command)
+            if not outputs:
+                problems.append(f"{name}: the dry run never ran `loopmath {command} --json`")
+                continue
+            for field, kids in tree:
+                why = resolve(outputs, field, kids)
+                if why and any(f"no `{p}`" in why for p in PENDING):
+                    pending.add(why)
+                elif why:
+                    problems.append(f"{name}: loopmath {command}: {why}")
+    assert not problems, "\n".join(problems)
+    assert len(pending) <= len(PENDING), pending
+
+
+def test_every_field_a_skill_reads_is_in_the_reference():
+    top, ref = parser(), inst.reference_text()
+    missing = {f"{name}: `{field}`" for name in inst.SKILLS
+               for _, tree in read_fields(inst.skill_text(name), top)
+               for field in names(tree) if f"`{field}`" not in ref}
+    assert not missing, sorted(missing)

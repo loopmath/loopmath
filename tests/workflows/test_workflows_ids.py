@@ -1,4 +1,4 @@
-"""Configuration ids (D2, D29 to D31) and the types to OCP mapping (lane 04)."""
+"""Configuration ids and the types to OCP mapping (lane 04)."""
 
 from __future__ import annotations
 

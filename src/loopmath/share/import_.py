@@ -1,14 +1,14 @@
 """Import a shared file as an organization group (spec 03 section 7, spec 04 section 5).
 
-Owner: lane 08. `prior import-shared FILE` checks a `loopmath.share/1` file
+`prior import-shared FILE` checks a `loopmath.share/1` file
 strictly (every key at every level must be one `share.export` writes, and every
 string must be an identifier, a salted hash or a closed value), then with the
-OCP v0.3 checker (D46), and stores its runs in
+OCP v0.3 checker, and stores its runs in
 `$LOOPMATH_HOME/priors/shared-<org_hash>.json.gz`, merged by run id with
 earlier imports from the same organization. Each stored run keeps the time of
 the share it came from (`shared_at`), and on a clash the run from the later
 share wins, whatever the import order. `shared_runs(home)` is the one reader
-for the fit (decision D22): each run comes back with
+for the fit: each run comes back with
 `run.task.org = "shared:<org_hash>"` and its outcome, scores and source node in
 `run.ext["dev.loopmath.share"]`.
 """
@@ -254,7 +254,7 @@ _LOGMATCH_FIELDS = _obj({"tier": _enum(*SHARED_SESSION_TIERS), "shared_session":
 
 
 def _logmatch(v: Any, where: str, errs: list) -> None:
-    """`{"tier": "heuristic"}` (D56), or a tier and `shared_session: true` when attempts split a session (D88)."""
+    """`{"tier": "heuristic"}`, or a tier and `shared_session: true` when attempts split a session."""
     _LOGMATCH_FIELDS(v, where, errs)
     if isinstance(v, dict) and "shared_session" not in v and v.get("tier") == "verified":
         _fail(errs, f"{where}.tier", "verified only with shared_session")
@@ -269,8 +269,8 @@ _COST_FIELDS = _obj({
 
 
 def _cost(v: Any, where: str, errs: list) -> None:
-    """`ext` holds the log match record exactly when the cost is allocated (D56, D88), and may hold the per-model
-    split (D71; `{}` is a valid split). The exporter never writes an empty `ext`."""
+    """`ext` holds the log match record exactly when the cost is allocated, and may hold the per-model
+    split (`{}` is a valid split). The exporter never writes an empty `ext`."""
     _COST_FIELDS(v, where, errs)
     if not isinstance(v, dict):
         return
@@ -320,7 +320,7 @@ def check_share(obj: Any) -> list[str]:
 
 
 def ocp_problems(obj: dict) -> list[str]:
-    """OCP v0.3 errors in a checked share's runs (D46), from lane 1's checker.
+    """OCP v0.3 errors in a checked share's runs, from lane 1's checker.
 
     Run after `check_share` passes, so every key in a reported place is an identifier;
     the checker's messages are left out because they quote values.
@@ -403,7 +403,7 @@ def _content(doc: dict) -> dict:
 
 
 def shared_runs(home: Path) -> Iterator[dict]:
-    """Every imported run, as an OCP v0.3 shaped document under its organization node (D22).
+    """Every imported run, as an OCP v0.3 shaped document under its organization node.
 
     `run.task.org` and `run.ext["dev.loopmath.share"]["source"]` are `shared:<org_hash>`;
     the outcome the sender's rule gave is `run.ext["dev.loopmath.share"]["outcome"]` = {z, q, tier},

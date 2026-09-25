@@ -1,4 +1,4 @@
-"""Child sessions and per-model tokens in ingest (lane 02, Analyst D28).
+"""Child sessions and per-model tokens in ingest (lane 02).
 
 A Codex sub-agent thread is its own record, priced at its own model, with its
 parent in `parent_session`; a Claude Code sub-agent transcript names its
@@ -162,7 +162,7 @@ def test_claude_code_tokens_split_by_model_and_sum_to_the_total(tmp_path):
         total.cache_write += part.cache_write
         total.out += part.out
     assert total == record.tokens
-    # The split joins the record dict, for shared pricing (D62).
+    # The split joins the record dict, for shared pricing.
     assert record.to_dict()["tokens_by_model"] == [
         {"model": "claude-opus-5-5", "tokens": {"in": 11, "cache_read": 110, "cache_write": 20, "out": 10}},
         {"model": "haiku-4.5", "tokens": {"in": 3, "cache_read": 30, "cache_write": 6, "out": 2}},

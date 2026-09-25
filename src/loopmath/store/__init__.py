@@ -1,6 +1,6 @@
 """The store at $LOOPMATH_HOME: runs, signals, receipts, recs, fits, config, views (spec 03 section 4).
 
-Owner: lane 07. `Store` is the one writer of run files, the index, receipts
+`Store` is the one writer of run files, the index, receipts
 and config; readers never lock. `spawn_fit` starts the background refit.
 """
 

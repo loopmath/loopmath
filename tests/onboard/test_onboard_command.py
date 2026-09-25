@@ -87,7 +87,7 @@ def test_dry_run_writes_nothing_and_shows_the_estimate(env, capsys):
     assert code == 0
     obj = json.loads(out)
     assert next(iter(obj)) == "schema" and obj["schema"] == "loopmath.onboard/1"
-    assert obj["dry_run"] is True and obj["groups"] == {"total": 3, "to_label": 2, "before_window": 0}
+    assert obj["dry_run"] is True and obj["groups"] == {"total": 3, "to_label": 2, "before_window": 0, "skipped": {}}
     assert obj["sessions"] == {"claude-code": 3, "codex": 2} and obj["files"] == {"claude-code": 3, "codex": 2}
     lab = obj["labeler"]
     assert lab["chosen"] and lab["spec"] == UNPRICED and lab["from"] == "flag" and lab["saved"] is False
@@ -243,7 +243,7 @@ def test_the_header_names_the_window_then_the_sessions_found(env, capsys):
 
 
 def test_since_goes_through_the_one_store_reader(env, capsys):
-    """D89, D109: `3m` (months or minutes?) exits 2 before anything is read; other bad text exits 1."""
+    """`3m` (months or minutes?) exits 2 before anything is read; other bad text exits 1."""
     def never(*a, **k):
         raise AssertionError("history must not be read")
 
@@ -296,8 +296,8 @@ def test_none_labeller_says_how_many_got_no_type_and_what_types_them(env, capsys
     assert code == 0 and any(x.endswith("; 1 matched no keyword") for x in lines) and hint in lines
     code, out, _ = e.run("--labeler", "none", "--yes", capsys=capsys)
     lines = out.splitlines()
-    assert code == 0 and "  not classified: 2 (no prompt in the session 1, no keyword matched 1)" in lines
-    assert hint in lines and "  classified: 1 run written: bug_fix 1" in lines
+    assert code == 0 and "  not classified: 1 (no prompt in the session 1)" in lines  # G1: stored as unknown
+    assert hint in lines and "  classified: 2 runs written: bug_fix 1, unknown 1" in lines
     assert "  usual workflow per task type and repo (runs with it, of all runs):" in lines
     assert any(x.startswith("    bug_fix, all repos: ") and x.endswith(" (1 of 1)") for x in lines)
     code, out, _ = e.run("--dry-run", "--labeler", "claude:claude-haiku-4-5", capsys=capsys)
@@ -405,6 +405,6 @@ def test_dry_run_preview_is_not_unclassified_with_a_model_labeller(env, capsys, 
     code, out, _ = e.run("--dry-run", "--labeler", "none", "--json", capsys=capsys)
     obj = json.loads(out)
     assert obj["preview"]["how"] == "keyword guess"
-    assert obj["unclassified"]["by_reason"] == {"no keyword matched": 2, "no prompt in the session": 1}
+    assert obj["unclassified"]["by_reason"] == {"no prompt in the session": 1}  # G1: the 2 would be unknown
     code, out, _ = e.run("--dry-run", "--labeler", UNPRICED, capsys=capsys)
     assert "  keyword preview: nothing matched; 2 matched no keyword" in out.splitlines()

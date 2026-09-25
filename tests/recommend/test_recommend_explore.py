@@ -163,7 +163,7 @@ def test_message_follows_the_template():
 
 
 def test_the_gain_reads_as_an_expected_saving_not_a_conditional_one():
-    """Dogfood (D96): "has a 1% chance to beat your goal, gains about 28 percent lower cost ($1.06) per future
+    """Dogfood: "has a 1% chance to beat your goal, gains about 28 percent lower cost ($1.06) per future
     similar run if it does" read lane 05's expected gain as one on the condition that the pick wins, though payback
     divides the price by it as it stands; and the 28 percent was the best workflow's after learning, not the pick's."""
     rec = run()
@@ -197,12 +197,12 @@ def test_score_rule_message_names_the_target_and_only_the_dollar_saving():
     rec = recommend(b, TASK, rule, usual=USUAL, usual_from="history", configs=CONFIGS, settings=Settings(goal="p90"))
     assert "has an 80% chance of reaching runtime_s <= 200 at about $2.00" in rec.message
     assert "expected to save about $0.30 on each future similar run" in rec.message
-    assert "-12 s" not in rec.message  # the best workflow's score after learning, not the pick's (D96)
+    assert "-12 s" not in rec.message  # the best workflow's score after learning, not the pick's
     assert rec.exploration.best_value.pick.gain_per_run["score"] == -12.0
 
 
 def test_a_score_target_goal_is_priced_per_accepted_result_as_the_default_pick_is():
-    """D109: with a score target the goal sentence said "about $X per success" while the Default pick line said
+    """With a score target the goal sentence said "about $X per success" while the Default pick line said
     "per accepted result" for the same number."""
     rule = score_rule("runtime_s", "<=", 200.0)
     b = FakeBelief({k: Num(v.g, v.usd, score=190.0, p_reach=v.g) for k, v in nums().items()}, gains(),
@@ -210,8 +210,13 @@ def test_a_score_target_goal_is_priced_per_accepted_result_as_the_default_pick_i
     rec = recommend(b, TASK, rule, usual=USUAL, usual_from="history", configs=CONFIGS, settings=Settings())
     assert rec.score_backed and rec.goal_level is None and rec.goal.config.id != USUAL.id
     ell = rec.goal.prediction.ell.usd.mean
-    assert "Your goal is the lowest expected cost to reaching runtime_s <= 200: " in rec.message
-    assert f", about ${ell:,.2f} per accepted result." in rec.message and "per success" not in rec.message
+    if rec.strategy is None:
+        assert "Your goal is the lowest expected cost of reaching runtime_s <= 200: " in rec.message
+        assert f", about ${ell:,.2f} per accepted result." in rec.message
+    else:  # the pick is less likely than the usual: the strategy sentence gives its cost per accepted result
+        assert "Your goal is the lowest expected cost of reaching runtime_s <= 200. Try " in rec.message
+        assert f"expected ${ell:,.2f} per accepted result, against " in rec.message
+    assert "per success" not in rec.message
 
 
 def test_a_score_rule_the_fit_cannot_predict_says_its_chances_are_of_an_accepted_result():
@@ -240,7 +245,7 @@ def test_screen_keeps_top_50_by_tenth_percentile_of_ell():
 
 
 def test_the_plain_diff_names_the_round_limit_as_lane_04_does():
-    """The plan's diff lines (`simple_diff`) say `round limit`, which counts the first round (D30, D81)."""
+    """The plan's diff lines (`simple_diff`) say `round limit`, which counts the first round."""
     import dataclasses
 
     from loopmath.recommend.engine import simple_diff

@@ -1,4 +1,4 @@
-"""The per-model token split settle writes and `price_model_tokens` reprices (Analyst D67, D71)."""
+"""The per-model token split settle writes and `price_model_tokens` reprices."""
 
 import json
 from pathlib import Path

@@ -1,18 +1,15 @@
 """Dollars from four token streams under the tariff in effect at the attempt's time.
 
-Owner: lane 02. Spec: design/0.1/ (01 section 2.5, 03 section 6; Analyst D27).
-
 `price_attempt` prices one model's four streams. `cost_record` builds the OCP
 `attempt.cost` object for a match: the four streams summed over the session
 and its children, dollars summed over the parts with each part priced at its
 own model, `basis` (`measured` for a verified match, `allocated` for a
 heuristic one), the tariff, and `ext["dev.loopmath.logmatch"]` with the tier,
 the children, the per-part breakdown and, for a match clipped to a
-`--session self` attempt's window, `clip` (Analyst D47).
+`--session self` attempt's window, `clip`.
 
 When the tokens ran on more than one model, `ext["dev.loopmath.model_tokens"]`
-splits the same streams by model under the OCP cost field names (Analyst
-D67, D71), for `price.price_model_tokens` to reprice: tokens under no model
+splits the same streams by model under the OCP cost field names, for `price.price_model_tokens` to reprice: tokens under no model
 go under `"unknown"`, never priced, and a thread that switched models but
 could not be split is `{}`. A single-model attempt has no split. It holds
 model ids and counts only.
@@ -68,7 +65,7 @@ def _stream_fields(tokens: Tokens) -> dict[str, int]:
 
 
 def model_tokens_from_parts(parts: Iterable[dict[str, Any]]) -> dict[str, dict[str, int]]:
-    """`{model_id: {OCP cost token fields}}` summed over logmatch `parts` (Analyst D71).
+    """`{model_id: {OCP cost token fields}}` summed over logmatch `parts`.
 
     `parts` are `ext["dev.loopmath.logmatch"]["parts"]`, each with `model`
     and `tokens` as `Tokens.as_dict()`. A part with no tokens is left out;
@@ -182,7 +179,7 @@ def cost_record(match: Any, *, path: str | Path | None = None) -> dict[str, Any]
     cost["ext"] = {EXT_KEY: ext}
     split = model_tokens_from_parts(ext_parts)
     if split and all(p.get("unsplit") for p in parts if p["tokens"].total):
-        cost["ext"][MODEL_TOKENS_KEY] = {}  # more than one model, no split (D71)
+        cost["ext"][MODEL_TOKENS_KEY] = {}  # more than one model, no split
     elif len(split) > 1 or UNLABELLED_MODEL in split:
         cost["ext"][MODEL_TOKENS_KEY] = split
     return cost

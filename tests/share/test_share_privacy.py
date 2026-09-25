@@ -95,7 +95,7 @@ def test_share_keeps_what_the_spec_keeps(store, capsys):
     assert task["features"] == {"size": "m", "lang": "python", "has_tests": "yes", "touches": "few"}
     assert task["repo"].startswith("repo_") and task["id"].startswith("tsk_") and "org" not in task
     cfg = run["configuration"]
-    # the id is recomputed from the reduced content (D46; test_shared_runs_are_strict_ocp checks the value)
+    # the id is recomputed from the reduced content (test_shared_runs_are_strict_ocp checks the value)
     assert cfg.get("id") != "cfg_0123456789ab" and cfg["workflow"]["id"] == "plan_implement_review"
     assert "title" not in cfg["workflow"] and cfg["workflow"]["control"]["repair"] == {"rev": "impl"}
     assert cfg["settings"]["impl"] == {"harness": "codex", "effort": "xhigh", "context_policy": "fresh",
@@ -112,7 +112,7 @@ def test_share_keeps_what_the_spec_keeps(store, capsys):
     assert impl2["cost"] == {"input_tokens": 20_000, "cached_input_tokens": 200_000, "cache_creation_tokens": 0,
                              "output_tokens": 7_000, "requests": 7, "usd": 1.1, "basis": "measured",
                              "tier": "verified", "tariff": {"id": "p_3a9f01c2", "date": "2026-09-20"}}
-    # D56: an allocated cost keeps exactly the log match tier. D71: any cost keeps its per-model split, whose
+    # An allocated cost keeps exactly the log match tier. D71: any cost keeps its per-model split, whose
     # private model label is hashed; a cost without one has no split, and so no ext when measured
     allocated = pir["attempts"][1]["cost"]
     split = allocated["ext"].pop("dev.loopmath.model_tokens")
@@ -225,7 +225,7 @@ def test_a_category_subtype_stays_readable(subtype):
 
 
 def test_shared_runs_are_strict_ocp(store, capsys):
-    """D46: every shared run passes lane 1's OCP v0.3 checker, and its id is the canonical hash of what is kept."""
+    """Every shared run passes lane 1's OCP v0.3 checker, and its id is the canonical hash of what is kept."""
     docs = json.loads(_preview(capsys, store))["runs"]
     examples = sorted((Path(__file__).parents[2] / "spec" / "examples" / "v0.3").glob("*.ocp.json"))
     for path in examples:  # lane 1's v0.3 examples, every catalog shape and every field
@@ -244,7 +244,7 @@ def test_shared_runs_are_strict_ocp(store, capsys):
 
 
 def test_cost_basis_and_the_log_match_record(capsys):
-    """D56: allocated keeps exactly the tier, whatever the source record holds; any other basis leaves no cost."""
+    """Allocated keeps exactly the tier, whatever the source record holds; any other basis leaves no cost."""
     doc = planted_docs()[0]
     costs = [a["cost"] for a in doc["attempts"]]
     costs[0]["basis"] = "expected"
@@ -292,7 +292,7 @@ def _split(split):
     ([["gpt-6-astra", T]], {}),
 ])
 def test_model_token_split(split, shared):
-    """D67, D71: model ids and the four OCP token counts, nothing else."""
+    """Model ids and the four OCP token counts, nothing else."""
     assert _split(split) == shared
 
 
@@ -327,7 +327,7 @@ SHARED = {"session": PLANTED["codex session"], "attempts": ["att_impl_1", "att_i
     ({"tier": "verified"}, {"tier": "heuristic"}),
 ])
 def test_shared_session_is_a_bare_boolean(source, shared):
-    """D88: an allocated cost split from a shared session keeps its tier and `shared_session: true`; the session
+    """An allocated cost split from a shared session keeps its tier and `shared_session: true`; the session
     id and the attempt ids stay home, next to the planted path, clip, parts and reason."""
     doc = planted_docs()[0]
     rule = run_rule(doc)
@@ -361,7 +361,7 @@ def test_reviewer_repro_allocated_cost_is_strict_ocp():
     reduced, found = errors(allocated)
     assert found == []
     assert reduced["attempts"][0]["cost"]["ext"] == {"dev.loopmath.logmatch": {"tier": "heuristic"}}
-    # D71: the per-model split passes the checker on a measured and an allocated cost, empty or not
+    # The per-model split passes the checker on a measured and an allocated cost, empty or not
     for basis, split in (("measured", {"gpt-6-astra": T, "unknown": T}), ("allocated", {})):
         allocated["attempts"][0]["cost"]["basis"] = basis
         allocated["attempts"][0]["cost"]["ext"]["dev.loopmath.model_tokens"] = split

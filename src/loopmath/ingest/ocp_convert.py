@@ -49,6 +49,7 @@ def _source_scoped_extension_projection(document: dict, projected: dict) -> dict
 def _projection_loss_counters(document: dict, graph: Graph) -> dict[str, int]:
     """Count input entities and members absent from a fresh Graph projection."""
     from ..graph.ocp import to_ocp
+    from ..graph.ocp_support import LEGACY_SOURCE_CONTRACT, SOURCE_CONTRACT
 
     projected = to_ocp(graph)
     counters: Counter = Counter()
@@ -58,6 +59,8 @@ def _projection_loss_counters(document: dict, graph: Graph) -> dict[str, int]:
         after = projected.get(family)
         if not isinstance(before, dict) or not isinstance(after, dict):
             continue
+        if family == "producer" and before.get("source_contract") == LEGACY_SOURCE_CONTRACT:
+            before = {**before, "source_contract": SOURCE_CONTRACT}  # the same contract under its pre-0.2 name
         counters[f"ocp_projection_{family}_members_unmodeled"] += sum(
             key != "ext" and after.get(key, missing) != value
             for key, value in before.items()

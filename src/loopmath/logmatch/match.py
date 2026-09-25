@@ -1,7 +1,5 @@
 """Session matching: exact by session id (verified), else working folder, time window and model (heuristic, one candidate only).
 
-Owner: lane 02. Spec: design/0.1/ (03 section 6; Analyst D26 to D28).
-
 Exact. An attempt that names its session is matched by that id only:
 Claude Code keeps `<projects>/<cwd slug>/<id>.jsonl`, Codex keeps
 `rollout-<local time>-<id>.jsonl` under `YYYY/MM/DD` (or flat in
@@ -77,7 +75,7 @@ class Match:
     parts: list[dict[str, Any]] = field(default_factory=list)
     models: list[str] = field(default_factory=list)
     reason: str = ""
-    # Set by `clip.clip_match` for a `--session self` attempt (D47):
+    # Set by `clip.clip_match` for a `--session self` attempt:
     # `{from, to}` of the window the parts were cut to.
     clip: dict[str, Any] | None = None
 
@@ -98,7 +96,7 @@ def resolve_session(value: str, harness: str | None = None, env: Mapping[str, st
 
     `self` is exact under Claude Code, which exports `CLAUDE_CODE_SESSION_ID`
     to its tools. Codex exports no documented equivalent, so `self` there is
-    an error asking for the id, never a guessed session (Analyst D26).
+    an error asking for the id, never a guessed session.
     """
     env = os.environ if env is None else env
     text = str(value or "").strip()

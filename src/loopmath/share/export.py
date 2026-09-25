@@ -1,12 +1,12 @@
 """Reduce runs to the shareable fields and write `loopmath.share/1` (spec 03 section 7).
 
-Owner: lane 08. The reduction is an allowlist: every shared document is built
+The reduction is an allowlist: every shared document is built
 fresh from the fields named below, so a field this module does not name never
 leaves. Identifier-like strings pass through only when they look like
 identifiers; anything else becomes a salted hash label. Repo, task, run and
 slate ids are always salted hashes. The salt is a per-store secret
-(`$LOOPMATH_HOME/share/salt`, decision D23), so two shares from one store agree
-and nobody can reverse a hash by trying names. Timestamps are not shared (D24).
+(`$LOOPMATH_HOME/share/salt`), so two shares from one store agree
+and nobody can reverse a hash by trying names. Timestamps are not shared.
 """
 
 from __future__ import annotations
@@ -53,18 +53,18 @@ COST_COUNTS = ("input_tokens", "cached_input_tokens", "cache_creation_tokens", "
 STATUSES = ("queued", "working", "done", "failed", "rejected", "canceled", "settled_unverified", "lost")
 RESULTS = STATUSES[2:]  # terminal results: OCP outcome.result
 BASES = ("measured", "allocated")
-# D56: an allocated cost keeps exactly this of the log match record; sessions, clips, parts and reasons stay home.
+# An allocated cost keeps exactly this of the log match record; sessions, clips, parts and reasons stay home.
 ALLOCATED_EXT = {"dev.loopmath.logmatch": {"tier": "heuristic"}}
 (LOGMATCH_KEY,) = ALLOCATED_EXT
-# D88: when attempts split one session's cost, the record also keeps its tier and `shared_session: true`, a bare
+# When attempts split one session's cost, the record also keeps its tier and `shared_session: true`, a bare
 # boolean; the session id and the attempt ids stay home.
 SHARED_SESSION_TIERS = ("verified", "heuristic")
-# D67, D71: the per-model token split travels on any cost so a mixed-model cost can be repriced. Absent means one
+# The per-model token split travels on any cost so a mixed-model cost can be repriced. Absent means one
 # model; `{}` means more than one model and no split; `unknown` holds unlabelled tokens, which are never priced.
 MODEL_TOKENS_KEY = "dev.loopmath.model_tokens"
 MODEL_TOKEN_COUNTS = ("input_tokens", "cached_input_tokens", "cache_creation_tokens", "output_tokens")
 UNKNOWN_MODEL = "unknown"
-# D46: the sender's rule text stays home; the structured parts travel under this fixed name and definition.
+# The sender's rule text stays home; the structured parts travel under this fixed name and definition.
 SHARED_RULE = {"name": "shared", "definition": "withheld"}
 VERDICT_VALUES = ("accept", "reject", "pass", "fail", "error")
 CONFIG_SOURCES = ("usual", "alternative", "exploration", "user_edit", "habit", "designed")
@@ -90,7 +90,7 @@ def is_pathlike(text: str) -> bool:
 
 
 def config_id_of(workflow: dict | None, settings: dict | None) -> str | None:
-    """The `cfg_` id of the reduced configuration (D2, D46), computed by lane 1's canonical form.
+    """The `cfg_` id of the reduced configuration, computed by lane 1's canonical form.
 
     None for a missing workflow, and for a reference the catalog cannot resolve
     (the OCP checker skips E190 then too).
@@ -165,7 +165,7 @@ class _Reducer:
         return table.setdefault(str(value), f"{prefix}{len(table) + 1}")
 
     def subtype(self, value: Any) -> str | None:
-        """Identifier segments stay plain (D24); a path-like value becomes one hash, so no part of it leaves."""
+        """Identifier segments stay plain; a path-like value becomes one hash, so no part of it leaves."""
         if not isinstance(value, str) or not value:
             return None
         if is_pathlike(value):
@@ -224,7 +224,7 @@ class _Reducer:
 
     # -- configuration
     def configuration(self, cfg: Any) -> dict:
-        """Workflow and settings as reduced; the id is recomputed from them (D46), since `options` and titles are gone."""
+        """Workflow and settings as reduced; the id is recomputed from them, since `options` and titles are gone."""
         if not isinstance(cfg, dict):
             return {}
         workflow = self.workflow(cfg.get("workflow"))
@@ -276,7 +276,7 @@ class _Reducer:
         return _clean({
             "gates": list(gates),
             "repair": self.keyed(c.get("repair"), self.token),
-            "budget": _int(c["budget"] if "budget" in c else c.get("budget_rounds")),  # D30
+            "budget": _int(c["budget"] if "budget" in c else c.get("budget_rounds")),
             "rescue": rescue if "kind" in rescue else None,
         }) or None
 
@@ -344,8 +344,8 @@ class _Reducer:
                        "via": self.nodes.get(str(via)) if via is not None else None})
 
     def cost(self, c: Any) -> dict | None:
-        """Tokens, dollars, basis and tariff. `ext` keeps an allocated cost's log match tier (D56), whether the
-        attempts split a shared session (D88), and the per-model split (D67, D71).
+        """Tokens, dollars, basis and tariff. `ext` keeps an allocated cost's log match tier, whether the
+        attempts split a shared session, and the per-model split.
 
         A cost whose basis is neither measured nor allocated is left out: a document
         from producer loopmath may carry no other (OCP E171).
@@ -369,7 +369,7 @@ class _Reducer:
         return _clean(out)
 
     def model_tokens(self, split: Any) -> dict[str, dict[str, int]]:
-        """D71: `{model id: {the four OCP token counts}}`, nothing else.
+        """`{model id: {the four OCP token counts}}`, nothing else.
 
         A model id goes through the same rule as an attempt's model; one with no usable
         label is `unknown`, and parts that reduce to one id are summed. A split that does
@@ -423,7 +423,7 @@ def reduce_run(doc: dict, *, salt: bytes, evidence: Evidence, rule: AcceptanceRu
     cfg = run.get("configuration")
     original = cfg.get("id") if isinstance(cfg, dict) else None
     if isinstance(original, str) and CFG_RE.match(original):
-        share_ext["original_config_id"] = original  # the sender's id before reduction (D46)
+        share_ext["original_config_id"] = original  # the sender's id before reduction
     return {
         "ocp": OCP_VERSION,
         "producer": {"name": "loopmath", "version": __version__},
@@ -582,8 +582,8 @@ def _usd(value: Any) -> float | int | None:
 
 
 def _logmatch(match: Any) -> dict[str, Any]:
-    """An allocated cost's log match record: the D56 tier, or with a shared session its own tier and a bare
-    `shared_session: true` (D88). A shared session is a non-empty object in the store, or `true`, as lane 1's
+    """An allocated cost's log match record: the tier, or with a shared session its own tier and a bare
+    `shared_session: true`. A shared session is a non-empty object in the store, or `true`, as lane 1's
     E171 reads it; any other value means none."""
     out = copy.deepcopy(ALLOCATED_EXT[LOGMATCH_KEY])
     shared = match.get("shared_session") if isinstance(match, dict) else None

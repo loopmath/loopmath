@@ -75,7 +75,7 @@ def test_a_file_shared_by_two_groups_names_only_each_groups_own_attempts():
 
 
 def test_group_cost_counts_each_session_once(history_dir):
-    """D62: a record carries only its own file's usage, so a group adds each session once.
+    """A record carries only its own file's usage, so a group adds each session once.
     The lead's three turns are its own; the sub-agent's two turns are not in the lead's total."""
     hist, groups = _loaded(history_dir)
     lead = groups[0]
@@ -86,7 +86,7 @@ def test_group_cost_counts_each_session_once(history_dir):
 
 
 def test_declared_parent_joins_groups():
-    """D28: a Codex child thread carries its parent id and joins its parent's group."""
+    """A Codex child thread carries its parent id and joins its parent's group."""
     nodes = [GraphNode(id="cx_p", harness="codex", source="codex", session_path="/x/p", ts="2026-09-20T10:00:00Z"),
              GraphNode(id="cx_c", harness="codex", source="codex", session_path="/x/c", ts="2026-09-20T10:01:00Z"),
              GraphNode(id="cx_o", harness="codex", source="codex", session_path="/x/o", ts="2026-09-20T11:00:00Z")]
@@ -152,7 +152,7 @@ def test_run_doc_is_v03_habit(history_dir):
                            "labeled_by": {"how": "labeler", "tier": "heuristic", "model": "claude-haiku-4-5",
                                           "version": "label/1", "confidence": 0.9}}
     assert run["configuration"]["id"] == config.id and run["configuration"]["source"] == "habit"
-    assert run["configuration"]["workflow"] == workflow_to_ocp(config.workflow)  # lane 1's form (D2)
+    assert run["configuration"]["workflow"] == workflow_to_ocp(config.workflow)  # lane 1's form
     assert run["configuration"]["settings"] == settings_to_ocp(config.settings)
     assert [f for f in validate_strict(doc) if f["level"] == "error"] == []
     assert set(run["configuration"]["settings"]) == {"implement", "review"}
@@ -192,7 +192,7 @@ def _raw(i, c=0, w=0, o=0):
 
 
 def test_model_tokens_shapes():
-    """D67: lane 2's `tokens_by_model` list as {model_id: {OCP token fields}}; model ids and counts only."""
+    """Lane 2's `tokens_by_model` list as {model_id: {OCP token fields}}; model ids and counts only."""
     assert H.model_tokens(None) is None and H.model_tokens({"model": "gpt-6-sol", "tokens": _raw(5)}) is None
     split = [{"model": "gpt-6-sol", "tokens": _raw(1000, 10, 0, 5)}, {"model": "gpt-6-astra", "tokens": _raw(1000)}]
     assert H.model_tokens({"tokens_by_model": split}) == {"gpt-6-sol": _ocp(1000, 10, 0, 5), "gpt-6-astra": _ocp(1000)}
@@ -202,7 +202,7 @@ def test_model_tokens_shapes():
 
 
 def test_run_doc_writes_the_split_into_cost_ext():
-    """D67: a mixed-model session's cost carries its split; a single-model one does not. Strict OCP 0.3 holds."""
+    """A mixed-model session's cost carries its split; a single-model one does not. Strict OCP 0.3 holds."""
     from loopmath.ocp.emit import validate_strict
 
     nodes = [GraphNode(id="cx_mixed", harness="codex", source="codex", session_path="/synthetic/a.jsonl",
@@ -224,7 +224,7 @@ def test_run_doc_writes_the_split_into_cost_ext():
 
 
 def test_run_doc_never_reprices_an_aggregate():
-    """D62: the emitter's cost is kept as it is. A session priced by lane 2 across two models
+    """The emitter's cost is kept as it is. A session priced by lane 2 across two models
     ($0.012 for 1,000 input tokens each on gpt-6-sol and gpt-6-astra) is not repriced as its main model."""
     from loopmath.graph import to_ocp
 
@@ -266,11 +266,11 @@ def test_mixed_model_session_through_onboarding(tmp_path, monkeypatch, second, u
             assert any(f.is_file() for f in cache.rglob("*"))  # the cold load filled the cache
         hist = H.load_history(7, logs=tmp_path / "logs")
         (record,) = hist.records
-        assert record.get("tokens_by_model"), load  # lane 2 keeps the split, parsed and cached (D62)
+        assert record.get("tokens_by_model"), load  # lane 2 keeps the split, parsed and cached
         (group,) = H.group_sessions(hist.graph, hist.by_id)
         doc = _solo_doc(group, hist.by_id)
         (cost,) = [a["cost"] for a in doc["attempts"]]
-        assert cost["ext"][H.MODEL_TOKENS_KEY] == {"gpt-6-sol": _ocp(1000), second: _ocp(1000)}, load  # D67
+        assert cost["ext"][H.MODEL_TOKENS_KEY] == {"gpt-6-sol": _ocp(1000), second: _ocp(1000)}, load
         if usd is None:
             assert cost.get("usd") is None and group.usd is None, load
         else:

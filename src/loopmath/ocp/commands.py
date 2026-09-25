@@ -1,7 +1,5 @@
 """Handlers for `loopmath ocp validate|migrate` (spec 01 sections 3 and 4, spec 02 section 7).
 
-Owner: lane 01.
-
 - `ocp validate FILE...`: every rule for each file, plus the cross-file slate
   check (E194) over the set. Exit 0 when no file has an error, 1 when one
   does, 2 when a file is missing.

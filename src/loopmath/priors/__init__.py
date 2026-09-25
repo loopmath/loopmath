@@ -1,10 +1,10 @@
 """The shipped prior bundle (our data as OCP v0.3) and benchmark priors (spec 04 section 5).
 
-Owner: lane 11. The read API for the belief model (lane 5):
+The read API for the belief model (lane 5):
 
 - `bundle_docs(without=(), sources=None)`: every bundled OCP v0.3 run document,
   each with `run.task.source.kind` set to its source node (`sweep`, `e0`,
-  `rq1`, `repo_history`); `fit --without SOURCE` passes `without` (D37).
+  `rq1`, `repo_history`); `fit --without SOURCE` passes `without`.
 - `bundle_entries()`: the same documents as `(source, document)` pairs, so the fit
   knows where each run came from whatever its label says (spec 04 section 1).
 - `shipped_overlap(run_ids)` and `overlap_note(counts)`: how many of the user's runs

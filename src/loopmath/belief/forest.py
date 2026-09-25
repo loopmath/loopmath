@@ -8,9 +8,10 @@ data then predicts its parent's belief widened by `phi`, as the tree law says.
 
 Node ids are `level:key`. Keys nest along a chain so that each node has one parent:
 `type:feature`, `repo:feature/owner/name`, `subtype:feature/owner/name/api`, `task:<id>`;
-`provider:anthropic`, `family:opus`, `model:claude-opus-5-5`; `effort:high`,
+`provider:anthropic`, `family:opus`, `model:claude-opus-5-5`, `fsrc:opus|sweep`; `effort:high`,
 `family_effort:opus|high`; `role:reviewer`, `role_family:reviewer|opus`;
-`topology:implement_review`, `position:implement_review#1`; `feature:size=s`;
+`topology:implement_review`, `position:implement_review#1`, `psrc:implement_review#1|sweep`;
+`feature:size=s`;
 `source:sweep`; `org:<org>` (crossed, since org is optional); `gate:<rule>`.
 Fixed effects (wide priors, no scale fit): `fixed:intercept`, `round:2`, `round:3+`,
 `control:budget`, `control:width`.
@@ -40,6 +41,8 @@ DEFAULT_SCALES: dict[str, tuple[float, float, float]] = {
     "role_family": (0.3, 0.5, 0.5),
     "topology": (0.5, 0.7, 0.7),
     "position": (0.2, 0.3, 0.3),
+    "psrc": (0.7, 0.7, 0.7),  # position x source, on the cost and tokens heads only
+    "fsrc": (0.5, 0.5, 0.5),  # family x source, on the cost and tokens heads only
     "feature": (0.3, 0.4, 0.4),
     "source": (0.3, 0.5, 0.5),
     "gate": (0.5, 0.7, 0.7),
@@ -51,6 +54,7 @@ FIXED_SD: dict[str, tuple[float, float, float]] = {
     "fixed": (10.0, 5.0, 5.0),
     "round": (2.0, 2.0, 2.0),
     "control": (1.0, 1.0, 1.0),
+    "horizon": (10.0, 10.0, 10.0),  # wide: the informative prior is a FactorSpec in fit() (spec 04 section 1)
 }
 
 HYPER_SD = 0.7  # sd of the log-normal hyperprior on each phi, around the defaults above
@@ -64,21 +68,23 @@ PARENT_LEVEL = {
     "family_effort": "effort",
     "role_family": "role",
     "position": "topology",
+    "psrc": "position",
+    "fsrc": "family",
 }
 
 # Level names the posterior command accepts, and the node levels each one shows.
 LEVEL_ALIASES = {
-    "model": ("provider", "family", "model"),
+    "model": ("provider", "family", "model", "fsrc"),
     "effort": ("effort", "family_effort"),
     "role": ("role", "role_family"),
-    "topology": ("topology", "position"),
+    "topology": ("topology", "position", "psrc"),
 }
 
 ROLE_WORDS = ("planner", "implementer", "reviewer", "tester", "referee", "worker")
 
 
 def canonical_role(role: str | None) -> str:
-    """Fold a role word into the types.py vocabulary through `workflows.normalize_role()` (lane 4, D32);
+    """Fold a role word into the types.py vocabulary through `workflows.normalize_role()` (lane 4);
     no role is `worker`."""
     return _canonical_role(str(role or "").strip().lower())
 

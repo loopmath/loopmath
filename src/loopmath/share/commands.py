@@ -1,6 +1,4 @@
 """Handlers for `loopmath share` and `loopmath prior import-shared` (spec 02 section 4, spec 03 section 7).
-
-Owner: lane 08.
 """
 
 from __future__ import annotations
@@ -30,7 +28,7 @@ def share(args: argparse.Namespace) -> int:
     now = _dt.datetime.now().astimezone()
     try:
         since = parse_since(args.since, now)
-    except ValueError as exc:  # lane 7's one --since reader (D89, D109): `3m` is ambiguous and exits 2
+    except ValueError as exc:  # lane 7's one --since reader: `3m` is ambiguous and exits 2
         return fail(str(exc), getattr(exc, "exit_code", EXIT_USER))
 
     try:

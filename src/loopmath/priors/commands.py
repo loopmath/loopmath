@@ -3,7 +3,7 @@
 `prior build [--out DIR] [--sweep-dir P] [--e0-corpus P] [--rq1-dir P]`
 rebuilds the shipped bundle from our sources. The inputs are read only; each
 is its flag, else `LOOPMATH_SWEEP_DIR`, `LOOPMATH_E0_CORPUS` or
-`LOOPMATH_PRIOR_RQ1`, and there is no default folder (D70).
+`LOOPMATH_PRIOR_RQ1`, and there is no default folder.
 `LOOPMATH_PRIOR_SOURCES` (comma list) limits the sources, and
 `LOOPMATH_PRIOR_SALT` fixes the repo-hash salt for a reproducible build. A
 missing input is an error, never a silently smaller bundle.

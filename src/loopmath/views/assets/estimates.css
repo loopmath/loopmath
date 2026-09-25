@@ -1,0 +1,50 @@
+/* The results page's detail blocks (estimates.js), moved from the 0.1 posterior page and scoped under .est so they
+   sit inside the paper look without touching viz.css. The colour names are the old ones, mapped to the paper palette. */
+.est { --panel: var(--surface); --band: #b9c6e8; --dot: var(--accent); --neutral: #a79e90; --good: var(--accent); --bad: #b3261e;
+  --mid: var(--card); --chip: var(--card); font-size: 14px; line-height: 1.45; }
+.est h2 { font: 400 1.25rem/1.25 var(--serif); margin: 1.4rem 0 0.4rem; }
+.est h3 { font: 600 0.9rem var(--sans); margin: 1rem 0 0.35rem; color: var(--ink2); }
+.est .heads { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 0.8rem 0 0.3rem; }
+.est .heads button { font: inherit; border: 1px solid var(--rule); background: var(--panel); color: var(--ink2); cursor: pointer;
+  border-radius: 999px; margin: 0; padding: 4px 11px; min-height: 30px; }
+.est .heads button[aria-pressed=true] { background: var(--ink); color: #fff; border-color: var(--ink); }
+.est .note { color: var(--ink2); margin: 4px 0 10px; max-width: 54rem; }
+.est .empty { color: var(--muted); font-style: italic; margin: 6px 0; }
+.est table { border-collapse: collapse; width: 100%; background: var(--panel); }
+.est table.nodes { table-layout: fixed; min-width: 760px; }
+.est col.c-node { width: 34%; } .est col.c-eff { width: 21%; } .est col.c-bar { width: 200px; } .est col.c-sup { width: 64px; }
+.est table.nodes td { overflow: hidden; text-overflow: ellipsis; }
+.est table.heat { width: auto; min-width: 320px; }
+.est table.compact { width: auto; min-width: 420px; } .est table.compact th, .est table.compact td { padding-right: 24px; }
+.est .heat td { min-width: 84px; }
+.est th, .est td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.est th { font-weight: 600; color: var(--ink2); font-size: 12px; }
+.est td.num, .est th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.est td.eff { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.est .scroll { overflow-x: auto; }
+.est .node { white-space: nowrap; }
+.est .lvl { color: var(--muted); font-size: 12px; }
+.est .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; background: var(--chip); color: var(--ink2); margin-left: 6px; }
+.est .tag.head { background: var(--accent-bg); color: var(--accent); }
+.est .why { display: block; color: var(--ink2); font-size: 12px; white-space: normal; }
+.est .sup { font-variant-numeric: tabular-nums; }
+.est .sup.low { color: var(--muted); }
+.est .mix { color: var(--ink2); font-size: 12px; }
+.est svg.bar { display: block; }
+.est .heat td { text-align: center; font-variant-numeric: tabular-nums; border: 2px solid var(--panel); font-size: 12px; }
+.est .heat th { text-align: center; }
+.est .heat th.rowh { text-align: left; }
+.est .legend { color: var(--ink2); font-size: 12px; margin: 4px 0; }
+.est .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin: 0 4px; }
+.est .graphwrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); margin: 10px 0; }
+.est .graphwrap svg text { font-family: inherit; } .est .graphwrap svg.graph { display: block; max-width: 100%; height: auto; }
+.est select { font: inherit; padding: 4px 6px; max-width: 100%; }
+.est .kv td:first-child { color: var(--ink2); width: 220px; }
+.est code { background: var(--chip); padding: 0 4px; border-radius: 3px; }
+.est details.more { margin: 4px 0 8px; } .est details.more summary { cursor: pointer; color: var(--ink2); font-size: 12px; padding: 4px 0; }
+.est details.wfgroup { margin: 0 0 4px; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); }
+.est details.wfgroup summary { cursor: pointer; padding: 5px 10px; } .est details.wfgroup table { margin: 0 0 4px; }
+.est table.wflist tr.on td { background: var(--accent-bg); } .est table.wflist a { color: var(--ink); text-decoration: none; }
+.est table.wflist a:hover { text-decoration: underline; }
+.tip.est-tip { white-space: pre-line; max-width: 360px; }
+@media (max-width: 700px) { .est td.bar, .est th.bar, .est col.bar { display: none; } .est table.nodes { min-width: 0; } .est .kv td:first-child { width: 40%; } }

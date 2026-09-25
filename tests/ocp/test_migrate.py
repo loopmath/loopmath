@@ -133,7 +133,7 @@ def test_inferred_configuration_is_marked_heuristic():
 
 
 def test_inference_reads_the_document_and_the_original_contract_file(monkeypatch):
-    """D51: infer gets the migrated document, or a contract run file before convert (with ext.experiment)."""
+    """Infer gets the migrated document, or a contract run file before convert (with ext.experiment)."""
     seen = []
     migrate_doc(load(MIGRATE_GOLDEN / "labeled-v02.ocp.json"), infer=lambda d: seen.append(d))
     contract = load(MIGRATE_GOLDEN / "contract-v3.run.json")

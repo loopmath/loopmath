@@ -87,7 +87,7 @@ def use_home(path: str | Path | None) -> None:
 
 
 def cache_dir() -> Path:
-    """Parsed-run and link cache root (Analyst D80).
+    """Parsed-run and link cache root.
 
     `LOOPMATH_CACHE_DIR`, else `<home>/cache` when `--home` (`use_home`) or
     `LOOPMATH_HOME` names the store, else ~/.loopmath: a store kept elsewhere
@@ -129,7 +129,7 @@ def canonical_effort(raw: str | None) -> str | None:
 class Tokens:
     """Four billable streams, kept separate because they are priced separately.
 
-    SPEC amendment 1 (08-31, Analyst): the price table carries four rates per
+    the price table carries four rates per
     model (`input`, `cache_read`, `cache_write`, `output`) and a cache write can
     cost up to 20x a cache read (opus-5: $10.00 against $0.50 per Mtok). An
     earlier version of this record folded cache writes into `in` on the theory
@@ -190,7 +190,7 @@ class RunRecord:
     files'), sidechain agents embedded in it included, and never a child
     session's: a sub-agent's own transcript and a Codex child thread are
     records of their own (`parent_session`), so a priced record never
-    includes its children (Analyst D64).
+    includes its children.
     """
 
     run_id: str
@@ -218,7 +218,7 @@ class RunRecord:
     # for pricing a session that ran more than one model. A parser that
     # cannot split a session that switched models leaves it empty. It joins
     # `to_dict` (and so the ingest cache) only when it says more than `model`
-    # and `tokens` do; see `to_dict` (Analyst D62).
+    # and `tokens` do; see `to_dict`.
     tokens_by_model: dict = field(default_factory=dict)
 
     # Grading fodder. These are not part of the SPEC section 3 JSON body; they
@@ -271,7 +271,7 @@ class RunRecord:
         if self.parent_session:
             body["parent_session"] = self.parent_session
         # The per-model split, as `[{"model", "tokens"}]` (JSON has no None
-        # key), so shared pricing prices each model at its own rate (D62).
+        # key), so shared pricing prices each model at its own rate.
         # Left out when the session ran one model, the record's own, so
         # single-model records keep their shape; an empty list says the
         # session switched models and its tokens could not be split.

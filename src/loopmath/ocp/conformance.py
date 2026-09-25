@@ -53,11 +53,11 @@ Checks an OCP run document twice over:
      - when producer.name is the extractor ('loopmath', or the pre-rename
        'dagr', optionally suffixed after a non-word character): every cost
        record has basis 'measured' (E171). One exception, v0.3 and later
-       with producer loopmath only (D48): basis 'allocated' is allowed when
+       with producer loopmath only: basis 'allocated' is allowed when
        cost.ext["dev.loopmath.logmatch"] is present with tier 'heuristic'
-       (the store's heuristic log match, D27), or with shared_session (a
+       (the store's heuristic log match), or with shared_session (a
        session several attempts name, its cost split among them; an object
-       or, in a shared record, true; D88)
+       or, in a shared record, true)
      - producer.capabilities is recommended; its absence is a warning, and a
        capability declared false while its element is present is an error
    The v0.2 consistency rules are strict: every internal inconsistency
@@ -169,12 +169,12 @@ RECOMMENDED_VOCABULARY_V03 = {
     "task.type": frozenset((
         "bug_fix", "feature", "refactor", "tests", "docs", "research", "infra", "data",
     )),
-    # D17: late events are matched to a run by its commit or merge artifacts.
-    # D91: the artifact kinds of workflow pieces are recorded as the workflow names them.
+    # Late events are matched to a run by its commit or merge artifacts.
+    # The artifact kinds of workflow pieces are recorded as the workflow names them.
     "artifact.kind.value": RECOMMENDED_VOCABULARY["artifact.kind.value"] | frozenset((
         "commit", "merge", "issue", "repo", "diff", "verdict", "test_record",
     )),
-    # D32: loopmath writes the workflow role words of its pieces verbatim.
+    # Loopmath writes the workflow role words of its pieces verbatim.
     "role.value": RECOMMENDED_VOCABULARY["role.value"] | frozenset((
         "implementer", "tester", "referee", "worker",
     )),
@@ -185,7 +185,7 @@ V03_CAPABILITIES = ("task", "configuration", "signals", "slate", "receipt")
 _EXTRACTOR_NAME = re.compile(r"^(loopmath|dagr)(\W|$)")  # dagr: pre-rename producer name in recorded runs
 # Only loopmath writes receipts (W196); 'dagr' never did.
 _LOOPMATH_NAME = re.compile(r"^loopmath(\W|$)")
-# The store's log-match evidence on an allocated cost (D27, D48).
+# The store's log-match evidence on an allocated cost.
 LOGMATCH_KEY = "dev.loopmath.logmatch"
 
 Finding = namedtuple("Finding", ["level", "code", "path", "message"])
@@ -282,8 +282,8 @@ def _is_loopmath_producer(doc):
 def _logmatch_allocation(cost):
     """An allocated cost the store's log match accounts for.
 
-    D48: a heuristic match (D27); a shared record keeps only `tier` (D56).
-    D88: a session several attempts name, split among them, at any tier;
+    A heuristic match; a shared record keeps only `tier`.
+    A session several attempts name, split among them, at any tier;
     `shared_session` is an object in the store and `true` in a shared record.
     """
     ext = cost.get("ext")

@@ -1,8 +1,5 @@
 """Artifacts written and read by a matched session.
 
-Owner: lane 02. Spec: design/0.1/ (02 `run finish`: "attaches artifacts found
-in the logs"; 03 section 6 `Match.artifacts`).
-
 The graph's own scanners list what each file of the match wrote and read:
 Claude Code Write, Edit and Read tool calls and shell commands
 (`graph.scan.scan_claude_session`), Codex patches and shell commands
@@ -13,7 +10,7 @@ best tier seen and the first and last time. A path inside the session's
 working folder is made relative to it. Metadata only: no content, no diff, no
 command text.
 
-A match clipped to a `--session self` attempt (Analyst D47) keeps only the
+A match clipped to a `--session self` attempt keeps only the
 session file's entries inside the window; the sub-agents it kept count in
 full. A sidechain agent embedded in the session file is cut by entry time
 here, as the scanners do not name the agent.

@@ -1,7 +1,5 @@
 """Claude Code and Codex history to OCP v0.3 runs (configuration.source: habit).
 
-Owner: lane 03. Spec: design/0.1/02-commands.md section 4, 08-lanes.md section 3.
-
 The pipeline is today's `loopmath graph` pipeline over every workspace: discover,
 parse (cached), grade, price, extract. The graph is then cut into session groups:
 a root session plus everything it started (Claude Code sub-agents, Codex child
@@ -18,6 +16,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import os
 import re
 import subprocess
 from collections import Counter
@@ -27,11 +26,12 @@ from typing import Any, Callable
 
 from .. import gitwalk
 from ..graph.schema import Artifact, Graph, GraphEdge, GraphNode
+from ..taskmodel import UNKNOWN_TYPE
 
 # Edges that mean "this session started that one". Artifact edges are left out.
 LINK_KINDS = ("spawn", "launch")
 PROMPT_LIMIT = 400
-MODEL_TOKENS_KEY = "dev.loopmath.model_tokens"  # D67: an attempt's per-model token split, in cost.ext
+MODEL_TOKENS_KEY = "dev.loopmath.model_tokens"  # An attempt's per-model token split, in cost.ext
 _OCP_TOKEN_FIELDS = (("in", "input_tokens"), ("cache_read", "cached_input_tokens"),
                      ("cache_write", "cache_creation_tokens"), ("out", "output_tokens"))
 UNLABELLED_MODEL = "unknown"  # tokens under no model label; no price table has this row
@@ -147,7 +147,7 @@ def group_id(root: str) -> str:
 
 
 def _record_parent(record: dict | None) -> str | None:
-    """The parent session id a record declares itself (D28: lane 2's `parent_session`, a bare
+    """The parent session id a record declares itself (lane 2's `parent_session`, a bare
     Codex thread id or Claude Code session id)."""
     value = record.get("parent_session") if isinstance(record, dict) else None
     return value if isinstance(value, str) and value else None
@@ -332,6 +332,84 @@ def repo_for(cwd: str | None) -> str:
     return name
 
 
+# ---------------------------------------------------------------- pipeline groups and untyped work
+# A group that is not the user's work is skipped before labelling, whatever its type would be:
+# loopmath's own labelling calls, and harness probes. A user names their own pipelines (an
+# intake stage, an experiment sweep's folder) in config `onboard.skip`: a list whose entries
+# are a prompt opening, or a folder (an entry starting with / or ~, or `cwd:`); `prompt:`
+# forces an opening. Openings compare lowercase with whitespace collapsed.
+OWN_LABELLING = (  # the graph labeller's brief (graph/labeler_prompt_build.py), onboard's (label.py)
+    re.compile(r"you are labell?ing sessions of a multi-agent coding workflow\b"),
+    re.compile(r"label these \d+ items\. items, one json object per line:"),
+)
+PROBE_RE = re.compile(r"(say hello|reply with|remember the word|compute \d|what is \d|"
+                      r"run (this|these)( exact| two)? shell commands?\b)")
+PROBE_MAX_CHARS = 200  # a probe is one session with a short first prompt
+SKIP_REASONS = ("loopmath's own labelling", "harness probes", "onboard.skip")
+UNTYPED_REASONS = ("no keyword matched", "labeller said unknown")
+
+
+def _opening(text: str | None) -> str:
+    return " ".join((text or "").split()).lower()
+
+
+def skip_rules(value: Any) -> list[tuple[str, str]]:
+    """Config `onboard.skip` as (kind, value) pairs, kind `prompt` or `cwd`; other entries are ignored."""
+    rules = []
+    for entry in [value] if isinstance(value, str) else value if isinstance(value, list) else []:
+        text = entry.strip() if isinstance(entry, str) else ""
+        if text.startswith(("cwd:", "prompt:")):
+            kind, text = text.split(":", 1)
+        else:
+            kind = "cwd" if text.startswith(("/", "~")) else "prompt"
+        text = os.path.normpath(os.path.expanduser(text.strip())) if kind == "cwd" else _opening(text)
+        if text and text != ".":
+            rules.append((kind, text))
+    return rules
+
+
+def skip_reason(group: SessionGroup, rules: list[tuple[str, str]] = ()) -> str | None:
+    """Why a group is not the user's work (one of SKIP_REASONS), or None."""
+    text = _opening(group.prompt)
+    if any(r.match(text) for r in OWN_LABELLING):
+        return SKIP_REASONS[0]
+    if len(group.nodes) == 1 and len(text) <= PROBE_MAX_CHARS and PROBE_RE.match(text):
+        return SKIP_REASONS[1]
+    cwd = os.path.normpath(group.cwd) if group.cwd else None
+    for kind, value in rules:
+        if (kind == "prompt" and text.startswith(value)) or (
+                kind == "cwd" and cwd and (cwd == value or cwd.startswith(value.rstrip(os.sep) + os.sep))):
+            return SKIP_REASONS[2]
+    return None
+
+
+def skip_pipeline(groups: list[SessionGroup], skip: Any = None) -> tuple[list[SessionGroup], dict[str, int]]:
+    """(the groups to onboard, how many were skipped per reason). Needs `read_heads` first."""
+    rules = skip_rules(skip)
+    kept, skipped = [], Counter()
+    for g in groups:
+        reason = skip_reason(g, rules)
+        if reason:
+            skipped[reason] += 1
+        else:
+            kept.append(g)
+    return kept, {r: skipped[r] for r in SKIP_REASONS if skipped[r]}
+
+
+def as_untyped(labels: dict[str, dict], rejected: dict[str, str]) -> tuple[dict[str, dict], dict[str, str]]:
+    """A group no labeller could type is stored as type `unknown` (the model has a node for it),
+    not left out: (labels with those groups added, the other rejects). Confidence 0: no type was
+    given; the run's usual pick is not counted (`usual.usual_picks`)."""
+    labels = dict(labels)
+    rest = {}
+    for gid, reason in rejected.items():
+        if reason in UNTYPED_REASONS:
+            labels[gid] = {"type": UNKNOWN_TYPE, "subtype": None, "features": {}, "confidence": 0.0, "title": ""}
+        else:
+            rest[gid] = reason
+    return labels, rest
+
+
 def group_summary(group: SessionGroup, history: History | None = None, *, prompt_limit: int = PROMPT_LIMIT) -> dict:
     """What the labeller sees for one group: metadata plus the first prompt, cut."""
     kinds: Counter = Counter()
@@ -385,7 +463,7 @@ def task_id_for(group: SessionGroup) -> str:
 
 
 def fallback_vertex(node: GraphNode, pieces: list[Any]) -> str | None:
-    """Node to piece by role, used only when infer gives no `node_vertex` (D25)."""
+    """Node to piece by role, used only when infer gives no `node_vertex`."""
     role = (node.role or "").lower()
     wanted = {
         "planner": ("plan", "planner"),
@@ -399,7 +477,7 @@ def fallback_vertex(node: GraphNode, pieces: list[Any]) -> str | None:
 
 
 def model_tokens(record: dict | None) -> dict | None:
-    """D67: a record's per-model split (lane 2's `tokens_by_model`) as {model_id: {OCP token fields}},
+    """A record's per-model split (lane 2's `tokens_by_model`) as {model_id: {OCP token fields}},
     or None when the record has no split (one model, the record's own). An empty object says the
     session switched models and its tokens could not be split. Model ids and counts only."""
     parts = record.get("tokens_by_model") if isinstance(record, dict) else None
@@ -426,10 +504,10 @@ def run_doc(group: SessionGroup, *, label: dict, labeled_by: dict, config: Any, 
     today's graph emitter output for the group (nodes, attempts, costs, edges,
     artifacts), raised to v0.3 with the task, the configuration (`source: habit`), the
     provenance and each node's piece. The configuration is written in OCP form by
-    lane 1's emit helpers (D2). Costs are the emitter's as they are: lane 2's
-    shared pricing (`price.price_all` in `load_history`) is the one pricing path (D62),
+    lane 1's emit helpers. Costs are the emitter's as they are: lane 2's
+    shared pricing (`price.price_all` in `load_history`) is the one pricing path,
     so a priced aggregate keeps its tariff evidence and an unpriced one stays unpriced.
-    `records` (run id to record) adds each mixed-model session's split to its cost (D67).
+    `records` (run id to record) adds each mixed-model session's split to its cost.
     """
     from .. import __version__
     from ..graph import to_ocp

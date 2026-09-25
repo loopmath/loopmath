@@ -50,8 +50,7 @@ def _worktree_root():
 def _resolve_out(out: str):
     """`--out` resolved against the worktree root (the git top level of the
     current directory); anything outside it is refused, and so is any `--out`
-    when the current directory is not inside a git worktree (EXTRACTOR-SPEC
-    section 0, rule 3: no writes outside the worktree). Returns (path, None)
+    when the current directory is not inside a git worktree. Returns (path, None)
     or (None, error message); nothing is written on refusal."""
     from pathlib import Path
 
@@ -108,7 +107,7 @@ def graph_verb(args: argparse.Namespace) -> int:
     pipeline excluded (files skipped, cut by `--limit` or the time window,
     records ungraded or unpriced) and everything the extractor could not place
     is counted in the graph's meta, which every format carries, and printed on
-    stderr (EXTRACTOR-SPEC section 0, rule 1). `--quiet` silences progress
+    stderr. `--quiet` silences progress
     only; the counters always print.
     """
     import json
@@ -132,7 +131,7 @@ def graph_verb(args: argparse.Namespace) -> int:
             return 2
 
     # The count rewrites itself with \r, so it only goes to a terminal; in a
-    # log or a pipe it would run into the next line (dogfood, D87 item 4).
+    # log or a pipe it would run into the next line (dogfood).
     live = not args.quiet and sys.stderr.isatty()
 
     def _progress(harness: str, i: int, n: int) -> None:

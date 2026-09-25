@@ -1,6 +1,4 @@
-"""Clip a `--session self` match to the attempt's own window (Analyst D47).
-
-Owner: lane 02. Spec: design/0.1/ (03 section 6; Analyst D26, D47).
+"""Clip a `--session self` match to the attempt's own window.
 
 `--session self` names the Claude Code session that runs the command, and
 that session usually did other work before and after the attempt. Such an
@@ -125,7 +123,7 @@ def window_tokens(path: str | Path, lo: float | None, hi: float | None) -> dict[
 def clip_match(match: Match, start: str | None, end: str) -> Match:
     """`match` cut to `[start, end]` (see the module docstring); `start=None` is open.
 
-    Claude Code only: `--session self` is an error under Codex (D26).
+    Claude Code only: `--session self` is an error under Codex.
     """
     if match.harness != "claude-code":
         raise ValueError(f"only a claude-code session is clipped, not {match.harness}")

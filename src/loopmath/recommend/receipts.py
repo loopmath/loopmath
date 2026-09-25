@@ -1,6 +1,6 @@
 """Before and after receipts, scoring and re-scoring (spec 05 section 6).
 
-Pure functions (decision D16): lane 7's store reads `recs/<rec>.json`, calls these,
+Pure functions: lane 7's store reads `recs/<rec>.json`, calls these,
 and does all receipt IO (`receipts/<rct>.json` and `run.receipt` in the run file).
 
 - `before_receipt(rec, *, run, config, ...)`: at `run start --rec`, the
@@ -114,7 +114,7 @@ def realized_from_doc(run_doc: dict[str, Any] | None) -> dict[str, Any]:
     """Cost (attempt `usd`, four token streams), rounds (highest attempt round) and signal ids.
 
     Dollars are the sum of attempt `usd` only when every attempt has one: an
-    unpriced attempt leaves the run's dollars unknown (D62, D67), so a lower
+    unpriced attempt leaves the run's dollars unknown, so a lower
     bound is never scored as the cost. The priced part is `cost_usd_known`.
     Tokens are the sum over the attempts that report them.
     """
@@ -199,7 +199,7 @@ def finish_receipt(receipt: Receipt, *, cost_usd: float | None, tokens: float | 
 def after_receipt(run_doc: dict[str, Any], rec: dict[str, Any] | None, evidence: Evidence,
                   fit_id: str | None = None, *, receipt: Receipt | dict[str, Any] | None = None,
                   belief: Any = None, task: Task | None = None, rule: AcceptanceRule | None = None) -> Receipt | None:
-    """The scored receipt at `run finish` (D16; the store writes it).
+    """The scored receipt at `run finish` (the store writes it).
 
     The before part is, in order: `receipt` (the one stored at `run start`),
     the run's configuration in `rec`, or the belief's prediction for it (with

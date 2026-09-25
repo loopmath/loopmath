@@ -1,4 +1,4 @@
-"""scripts/preview.sh's recommend summary (D105 note): a curve level that no candidate reaches
+"""scripts/preview.sh's recommend summary: a curve level that no candidate reaches
 reads as recommend's own text says it, not as the `None: None` of a null config."""
 
 import ast

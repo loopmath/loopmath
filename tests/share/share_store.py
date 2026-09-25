@@ -79,7 +79,7 @@ PRIVATE_SPLIT = {"gpt-6-astra": _tokens(30_000, 250_000, 0, 10_000),
 
 
 def _cost(usd, inp, cached, created, out, tier="verified", split=None):
-    """A measured cost; a heuristic one is allocated, with the full log match record (D27, D53)."""
+    """A measured cost; a heuristic one is allocated, with the full log match record."""
     cost = {"input_tokens": inp, "cached_input_tokens": cached, "cache_creation_tokens": created,
             "output_tokens": out, "requests": 7, "usd": usd, "basis": "measured", "tier": tier,
             "tariff": dict(TARIFF), "ext": {"com.acme.cost": PLANTED["ext value"]}}

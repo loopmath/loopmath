@@ -187,7 +187,7 @@ def test_workflow_from_an_ocp_run_document(store, capsys):
 
 
 def test_ocp_control_gives_gates_loops_and_budget(store, capsys):
-    """OCP v0.3 control (D29, D30): gate piece ids, a repair map, budget, rules in ext, rescue object."""
+    """OCP v0.3 control: gate piece ids, a repair map, budget, rules in ext, rescue object."""
     home, _ = store
     goal = _config("plan_implement_review")
     control = {"gates": ["review"], "repair": {"review": "implement"}, "budget": 3,
@@ -293,7 +293,7 @@ def test_terminal_summary(store, capsys):
     assert 3 < len(lines) <= 25
     assert lines[0].startswith("Current estimates (the posterior) from fit fit_20260923160000")
     assert lines[1].startswith("Graph: implement_review:")
-    # D60: implement costs $1 per round over 1.4 rounds, review $2; shares from the run totals 1.4 and 2.8
+    # Implement costs $1 per round over 1.4 rounds, review $2; shares from the run totals 1.4 and 2.8
     implement = next(line for line in lines if line.startswith("  implement:"))
     assert implement.startswith("  implement: $1.00 ($0.60 to $1.60) per round, $1.40 ($0.84 to $2.24) per run,")
     assert implement.endswith("33% of cost")

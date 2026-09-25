@@ -1,4 +1,4 @@
-"""The one `--since` reader (Analyst D89) and the fits size in `status` (D91)."""
+"""The one `--since` reader and the fits size in `status`."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def test_anything_else_unreadable_exits_1(text):
 
 @pytest.mark.parametrize("text", ["99999999999d", "999999w", "1000000d"])
 def test_a_length_past_year_one_is_refused_not_a_traceback(text):
-    """D109 note (questions/lane-03-2326.md): timedelta or the date subtraction overflowed."""
+    """Timedelta or the date subtraction overflowed."""
     with pytest.raises(SinceError, match="use 36h, 90d, 12w or a date") as exc:
         parse_since(text, NOW)
     assert exc.value.exit_code == 1 and exc.value.__cause__ is None

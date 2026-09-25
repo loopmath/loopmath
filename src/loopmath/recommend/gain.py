@@ -108,7 +108,7 @@ def screen(cands: Sequence[Candidate], goal_id: str, n: int = SCREEN_SIZE) -> li
 def lookahead_scores(belief: Any, task: Task, goal: Candidate, screened: Sequence[Candidate],
                      pool: Sequence[Candidate], rule: AcceptanceRule | None,
                      rescue_usd: float | None) -> list[Scored]:
-    """Look-ahead for every screened candidate, with the recommender's `C_rescue` (D9)."""
+    """Look-ahead for every screened candidate, with the recommender's `C_rescue`."""
     configs = [c.config for c in pool]
     out: list[Scored] = []
     for cand in screened:

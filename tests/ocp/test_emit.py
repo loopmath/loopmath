@@ -1,4 +1,4 @@
-"""Emit helpers: types records to OCP v0.3 (spec 03 section 4; D3, D29 to D32, D41)."""
+"""Emit helpers: types records to OCP v0.3 (spec 03 section 4)."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def test_d41_the_gates_win_over_a_stale_gate_rules_key():
 def test_workflow_mapping():
     w = emit.workflow_to_ocp(implement_review())
     assert w["pieces"] == [{"id": "implement", "role": "implementer", "width": 1},
-                           {"id": "review", "role": "reviewer", "width": 1}]  # D32: roles verbatim
+                           {"id": "review", "role": "reviewer", "width": 1}]  # Roles verbatim
     assert w["artifacts"] == [{"id": "patch", "kind": "other"}, {"id": "review_notes", "kind": "other"}]
     assert w["control"] == {"gates": ["review"], "repair": {"review": "implement"}, "budget": 3,
                             "rescue": {"kind": "configuration", "ref": "usual"}}
@@ -67,7 +67,7 @@ def test_workflow_mapping():
 
 
 def test_a_cyclic_workflow_raises():
-    """D3: repair loops live in control, never as graph edges."""
+    """Repair loops live in control, never as graph edges."""
     cyclic = dataclasses.replace(implement_review(), edges=implement_review().edges + (("review_notes", "implement"),))
     with pytest.raises(emit.WorkflowCycleError):
         emit.workflow_to_ocp(cyclic)
@@ -77,7 +77,7 @@ def test_a_cyclic_workflow_raises():
 
 
 def test_setting_mapping_writes_context_policy():
-    """D31: fresh when absent, always written."""
+    """Fresh when absent, always written."""
     assert emit.setting_to_ocp(ASTRA) == {"harness": "codex", "model": {"raw": "gpt-6-astra", "id": "gpt-6-astra"},
                                           "effort": "xhigh", "context_policy": "fresh", "options": {}}
     assert emit.setting_to_ocp({"harness": "codex", "model": "m"})["context_policy"] == "fresh"
@@ -87,7 +87,7 @@ MODEL_REF = {"raw": "opus", "id": "claude-opus-5-5", "provider": "anthropic"}
 
 
 def test_kept_model_object_folds_back_into_model():
-    """D52: extra["model_ref"] (kept by lane 04's setting_from_ocp) becomes `model`; no top-level model_ref."""
+    """Extra["model_ref"] (kept by lane 04's setting_from_ocp) becomes `model`; no top-level model_ref."""
     kept = Setting("claude-code", "claude-opus-5-5", "high", extra={"model_ref": MODEL_REF})
     out = emit.setting_to_ocp(kept)
     assert out["model"] == MODEL_REF and "model_ref" not in out

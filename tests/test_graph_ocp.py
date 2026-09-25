@@ -19,7 +19,9 @@ import pytest
 
 from loopmath.graph import extract, sanitize, to_ocp
 from loopmath.graph.ocp import attempt_id
+from loopmath.graph.ocp_support import LEGACY_SOURCE_CONTRACT
 from loopmath.graph.schema import Artifact, Graph, GraphEdge, GraphNode
+from loopmath.ingest.ocp import from_ocp
 from loopmath.ocp.emit import validate_strict
 from tests.test_graph_extract import ALPHA, skeleton_records
 
@@ -60,7 +62,7 @@ def _attempt(doc, node_id):
 def test_document_passes_conformance_as_the_extractor(doc):
     assert doc["ocp"] == "0.3"
     assert doc["producer"]["name"] == "loopmath"
-    assert doc["producer"]["source_contract"] == "dagr_graph/1"
+    assert doc["producer"]["source_contract"] == "loopmath_graph/1"
     assert errors(doc) == []
     # The store's strict check takes it (v0.3, E005), and no key is in the
     # pre-0.3 `dev.dagr.` namespace (W182).
@@ -68,6 +70,14 @@ def test_document_passes_conformance_as_the_extractor(doc):
     assert [f for f in strict if f["level"] == "error"] == []
     assert [f for f in strict if f["code"] == "W182"] == []
     assert any(f["code"] == "W182" for f in validate_strict(_as_pre_03(doc)))
+
+
+def test_a_document_with_the_pre_0_2_source_contract_reads_the_same(doc):
+    old = copy.deepcopy(doc)
+    old["producer"]["source_contract"] = LEGACY_SOURCE_CONTRACT
+    assert errors(old) == []
+    assert [f for f in validate_strict(old) if f["level"] == "error"] == []
+    assert from_ocp(old).to_dict() == from_ocp(doc).to_dict()
 
 
 def test_one_node_one_attempt_per_graph_node(g, doc):

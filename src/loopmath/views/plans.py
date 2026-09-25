@@ -3,12 +3,12 @@
 The view object is `loopmath.view.plans/1` (spec 03 section 8): the `loopmath.recommend/1`
 object plus `candidates` (the top 200 with predictions) and `graphs` (one workflow graph per
 configuration the page can open, with per-piece predictions). The page renders from that
-object only; `plans.js` draws it.
+object only; `plans.js` draws it as the 0.2 planning page (D119 Z3): the pick first, with
+`goal.strategy.text` verbatim when set, then the rest in details sections, on the shared
+`viz.js` and `viz.css`.
 
 Lane 6 owns the recommend command. It calls `build_view(payload, candidates)` and then
 `render(view)`, and prints `build_view(...)` for `--json` together with `--html`.
-
-Owner: lane 12. Spec: design/0.1/06-views.md section 2, 03-interfaces.md section 8.
 """
 
 from __future__ import annotations
@@ -139,10 +139,10 @@ def render(data: Mapping[str, Any]) -> str:
     view = common.plain(data)
     if view.get("schema") != SCHEMA or "graphs" not in view:
         view = build_view(view, view.get("candidates") or ())
-    title = "loopmath plans"
+    title = "loopmath plan"
     task = view.get("task") or {}
     if task.get("title"):
         title += ": " + str(task["title"])[:80]
     return common.page(title=title, data=view, body="",
-                       scripts=[common.graph_js(), common.asset("plans.js")],
-                       styles=[common.graph_css(), common.asset("plans.css")])
+                       scripts=[common.asset("viz.js"), common.asset("plans.js")],
+                       styles=[common.asset("viz.css"), common.asset("plans.css")])

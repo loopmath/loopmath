@@ -20,7 +20,7 @@ from typing import Any, Sequence
 from ..output import (
     EXIT_NO_FIT, EXIT_NOT_FOUND, EXIT_OK, emit_json, fail, home as home_dir, html_path, write_html,
 )
-from ..taskmodel import group_chain, normalize_features
+from ..taskmodel import HORIZON_KEY, group_chain, normalize_features, parse_horizon
 from ..types import (
     DEFAULT_RULE, TASK_TYPE_IDS, AcceptanceRule, Configuration, ScoreTarget, Setting, Task,
 )
@@ -36,6 +36,10 @@ DEFAULT_USUAL_SHAPE = "implement_review"
 FALLBACK_IMPLEMENTER = ("claude-code", "claude-opus-5-5", "high")
 FALLBACK_REVIEWER = ("codex", "gpt-6-astra", "xhigh")
 REVIEW_ROLES = ("reviewer", "referee", "review", "select")
+# `--json --brief`: what an agent needs to show the choices and start one. The stored
+# recommendation and the full JSON keep everything; a key added to recommend/2 stays out unless listed.
+BRIEF_KEYS = ("task", "rule", "fit", "reference", "goal", "rescue", "choices", "message", "notes", "rec",
+              "created_at")
 
 
 class UserError(ValueError):
@@ -66,7 +70,7 @@ def task_from_args(args: argparse.Namespace) -> tuple[Task, bool]:
 
 
 def question_task(task: Task, fit_id: str, rule: AcceptanceRule, configs: Sequence[Configuration]) -> Task:
-    """The task as the belief sees it when its id was made up for this call (D89).
+    """The task as the belief sees it when its id was made up for this call.
 
     The belief draws an unseen task's effect from a seed of the node id, so a fresh id gave
     the same question on the same fit new numbers on every call. This id is a hash of the
@@ -97,6 +101,13 @@ def task_from_dict(data: dict[str, Any], overrides: argparse.Namespace | None = 
     if not d.get("repo"):
         raise UserError("task needs a repo")
     d["features"] = normalize_features({str(k): str(v) for k, v in (d.get("features") or {}).items()})
+    horizon = getattr(overrides, "horizon", None) if overrides is not None else None
+    if horizon is not None:  # given: wins over the one the fit recorded; `none` is open-ended (spec 04 section 1)
+        try:
+            secs = parse_horizon(horizon)
+        except ValueError as exc:
+            raise UserError(f"--horizon: {exc}") from None
+        d["features"][HORIZON_KEY] = (str(int(secs)) if float(secs).is_integer() else str(secs)) if secs else "none"
     if not d.get("id"):
         d["id"] = "tsk_" + storeread.ulid()
     return Task.from_dict(d)
@@ -156,7 +167,7 @@ def rule_from_args(args: argparse.Namespace, conf: Conf) -> AcceptanceRule:
 
 # ---------------------------------------------------------------- belief, budget, settings
 def load_belief(home: Path, fit_id: str | None = None) -> tuple[Any, int]:
-    from ..belief.state import load_latest
+    from ..belief.state import latest_problem, load_latest
 
     if fit_id:  # `--fit ID`: a kept fit instead of fits/latest
         from ..belief.fit import UnknownFit, load_fit
@@ -165,6 +176,9 @@ def load_belief(home: Path, fit_id: str | None = None) -> tuple[Any, int]:
             return load_fit(home, fit_id), EXIT_OK
         except UnknownFit as exc:
             return None, fail(str(exc), EXIT_NOT_FOUND)
+    why = latest_problem(home)  # a fit from another design version: one line that says so
+    if why is not None:
+        return None, fail(why, EXIT_NO_FIT)
     belief = load_latest(home)
     if belief is None:
         return None, fail("no fit yet: run `loopmath fit`, or `loopmath onboard` for a first fit from your "
@@ -323,7 +337,7 @@ def allowed_settings(conf: Conf, models: Sequence[str] | None) -> dict[str, Any]
 
 def reference_for(belief: Any, task: Task, rule: AcceptanceRule, recorded: Sequence[Configuration],
                   models: Sequence[str] | None) -> Configuration | None:
-    """With no usual, the best recorded configuration (D118 N4); with `--models`, among the recorded ones that
+    """With no usual, the best recorded configuration; with `--models`, among the recorded ones that
     use only those models when there are any."""
     pool = list(recorded)
     if models:
@@ -365,8 +379,17 @@ def fit_info(belief: Any, now) -> dict[str, Any]:
 
 
 def task_block(task: Task, belief: Any) -> dict[str, Any]:
-    return {**task.to_dict(), "group_chain": [list(x) for x in group_chain(task)],
-            "support": dict(belief.support(task))}
+    out = {**task.to_dict(), "group_chain": [list(x) for x in group_chain(task)],
+           "support": dict(belief.support(task))}
+    if hasattr(belief, "resolve_task"):  # the horizon and values the fit filled in, and notes on the features
+        info = belief.resolve_task(task)[1]
+        out["horizon"] = dict(info["horizon"])
+        if info["inherited"]:
+            out["inherited_features"] = dict(info["inherited"])
+        notes = belief.task_notes(task)
+        if notes:
+            out["notes"] = notes
+    return out
 
 
 def build_payload(rec: Recommendation, belief: Any, rec_id: str, now) -> dict[str, Any]:
@@ -381,6 +404,7 @@ def build_payload(rec: Recommendation, belief: Any, rec_id: str, now) -> dict[st
         out["notes"] = core["notes"]
     out["reference"] = core["reference"]  # recommend/2 keys after the /1 ones, so /1 readers keep their order
     out["choices"] = core["choices"]
+    out["search"] = core["search"]  # spec 05 section 1a; null when the search did not run
     return out
 
 
@@ -420,7 +444,7 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
     t, fit, u = payload["task"], payload["fit"], rec.usual.prediction
 
     def named(cfg: Configuration) -> str:
-        """The shown label with its id, which `run start --config` takes (D91)."""
+        """The shown label with its id, which `run start --config` takes."""
         label = rec.label(cfg)
         return label if label.endswith(f"[{cfg.id}]") else f"{label} [{cfg.id}]"
 
@@ -429,6 +453,7 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
     age_text = f"{age // 60} min old" if isinstance(age, int) else "age unknown"
     lines = [f"Task: {t['type']} in {t['repo']}" + (f" ({t['subtype']})" if t.get("subtype") else "")
              + (f"; runs per level: {sup}" if sup else ""),
+             *(["  " + "; ".join(t["notes"])] if t.get("notes") else []),
              f"Rule: {rec.rule.name} ({rec.rule.definition}"
              + ("" if rec.score_backed else f"; too few {rec.rule.score.name} scores to predict it, so each "
                                               f"chance is of an accepted result")
@@ -515,8 +540,8 @@ def typical(rec: Recommendation | None, p) -> str:
 
 
 def line_numbers(p, *, first: bool = False, marks: tuple[str, ...] = (), rec: Recommendation | None = None) -> str:
-    """Chance, run cost with its median, expected rescue and `ell`, which the first line spells out (D94); a
-    mean above its interval's upper end gets the D107 note in its parentheses, after any `marks` such as
+    """Chance, run cost with its median, expected rescue and `ell`, which the first line spells out; a
+    mean above its interval's upper end gets the tail note in its parentheses, after any `marks` such as
     "uncertain"."""
     ell = fmt_usd(p.ell.usd.mean)
     note = TAIL if heavy(p.ell.usd) else ""
@@ -532,7 +557,7 @@ def line_numbers(p, *, first: bool = False, marks: tuple[str, ...] = (), rec: Re
 
 
 def delta_words(d: dict[str, Any], baseline: str = "the usual") -> str:
-    """An alternative's differences from the usual in words (D94)."""
+    """An alternative's differences from the usual in words."""
     pp = round(d["success_pp"])
     parts = [f"success {abs(pp)} point{'s' if abs(pp) != 1 else ''} {'higher' if pp > 0 else 'lower'}" if pp
              else "success about the same"]
@@ -596,10 +621,19 @@ def recommend(args: argparse.Namespace) -> int:
         else:
             write_html(target, page)
     if args.json:
-        emit_json(SCHEMA, payload)
+        out = brief(payload) if getattr(args, "brief", False) else payload
+        emit_json(SCHEMA, {**out, "page": str(target)} if target is not None else out)
     elif target is None:
         print("\n".join(summary(payload, rec)))
     return EXIT_OK
+
+
+def brief(payload: dict[str, Any]) -> dict[str, Any]:
+    """The `--brief` projection: BRIEF_KEYS, and the reference without its prediction draws."""
+    out = {k: payload[k] for k in BRIEF_KEYS if k in payload}
+    if isinstance(out.get("reference"), dict):
+        out["reference"] = {k: v for k, v in out["reference"].items() if k != "prediction"}
+    return out
 
 
 def write_html_quiet(path: Path, page: str) -> None:

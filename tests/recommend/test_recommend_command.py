@@ -341,7 +341,7 @@ def test_redo_usual_with_a_usual_that_never_succeeds_is_a_user_error(env, capsys
 
 
 def test_the_same_question_on_the_same_fit_gets_the_same_answer(env, capsys, tmp_path):
-    """D89: the task id made up for each call seeded the belief's draw of the task's effect."""
+    """The task id made up for each call seeded the belief's draw of the task's effect."""
     _, state = env
     base = make_belief()
     state["belief"] = b = TaskDrawBelief(base.nums, base.gains, base.beats)
@@ -369,7 +369,7 @@ def test_the_same_question_on_the_same_fit_gets_the_same_answer(env, capsys, tmp
 
 
 def test_the_text_names_the_ids_that_run_start_takes(env, capsys):
-    """D91: the usual, the goal and each exploration pick carry their `[cfg_...]` id; D89: no usual in the
+    """The usual, the goal and each exploration pick carry their `[cfg_...]` id; D89: no usual in the
     alternatives."""
     argv = ["recommend", "--type", "feature", "--repo", "acme/app"]
     _, obj = run_json(capsys, [*argv, "--json"])
@@ -403,7 +403,7 @@ def test_the_text_says_when_the_fit_cannot_predict_the_score_rule(env, capsys):
 
 
 def test_a_mean_above_its_interval_says_the_average_is_pulled_up(env, capsys):
-    """D107: after D98 and D106 a mean above its interval's upper end is a real heavy tail. The text keeps the mean
+    """A mean above its interval's upper end is a real heavy tail. The text keeps the mean
     and says so in the value's parentheses, though it prints no interval; the JSON gains no field or number."""
     from loopmath.recommend.message import TAIL
 
@@ -450,7 +450,7 @@ def test_a_mean_above_its_interval_says_the_average_is_pulled_up(env, capsys):
 
 
 def test_the_text_says_what_ell_is_once_and_alternatives_differ_in_words(env, capsys):
-    """D94: `ell $41.32` and `ell -30.74 USD` meant nothing to a newcomer."""
+    """`ell $41.32` and `ell -30.74 USD` meant nothing to a newcomer."""
     from loopmath.recommend.commands import delta_words
 
     argv = ["recommend", "--type", "feature", "--repo", "acme/app"]

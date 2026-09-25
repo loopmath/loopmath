@@ -155,7 +155,7 @@ class Gate(Record):
 class Control(Record):
     gates: tuple[Gate, ...] = ()
     budget_rounds: int = 1  # K_max
-    # "redo_usual" | "person" | "none", or an OCP rescue object kept whole (decision D42)
+    # "redo_usual" | "person" | "none", or an OCP rescue object kept whole
     rescue: str | dict[str, Any] = "redo_usual"
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -242,11 +242,11 @@ class Evidence(Record):
 @_frozen
 class PiecePrediction(Record):
     piece: str
-    cost: Money  # E[C_piece]: the full-run contribution over every round reached; sums to Prediction.cost (D60)
+    cost: Money  # E[C_piece]: the full-run contribution over every round reached; sums to Prediction.cost
     gate_pass: Interval | None
     rounds: Interval
     # expected cost of one execution: the per-execution prediction when it is the same in every round,
-    # else E[C_piece] / E[executions]; None when expected executions are 0 (D60)
+    # else E[C_piece] / E[executions]; None when expected executions are 0
     cost_per_round: Money | None = None
 
 
@@ -335,11 +335,11 @@ class LookaheadResult(Record):
 class BeliefState(Protocol):
     """The fitted belief (lane 5), as the recommender and the views read it.
 
-    `rescue_usd` is C_rescue in dollars (decision D9): the recommender computes
+    `rescue_usd` is C_rescue in dollars: the recommender computes
     it from config `rescue.kind` and always passes it, so `Prediction.ell` and
     the look-ahead use the same value. None means the belief's own default.
 
-    Optional methods (decisions D8 and D10); callers test with `hasattr`:
+    Optional methods; callers test with `hasattr`:
       success_draws(task, configs, rule=None) -> ndarray of shape (n_configs, 400)
       conditioned(task, config, rule=None, rescue_usd=None) -> BeliefState
     """

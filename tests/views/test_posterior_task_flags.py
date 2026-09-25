@@ -1,4 +1,4 @@
-"""`posterior --subtype S --feature K=V`, as `recommend`: predictions for that task (D118 N9, FINDINGS I14).
+"""`posterior --subtype S --feature K=V`, as `recommend`: predictions for that task (FINDINGS I14).
 
 The flags go into the task the workflow graph is predicted for, and into the view's `task`
 block, which the page reads. The page itself is 0.2.

@@ -2,7 +2,7 @@
 
 Each bundled run carries its source as `run.task.source.kind`, which is also the
 source node `fit --without SOURCE` drops (spec 04, section 5). `benchmark` is
-reserved for published results used as prior factors (Analyst decision D15).
+reserved for published results used as prior factors.
 
 Not named `sources.py`: a submodule of that name would replace the read API's
 `loopmath.priors.sources()` once imported.
@@ -26,7 +26,7 @@ PUBLIC_REPOS = ("loopmath-sweep", "ale-bench")
 
 # Inputs on the build machine, read only; nothing at run time needs them (the
 # bundle ships built). Each is an explicit path, the `prior build` flag or else
-# the environment variable, with no default folder (D70). The sweep and E0
+# the environment variable, with no default folder. The sweep and E0
 # variables are the ones `research fit` and `analyze-e0` read.
 INPUT_FLAGS = {SWEEP: "--sweep-dir", E0: "--e0-corpus", RQ1: "--rq1-dir"}
 ENV_INPUTS = {SWEEP: "LOOPMATH_SWEEP_DIR", E0: "LOOPMATH_E0_CORPUS", RQ1: "LOOPMATH_PRIOR_RQ1"}

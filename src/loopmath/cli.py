@@ -487,7 +487,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("loopmath graph requires --workspace or --ocp")
     from .ingest.base import use_home
 
-    use_home(getattr(args, "home", None))  # the caches follow --home as the store does (D80)
+    use_home(getattr(args, "home", None))  # the caches follow --home as the store does
     return args.func(args)
 
 

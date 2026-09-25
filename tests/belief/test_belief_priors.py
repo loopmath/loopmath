@@ -1,4 +1,4 @@
-"""Benchmark prior factors (spec 04 section 5, D36, D54)."""
+"""Benchmark prior factors (spec 04 section 5)."""
 
 from __future__ import annotations
 
@@ -92,8 +92,11 @@ def test_tokens_factors_reach_the_tokens_head_only(tmp_path):
     (spec,) = [f for f in benchmark_factors(path) if f.head == "tokens"]
 
     def gap(st):
-        """The factor's linear combination: astra at xhigh against opus at high, whole setting path."""
+        """The factor's linear combination: astra at xhigh against opus at high, whole setting path, plus
+        the user's family x source nodes, so the user's own contrast (all these runs are the user's)."""
         h = st.heads["tokens"]
-        return sum(v * h.mean[h.index[n]] for n, _, v in spec.terms)
+        user = [(n.replace("family:", "fsrc:", 1) + "|user", v) for n, _, v in spec.terms if n.startswith("family:")]
+        return (sum(v * h.mean[h.index[n]] for n, _, v in spec.terms)
+                + sum(v * h.mean[h.index[n]] for n, v in user if n in h.index))
 
     assert abs(gap(state) - math.log(2.5)) < abs(gap(plain) - math.log(2.5))  # pulled toward the benchmark

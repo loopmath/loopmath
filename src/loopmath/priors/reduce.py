@@ -1,4 +1,4 @@
-"""The share reduction applied to every bundled run (spec 03 section 7; Analyst decision D19).
+"""The share reduction applied to every bundled run (spec 03 section 7).
 
 The bundle ships in the public package, so each run keeps only what `loopmath
 share` would send: task type, subtype, features, a salted hash of the repo,
@@ -9,7 +9,7 @@ shas, free-text receipts and unknown extension keys are dropped. Our public
 benchmark repos (`PUBLIC_REPOS`) stay readable. When the reduction changes the
 configuration's content (a private option or extension dropped), its id is
 recomputed from the reduced content and the original kept as
-`run.ext["dev.loopmath.share"].original_config_id` (D46). The acceptance rule
+`run.ext["dev.loopmath.share"].original_config_id`. The acceptance rule
 stays whole: the bundle's rules are our own generic text and the fit reads
 outcomes from them.
 """
@@ -23,7 +23,7 @@ from . import ocpdoc
 from .registry import PUBLIC_REPOS
 
 # Extension keys the bundle keeps: our own data-quality flags and the gate rules
-# that are part of the configuration id (D29).
+# that are part of the configuration id.
 KEEP_EXT = frozenset({
     "dev.loopmath.prior", "dev.loopmath.infra_error", "dev.loopmath.tokens_unknown",
     "dev.loopmath.shared_across_runs", "dev.loopmath.gate_rules", "dev.loopmath.share",
@@ -49,7 +49,7 @@ def _ext(obj: dict) -> None:
 
 
 def _rekey(run: dict, cfg: dict, original: dict) -> None:
-    """D46: a new id only when the reduction changed a correctly keyed configuration."""
+    """A new id only when the reduction changed a correctly keyed configuration."""
     if not cfg.get("id") or not isinstance(cfg.get("workflow"), dict):
         return
     before = ocpdoc.config_id(original.get("workflow") or {}, original.get("settings") or {})

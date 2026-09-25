@@ -101,7 +101,7 @@ def test_e191_setting_must_be_an_object():
     lambda w: w["edges"].append(["issue", "diff"]),                # artifact to artifact
     lambda w: w["edges"].append(["implement", "nowhere"]),         # unknown vertex
     lambda w: w["pieces"].append({"id": "diff", "role": "worker"}),  # id used twice
-    lambda w: w["edges"].append(["verdict", "implement"]),         # the old repair back edge (D3)
+    lambda w: w["edges"].append(["verdict", "implement"]),         # the old repair back edge
 ], ids=["piece-piece", "artifact-artifact", "unknown", "duplicate", "back-edge"])
 def test_e192_cases(edit):
     doc = example("implement_review")
@@ -262,7 +262,7 @@ def test_v03_rules_do_not_fire_on_v02_documents():
 
 
 def test_v03_commit_and_merge_artifact_kinds():
-    """Lane 07's request: `run artifact --kind commit` (D17) draws no W200 in v0.3; v0.2 is unchanged."""
+    """Lane 07's request: `run artifact --kind commit` draws no W200 in v0.3; v0.2 is unchanged."""
     doc = example("full-fields")
     doc["artifacts"][0]["kind"] = {"value": "commit", "tier": "reported"}
     doc["artifacts"][1]["kind"] = {"value": "merge", "tier": "reported"}
@@ -279,7 +279,7 @@ CATALOG_KINDS = {a["kind"] for w in catalog().values() for a in workflow_to_ocp(
 
 @pytest.mark.parametrize("kind", sorted(CATALOG_KINDS | set(RECOMMENDED_KINDS) | set(ARTIFACT_KINDS)))
 def test_v03_workflow_artifact_kinds_draw_no_w200(kind):
-    """D91: an artifact recorded with the kind its workflow names draws no W200 in v0.3; v0.2 is unchanged."""
+    """An artifact recorded with the kind its workflow names draws no W200 in v0.3; v0.2 is unchanged."""
     assert {"diff", "issue", "repo", "verdict"} <= CATALOG_KINDS
     doc = example("full-fields")
     doc["artifacts"][0]["kind"] = {"value": kind, "tier": "reported"}

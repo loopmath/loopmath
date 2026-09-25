@@ -1,28 +1,9 @@
-/* Plans view (lane 12): chart, curve and side panel. */
-.pl-layout { display: flex; gap: 12px; align-items: flex-start; }
-.pl-main { flex: 1 1 auto; min-width: 0; }
-.pl-panel { flex: 0 0 520px; max-width: 520px; position: sticky; top: 10px; max-height: calc(100vh - 20px); overflow: auto; }
-.pl-panel h2 span { overflow-wrap: anywhere; }
-.pl-panel .lmg { overflow-x: auto; }
-.pl-panel .ivbar { width: 96px; }
-.pl-panel td:first-child { max-width: 150px; }
-
-@media (max-width: 1100px) { .pl-layout { flex-direction: column; align-items: stretch; } .pl-panel { position: static; max-width: none; width: 100%; flex-basis: auto; max-height: none; } }
-.pl-chart { width: 100%; }
-.pl-svg { display: block; max-width: 100%; height: auto; }
-.pl-grid { stroke: var(--grid); stroke-width: 1; }
-.pl-tick { fill: var(--muted); font-size: 11px; }
-.pl-axis { fill: var(--ink2); font-size: 12px; }
-.pl-ref { stroke: var(--amber); stroke-width: 1.2; stroke-dasharray: 5 4; }
-.pl-reft { fill: #8a5a10; font-size: 11px; }
-.pl-curve { fill: none; stroke: var(--ink2); stroke-width: 1.6; }
-.pl-curve.unc { stroke-dasharray: 5 4; }
-.pl-level { fill: var(--ink2); font-size: 11px; }
-.pl-cross { stroke: var(--range); stroke-width: 1.4; }
-.pl-cross.mk { stroke: var(--range-strong); }
-.pl-dot { fill: #fff; stroke: var(--blue); stroke-width: 1.6; cursor: pointer; }
-.pl-dot.mk { fill: var(--blue); stroke: #fff; stroke-width: 1.5; }
-.pl-dot.sel { stroke: var(--ink); stroke-width: 3; }
-.pl-label { fill: var(--ink); font-size: 12px; font-weight: 600; cursor: pointer; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
-.pick h3 { margin-top: 0; }
-.kv dd.wide { grid-column: 1 / -1; }
+/* Planning page (lane 2E, 0.2): what the shared viz.css does not cover. */
+table.v-t tr.v-opt { cursor: pointer; }
+table.v-t tr.v-opt:hover td { background: var(--hover); }
+table.v-t tr.v-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+table.v-t tr.v-opt-detail td { background: var(--surface); padding: 0.6rem 0.8rem 0.8rem; }
+#message { max-width: 48rem; }
+.v-bet .v-kv { grid-template-columns: minmax(7rem, 42%) minmax(0, 1fr); }
+.v-bet .v-cmd { flex-direction: column; }
+.v-bet .v-cmd button { align-self: flex-start; }

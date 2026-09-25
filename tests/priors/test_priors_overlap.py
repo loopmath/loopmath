@@ -1,4 +1,4 @@
-"""The bundle reader's sources and the overlap with the user's runs (spec 04 section 1, D118 N2)."""
+"""The bundle reader's sources and the overlap with the user's runs (spec 04 section 1)."""
 
 from __future__ import annotations
 

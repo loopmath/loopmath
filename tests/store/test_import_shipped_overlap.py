@@ -1,4 +1,4 @@
-"""`run import` says once when the shipped prior holds the same run (D118 N2, spec 04 section 1)."""
+"""`run import` says once when the shipped prior holds the same run (spec 04 section 1)."""
 
 from __future__ import annotations
 

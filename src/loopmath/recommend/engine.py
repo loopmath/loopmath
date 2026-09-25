@@ -4,7 +4,7 @@ here, so every rule of spec 05 is testable on a fake belief.
 
 With no usual workflow (no `--usual`, no habit in the history, no config), the
 baseline is the reference workflow: the best recorded configuration, else the
-catalog default (spec 05 section 1, D118 N4). It plays the usual's part in the
+catalog default (spec 05 section 1). It plays the usual's part in the
 rescue and the deltas, and is never called "your usual".
 """
 
@@ -18,9 +18,10 @@ from typing import Any, Callable, Sequence
 
 from ..types import AcceptanceRule, Candidate, Configuration, CurveRow, Prediction, Task
 from . import curve as curve_mod
+from . import search as search_mod
 from .curve import Rescue, default_pick, ell_key, goal_row, parse_goal, rescue_cost
 from .gain import Exploration, explore
-from .message import compose
+from .message import compose, strategy as strategy_of
 
 TOP_N = 200
 N_ALTERNATIVES = 5
@@ -59,7 +60,7 @@ def reference_text(kind: str, label: str) -> str:
 def best_recorded(belief: Any, task: Task, rule: AcceptanceRule,
                   recorded: Sequence[Configuration]) -> Configuration | None:
     """The recorded configuration with the lowest expected cost per accepted result when it is its own rescue:
-    `E[C_run] + (1 - g) E[C_run] / g = E[C_run] / g` (D118 N4). None when none has a positive chance."""
+    `E[C_run] + (1 - g) E[C_run] / g = E[C_run] / g`. None when none has a positive chance."""
     if not recorded:
         return None
     preds = list(belief.predict_many(task, list(recorded), rule=rule, rescue_usd=None))
@@ -81,6 +82,10 @@ class Settings:
     auto_payback_runs: float | None = None
     default_pick: str = "best_value"  # explore.default_pick
     screen_size: int = 50
+    search: bool = True  # spec 05 section 1a: search the whole space, not only the candidates
+    search_draws: int = 200
+    search_per_objective: int = 100  # draw winners rescored per objective, so at most 7 x this (spec 05 1a step 3)
+    search_copies: str = "model"  # copies stay separate when they differ in model ("setting": in any setting)
 
 
 @dataclass
@@ -105,6 +110,10 @@ class Recommendation:
     labels: dict[str, str] = field(default_factory=dict)  # shown labels by config id (`shown_labels`)
     reference_kind: str = "usual"  # usual | best_recorded | default (spec 05 section 1)
     medians: dict[str, tuple[float, str]] = field(default_factory=dict)  # run cost median and its basis, by id
+    search: dict[str, Any] | None = None  # the search's JSON (spec 02), None when it did not run
+    wins: dict[str, dict[str, float]] = field(default_factory=dict)  # by id: objective -> share of draws it wins
+    on_front: frozenset[str] = frozenset()
+    strategy: dict[str, Any] | None = None  # goal.strategy (spec 05, the strategy sentence)
 
     def label(self, cfg: Configuration) -> str:
         return self.labels.get(cfg.id) or wide_label(cfg)
@@ -137,7 +146,14 @@ class Recommendation:
                 "p_reach": reach}
 
     def candidate_dict(self, c: Candidate) -> dict[str, Any]:
-        return {**c.to_dict(), "label": self.label(c.config), "numbers": self.numbers(c.prediction)}
+        return {**c.to_dict(), "label": self.label(c.config), "numbers": self.numbers(c.prediction),
+                **self.search_fields(c.config.id)}
+
+    def search_fields(self, cfg_id: str) -> dict[str, Any]:
+        """A candidate's `search: {on_front, wins}`, or nothing when the search did not run."""
+        if self.search is None:
+            return {}
+        return {"search": {"on_front": cfg_id in self.on_front, "wins": dict(self.wins.get(cfg_id, {}))}}
 
     def reference_dict(self) -> dict[str, Any]:
         u = self.usual
@@ -162,17 +178,18 @@ class Recommendation:
         def add(key: str, title: str, c: Candidate, members: list[str], label: str | None = None,
                 **more: Any) -> None:
             n = self.numbers(c.prediction)
+            wins = {"wins": dict(self.wins.get(c.config.id, {}))} if self.search is not None else {}
             out.append({"key": key, "title": title, "label": label or self.label(c.config), "config": c.config.id,
                         "members": members, "cost_per_accepted_usd": n["cost_per_accepted_usd"],
                         "chance": self.chance(c.prediction),
                         "run_cost_usd": {"mean": n["run_cost_usd"]["mean"], "median": n["run_cost_usd"]["median"]},
-                        "expected_rescue_usd": n["expected_rescue_usd"], **more})
+                        "expected_rescue_usd": n["expected_rescue_usd"], **wins, **more})
 
         goal = self.goal
         base = ("the usual workflow" if self.is_usual else
                 "the reference workflow") if goal.config.id == self.usual.config.id else ""
         add("goal", "Run the recommended workflow" + (f", which is {base}" if base else ""), goal,
-            [goal.config.id], recommended=True)
+            [goal.config.id], recommended=True, strategy=self.strategy)
         slot = self.exploration.slot(self.explore_kind)
         if slot.active:
             pick = slot.pick
@@ -225,6 +242,7 @@ class Recommendation:
         for c in self.alternatives:
             a = alt_dict(c, usual, self.rule, self.label(c.config))
             a["numbers"] = self.numbers(c.prediction)
+            a.update(self.search_fields(c.config.id))
             alternatives.append(a)
         rescue = self.rescue.to_dict()
         rescue["of"] = self.label(usual.config) if self.rescue.kind == "redo_usual" else None
@@ -238,12 +256,14 @@ class Recommendation:
             "curve": [row_dict(r, self) for r in self.curve],
             "default_pick": {"config": self.default.config.id, "label": self.label(self.default.config)},
             "goal": {"level": self.goal_level, "config": self.goal.config.id, "label": self.label(self.goal.config),
-                     "choice": self.goal_choice, **({"note": self.goal_note} if self.goal_note else {})},
+                     "choice": self.goal_choice, **({"note": self.goal_note} if self.goal_note else {}),
+                     "strategy": self.strategy},
             "alternatives": alternatives,
             "exploration": self.exploration.to_dict(),
             "pair": self.pair(),
             "choices": self.choices(),
             "message": self.message,
+            "search": self.search,
             **({"notes": list(self.notes)} if self.notes else {}),
         }
 
@@ -256,6 +276,9 @@ def row_dict(row: CurveRow, rec: Recommendation) -> dict[str, Any]:
             out["label"] = rec.label(c.config)
     if row.prediction is not None:
         out["numbers"] = rec.numbers(row.prediction)
+    if rec.search is not None:
+        won = rec.wins.get(row.config or "", {})
+        out["wins"] = {f"p{lv}": won[f"p{lv}"] for lv in row.levels if f"p{lv}" in won}
     return out
 
 
@@ -316,7 +339,7 @@ def wide_label(cfg: Configuration) -> str:
 
 
 def shown_labels(configs: Sequence[Configuration]) -> dict[str, str]:
-    """Labels for configurations shown together, by id (D89).
+    """Labels for configurations shown together, by id.
 
     `wide_label()` names the shape, widths, models and efforts only, so two configurations can print
     the same. Each of them then gets what tells it apart: its harnesses when no other
@@ -372,7 +395,7 @@ def simple_diff(a: Configuration, b: Configuration) -> tuple[str, ...]:
         if p.id in wa and wa[p.id] != p.width:
             lines.append(f"{p.role} width: {wa[p.id]} to {p.width}")
     if a.workflow.control.budget_rounds != b.workflow.control.budget_rounds:
-        # the round limit counts the first round (D30), as lane 4's `diff` says it
+        # the round limit counts the first round, as lane 4's `diff` says it
         lines.append(f"round limit: {a.workflow.control.budget_rounds} to {b.workflow.control.budget_rounds}")
     return tuple(lines) or ("settings changed",)
 
@@ -392,7 +415,7 @@ def predict_one(belief: Any, task: Task, config: Configuration, rule: Acceptance
 
 def predict_all(belief: Any, task: Task, configs: Sequence[Configuration], rule: AcceptanceRule,
                 rescue: Rescue) -> list[Prediction]:
-    """`predict_many` with the recommender's `C_rescue` (D9), so `ell` uses the configured rescue."""
+    """`predict_many` with the recommender's `C_rescue`, so `ell` uses the configured rescue."""
     return list(belief.predict_many(task, configs, rule=rule, rescue_usd=rescue.usd))
 
 
@@ -420,7 +443,7 @@ def predict_with_medians(belief: Any, task: Task, configs: Sequence[Configuratio
 
 def draw_share(belief: Any, task: Task, rule: AcceptanceRule, preds: Sequence[Prediction],
                configs: dict[str, Configuration]):
-    """Share of the belief's success draws at or above a level (D8), or None to use intervals."""
+    """Share of the belief's success draws at or above a level, or None to use intervals."""
     fn = getattr(belief, "success_draws", None)
     if fn is None:
         return None
@@ -465,23 +488,40 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     for cfg, origin in configs:
         if cfg.id not in unique:
             unique[cfg.id] = (cfg, origin)
+    space = found = None
+    if st.search and search_mod.searchable(belief):
+        # spec 05 section 1a: the candidates' settings and shapes define the space; catalog and edit
+        # configurations lie inside it, so only the usual, user and recorded ones are predicted as written
+        space = search_mod.space_from(list(unique.values()), usual, copies=st.search_copies)
+        if space.settings and space.cases:
+            found = search_mod.search(belief, task, rule, rescue.usd, space, draws=st.search_draws,
+                                      per_objective=st.search_per_objective)
+            unique = {cid: v for cid, v in unique.items() if cid == usual.id or v[1] not in ("catalog", "edit")}
+            for cfg, origin in found.configs:
+                unique.setdefault(cfg.id, (cfg, origin))
     cfgs = [c for c, _ in unique.values()]
     preds, medians = predict_with_medians(belief, task, cfgs, rule, rescue)
     by_id = {c.id: c for c in cfgs}
+    polished = 0
+    if found is not None:
+        polished, preds = polish(belief, task, rule, rescue, space, by_id, preds, medians, goal_level_wanted)
+        for cfg in list(by_id.values())[len(cfgs):]:
+            unique[cfg.id] = (cfg, "polish")
+        cfgs = list(by_id.values())
     cands = [Candidate(cfg, unique[cfg.id][1], diff_fn(usual, cfg) if cfg.id != usual.id else (), pred)
              for cfg, pred in zip(cfgs, preds)]
     cands.sort(key=lambda c: ell_key(c.prediction))
-    kept_ids = {usual.id, *keep}
+    all_preds = [c.prediction for c in cands]
+    share = draw_share(belief, task, rule, all_preds, by_id)
+    rows = curve_mod.curve(all_preds, share=share)  # every prediction; the top-200 cut is the stored list only
+    kept_ids = {usual.id, *keep, *(r.config for r in rows if r.config is not None)}
     top = cands[:TOP_N]
     top_ids = {c.config.id for c in top}
     top += [c for c in cands if c.config.id in kept_ids and c.config.id not in top_ids]
     top.sort(key=lambda c: ell_key(c.prediction))
     usual_c = next(c for c in top if c.config.id == usual.id)
 
-    top_preds = [c.prediction for c in top]
-    share = draw_share(belief, task, rule, top_preds, by_id)
-    rows = curve_mod.curve(top_preds, share=share)
-    best = default_pick(top_preds)
+    best = default_pick(all_preds)
     default_c = next(c for c in top if c.config.id == best.config)
 
     goal_note = None
@@ -494,7 +534,7 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
             goal_c = next(c for c in top if c.config.id == row.config)
     choice = "default" if goal_level_wanted is None else f"p{goal_level_wanted}"
 
-    # spec 05 section 3; the usual is never an alternative, its numbers are the deltas' baseline (D89)
+    # spec 05 section 3; the usual is never an alternative, its numbers are the deltas' baseline
     alternatives = [c for c in top if c.config.id not in (goal_c.config.id, usual.id)][:N_ALTERNATIVES]
     exploration = explore(belief, task, goal_c, top, rule=rule, rescue_usd=rescue.usd, spend=st.spend,
                           cap=st.cap, auto_payback_runs=st.auto_payback_runs, screen_size=st.screen_size)
@@ -506,10 +546,14 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
             shown += [slot.pick.candidate.config, *(c.config for c in slot.pick.runner_ups)]
     labels = shown_labels(shown)
     backed = score_backed(rule, usual_c.prediction)
+    label_of = lambda cfg: labels.get(cfg.id) or wide_label(cfg)  # noqa: E731
+    strategy = strategy_of(pick=goal_c.config, pick_pred=goal_c.prediction, pick_label=label_of(goal_c.config),
+                           ref=usual, ref_pred=usual_c.prediction, reference=kind, rescue_kind=rescue.kind,
+                           rescue_usd=rescue.usd)
     message = compose(usual=usual, usual_pred=usual_c.prediction, goal=goal_c.config, goal_pred=goal_c.prediction,
                       goal_level=goal_level, goal_note=goal_note, exploration=exploration,
-                      rule=rule if backed else None, label=lambda cfg: labels.get(cfg.id) or wide_label(cfg),
-                      reference=kind)
+                      rule=rule if backed else None, label=label_of, reference=kind,
+                      strategy_text=strategy["text"] if strategy else None)
     notes = []
     if not backed:
         notes.append(UNBACKED.format(score=rule.score.name, rule=rule.definition))
@@ -517,6 +561,57 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
         notes.append(exploration.note)
     if rescue.kind == "none":
         notes.append("rescue.kind is none: success is shown but not priced, so ell is the run cost")
+    search_json = None
+    wins: dict[str, dict[str, float]] = {}
+    on_front: frozenset[str] = frozenset()
+    if found is not None:
+        wins, on_front = found.wins, frozenset(found.on_front)
+        search_json = search_payload(found, len(cfgs), polished, labels)
     return Recommendation(task, rule, usual_c, usual_from, top, rows, default_c, goal_c, goal_level, choice,
                           goal_note, alternatives, exploration, rescue, message, explore_kind, notes, labels,
-                          kind, medians)
+                          kind, medians, search_json, wins, on_front, strategy)
+
+
+def polish(belief: Any, task: Task, rule: AcceptanceRule, rescue: Rescue, space: Any,
+           by_id: dict[str, Configuration], preds: list[Prediction], medians: dict[str, tuple[float, str]],
+           goal_level: int | None) -> tuple[int, list[Prediction]]:
+    """Spec 05 section 1a, step 4: predict the default pick's one-piece neighbours until the pick stops moving,
+    then the goal row's when the goal is a level, then every other reached row's. Adds to `by_id` and `medians`;
+    returns the count and all predictions."""
+    n0 = len(by_id)
+
+    def predict_more(new: list[Configuration]) -> list[Prediction]:
+        more, med = predict_with_medians(belief, task, new, rule, rescue)
+        medians.update(med)
+        return more
+
+    def default_of(ps: list[Prediction]) -> str | None:
+        return default_pick(ps).config
+
+    def goal_of(ps: list[Prediction]) -> str | None:
+        row = goal_row(curve_mod.curve(ps), goal_level)[0]
+        return None if row is None else row.config
+
+    def row_of(level: int) -> Callable[[list[Prediction]], str | None]:
+        def choose(ps: list[Prediction]) -> str | None:
+            row = next((r for r in curve_mod.curve(ps) if level in r.levels and r.reached), None)
+            return None if row is None else row.config
+        return choose
+
+    preds = list(preds)
+    chooses = [default_of] + ([goal_of] if goal_level is not None else []) + [row_of(lv) for lv in curve_mod.LEVELS]
+    for choose in chooses:
+        preds += search_mod.polish(space, by_id, preds, predict_more, choose)
+    return len(by_id) - n0, preds
+
+
+def search_payload(found: Any, rescored: int, polished: int, labels: dict[str, str]) -> dict[str, Any]:
+    """The `search` object of `loopmath.recommend/2` (spec 02 section 2)."""
+    s = found.stats
+    return {"method": s["method"], "exact": s["exact"], "space": s["space"], "draws": s["draws"],
+            "front_points": s["front_points"], "thompson_configs": s["thompson_configs"], "rescored": rescored,
+            "pruned_share": s["pruned_share"], "polished": polished,
+            "seconds": round(float(s["seconds"]["total"]), 3),
+            **({"skipped": s["skipped"]} if s["skipped"] else {}),
+            "front": [{"config": c.id, "label": labels.get(c.id) or wide_label(c), "run_cost_usd": r6(cost),
+                       "chance": r6(g)} for c, cost, g in found.front]}

@@ -650,7 +650,7 @@ def test_native_workspace_and_ocp_sources_are_combined(stubbed_pipeline, capsys)
 
 
 def test_parsing_progress_goes_to_a_terminal_only(stubbed_pipeline, capsys, monkeypatch):
-    # Dogfood (D87 item 4): in a log the \r count ran into the next line.
+    # Dogfood: in a log the \r count ran into the next line.
     assert main(["graph", "--workspace", ALPHA, "--format", "json"]) == 0
     assert "\r" not in capsys.readouterr().err
     monkeypatch.setattr(sys.stderr, "isatty", lambda: True)

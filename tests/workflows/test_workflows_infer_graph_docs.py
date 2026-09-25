@@ -1,4 +1,4 @@
-"""`infer` on `graph --format ocp` documents: routed by the graph extension, not the OCP version (D65; lane 04)."""
+"""`infer` on `graph --format ocp` documents: routed by the graph extension, not the OCP version (lane 04)."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def test_a_v03_document_without_the_graph_extension_keeps_its_route(doc):
     other = _strip(_twin(doc, "0.3", NEW))
     assert not is_graph_document(other) and "graph" not in json.dumps(other.get("ext") or {})
     r = infer_detail(other)
-    before = infer_agents(agents_from_ocp(other), base=0.85, source="ocp")  # the route before D65
+    before = infer_agents(agents_from_ocp(other), base=0.85, source="ocp")  # the previous inference route
     assert (r.configuration.id, r.confidence, r.reasons) == (before.configuration.id, before.confidence, before.reasons)
 
 

@@ -13,12 +13,13 @@ A term is `(node_id, parent_id, value)`. Rows:
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
-from ..taskmodel import FEATURES, normalize_features
+from ..taskmodel import BUILTIN_FEATURES, HORIZON_KEY, FeatureSet, parse_horizon
 from ..types import (
     DEFAULT_RULE, AcceptanceRule, Configuration, Control, Evidence, Gate, Piece, ScoreTarget, Setting, Task,
     Workflow,
@@ -27,8 +28,24 @@ from .forest import canonical_model_id, canonical_role, model_path
 
 Term = tuple[str, "str | None", float]
 
+# Node names of this design (spec 04 section 4). 2 (loopmath 0.2): shape keys, psrc nodes and role groups.
+# 3 (0.2): `horizon:log2h` is relative to the fit's reference horizon. A fit of another version is not read.
+DESIGN_VERSION = 3
 HEURISTIC_COST_WEIGHT = 0.7  # spec 04 section 2 and D27: allocated (heuristic) cost rows
 USER_SOURCES = ("live", "backlog", "history", "user", "orchestrator", "onboard", "habit", "")
+HORIZON_NODES = ("horizon:timebox", "horizon:log2h")  # fixed terms of a timeboxed run (spec 04 section 1)
+RQ1_EXT = "dev.loopmath.rq1"  # loopmath-exp's ext key; its horizon_s is the fallback for older RQ1 runs
+
+
+def other_design(meta: dict) -> str | None:
+    """Why a fit cannot be read: it was written by another design version (fits before 0.2 have none,
+    version 1). None when it can. Light on purpose: `status` and `doctor` call it without the engine."""
+    version = meta.get("design_version", 1)
+    if version == DESIGN_VERSION:
+        return None
+    by = "an older" if isinstance(version, int) and version < DESIGN_VERSION else "another"
+    return (f"fit {meta.get('fit') or '?'} is from design version {version} (made by {by} loopmath) and this "
+            f"loopmath reads version {DESIGN_VERSION}; run `loopmath fit` for a new fit")
 
 
 # ---------------------------------------------------------------- terms
@@ -61,15 +78,32 @@ def _task_terms_cached(org: str | None, ttype: str, repo: str, subtype: str | No
     return tuple(terms)
 
 
-def task_features(task: Task) -> tuple[tuple[str, str], ...]:
-    """Known feature keys with a known value, sorted. Unknown values carry no information."""
-    feats = normalize_features({k: _feature_str(v) for k, v in (task.features or {}).items()})
-    out = []
-    for key, value in sorted(feats.items()):
-        if key not in FEATURES or not value or value == FEATURES[key].default:
-            continue
-        out.append((key, value))
-    return tuple(out)
+def horizon_terms(horizon: float | None, coding: dict | None) -> list[Term]:
+    """A run's horizon terms under a fit's coding (`meta.json` `horizons`, spec 04 section 1).
+
+    `horizon:log2h` is log2(horizon / reference_s), so a run at the fit's reference horizon adds 0;
+    `horizon:timebox` only when the fit could tell timeboxed from open-ended runs (`timebox`).
+    None for an open-ended run, or under a fit without a reference (no timeboxed runs)."""
+    ref = (coding or {}).get("reference_s")
+    if not horizon or not ref:
+        return []
+    terms = [(HORIZON_NODES[1], None, math.log2(horizon / float(ref)))]
+    return [(HORIZON_NODES[0], None, 1.0)] + terms if coding.get("timebox") else terms
+
+
+def task_features(task: Task, features: FeatureSet | None = None) -> tuple[tuple[str, str], ...]:
+    """Declared feature keys with a known value, sorted. Unknown values carry no information;
+    `horizon_s` is not a feature level (see `task_horizon`)."""
+    raw = {k: _feature_str(v) for k, v in (task.features or {}).items()}
+    return (features or BUILTIN_FEATURES).model_features(raw)
+
+
+def task_horizon(task: Task) -> float | None:
+    """`task.features.horizon_s` in seconds; None when open-ended or unreadable."""
+    try:
+        return parse_horizon((task.features or {}).get(HORIZON_KEY))
+    except ValueError:
+        return None
 
 
 def _feature_str(value: Any) -> str:
@@ -78,9 +112,12 @@ def _feature_str(value: Any) -> str:
     return str(value)
 
 
-def task_terms(task: Task, source: str) -> list[Term]:
-    return list(_task_terms_cached(task.org or None, task.type or "unknown", task.repo or "unknown",
-                                   task.subtype or None, task.id, task_features(task), source))
+def task_terms(task: Task, source: str, features: FeatureSet | None = None,
+               horizons: dict | None = None) -> list[Term]:
+    """The task's terms; the horizon terms only under a fit's coding (`horizons`, see `horizon_terms`)."""
+    terms = list(_task_terms_cached(task.org or None, task.type or "unknown", task.repo or "unknown",
+                                    task.subtype or None, task.id, task_features(task, features), source))
+    return terms + horizon_terms(task_horizon(task), horizons) if horizons else terms
 
 
 @lru_cache(maxsize=65536)
@@ -131,6 +168,8 @@ class Structure:
     k_max: int
     piece_loop: dict[str, int | None] = field(default_factory=dict)  # piece -> index into loops
     gate_loop: dict[int, int | None] = field(default_factory=dict)  # gate index -> index into loops
+    shape: str = ""  # topology and position key (`shape_key`); empty means the workflow id
+    copies: dict[str, int] = field(default_factory=dict)  # piece -> copies in its group (`copy_groups`)
 
 
 def topological_pieces(workflow: Workflow) -> list[str]:
@@ -178,6 +217,38 @@ def _piece_reach(workflow: Workflow) -> dict[str, set[str]]:
     return reach
 
 
+@lru_cache(maxsize=256)
+def _catalog_roles(workflow_id: str) -> frozenset[str] | None:
+    wf = _catalog_workflow(workflow_id)
+    return frozenset(canonical_role(p.role) for p in wf.pieces) if wf is not None else None
+
+
+def shape_key(workflow_id: str, roles: Iterable[str]) -> str:
+    """The key of a workflow's topology and position nodes (spec 04 section 1): its id, or
+    `<id>~<sorted roles joined by +>` when its set of roles differs from the catalog workflow of that
+    id (RQ1's `plan_implement` with workers is `plan_implement~planner+worker`). A set, so parallel
+    copies of a role (one width-3 piece or three width-1 pieces) are one shape."""
+    have = frozenset(canonical_role(r) for r in roles)
+    catalog_roles = _catalog_roles(workflow_id)
+    if catalog_roles is None or catalog_roles == have:
+        return workflow_id
+    return f"{workflow_id}~{'+'.join(sorted(have))}"
+
+
+def copy_groups(order: list[str], roles: dict[str, str], reach: dict[str, set[str]]) -> dict[str, int]:
+    """piece -> the number of copies in its group. A group is the pieces of one role with no path
+    between them either way, such as `implement-1`, `implement-2`, `implement-3`; a lone piece is 1."""
+    groups: list[list[str]] = []
+    for p in order:
+        for g in groups:
+            if roles[g[0]] == roles[p] and all(p not in reach.get(q, ()) and q not in reach.get(p, ()) for q in g):
+                g.append(p)
+                break
+        else:
+            groups.append([p])
+    return {p: len(g) for g in groups for p in g}
+
+
 def default_gate_rule(role: str) -> str:
     return {"reviewer": "review_approve", "tester": "tests_pass", "referee": "referee_pick"}.get(role, "gate")
 
@@ -191,7 +262,7 @@ def structure(config: Configuration) -> Structure:
     for p in wf.pieces:
         s = config.settings.get(p.id) or p.setting
         settings[p.id] = s if s is not None else Setting("unknown", "unknown")
-    k_max = max(1, int(wf.control.budget_rounds or 1))  # D30: counts the first round
+    k_max = max(1, int(wf.control.budget_rounds or 1))  # Counts the first round
     gates: list[GateInfo] = []
     for i, g in enumerate(wf.control.gates):
         judged = g.on_fail if g.on_fail in roles else g.after
@@ -201,7 +272,7 @@ def structure(config: Configuration) -> Structure:
     loops: list[tuple[tuple[int, ...], list[str]]] = []
     piece_loop: dict[str, int | None] = {p: None for p in order}
     gate_loop: dict[int, int | None] = {gi: None for gi in range(len(gates))}
-    # D69: loops exist at K_max = 1 too, so gates still decide which pieces a round reaches
+    # Loops exist at K_max = 1 too, so gates still decide which pieces a round reaches
     merged: list[tuple[set[int], set[str]]] = []
     for gi, g in enumerate(gates):
         if not g.on_fail or g.after not in roles:
@@ -227,20 +298,28 @@ def structure(config: Configuration) -> Structure:
             piece_loop[p] = len(loops) - 1
         for i in gidx:
             gate_loop[i] = len(loops) - 1
-    return Structure(wf.id, order, roles, settings, widths, gates, loops, k_max, piece_loop, gate_loop)
+    return Structure(wf.id, order, roles, settings, widths, gates, loops, k_max, piece_loop, gate_loop,
+                     shape_key(wf.id, roles.values()), copy_groups(order, roles, reach))
 
 
 # ---------------------------------------------------------------- rows
 
-def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None) -> tuple[Term, ...]:
-    """Cost and tokens rows without the task part: setting, role, topology, position, round, control."""
+def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None, *,
+              source: str | None = None) -> tuple[Term, ...]:
+    """Cost and tokens rows without the task part: setting, role, topology, position, round, control,
+    and with a `source` the position x source node `psrc:<shape>#<pos>|<source>` and the family x source
+    node `fsrc:<family>|<source>` (spec 04 section 1)."""
     s = setting or st.settings[piece]
     h, m, e = _s(s)
-    pos = st.pieces.index(piece)
-    return (setting_terms(h, m, e) + role_terms(st.roles[piece], m)
-            + ((f"topology:{st.workflow_id}", None, 1.0),
-               (f"position:{st.workflow_id}#{pos}", f"topology:{st.workflow_id}", 1.0))
-            + tuple(round_terms(k)) + tuple(_control_terms(st.k_max, st.widths[piece])))
+    shape = st.shape or st.workflow_id
+    position = f"{shape}#{st.pieces.index(piece)}"
+    terms = (setting_terms(h, m, e) + role_terms(st.roles[piece], m)
+             + ((f"topology:{shape}", None, 1.0), (f"position:{position}", f"topology:{shape}", 1.0)))
+    if source is not None:
+        fam = model_path(m)[1]
+        terms += ((f"psrc:{position}|{source}", f"position:{position}", 1.0),
+                  (f"fsrc:{fam}|{source}", f"family:{fam}", 1.0))
+    return terms + tuple(round_terms(k)) + tuple(_control_terms(st.k_max, st.widths[piece]))
 
 
 def gate_rest(st: Structure, gate: GateInfo, k: int) -> tuple[Term, ...]:
@@ -251,29 +330,31 @@ def gate_rest(st: Structure, gate: GateInfo, k: int) -> tuple[Term, ...]:
 
 
 def run_rest(st: Structure) -> tuple[Term, ...]:
-    """Success and score rows without the task part: topology, control, and per piece its role and
-    role x family (weight 1) plus its model chain, effort and harness (weight 1/n)."""
-    terms: list[Term] = [(f"topology:{st.workflow_id}", None, 1.0)]
+    """Success and score rows without the task part: topology, control, and per piece its model chain,
+    effort and harness (weight 1/n) plus its role and role x family (weight 1/g, g the copies in its
+    group, so parallel copies carry the role effect once, as one wide piece does)."""
+    terms: list[Term] = [(f"topology:{st.shape or st.workflow_id}", None, 1.0)]
     terms += _control_terms(st.k_max, max(st.widths.values() or [1]))
     n = max(1, len(st.pieces))
     for piece in st.pieces:
         h, m, e = _s(st.settings[piece])
         terms += setting_terms(h, m, e, 1.0 / n)
-        terms += role_terms(st.roles[piece], m)
+        terms += role_terms(st.roles[piece], m, 1.0 / (st.copies.get(piece) or 1))
     return tuple(terms)
 
 
 def cost_row(task: Task, source: str, st: Structure, piece: str, k: int,
-             setting: Setting | None = None) -> list[Term]:
-    return task_terms(task, source) + list(cost_rest(st, piece, k, setting))
+             setting: Setting | None = None, features: FeatureSet | None = None) -> list[Term]:
+    return task_terms(task, source, features) + list(cost_rest(st, piece, k, setting, source=source))
 
 
-def gate_row(task: Task, source: str, st: Structure, gate: GateInfo, k: int) -> list[Term]:
-    return task_terms(task, source) + list(gate_rest(st, gate, k))
+def gate_row(task: Task, source: str, st: Structure, gate: GateInfo, k: int,
+             features: FeatureSet | None = None) -> list[Term]:
+    return task_terms(task, source, features) + list(gate_rest(st, gate, k))
 
 
-def run_row(task: Task, source: str, st: Structure) -> list[Term]:
-    return task_terms(task, source) + list(run_rest(st))
+def run_row(task: Task, source: str, st: Structure, features: FeatureSet | None = None) -> list[Term]:
+    return task_terms(task, source, features) + list(run_rest(st))
 
 
 def _control_terms(k_max: int, width: int) -> list[Term]:
@@ -287,20 +368,21 @@ def _control_terms(k_max: int, width: int) -> list[Term]:
     return out
 
 
-def rows_for_config(task: Task, config: Configuration, source: str = "user") -> dict:
+def rows_for_config(task: Task, config: Configuration, source: str = "user",
+                    features: FeatureSet | None = None) -> dict:
     """Prediction rows: per (piece, round), per (gate, round), one run row, and the structure."""
     st = structure(config)
     cost = {}
     for piece in st.pieces:
         rounds = st.k_max if st.piece_loop.get(piece) is not None else 1
         for k in range(1, rounds + 1):
-            cost[(piece, k)] = cost_row(task, source, st, piece, k)
+            cost[(piece, k)] = cost_row(task, source, st, piece, k, features=features)
     gate = {}
     for gi, g in enumerate(st.gates):
         rounds = st.k_max if st.gate_loop.get(gi) is not None else 1
         for k in range(1, rounds + 1):
-            gate[(gi, k)] = gate_row(task, source, st, g, k)
-    return {"structure": st, "cost": cost, "gate": gate, "run": run_row(task, source, st)}
+            gate[(gi, k)] = gate_row(task, source, st, g, k, features)
+    return {"structure": st, "cost": cost, "gate": gate, "run": run_row(task, source, st, features)}
 
 
 # ---------------------------------------------------------------- reading run documents
@@ -313,7 +395,7 @@ class AttemptObs:
     tokens: float | None
     weight: float
     setting: Setting
-    repriced: bool = True  # False: the recorded dollars, not the current tariff (D67)
+    repriced: bool = True  # False: the recorded dollars, not the current tariff
 
 
 @dataclass
@@ -328,7 +410,7 @@ class ParsedRun:
     score_meta: dict[str, dict]  # score name -> {unit, better, scale}
     rule: AcceptanceRule
     dropped: dict[str, int] = field(default_factory=dict)
-    checks: dict[str, int] = field(default_factory=dict)  # check name -> attempts that ran no model (D86)
+    checks: dict[str, int] = field(default_factory=dict)  # check name -> attempts that ran no model
 
 
 class Unusable(ValueError):
@@ -338,7 +420,7 @@ class Unusable(ValueError):
 def data_source(doc: dict, origin: str | None = None) -> str:
     """spec 04 section 1 `source` level: user, sweep, e0, rq1, repo_history, benchmark, shared:<org>.
 
-    The source is where the fit found the run (D118 N2): `origin` is `user` for a run in the
+    The source is where the fit found the run: `origin` is `user` for a run in the
     store, whatever its label says, the manifest source for a shipped run, `shared:<org>` for
     an import. A document given without an origin falls back to its own label.
     """
@@ -370,7 +452,11 @@ def task_from_doc(doc: dict, origin: str | None = None) -> Task:
     run = doc.get("run") or {}
     t = run.get("task") or {}
     labels = run.get("labels") or {}
-    features = t.get("features") or {}
+    features = {str(k): _feature_str(v) for k, v in (t.get("features") or {}).items()}
+    if HORIZON_KEY not in features:  # older RQ1 runs keep the horizon in loopmath-exp's own ext key
+        rq1 = (run.get("ext") or {}).get(RQ1_EXT)
+        if isinstance(rq1, dict) and rq1.get(HORIZON_KEY) is not None:
+            features[HORIZON_KEY] = _feature_str(rq1[HORIZON_KEY])
     labeled = t.get("labeled_by")
     source = data_source(doc, origin)
     label = source_label(doc) if origin else source
@@ -381,7 +467,7 @@ def task_from_doc(doc: dict, origin: str | None = None) -> Task:
         title="",
         subtype=t.get("subtype") or None,
         org=t.get("org") or None,
-        features={str(k): _feature_str(v) for k, v in features.items()},
+        features=features,
         base_commit=t.get("base_commit"),
         source=source,
         labeled_by=(labeled.get("how") if isinstance(labeled, dict) else labeled),
@@ -411,7 +497,7 @@ def _catalog_workflow(ref: str) -> Workflow | None:
 
 
 def workflow_from_doc(wf: dict) -> Workflow:
-    """OCP 2.3 workflow (D29 control), a `types.Workflow.to_dict()`, or a catalog `{ref, version}`."""
+    """An OCP 2.3 workflow, a `types.Workflow.to_dict()`, or a catalog `{ref, version}`."""
     if "ref" in wf and "pieces" not in wf:
         found = _catalog_workflow(str(wf["ref"]))
         if found is None:
@@ -437,7 +523,7 @@ def workflow_from_doc(wf: dict) -> Workflow:
                               rule=str(g.get("rule") or default_gate_rule(roles.get(str(g.get("after")), ""))),
                               on_fail=g.get("on_fail")))
         budget = ctl.get("budget_rounds", ctl.get("budget"))
-    else:  # OCP form, D29
+    else:  # OCP form
         repair = ctl.get("repair") or {}
         rules = ((ctl.get("ext") or {}).get("dev.loopmath.gate_rules") or {})
         for after in raw_gates:
@@ -504,7 +590,7 @@ def _price_table():
     return _PRICES or None
 
 
-MODEL_TOKENS = "dev.loopmath.model_tokens"  # D67, D71: {model_id: {OCP cost token fields}}
+MODEL_TOKENS = "dev.loopmath.model_tokens"  # {model_id: {OCP cost token fields}}
 _OCP_TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "cache_creation_tokens", "output_tokens")
 
 
@@ -519,7 +605,7 @@ def _ocp_fields(cost: dict) -> dict[str, float]:
 
 def _price_split(split: dict, table) -> float | None:
     """Dollars for `{model: OCP token fields}`, each model at its own current rate, summed; None when any
-    part is unpriced or unlabelled (lane 02's `price.price_model_tokens`, D67, D71)."""
+    part is unpriced or unlabelled (lane 02's `price.price_model_tokens`)."""
     from ..price import price_model_tokens
 
     usd = price_model_tokens(split, table).get("usd")
@@ -527,7 +613,7 @@ def _price_split(split: dict, table) -> float | None:
 
 
 def attempt_cost(cost: dict, model: str) -> tuple[float | None, float | None, bool]:
-    """(usd, total tokens, repriced) for one attempt's cost record (spec 04 section 2; D62, D67, D71).
+    """(usd, total tokens, repriced) for one attempt's cost record (spec 04 section 2).
 
     Dollars are repriced under the current tariff, each model's tokens at that model's rate:
     - a split in `ext["dev.loopmath.model_tokens"]`, of any number of models, prices each model's
@@ -563,7 +649,7 @@ def attempt_cost(cost: dict, model: str) -> tuple[float | None, float | None, bo
 
 
 def _cost_weight(cost: dict) -> float:
-    """D27: `basis: measured` is verified (1.0), `allocated` is heuristic (0.7); asserted rows are excluded (0)."""
+    """`basis: measured` is verified (1.0), `allocated` is heuristic (0.7); asserted rows are excluded (0)."""
     basis = str(cost.get("basis") or "").lower()
     match = ((cost.get("ext") or {}).get("dev.loopmath.logmatch") or {})
     tier = str(match.get("tier") or cost.get("evidence") or cost.get("tier") or "").lower()
@@ -587,7 +673,7 @@ def _check_name(a: dict, node: dict) -> str | None:
     """The check a non-model attempt ran (a gate's command, such as the test suite), else None.
 
     A check has no model, no usage and no workflow piece: the harness ran it, so it is not
-    evidence about any setting and it is not a dropped observation (D86).
+    evidence about any setting and it is not a dropped observation.
     """
     setting = a.get("setting") if isinstance(a.get("setting"), dict) else {}
     cost = a.get("cost") if isinstance(a.get("cost"), dict) else {}

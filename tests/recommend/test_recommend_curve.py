@@ -133,14 +133,14 @@ def test_score_rule_ranks_by_p_reach():
     assert rec.curve[0].levels == (50, 70, 80, 90) and rec.curve[0].config == fast.id
     assert "chance of reaching runtime_s <= 200" in rec.message
     alt = rec.payload()["alternatives"]
-    # every configuration but the goal and the usual (spec 05 section 3, D89)
+    # every configuration but the goal and the usual (spec 05 section 3)
     assert [a["config"]["id"] for a in alt] == [mid.id]
     assert alt[0]["deltas"]["score"] == pytest.approx(-65.0)
     assert alt[0]["prediction"]["scores"]["runtime_s"]["value"]["mean"] == 195.0
 
 
 def test_equal_labels_get_what_tells_them_apart():
-    """D89: `label()` leaves out harnesses and settings such as the round limit."""
+    """`label()` leaves out harnesses and settings such as the round limit."""
     import dataclasses
 
     from loopmath.types import Configuration, Setting

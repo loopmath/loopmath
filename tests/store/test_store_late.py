@@ -1,4 +1,4 @@
-"""Late signals: re-scoring receipts, refit trigger, and finding runs by commit (Analyst D17)."""
+"""Late signals: re-scoring receipts, refit trigger, and finding runs by commit."""
 
 from __future__ import annotations
 
@@ -33,7 +33,8 @@ def home(tmp_path, monkeypatch, spawned):
 def _finished_run(capsys, home, *, cwd, base=None, commit_artifact=None):
     extra = ["--base-commit", base] if base else []
     code, start, err = cli(capsys, home, "run", "start", "--type", "feature", "--repo", "loopmath/loopmath",
-                           "--config", EXPLORE_CFG, "--rec", REC_ID, "--source", "exploration", *extra, "--json")
+                           "--config", EXPLORE_CFG, "--rec", REC_ID, "--source", "exploration", "--rule", "tests",
+                           *extra, "--json")  # judged by tests alone, not the recommendation's tests+review
     assert code == 0, err
     run = start["run"]
     _, att, _ = cli(capsys, home, "run", "attempt", "--run", run, "--piece", "implement", "--harness", "codex",

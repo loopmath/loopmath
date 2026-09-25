@@ -25,6 +25,11 @@ VISIT_EVERYTHING = r"""
   hoverAll();
   await clickAll('.pl-dot');
   await clickAll('tr.row');
+  await clickAll('#more');
+  for (const cfg of [...document.querySelectorAll('tr.v-opt')].map(tr => tr.dataset.cfg).slice(0, 30)) {
+    const tr = [...document.querySelectorAll('tr.v-opt')].find(t => t.dataset.cfg === cfg);
+    if (tr) { tr.dispatchEvent(new MouseEvent('click', { bubbles: true })); await pause(); hoverAll(); }
+  }
   await clickAll('[data-y]');
   await clickAll('[data-layout]');
   document.querySelectorAll('details').forEach(d => { d.open = true; d.dispatchEvent(new Event('toggle')); });
@@ -65,6 +70,7 @@ def test_plans_page_shows_markup_in_data_as_text(variant, probe, tmp_path):
     for cand in marked["candidates"]:
         cand["prediction"]["success_from"] = data["candidates"][0]["prediction"]["success_from"]
     marked["curve"] = [dict(row, levels=[f"{lv}{MARK}" for lv in row["levels"]]) for row in marked["curve"]]
+    marked["goal"]["strategy"] = {"kind": "try_then_rescue", "text": "Try it first" + MARK}  # D119 Z2, shown verbatim
     _check(probe, tmp_path / f"plans-{variant}.html", plans.render(marked))
 
 

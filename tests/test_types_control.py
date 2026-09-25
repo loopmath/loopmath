@@ -1,4 +1,4 @@
-"""types.Control.rescue is one of three words or an OCP rescue object kept whole (decision D42)."""
+"""types.Control.rescue is one of three words or an OCP rescue object kept whole."""
 
 from __future__ import annotations
 

@@ -1,14 +1,14 @@
-"""Published benchmark results (lane 11): `priors/benchmarks.toml` (D36 layout, D50 coverage).
+"""Published benchmark results (lane 11): `priors/benchmarks.toml`.
 
 The file has `[[benchmark]]` tables (`id`, `title`, `metric`, `kind` success,
-cost or tokens (D54), `reference` model, `reference_effort`, `harness`, `url`, `note`) and
+cost or tokens, `reference` model, `reference_effort`, `harness`, `url`, `note`) and
 `[[result]]` tables (`benchmark`, `model`, `effort`, `value`, `harness`, `date`,
 `url`, `note`). Lane 5's `belief.priors.benchmark_factors` turns them into prior
 factors on version nodes (spec 04 section 5); it reads the first result of the
 reference model as the reference, so that row is the one at `reference_effort`.
 
 This module loads the file and checks it: every value is a published number
-with its own source line (D50), success values are fractions, the reference
+with its own source line, success values are fractions, the reference
 model has a result, and only the 12 current models appear. A model with no
 result anywhere is listed by `missing_models`, never filled in.
 """
@@ -23,12 +23,12 @@ from ..ingest.base import EFFORTS
 
 BENCHMARKS_TOML = Path(__file__).resolve().parent / "benchmarks.toml"
 
-# D50: the current models in the packaged price table (with lane 2's additions).
+# The current models in the packaged price table (with lane 2's additions).
 MODELS = (
     "claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5", "haiku-4.5",
     "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 )
-KINDS = ("success", "cost", "tokens")  # D36, D54
+KINDS = ("success", "cost", "tokens")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _BENCH_KEYS = ("id", "title", "metric", "kind", "reference", "harness", "url")
 _RESULT_KEYS = ("benchmark", "model", "value", "harness", "date", "url")
@@ -103,5 +103,5 @@ def coverage(data: dict) -> dict[str, list[str]]:
 
 
 def missing_models(data: dict) -> list[str]:
-    """Current models with no published result on any benchmark in the file (listed in the report, D50)."""
+    """Current models with no published result on any benchmark in the file (listed in the report)."""
     return [m for m, ids in coverage(data).items() if not ids]

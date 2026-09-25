@@ -1,4 +1,4 @@
-"""The parse and link caches follow the store (Analyst D80, from the dogfood pass).
+"""The parse and link caches follow the store (from the dogfood pass).
 
 `LOOPMATH_CACHE_DIR`, else `<home>/cache` for `--home` or `LOOPMATH_HOME`, else
 ~/.loopmath. ~/.loopmath is replaced by a folder in `tmp_path` throughout.

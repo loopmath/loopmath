@@ -1,0 +1,18 @@
+/* The results page (lane 2E, 0.2): what viz.css does not already give the questions. */
+.v-wl .r[data-wf] { cursor: pointer; }
+.v-wl .r[data-wf]:hover { background: var(--hover); }
+.v-wl .r[data-wf].best:hover { background: var(--accent-bg); }
+.v-wl .r[data-wf]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.v-wl .g .v-gmini svg { max-width: 76px; height: auto; }
+.v-wl .cs b { font-weight: 650; }
+.v-wl .cs .v-tail, .v-wl .ch .sub { display: block; }
+#sens { max-width: 46rem; }
+.v-bars .b { grid-template-columns: minmax(90px, 150px) minmax(0, 1fr) max-content; }
+#d-wf .v-body, #d-levels .v-body, #d-data .v-body { overflow-x: auto; }
+.v-mb .v-note { margin-top: 0.5rem; }
+@media (max-width: 700px) {
+  .v-wl .r { grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "g n n" "c c s" "d d d"; row-gap: 4px; }
+  .v-wl .cs { text-align: right; }
+  .v-wl .g .v-gmini svg { max-width: 60px; }
+  .v-mb .er { grid-template-columns: 52px 1fr 1fr; }
+}

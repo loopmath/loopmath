@@ -1,4 +1,4 @@
-"""The one canonical configuration id (D2): pinned, order independent, D29 to D31 applied."""
+"""The one canonical configuration id: pinned, order independent, D29 to D31 applied."""
 
 from __future__ import annotations
 
@@ -70,13 +70,13 @@ def test_defaults_read_the_same_as_their_absence():
     workflow, settings = copy.deepcopy(WORKFLOW), copy.deepcopy(SETTINGS)
     for piece in workflow["pieces"]:
         piece["width"] = 1
-    settings["implement"].update(context_policy="fresh", options={})  # D31: fresh when absent
+    settings["implement"].update(context_policy="fresh", options={})  # Fresh when absent
     settings["implement"]["model"] = "claude-opus-5-5"  # modelRef id or a bare string
     assert config_id(workflow, settings) == PINNED_ID
 
 
 def test_budget_counts_round_one():
-    """D30: a missing or zero budget reads as 1."""
+    """A missing or zero budget reads as 1."""
     ids = set()
     for budget in (None, 0, 1):
         workflow = copy.deepcopy(WORKFLOW)
@@ -101,7 +101,7 @@ def test_what_ran_changes_the_id():
     workflow["pieces"][0]["width"] = 3
     changed.append(config_id(workflow, SETTINGS))
     workflow = copy.deepcopy(WORKFLOW)
-    workflow["control"]["ext"] = {GATE_RULES_KEY: {"review": "command:lint"}}  # D29
+    workflow["control"]["ext"] = {GATE_RULES_KEY: {"review": "command:lint"}}
     changed.append(config_id(workflow, SETTINGS))
     workflow = copy.deepcopy(WORKFLOW)
     workflow["control"]["rescue"] = {"kind": "person"}

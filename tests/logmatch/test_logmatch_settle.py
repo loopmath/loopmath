@@ -110,7 +110,7 @@ def test_a_declared_model_the_log_never_ran_is_named_in_the_reason(roots):
 
 
 def test_a_resumed_round_two_naming_the_same_session_splits_it(roots):
-    # D87: round 2, sent back, resumes the session round 1 named. The session
+    # Round 2, sent back, resumes the session round 1 named. The session
     # is counted once, split equally, the odd token to the earlier attempt.
     r1 = {"id": "r1", "node": "n1", "status": "rejected", "harness": "claude-code", "session": CC, "round": 1}
     r2 = {**r1, "id": "r2", "status": "done", "round": 2, "cause": {"type": "sent_back"}}

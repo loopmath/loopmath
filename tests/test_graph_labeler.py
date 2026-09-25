@@ -1,4 +1,4 @@
-"""D2: the labeler's prompt, parser, scorer, cost figures and the grid runner's dry run.
+"""The labeler's prompt, parser, scorer, cost figures and the grid runner's dry run.
 
 The dataset under test is the synthetic delta workspace of `tests/test_graph_dataset.py`
 built with its `labels-full/` files (three nodes: `delta-lead` with two agreeing contract

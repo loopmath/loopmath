@@ -8,8 +8,10 @@ Keys are dotted paths into the TOML tables: `org`, `acceptance_rule`,
 `onboard.labeler` (Analyst D39: `claude:<model>`, `codex:<model>`,
 `command:<cmd>` or `none`, chosen by the user, never defaulted), and the
 usual workflows `usual.<type>."<repo>"` / `usual.<type>."*"` with
-`usual_meta.<type>` (Analyst decision D5), and `research.<name>` strings kept
-verbatim (lane 9 request: `research.sweep_dir`, `research.e0_corpus`).
+`usual_meta.<type>`, `research.<name>` strings kept
+verbatim (lane 9 request: `research.sweep_dir`, `research.e0_corpus`), and the
+declared task features `features.<key>` with `features.min_tasks`
+(taskmodel.FeatureSet; spec 04 section 1).
 
 Reading uses `tomllib` (Python 3.11+), else a reader for the
 subset this module writes. The writer emits plain tables and JSON-compatible
@@ -24,6 +26,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ..taskmodel import FeatureConfigError, FeatureSet, features_from_config
 from ..types import DEFAULT_RULE, AcceptanceRule, ScoreTarget
 from .lock import atomic_write_text
 
@@ -54,10 +57,10 @@ LIST_KEYS = ("models.allowed", "harnesses", "subtypes")
 NUMBER_KEYS = ("rescue.person_usd_per_hour", "rescue.hours", "benchmark_prior_weight",
                "explore.auto_payback_runs", "budget.usd", "plan.time_budget_s")
 POSITIVE_KEYS = ("plan.time_budget_s",)
-COUNT_KEYS = ("plan.exact_picks",)  # whole numbers >= 0; lane 6 owns the defaults of the plan keys (D59)
+COUNT_KEYS = ("plan.exact_picks",)  # whole numbers >= 0; lane 6 owns the defaults of the plan keys
 KNOWN_ROOTS = ("org", "acceptance_rule", "rules", "goal", "rescue", "models", "harnesses", "subtypes",
                "labeler", "benchmark_prior_weight", "explore", "referee", "budget", "outcome", "usual",
-               "usual_meta", "research", "onboard", "plan", "efforts")
+               "usual_meta", "research", "onboard", "plan", "efforts", "features")
 STRING_ROOTS = ("research",)  # values stored as given, never parsed as JSON
 
 
@@ -166,7 +169,7 @@ def rule_to_table(rule: AcceptanceRule) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- values
 def check_labeler(value: str) -> str:
-    """D39: `none`, or `claude:<model>`, `codex:<model>`, `command:<cmd>`; kept verbatim."""
+    """`none`, or `claude:<model>`, `codex:<model>`, `command:<cmd>`; kept verbatim."""
     text = value.strip()
     kind, sep, rest = text.partition(":")
     if text == "none" or (sep and kind in LABELER_KINDS and rest.strip()):
@@ -174,10 +177,65 @@ def check_labeler(value: str) -> str:
     raise ConfigError(f"a labeler is claude:<model>, codex:<model>, command:<cmd> or none; got {value!r}")
 
 
+_FEATURE_LISTS = ("values", "labels", "types", "repos")
+_FEATURE_WORDS = ("kind", "fill")
+
+
+def _coerce_feature(parts: list[str], value: str) -> Any:
+    """`features.min_tasks`, a whole `features.<key>` table as JSON, or one field of it."""
+    dotted = ".".join(parts)
+    text = value.strip()
+    if text == "null":
+        return None
+    if parts == ["features", "min_tasks"]:
+        try:
+            n = int(text)
+        except ValueError:
+            n = 0
+        if n < 1:
+            raise ConfigError(f"features.min_tasks takes a whole number of 1 or more, got {value!r}")
+        return n
+    if len(parts) == 2:
+        try:
+            table = json.loads(text)
+        except ValueError:
+            table = None
+        if not isinstance(table, dict):
+            raise ConfigError(f"{dotted} takes a JSON table, for example "
+                              "'{\"kind\": \"category\", \"values\": [\"web\", \"cli\"]}'")
+        try:
+            FeatureSet.from_config({parts[1]: table})
+        except FeatureConfigError as exc:
+            raise ConfigError(str(exc)) from None
+        return table
+    field = parts[2] if len(parts) == 3 else ""
+    if field in _FEATURE_LISTS or field == "edges":
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = text
+        if isinstance(parsed, str):
+            parsed = [v.strip() for v in parsed.split(",") if v.strip()]
+        if field == "edges":
+            try:
+                parsed = [float(v) for v in parsed]
+            except (TypeError, ValueError):
+                raise ConfigError(f"{dotted} takes a list of numbers, got {value!r}") from None
+        return parsed
+    if field in _FEATURE_WORDS:
+        return text.lower()
+    if field == "description":
+        return value
+    raise ConfigError(f"{dotted}: a feature field is one of kind, values, edges, labels, fill, types, repos, "
+                      "description")
+
+
 def coerce(key: str, value: str) -> Any:
     """A `config set` value: JSON when it parses, comma lists for list keys, numbers for number keys."""
     parts = split_key(key)
     dotted = ".".join(parts)
+    if parts[0] == "features" and len(parts) > 1:
+        return _coerce_feature(parts, value)
     if parts[0] == "rules" and len(parts) == 2:
         text = value.strip()
         if text.startswith("{"):
@@ -269,7 +327,7 @@ class Config:
         return parse_rule(name)
 
     def usual(self, task_type: str, repo: str | None = None) -> str | None:
-        """D5: `usual.<type>."<repo>"`, then `usual.<type>."*"`."""
+        """`usual.<type>."<repo>"`, then `usual.<type>."*"`."""
         table = (self.data.get("usual") or {}).get(task_type)
         if isinstance(table, str):
             return table
@@ -284,10 +342,38 @@ class Config:
         value = self.get(f"outcome.q.{tier}")
         return float(value) if isinstance(value, (int, float)) else 0.7
 
+    def features(self) -> FeatureSet:
+        """The built-in features plus `[features]`. Raises ConfigError on a bad declaration."""
+        try:
+            return FeatureSet.from_config(self.data.get("features"))
+        except FeatureConfigError as exc:
+            raise ConfigError(str(exc)) from None
+
+    def features_or_builtin(self) -> FeatureSet:
+        """`features()`, or the built-ins with a warning on stderr when the declaration is bad."""
+        return features_from_config(self.data.get("features"))
+
     # writing
     def set(self, key: str, value: Any) -> None:
-        """Set a dotted key; None removes it."""
+        """Set a dotted key; None removes it. A `features` change that leaves a bad declaration is undone."""
         parts = split_key(key)
+        if parts[0] == "features":
+            before = copy.deepcopy(self.data)
+            self._set(parts, value)
+            try:
+                self.features()
+            except ConfigError as exc:
+                self.data.clear()
+                self.data.update(before)
+                hint = ""
+                if len(parts) > 2 and ("edges" in str(exc) or "labels" in str(exc)):
+                    hint = (f"; set the whole table at once, for example loopmath config set features.{parts[1]} "
+                            "'{\"kind\": \"number\", \"edges\": [100, 1000], \"labels\": [\"low\", \"mid\", \"high\"]}'")
+                raise ConfigError(f"{exc}{hint}") from None
+            return
+        self._set(parts, value)
+
+    def _set(self, parts: list[str], value: Any) -> None:
         node = self.data
         for p in parts[:-1]:
             nxt = node.get(p)

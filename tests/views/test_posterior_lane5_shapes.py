@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 
+from loopmath.views import common
 from loopmath.views import posterior as P
 from tests.views._posterior_helpers import FakeState, lane5_nodes, needs_node, run_page
 
@@ -157,7 +158,7 @@ def test_bundle_fit_order_of_efforts_heads_and_source_rows(tmp_path):
 def test_page_effort_order_is_the_fit_order():
     from loopmath.fit_pricing import EFFORT_ORDER
 
-    assert "var EFFORTS = ['" + "', '".join(EFFORT_ORDER) + "'];" in P.PAGE_JS
+    assert "var EFFORTS = ['" + "', '".join(EFFORT_ORDER) + "'];" in common.asset("estimates.js")
 
 
 def test_loop_text_names_a_piece_that_retries_itself():

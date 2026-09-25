@@ -62,7 +62,7 @@ def test_layout_and_latest(tmp_path, mixed_docs):
     arrays = np.load(path / "state.npz")
     state = load_latest(tmp_path)
     for key in ("cost", "success"):
-        # D94: the sparse precision is stored, not the dense factor or the draws
+        # The sparse precision is stored, not the dense factor or the draws
         assert {f"{key}__P_data", f"{key}__P_indices", f"{key}__P_indptr"} <= set(arrays.files)
         assert f"{key}__U" not in arrays.files and f"{key}__draws" not in arrays.files
         head = state.heads[key]
@@ -209,7 +209,7 @@ def test_a_fit_written_before_d94_still_loads(tmp_path, mixed_docs):
 
 
 def test_fit_keeps_the_newest_five_and_the_fits_receipts_and_recommendations_name(tmp_path, mixed_docs):
-    """D91: each fit deletes the older fits, except those a receipt or stored recommendation names."""
+    """Each fit deletes the older fits, except those a receipt or stored recommendation names."""
     from loopmath.store.home import Store
 
     user, _ = mixed_docs

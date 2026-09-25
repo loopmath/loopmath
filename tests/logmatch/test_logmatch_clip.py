@@ -1,4 +1,4 @@
-"""Clipping a `--session self` attempt to its window (Analyst D47), on a synthetic session."""
+"""Clipping a `--session self` attempt to its window, on a synthetic session."""
 
 import copy
 import json
@@ -215,7 +215,7 @@ FIELDS = ("input_tokens", "cached_input_tokens", "cache_creation_tokens", "outpu
 
 
 def test_a_session_named_whole_and_as_self_is_counted_once(roots):
-    # The dogfood case (D87): one attempt names the session whole, another is
+    # The dogfood case: one attempt names the session whole, another is
     # the orchestrator's `--session self` window in it.
     doc = {"ocp": "0.3", "run": {"id": "r"}, "attempts": [_attempt(id="a-whole", ext={}), _attempt(id="a-self")]}
     out, summary = settle_run(doc, roots=roots)

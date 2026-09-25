@@ -1,7 +1,7 @@
 """Small numeric helpers on 80 percent intervals (spec 03 `Interval`).
 
 `Prediction` carries each quantity as a mean and its 10th and 90th percentiles,
-not the belief's 400 draws. When the belief does not hand draws over (D8),
+not the belief's 400 draws. When the belief does not hand draws over,
 the recommender reads a distribution back from the interval: logit-normal for
 chances, log-normal for a receipt's cost surprise. These are stated
 approximations.

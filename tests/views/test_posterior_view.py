@@ -42,7 +42,7 @@ def test_enrich_is_idempotent_and_keeps_every_fixture_field():
 def test_fixture_workflow_shares_gates_and_repair_loop():
     w = P.enrich(fixture())["workflow"]
     assert math.isclose(sum(w["shares"].values()), 1.0, abs_tol=1e-3)
-    # D60: each piece's cost is its whole-run contribution (1.13 each), never multiplied by rounds
+    # Each piece's cost is its whole-run contribution (1.13 each), never multiplied by rounds
     assert w["shares"]["plan"] == pytest.approx(1 / 3, abs=1e-3)
     assert w["shares"]["review"] == pytest.approx(1 / 3, abs=1e-3)
     (loop,) = w["loops"]
@@ -156,14 +156,14 @@ def test_summary_lines_stay_within_25():
 
 # ---------------------------------------------------------------- the page under node
 @needs_node
-def test_page_draws_every_head_section_and_tab(tmp_path):
+def test_page_draws_every_head_section_and_block(tmp_path):
     data = fixture()
     data["levels"] = P.group_levels(fixture_nodes())
     data["levels"]["score:heldout_perf"] = fixture()["levels"]["score:heldout_perf"]
     obj = P.enrich(data)
     out = run_page(P.render(data), tmp_path)
     assert out["initialHead"] == "cost" and out["heads"][:3] == ["cost", "success", "gate"]
-    assert out["initialPanels"] == {"levels": False, "graph": True, "data": True}
+    assert out["drawn"] == {"levels": True, "graph": True, "data": True}  # every block drawn into its host
     for head, html in out["levels"].items():
         assert balance_errors(html) == [], head
         for name in obj["levels"]:
@@ -176,7 +176,6 @@ def test_page_draws_every_head_section_and_tab(tmp_path):
     assert "No cost estimates at this level" in cost
     assert "+60 (-40 to +160)" in out["levels"]["score:heldout_perf"]
     assert out["afterHeadClick"] == "all"
-    assert out["panels"] == {"levels": True, "graph": True, "data": False}
     assert out["tip"] == "line one\nline two" and out["tipHidden"] is False and out["tipLeft"] == "820px"
     assert "from 1,173 runs, 23 of them yours" in out["lede"]
 
@@ -193,9 +192,9 @@ def test_js_and_python_format_every_node_alike(tmp_path):
 
 
 @needs_node
-def test_graph_and_data_tabs_on_the_fixture(tmp_path):
+def test_graph_and_data_blocks_on_the_fixture(tmp_path):
     out = run_page(P.render(fixture()), tmp_path, "#graph")
-    assert out["initialPanels"] == {"levels": True, "graph": False, "data": True}
+    assert out["drawn"]["graph"]
     (graph,) = out["graph"]
     assert balance_errors(graph) == []
     for text in ("plan_implement_review", "$1.13 ($0.73 to $1.76) per run", "203k tokens per run, 33% of cost",
@@ -225,7 +224,7 @@ def test_graph_words_for_one_round_no_support_and_small_amounts(tmp_path):
 
 def _d60_workflow() -> dict:
     """The reviewer's case through lane 5's composer: plan costs 1 once; implement costs 1 per round,
-    passes its gate half the time and runs at most 2 rounds, so 1.5 over the run (D60)."""
+    passes its gate half the time and runs at most 2 rounds, so 1.5 over the run."""
     one = {"mean": 1.0, "lo": 1.0, "hi": 1.0, "level": 0.8}
     def money(x):
         return {"usd": {**one, "mean": x, "lo": x, "hi": x}, "tokens": {**one, "mean": 1000 * x, "lo": 1000 * x, "hi": 1000 * x}}

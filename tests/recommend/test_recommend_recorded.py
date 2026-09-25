@@ -97,7 +97,7 @@ def test_designed_runs_are_candidates_and_the_best_recorded_one_is_the_reference
     ref = obj["reference"]
     assert ref["kind"] == "best_recorded" and ref["from"] == "recorded" and ref["config"]["id"] == CHEAP.id
     assert ref["text"] == f"no usual workflow; reference: your best recorded workflow ({ref['label']})"
-    assert obj["usual"] is None  # D74: designed runs never make a usual
+    assert obj["usual"] is None  # Designed runs never make a usual
     assert "your usual" not in json.dumps(obj).lower()
     assert obj["message"].startswith(f"You have no usual workflow for this task; the reference is your best "
                                      f"recorded workflow ({ref['label']}), with ")

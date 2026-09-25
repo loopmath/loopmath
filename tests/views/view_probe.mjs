@@ -19,8 +19,21 @@ const script = scriptFile ? await readFile(scriptFile, 'utf8') : null;
 const profile = await mkdtemp(join(tmpdir(), 'lm-view-probe-'));
 const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--disable-background-networking', '--disable-component-update',
   '--disable-default-apps', '--disable-sync', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0',
+  // A mock keychain: a fresh profile must not ask macOS for a keychain (a sandboxed caller has none,
+  // and each probe then raises a system dialog).
+  '--use-mock-keychain', '--password-store=basic',
   '--host-resolver-rules=MAP * ~NOTFOUND', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'ignore'] });
 const delay = ms => new Promise(done => setTimeout(done, ms));
+const exited = new Promise(done => chrome.once('exit', done));
+// Stop Chrome and wait until it has gone: SIGTERM, then SIGKILL after 3 s.
+const stopChrome = async () => {
+  if (chrome.exitCode !== null || chrome.signalCode !== null) return;
+  chrome.kill('SIGTERM');
+  if (await Promise.race([exited.then(() => true), delay(3000).then(() => false)])) return;
+  chrome.kill('SIGKILL');
+  await Promise.race([exited, delay(2000)]);
+};
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.once(sig, () => { chrome.kill('SIGKILL'); process.exit(1); });
 
 let socket, nextId = 0;
 const pending = new Map(), listeners = new Map();
@@ -80,8 +93,7 @@ try {
   code = 1;
 } finally {
   try { socket && socket.close(); } catch {}
-  chrome.kill();
-  await delay(150);
+  await stopChrome();
   await rm(profile, { recursive: true, force: true }).catch(() => {});
 }
 process.exit(code);

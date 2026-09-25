@@ -1,4 +1,4 @@
-"""types.PiecePrediction: `cost` is the full-run contribution, `cost_per_round` one execution (decision D60)."""
+"""types.PiecePrediction: `cost` is the full-run contribution, `cost_per_round` one execution."""
 
 from __future__ import annotations
 

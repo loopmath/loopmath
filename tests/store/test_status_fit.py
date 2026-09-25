@@ -7,13 +7,15 @@ import os
 from datetime import datetime
 
 from loopmath import cli
+from loopmath.belief.design import DESIGN_VERSION
 from loopmath.store.status import fit_options_text, fit_summary
 
 
 def _fit(home, fit_id, meta):
     folder = home / "fits" / fit_id
     folder.mkdir(parents=True)
-    meta = {"fit": fit_id, "created_at": datetime.now().astimezone().isoformat(timespec="seconds"), **meta}
+    meta = {"fit": fit_id, "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "design_version": DESIGN_VERSION, **meta}
     (folder / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     link = home / "fits" / "latest"
     if link.is_symlink():

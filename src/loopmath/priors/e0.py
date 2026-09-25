@@ -1,6 +1,6 @@
 """The E0 corpus (lane 11): our own Claude Code and Codex sessions as logged habit runs.
 
-Input: the read-only corpus copy (D18), `sessions.jsonl` and
+Input: the read-only corpus copy, `sessions.jsonl` and
 `session-dag-join.jsonl`, through an explicit path; `e0/io.py`'s default corpus
 is never used. The corpus is metadata only (parser-spec.md); no text reaches
 the bundle.
@@ -16,7 +16,7 @@ the bundle.
 - The configuration is the catalog `solo` shape: one implementer, the session's
   harness, primary model and dominant effort; `configuration.source: habit`,
   `provenance {kind: logged, chooser: habit}`.
-- No verdicts (D7): no signals and no acceptance rule; attempts are
+- No verdicts: no signals and no acceptance rule; attempts are
   `settled_unverified`. These runs feed the cost and tokens heads only.
 - The task has no type (the corpus has no text to label) and no features; the
   repo is the workspace folder name, which the reduction replaces with a salted
@@ -83,7 +83,7 @@ def repo_of(project: str | None) -> str | None:
 
 
 def project_kind(project_class: str | None) -> str | None:
-    """The corpus's project class without the project or tool name in it (D70): orchestrated, agent or other."""
+    """The corpus's project class without the project or tool name in it: orchestrated, agent or other."""
     if not project_class:
         return None
     for kind in ("orchestrated", "agent"):

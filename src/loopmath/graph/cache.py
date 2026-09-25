@@ -1,4 +1,4 @@
-"""Link cache for per-session scans (EXTRACTOR-SPEC.md section 4, L2).
+"""Link cache for per-session scans.
 
 `scan.py` (Claude transcripts) and `extract.py` (codex rollouts) look a scan up with
 `link_cache_get(key)` before scanning and store it with `link_cache_put(key, value)`
@@ -7,7 +7,7 @@ afterwards. `key` is `("claude" | "codex", path, mtime_ns, size)` from
 
 Layout: one JSON file per session file under `<parsed-run cache dir>/links-v2/`, the
 parsed-run cache directory `loopmath.ingest.cache_dir` already uses (`LOOPMATH_CACHE_DIR`,
-else `<home>/cache` for a `--home` or `LOOPMATH_HOME` store, else ~/.loopmath; D80).
+else `<home>/cache` for a `--home` or `LOOPMATH_HOME` store, else ~/.loopmath).
 The file name is a hash of the session path; the file holds
 the full key, a scanner fingerprint and the encoded value. A hit requires the stored
 key to equal the requested one (a rewritten session, new mtime or size, is a miss)

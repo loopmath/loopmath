@@ -1,8 +1,7 @@
 """Small OCP v0.3 builders shared by the prior converters (lane 11).
 
 The converters write OCP v0.3 documents directly (spec 01, section 2). The
-configuration id is lane 1's `loopmath.ocp.canonical.config_id` (Analyst
-decision D2); the bundle manifest names it as `config_id_impl`.
+configuration id is lane 1's `loopmath.ocp.canonical.config_id`; the bundle manifest names it as `config_id_impl`.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from pathlib import Path
 
 from ..ingest.base import canonical_effort, canonical_model
 from ..logmatch.tariff import price_table, table_id  # lane 2
-from ..ocp.canonical import config_id  # lane 1 (D2); converters call ocpdoc.config_id
+from ..ocp.canonical import config_id  # lane 1; converters call ocpdoc.config_id
 
 OCP_VERSION = "0.3"
 PRODUCER_NAME = "loopmath-prior"
@@ -65,7 +64,7 @@ def setting(harness: str, model: str | None, eff: str | None, **options) -> dict
     if model is not None:
         out["model"] = model_ref(model)
     out["effort"] = effort(eff) if eff is not None else "default"
-    out["context_policy"] = "fresh"  # D31
+    out["context_policy"] = "fresh"
     if options:
         out["options"] = {k: str(v) for k, v in options.items()}
     return out
@@ -135,7 +134,7 @@ GATE_RULE_DEFAULTS = {"reviewer": "review_approve", "referee": "referee_pick", "
 
 
 def _control(gates: list[tuple[str, str, str | None]], roles: dict[str, str], *, budget: int, rescue: dict) -> dict:
-    """OCP control from (after, rule, on_fail) gates, as lane 4 maps it (D29, D30).
+    """OCP control from (after, rule, on_fail) gates, as lane 4 maps it.
 
     A gate rule goes to `control.ext["dev.loopmath.gate_rules"]` only when it is
     not the default for the judged piece's role (`review_approve` unless the role
@@ -156,8 +155,8 @@ def workflow_plan_implement_review(*, budget: int, test_gate: bool = True) -> di
     Pieces, artifacts and edges are lane 4's catalog definition, so the only
     difference from the catalog configuration is the extra gate: tests after
     implement (repair to implement) and the reviewer's verdict (a rejection
-    sends the work back to implement). Roles use the `types.py` words (D32);
-    `budget` is K_max counting the first round (D30).
+    sends the work back to implement). Roles use the `types.py` words;
+    `budget` is K_max counting the first round.
     """
     roles = {"plan": "planner", "implement": "implementer", "review": "reviewer"}
     gates = ([("implement", "tests_pass", "implement")] if test_gate else []) + [

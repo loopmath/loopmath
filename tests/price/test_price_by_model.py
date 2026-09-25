@@ -1,4 +1,4 @@
-"""Shared pricing prices each model of a session at its own rate (Analyst D62).
+"""Shared pricing prices each model of a session at its own rate.
 
 `RunRecord.to_dict` keeps the per-model split, the ingest cache keeps it, and
 `price.price_run` sums the parts or withholds dollars when a part has no

@@ -1,4 +1,4 @@
-"""The shape builder (D33): front (none, plan) + middle (implement, best_of_n, team) + back (none, review).
+"""The shape builder: front (none, plan) + middle (implement, best_of_n, team) + back (none, review).
 
 The six catalog shapes are named combinations; every other combination gets a
 composed id (`team`, `plan_team`, `best_of_n_review`, ...). One-step edits and
@@ -6,7 +6,7 @@ composed id (`team`, `plan_team`, `best_of_n_review`, ...). One-step edits and
 `implement_review` lands exactly on `solo`, with the same configuration id.
 
 Every shape reads the inputs `issue` and `repo` and writes the output `diff`.
-Workflows are acyclic (D3): a repair loop is `control`, never an edge.
+Workflows are acyclic: a repair loop is `control`, never an edge.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class ShapeParams:
     middle: str = "implement"  # implement | best_of_n | team
     width: int = 1  # 1 for implement; 2 to 6 for best_of_n and team
     review: bool = False
-    budget_rounds: int = 1  # K_max counting the first round (D30); 1 without a review gate
+    budget_rounds: int = 1  # K_max counting the first round; 1 without a review gate
     rescue: str = "redo_usual"
 
     def replace(self, **changes) -> "ShapeParams":

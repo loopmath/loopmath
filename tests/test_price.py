@@ -655,7 +655,7 @@ output = 20.00
 
 
 def test_validate_prices_a_marked_free_model_passes_silently(tmp_path):
-    # Dogfood (D87 item 2): the packaged free rows always warned, and their
+    # Dogfood: the packaged free rows always warned, and their
     # zero_ok could not clear it. Every rate zero and marked is a free model;
     # one dropped digit cannot zero all four rates.
     free = """
@@ -921,7 +921,7 @@ def test_validate_prices_packaged_table_has_no_hard_error():
     # The shipped table must validate: every GPT cache_write is a real 0.00
     # (OpenAI charges nothing for a cache write) and is marked zero_ok. The
     # three OpenCode-hosted free routes are all zero and marked, so they are
-    # free models and no longer warn (Analyst D87, from lane 02's dogfood).
+    # free models and no longer warn (from lane 02's dogfood).
     # Staleness is deliberately not asserted here because the packaged as_of
     # ages on its own.
     result = validate_prices()

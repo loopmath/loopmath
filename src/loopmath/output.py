@@ -56,7 +56,12 @@ def html_path(command: str, arg: str | None, home_override: str | None = None) -
     if arg != HTML_DEFAULT:
         return Path(arg).expanduser()
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    return home(home_override) / "views" / f"{command}-{stamp}.html"
+    folder, n = home(home_override) / "views", 1
+    path = folder / f"{command}-{stamp}.html"
+    while path.exists():  # a second page in the same second must not replace the first
+        n += 1
+        path = folder / f"{command}-{stamp}-{n}.html"
+    return path
 
 
 def write_html(path: Path, page: str) -> Path:

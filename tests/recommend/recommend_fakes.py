@@ -1,7 +1,7 @@
 """A fake belief with known numbers, and small configuration builders, for lane 06 tests.
 
 Each configuration gets a fixed chance, cost and optional score. `ell` uses the
-`rescue_usd` the recommender passes (decision D9). The look-ahead returns gains
+`rescue_usd` the recommender passes. The look-ahead returns gains
 from a table, so tests can pin exploration picks exactly.
 """
 
@@ -69,7 +69,7 @@ class Num:
     usd: float
     g_half: float = 0.05
     usd_spread: float = 0.3  # relative half-width of the cost interval
-    usd_hi: float | None = None  # the cost interval's upper end over the mean; below 1 is a heavy tail (D107)
+    usd_hi: float | None = None  # the cost interval's upper end over the mean; below 1 is a heavy tail
     score: float | None = None
     score_half: float = 100.0
     p_reach: float | None = None

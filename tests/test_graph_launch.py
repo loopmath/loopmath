@@ -538,7 +538,7 @@ def test_backgrounded_long_call_naming_nothing_is_not_a_last_resort():
 
 def test_a_call_naming_two_launches_claims_two_sessions_through_the_window():
     # Swarm A's lead dispatched two reviews in one Bash call, two `nohup ... &` lines
-    # (D0 labels: both codex runs belong to the lead). The text names two launches,
+    # (labels: both codex runs belong to the lead). The text names two launches,
     # so the call claims the two closest sessions; a third stays unlaunched.
     nodes = {
         "lead": _node("lead", "claude-code", "top", "w", "2026-08-30T10:00:00Z", 900.0),

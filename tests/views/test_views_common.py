@@ -200,7 +200,7 @@ def test_piece_costs_from_the_lane_5_composer_are_labelled_per_run_and_per_round
 
 
 def test_a_mean_above_its_interval_keeps_the_mean_and_says_why_in_the_same_words(tmp_path, probe):
-    """D107: the mean stays, with one note in the same words in Python and the pages; the JSON is unchanged."""
+    """The mean stays, with one note in the same words in Python and the pages; the JSON is unchanged."""
     note = "the average is pulled up by rare very large outcomes"
     assert common.TAIL_NOTE == note and f"const TAIL_NOTE = '{note}';" in common.asset("common.js")
     tail = {"mean": 5.0, "lo": 0.1, "hi": 4.0}
@@ -234,7 +234,7 @@ def test_a_mean_above_its_interval_keeps_the_mean_and_says_why_in_the_same_words
 
 
 def test_a_box_whose_bare_token_mean_is_pulled_up_gets_the_note(tmp_path, probe):
-    """D107 note 2: the box prints tokens as a bare mean; the note follows the prediction, not the printed bounds."""
+    """The box prints tokens as a bare mean; the note follows the prediction, not the printed bounds."""
     tokens_tail = _money(1.0)
     tokens_tail["tokens"] = {"mean": 900000.0, "lo": 50000.0, "hi": 800000.0, "level": 0.8}
     graph = {"config": "cfg_tok", "label": "tok", "gates": [],
@@ -250,3 +250,19 @@ def test_a_box_whose_bare_token_mean_is_pulled_up_gets_the_note(tmp_path, probe)
     r = out["result"]
     assert "the average is pulled up by" in r["implement"] and "rare very large outcomes" in r["implement"]
     assert not any("pulled up" in t for t in r["plan"] + r["review"]) and not r["overflow"]
+
+
+def test_a_second_page_in_the_same_second_gets_its_own_name(tmp_path, monkeypatch):
+    """Default `--html` names are stamped to the second; two pages that fall in one second both stay."""
+    from loopmath.output import HTML_DEFAULT
+
+    monkeypatch.setenv("LOOPMATH_HOME", str(tmp_path))
+    first = common.html_target(HTML_DEFAULT, "posterior")
+    common.write_page(first, "<p>one</p>")
+    second = common.html_target(HTML_DEFAULT, "posterior")
+    if second.stem.count("-") == first.stem.count("-"):  # the clock moved on: a new stamp, a new name
+        assert second != first
+    else:
+        assert second == first.with_name(first.stem + "-2.html")
+    common.write_page(second, "<p>two</p>")
+    assert first.read_text() == "<p>one</p>" and common.html_target("x.html", "posterior") == Path("x.html")

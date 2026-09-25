@@ -13,8 +13,6 @@ graph component has two inputs:
   realized attempts, gate results and artifact versions (`run_workflow_graph()`);
 - a run graph (`run_graph()`): today's `graph/html_data` object for an OCP
   document, drawn with today's swimlanes, force and cost-curve layouts.
-
-Owner: lane 12. Spec: design/0.1/06-views.md, 03-interfaces.md section 8.
 """
 
 from __future__ import annotations
@@ -139,7 +137,12 @@ def html_target(arg: str | None, command: str, home_override: str | None = None)
     if arg != HTML_DEFAULT:
         return Path(arg).expanduser()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return store_home(home_override) / "views" / f"{command}-{stamp}.html"
+    folder, n = store_home(home_override) / "views", 1
+    path = folder / f"{command}-{stamp}.html"
+    while path.exists():  # a second page in the same second must not replace the first
+        n += 1
+        path = folder / f"{command}-{stamp}-{n}.html"
+    return path
 
 
 def write_page(path: Path, text: str, *, json_mode: bool = False) -> Path:
@@ -232,12 +235,12 @@ def fmt_pct(value: Any, digits: int = 0) -> str:
     return "n/a" if v is None else f"{v * 100:.{digits}f}%"
 
 
-# D107: the same words in every view (assets/common.js TAIL_NOTE); the JSON is unchanged.
+# The same words in every view (assets/common.js TAIL_NOTE); the JSON is unchanged.
 TAIL_NOTE = "the average is pulled up by rare very large outcomes"
 
 
 def pulled_up(iv: Mapping[str, Any] | None) -> bool:
-    """A mean above its interval's upper end: after D98 and D106, always a heavy tail (D107)."""
+    """A mean above its interval's upper end: always a heavy tail."""
     if not iv:
         return False
     mean, hi = num(iv.get("mean")), num(iv.get("hi"))
@@ -245,7 +248,7 @@ def pulled_up(iv: Mapping[str, Any] | None) -> bool:
 
 
 def fmt_interval(iv: Mapping[str, Any] | None, fmt=fmt_usd) -> str:
-    """`mean (lo to hi)`, with the D107 note when the mean is above the upper end."""
+    """`mean (lo to hi)`, with the tail note when the mean is above the upper end."""
     if not iv:
         return "n/a"
     text = f"{fmt(iv.get('mean'))} ({fmt(iv.get('lo'))} to {fmt(iv.get('hi'))})"

@@ -39,7 +39,7 @@ def _session_id(path: "str | Path") -> "str | None":
     and its root parent's id in `session_id` (measured 2026-09-23: 174 of
     4,314 rollout files, every one a `source.subagent` thread), so reading
     `session_id` first grouped each child into its parent as if it were a
-    resumed continuation, priced at the parent's model (Analyst D28). No two
+    resumed continuation, priced at the parent's model. No two
     files shared an `id` in that estate; `session_id` remains the fallback
     for a file without an `id`.
     """

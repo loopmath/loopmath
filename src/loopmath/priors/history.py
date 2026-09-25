@@ -1,7 +1,7 @@
 """Repo-history task miner (lane 11): our own commits as tasks with tests.
 
 A candidate is a non-merge commit that changes at most `max_files` files and
-at least one runnable test file. It becomes one spec 03 `Task` line (D14):
+at least one runnable test file. It becomes one spec 03 `Task` line:
 `source: "repo_history"`, `base_commit` = the parent, features from the diff,
 and a top-level `history` object with the commit, its test files, the command
 that runs them, the changed lines and the files changed.
@@ -300,7 +300,7 @@ def test_command(blobs: _Blobs, commit: str, test_files: list[str]) -> tuple[str
 
 # ---------------------------------------------------------------- mining
 def commit_to_task(repo_path: Path, name: str, commit: dict, blobs: _Blobs, *, max_files: int = 25) -> dict | None:
-    """One D14 task line for a commit, or None when it is not a candidate."""
+    """One task line for a commit, or None when it is not a candidate."""
     if len(commit["parents"]) != 1 or _EXCLUDE_SUBJECT.search(commit["subject"]):
         return None
     groups = classify_files(commit["files"])
@@ -555,7 +555,7 @@ def _rank(task: dict) -> str:
 
 
 def can_fail(task: dict) -> bool:
-    """D66: a task has a test that fails at its base commit (a test-only commit whose parent already passes has none)."""
+    """A task has a test that fails at its base commit (a test-only commit whose parent already passes has none)."""
     return bool((task["history"].get("validation") or {}).get("fail_to_pass"))
 
 
@@ -564,7 +564,7 @@ def select_tasks(tasks: list[dict], *, per_repo: dict[str, int], require_verifie
     """A deterministic, type-balanced pick: round robin over types within each repo, ranked by id hash.
 
     In a repo held to verified tasks, a picked task that cannot fail is left out after the pick and
-    appended to `dropped` (D66: its start tree already passes); the rest of the pick does not move.
+    appended to `dropped` (its start tree already passes); the rest of the pick does not move.
     """
     strict = set(require_verified)
     picked: list[dict] = []
@@ -671,7 +671,7 @@ def main(argv: list[str] | None = None) -> int:
     quota = dict(args.quota)
     if not quota:
         s.error("select needs --quota REPO=N for each repo to pick from")
-    # A misspelt repo would silently pick nothing from it, or skip its D66 filter: refuse, write nothing.
+    # A misspelt repo would silently pick nothing from it, or skip its filter: refuse, write nothing.
     held = {r.get("repo") for r in rows}
     unknown = sorted((set(quota) | set(args.verified)) - held)
     if unknown:

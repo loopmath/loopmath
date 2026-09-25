@@ -31,7 +31,7 @@ A workflow file (the catalog files in `catalog/` are complete examples):
     effort = "high"
 
 An edge is `"a -> b"` or `["a", "b"]`; one end is a piece and the other an
-artifact. Workflows are acyclic (D3): repair loops are `control.gates`.
+artifact. Workflows are acyclic: repair loops are `control.gates`.
 Unknown top-level keys are kept in `Workflow.extra` and written back.
 """
 

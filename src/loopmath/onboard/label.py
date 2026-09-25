@@ -1,9 +1,6 @@
 """One batch labelling call through the labeller the user chose.
 
-Owner: lane 03. Spec: design/0.1/02-commands.md sections 1 and 4, 08-lanes.md section 3;
-decisions D6, D11 and D39 in the lane questions log.
-
-The user picks the labeller; loopmath never picks a model for them (D39):
+The user picks the labeller; loopmath never picks a model for them:
 
     claude:<model>    runs the user's `claude -p --model <model>`
     codex:<model>     runs the user's `codex exec --model <model>`
@@ -49,6 +46,9 @@ OUT_TOKENS_PER_GROUP = 60      # one label is about 50 to 70 tokens of JSON
 # 16,400 of overhead. claude runs with our own --system-prompt; its figure is assumed.
 CALL_OVERHEAD_TOKENS = {"claude": 1500, "codex": 16500}
 TIMEOUT_S = 900
+# A small model per CLI, priced in `labeler.options` when the user has not chosen yet. These are
+# examples to show with their cost, never a default: the user still picks (D39).
+SUGGESTED = (("claude", "claude-haiku-4-5"), ("codex", "gpt-6-luna"))
 
 
 class LabelError(Exception):
@@ -78,7 +78,7 @@ class Labeler:
 
 
 def parse_labeler(spec: str, *, which: Callable[[str], str | None] = shutil.which) -> Labeler:
-    """A `--labeler` or config `onboard.labeler` value to a `Labeler` (D39 forms only)."""
+    """A `--labeler` or config `onboard.labeler` value to a `Labeler`."""
     from ..cli_registry import labeler_spec
 
     try:
@@ -100,7 +100,7 @@ def parse_labeler(spec: str, *, which: Callable[[str], str | None] = shutil.whic
 def choose_labeler(requested: str | None, configured: str | None, *,
                    which: Callable[[str], str | None] = shutil.which) -> tuple[Labeler | None, str | None]:
     """(labeller, where it came from: "flag" | "config"), or (None, None) when the user
-    has not chosen one. There is no default (D39)."""
+    has not chosen one. There is no default."""
     if requested:
         return parse_labeler(requested, which=which), "flag"
     if configured:
@@ -151,6 +151,23 @@ def estimate(prompts: list[str], system: str, n_groups: int, labeler: Labeler, *
         else:
             out["usd_unknown"] = f"no price row for {labeler.model}"
         out["price_todo"] = bool(priced.get("todo"))
+    return out
+
+
+def options(prompts: list[str], system: str, n_groups: int, *, which: Callable[[str], str | None] = shutil.which,
+            table: Any = None) -> list[dict]:
+    """The labellers this machine can run, each with its expected cost, then `none`: what the
+    orchestrator shows in its one question before onboarding."""
+    out = []
+    for kind, model in SUGGESTED:
+        exe = which(kind)
+        if exe:
+            lab = Labeler(kind, model=model, executable=exe)
+            out.append({"spec": lab.spec, "title": lab.title,
+                        "expected": estimate(prompts, system, n_groups, lab, table=table)})
+    out.append({"spec": "none", "title": "none (no model; a keyword guess)",
+                "expected": {"labeler": "none", "model": None, "calls": 0, "groups": n_groups,
+                             "tokens": {"input": 0, "output": 0, "total": 0}, "usd": 0.0}})
     return out
 
 
@@ -256,7 +273,7 @@ def _command_answer(stdout: str) -> tuple[dict | None, dict]:
     return answer, cost
 
 
-def parse_answer(answer: dict | None, expected: list[str], subtypes: list[str] | None) -> tuple[dict, dict, list[str]]:
+def parse_answer(answer: dict | None, expected: list[str], subtypes: list[str] | None, features: Any = None) -> tuple[dict, dict, list[str]]:
     """(labels, rejected, problems) for one chunk's answer object."""
     labels: dict[str, dict] = {}
     rejected: dict[str, str] = {}
@@ -273,7 +290,7 @@ def parse_answer(answer: dict | None, expected: list[str], subtypes: list[str] |
         if gid in labels or gid in rejected:
             problems.append(f"answer repeats id {gid}")
             continue
-        label, notes = taskmodel.validate_label(item, subtypes)
+        label, notes = taskmodel.validate_label(item, subtypes, features)
         if label is None:
             rejected[gid] = "labeller said unknown" if notes == ["type unknown"] else "labeller answer invalid: " + "; ".join(notes)
         else:
@@ -295,15 +312,15 @@ def chunk_stdin(labeler: Labeler, batch: list[dict], *, system: str, schema: dic
     return build_prompt(batch)
 
 
-def run_batches(batches: list[list[dict]], labeler: Labeler, *, subtypes: list[str] | None = None,
+def run_batches(batches: list[list[dict]], labeler: Labeler, *, subtypes: list[str] | None = None, features: Any = None,
                 runner: Callable[..., Any] = subprocess.run, table: Any = None, timeout: float = TIMEOUT_S,
                 progress: Callable[[int, int], None] | None = None, attempts: int = 2,
                 trace: list[dict] | None = None) -> LabelRun:
     """Send every chunk (after the caller has the user's yes). `attempts` 2 is one retry
-    per chunk (D6). When `trace` is a list, each call's argv, stdin, exit code and
+    per chunk. When `trace` is a list, each call's argv, stdin, exit code and
     output are appended to it, so a caller can show exactly what was sent."""
-    system = taskmodel.label_instructions(subtypes)
-    schema = taskmodel.label_schema(subtypes)
+    system = taskmodel.label_instructions(subtypes, features)
+    schema = taskmodel.label_schema(subtypes, features)
     result = LabelRun()
     if labeler.name == "command":
         result.cost["basis"] = "reported by your command"
@@ -366,7 +383,7 @@ def run_batches(batches: list[list[dict]], labeler: Labeler, *, subtypes: list[s
                 for gid in expected:
                     result.rejected[gid] = f"labeller failed ({error})"
                 continue
-            labels, rejected, problems = parse_answer(answer, expected, subtypes)
+            labels, rejected, problems = parse_answer(answer, expected, subtypes, features)
             result.labels.update(labels)
             result.rejected.update(rejected)
             result.problems += problems

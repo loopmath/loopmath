@@ -1,12 +1,11 @@
 """Handlers for `loopmath doctor` and `loopmath skill install|uninstall|show`.
-
-Owner: lane 09. Spec: design/0.1/02-commands.md section 5, 07-skill.md.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .. import __version__
 from ..output import EXIT_OK, EXIT_USER, emit_json, fail, home
@@ -27,20 +26,37 @@ def doctor(args: argparse.Namespace) -> int:
     return EXIT_OK if report["ok"] else EXIT_USER
 
 
+def _count(entries: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for e in entries:
+        counts[e["action"]] = counts.get(e["action"], 0) + 1
+    return ", ".join(f"{n} {action}" for action, n in counts.items())
+
+
 def _results(verb: str, results: list[dict], as_json: bool) -> None:
     if as_json:
-        emit_json("loopmath.skill/1", {"verb": verb, "results": results})
+        emit_json("loopmath.skill/2", {"verb": verb, "results": results})
         return
     for r in results:
-        line = f"{r['target']} {r['scope']}: {r['action']} {r['path']}"
+        form = " (AGENTS.md block)" if r["method"] == "agents_block" else ""
+        print(f"{r['target']} {r['scope']}{form}: {len(r['skills'])} skills in {r['root']}: {_count(r['skills'])}")
+        for e in r["removed"]:
+            print(f"  removed {e['path']}")
         if r.get("block"):
-            line += f"; AGENTS.md block {r['block']} in {r['agents_md']}"
-        print(line)
+            print(f"  AGENTS.md block {r['block']} in {r['agents_md']}")
+        for note in r.get("notes") or []:
+            print(f"  note: {note}")
+
+
+def _where(args: argparse.Namespace) -> Path | None:
+    if args.dir and args.scope != "project":
+        raise ValueError("--dir is the project folder for --scope project")
+    return Path(args.dir).expanduser().resolve() if args.dir else None
 
 
 def install(args: argparse.Namespace) -> int:
     try:
-        results = _install.install(args.target, args.scope)
+        results = _install.install(args.target, args.scope, cwd=_where(args))
     except (OSError, ValueError) as exc:
         return fail(str(exc))
     _results("install", results, args.json)
@@ -49,7 +65,7 @@ def install(args: argparse.Namespace) -> int:
 
 def uninstall(args: argparse.Namespace) -> int:
     try:
-        results = _install.uninstall(args.target, args.scope)
+        results = _install.uninstall(args.target, args.scope, cwd=_where(args))
     except (OSError, ValueError) as exc:
         return fail(str(exc))
     _results("uninstall", results, args.json)
@@ -57,5 +73,9 @@ def uninstall(args: argparse.Namespace) -> int:
 
 
 def show(args: argparse.Namespace) -> int:
-    sys.stdout.write(_install.skill_text())
+    name = getattr(args, "name", None) or "loopmath"
+    try:
+        sys.stdout.write(_install.skill_text(name))
+    except KeyError:
+        return fail(f"no skill {name!r}; one of {', '.join(_install.SKILLS)}, or reference")
     return EXIT_OK

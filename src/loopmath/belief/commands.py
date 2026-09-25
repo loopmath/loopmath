@@ -7,7 +7,7 @@
 - `--background`: detaches and returns at once through the store's fit trigger
   (`store.fitjob.spawn_fit`, lane 7), so a running fit queues one more fit instead of
   racing it.
-- A `--without` name that matches no source exits 2 and lists the known names (D86); a fit
+- A `--without` name that matches no source exits 2 and lists the known names; a fit
   with nothing to fit writes nothing, leaves `fits/latest` where it was and exits 1.
 """
 
@@ -30,7 +30,7 @@ def _spawn(home: Path, *, no_prior: bool, without: tuple[str, ...], full: bool) 
 
 
 def _unknown_without(home: Path, without: tuple[str, ...]) -> str | None:
-    """The D86 error for `--without` names that match no source, checked before any fit starts.
+    """The error for `--without` names that match no source, checked before any fit starts.
 
     Names the bundle, `benchmark`, `user` or `shared` know pass at once; only a likely typo
     reads the source names of the stored and imported runs.
@@ -72,11 +72,14 @@ def _summary(path: Path) -> dict:
         "dropped": meta.get("dropped", {}),
         "not_model_attempts": meta.get("not_model_attempts", {}),
         "full": meta.get("full"),
+        "features": {k: v for k, v in (meta.get("features") or {}).items() if k != "declared"},
+        "horizons": meta.get("horizons") or {},
     }
 
 
 def _print_summary(s: dict) -> None:
     from ..priors import overlap_note
+    from .features import features_line, horizon_line
     from .fit import dropped_text
 
     f = s["fit"]
@@ -101,6 +104,12 @@ def _print_summary(s: dict) -> None:
     dropped = s.get("dropped") or {}
     if dropped:
         print(dropped_text(dropped))
+    line = features_line(s.get("features"))
+    if line:
+        print(line)
+    line = horizon_line(s.get("horizons"))
+    if line:
+        print(line)
     full = s.get("full")
     if isinstance(full, dict) and not full.get("ran"):
         print(f"pymc check: {full.get('reason', 'not run')}")

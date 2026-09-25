@@ -127,7 +127,7 @@ def _manifest_paths(discovered, harness: str) -> tuple[Path, ...]:
 # path whose real mtime now differs only at sub-second resolution, serving
 # a stale record with no sign anything was wrong. Bumping the version
 # changes the cache file's name (`_cache_path` below), so an old-format
-# cache is never opened under the new scheme; it is simply rebuilt (D4: the
+# cache is never opened under the new scheme; it is simply rebuilt (the
 # cache is rebuildable by construction, so this costs one cold parse, not
 # a migration).
 CACHE_VERSION = 2
@@ -170,7 +170,7 @@ def _cache_path() -> Path:
 def load_cache() -> dict:
     """Load the parsed-run cache. Any problem yields an empty cache.
 
-    The cache is rebuildable by construction (D4): it holds only what the
+    The cache is rebuildable by construction: it holds only what the
     parsers derived from logs that are still on disk, so a corrupt or
     stale-format cache is discarded rather than repaired. A cache written by a
     different build of the parsers is discarded wholesale for the same reason:

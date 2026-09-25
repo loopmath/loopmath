@@ -11,7 +11,7 @@ Spec 04 sections 2 and 4. Every head has effects `b` with prior `N(0, Lambda)`, 
   4.10; `q = 1` for gates). The mode is found by Newton iterations with the expected
   (Fisher) Hessian, which equals the Newton Hessian when `q = 1` and stays positive definite
   when `q < 1`. The Laplace covariance and evidence use the observed Hessian of the log
-  posterior at the mode (spec 04, D68); if that is not positive definite the head falls back
+  posterior at the mode (spec 04); if that is not positive definite the head falls back
   to the Fisher precision, and the fit's diagnostics say so (`info["hessian"]`).
 - Scales: L-BFGS-B over `log phi` (and `log sigma`) with a log-normal hyperprior on each
   `phi` (sd 0.7 around the spec defaults) so that sparse levels do not collapse to zero.
@@ -79,7 +79,7 @@ class HeadFit:
     log_evidence: float = float("nan")
     iterations: int = 0
     info: dict = field(default_factory=dict)
-    precision: sparse.csr_matrix | None = None  # the matrix whose Cholesky factor gives U (D94)
+    precision: sparse.csr_matrix | None = None  # the matrix whose Cholesky factor gives U
     _U: np.ndarray | None = field(default=None, repr=False)
 
     @property
@@ -346,7 +346,7 @@ class LogisticHead:
 
     def _precision(self, b: np.ndarray, lam_inv: np.ndarray) -> tuple[BlockFactor, str, np.ndarray]:
         """Factor of the Laplace precision at `b`: the observed Hessian of the log posterior, or the
-        Fisher one when the observed Hessian is not positive definite (D68); and its row weights."""
+        Fisher one when the observed Hessian is not positive definite; and its row weights."""
         eta = self.X @ b
         o = self._observed(eta)
         try:

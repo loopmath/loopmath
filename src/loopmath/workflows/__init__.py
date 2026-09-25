@@ -1,7 +1,5 @@
 """Workflow catalog, TOML format, configuration ids, candidates, diff and inference (spec 03, spec 05 section 1).
 
-Owner: lane 04. Spec: design/0.1/.
-
 Names below load their module on first use, so `import loopmath.workflows`
 stays cheap and cannot form an import cycle with `loopmath.ocp`. `candidates`,
 `diff` and `infer` are submodules (lane 01's migrate imports `infer` as a

@@ -27,17 +27,31 @@ python3 -m venv .venv
 ## First run
 
 ```sh
-loopmath doctor                        # what loopmath can see: logs, agents, store, fit, prices, skill
-loopmath skill install --target both   # teach Claude Code and Codex how to use loopmath
+loopmath skill install      # teach your coding agents how to use loopmath
 ```
 
-`skill install` writes one `SKILL.md` for Claude Code (under `~/.claude/skills/loopmath/`) and one for Codex (under `~/.codex/skills/loopmath/`). If your Codex has no skills folder, it writes the file to `~/.codex/loopmath/SKILL.md` instead and adds a short marked block to `~/.codex/AGENTS.md` that points to it. Add `--scope project` to install into the current repository. It is safe to run again, and it rewrites only its own files. `loopmath skill uninstall` removes them.
+Then ask your agent to onboard, for example "onboard loopmath". The agent runs a dry run, asks you one question (which model labels your sessions, with the cost of each option), onboards, fits, and opens the results page.
 
-Next, turn your history into a starting point:
+`skill install` writes six skills, one per job, and a shared `reference.md` with every command and JSON field they use. An agent loads only the skill for the job at hand, and each phrase belongs to one skill:
+
+| Skill | Ask your agent |
+|---|---|
+| `loopmath` | loopmath named without a job: "use loopmath", "what can loopmath do", "what next with loopmath" |
+| `loopmath-onboard` | "onboard", "set up", "start" or "try" loopmath; or loopmath has no runs yet |
+| `loopmath-import-runs` | OCP files (`*.ocp.json`), a folder of finished runs, or the output of an orchestrator or experiment harness that writes OCP |
+| `loopmath-update-fit` | "update", "refresh" or "rerun" the fit; what loopmath learned; runs imported or recorded without a refit |
+| `loopmath-plan-task` | "plan a task with loopmath"; which workflow, model or effort to use; a coding task of more than a few minutes in a repo that uses loopmath |
+| `loopmath-record-run` | a task planned with loopmath is done; "record", "log" or "save" a run; both runs of a pair need a blind judge |
+
+By default the skills go to every agent whose home exists: Claude Code (`~/.claude/skills/<name>/`, or under `$CLAUDE_CONFIG_DIR`) and Codex (`~/.codex/skills/<name>/`, or under `$CODEX_HOME`). `--target claude-code`, `codex` or `both` picks them yourself. If your Codex has no skills folder, the files go to `~/.codex/loopmath/<name>/` instead, with a short marked block in `~/.codex/AGENTS.md` that lists them. Add `--scope project` to install into the current repository (or `--dir PATH` for another one).
+
+It is safe to run again. It records the files it wrote, with their hashes, in `.loopmath-skills.json` beside the skill folders, and it replaces or removes only those. A skill file you changed is kept, with a note. Any other file where a skill goes stops the install before it writes anything, and names the path to move aside. The single skill that 0.1 installed is replaced when it is as 0.1 wrote it. `loopmath skill show NAME` prints one skill, and `loopmath skill uninstall` removes the files it wrote. `loopmath doctor` shows what loopmath can see: logs, agents, store, fit, prices and skills.
+
+To onboard by hand instead:
 
 ```sh
-loopmath onboard --labeler claude:claude-haiku-4-5 --dry-run    # see what it found and what labelling costs
-loopmath onboard --labeler claude:claude-haiku-4-5 --yes        # record it and run a first fit
+loopmath onboard --dry-run                                  # what it found, and what each labeller costs
+loopmath onboard --labeler claude:claude-haiku-4-5 --yes    # record it and run a first fit
 ```
 
 `onboard` reads your recent Claude Code and Codex sessions (the last 90 days unless you pass `--since`). It groups them into runs, labels each group's task type with a model you choose, names your usual workflow per task type and repository, and fits. loopmath never picks the labelling model for you. `--labeler` takes one of:
@@ -53,7 +67,15 @@ loopmath ships with a prior built from our own sweeps and experiments, so `recom
 
 ## The loop
 
-The skill tells an orchestrator agent to follow these steps. You can run the same commands by hand.
+The plan and record skills take an agent through the loop in three commands:
+
+```sh
+loopmath recommend --type bug_fix --repo acme/api --title "Fix the parser crash" --json --brief --html
+loopmath run start --rec REC --choice goal --base-commit SHA --json      # the harness, model and effort per piece
+loopmath run record --run RUN --session UUID --verified tests=pass --json  # costs from the logs, the outcome, the receipt
+```
+
+The same loop step by step, for a tool of your own:
 
 ```sh
 # 1. Plan: classify the task, then ask.

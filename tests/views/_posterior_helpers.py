@@ -1,5 +1,5 @@
 """Shared pieces for the posterior view tests: the fixture, a fake belief state, hand-made
-workflow shapes, a node DOM stub that runs the page's script, and an HTML balance check."""
+workflow shapes, a node DOM stub that runs the page's detail blocks, and an HTML balance check."""
 
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ def money(usd: float) -> Money:
 class FakeState:
     """A BeliefState with fixed numbers: each piece costs $1 x its position per round.
 
-    As lane 5 does (D60), `cost` is the piece's whole-run contribution and `cost_per_round`
+    As lane 5 does, `cost` is the piece's whole-run contribution and `cost_per_round`
     one execution; the fake may multiply by its own expected rounds, the view never does.
     """
 
@@ -121,6 +121,9 @@ class FakeState:
         total = sum(p.cost.usd.mean for p in per_piece.values())
         return Prediction(config.id, iv(0.8, 0.7, 0.9), money(total), money(total * 1.2), iv(1.4, 1.0, 2.2),
                           per_piece, 12)
+
+    def predict_many(self, task, configs, rule=None, *, rescue_usd=None) -> list[Prediction]:
+        return [self.predict(task, c, rule) for c in configs]
 
 
 OPUS = Setting("claude-code", "claude-opus-5-5", "high")
@@ -180,30 +183,29 @@ const fs = require('fs');
 const page = fs.readFileSync(process.argv[2], 'utf8');
 const open = '<script type="application/json" id="data">';
 const dataText = page.slice(page.indexOf(open) + open.length, page.indexOf('</script>', page.indexOf(open)));
-const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+const script = fs.readFileSync(process.argv[4], 'utf8');
 function el(attrs) {
   return {attrs: attrs || {}, innerHTML: '', textContent: '', hidden: false, style: {},
     getAttribute(k) { return this.attrs[k] == null ? null : String(this.attrs[k]); },
     setAttribute(k, v) { this.attrs[k] = String(v); },
     closest() { return this; }};
 }
-const els = {data: el(), lede: el(), task: el(), tip: el(),
-  'tab-levels': el({'data-panel': 'levels'}), 'tab-graph': el({'data-panel': 'graph'}), 'tab-data': el({'data-panel': 'data'})};
+const els = {data: el(), tip: el(), 'est-levels': el(), 'est-graph': el(), 'est-data': el()};
 els.data.textContent = dataText;
-const tabs = ['levels', 'graph', 'data'].map(t => el({'data-tab': t}));
 const handlers = {};
-global.document = {readyState: 'complete', getElementById: id => els[id] || null,
-  querySelectorAll: sel => sel === '[data-panel]' ? [els['tab-levels'], els['tab-graph'], els['tab-data']] : (sel === '[data-tab]' ? tabs : []),
+global.document = {readyState: 'complete', getElementById: id => els[id] || null, querySelectorAll: () => [],
+  createElement: () => el(), body: {appendChild() {}},
   addEventListener: (t, f) => { (handlers[t] = handlers[t] || []).push(f); }};
 global.window = global;
 global.innerWidth = 1200;
 global.location = {hash: process.argv[3] || ''};
 global.history = {replaceState() {}};
-for (const s of scripts) (0, eval)(s);
+(0, eval)(script);
 const P = global.LMPosterior;
+P.init();
 const D = JSON.parse(dataText);
-const out = {heads: P.heads(), initialHead: P.state.head, levels: {}, graph: [], lede: els.lede.innerHTML, task: els.task.innerHTML,
-  initialPanels: {levels: els['tab-levels'].hidden, graph: els['tab-graph'].hidden, data: els['tab-data'].hidden}};
+const out = {heads: P.heads(), initialHead: P.state.head, levels: {}, graph: [], lede: P.lede(), task: P.taskLine(),
+  drawn: {levels: els['est-levels'].innerHTML.length > 0, graph: els['est-graph'].innerHTML.length > 0, data: els['est-data'].innerHTML.length > 0}};
 for (const h of P.heads().concat(['all'])) out.levels[h] = P.levelsHtml(h);
 out.data = P.dataHtml();
 const n = (D.workflows && D.workflows.length) || (D.workflow ? 1 : 0);
@@ -214,9 +216,6 @@ Object.keys(D.levels || {}).forEach(k => (D.levels[k] || []).forEach(nd => { out
 const headBtn = el({'data-head': 'all'});
 handlers.click.forEach(f => f({target: headBtn}));
 out.afterHeadClick = P.state.head;
-const tabBtn = el({'data-tab': 'data'});
-handlers.click.forEach(f => f({target: tabBtn}));
-out.panels = {levels: els['tab-levels'].hidden, graph: els['tab-graph'].hidden, data: els['tab-data'].hidden};
 const pick = {id: 'wfpick', value: String(Math.max(0, n - 1))};
 handlers.change.forEach(f => f({target: pick}));
 out.afterPick = P.state.wf;
@@ -227,15 +226,19 @@ out.tipHidden = els.tip.hidden;
 out.tipLeft = els.tip.style.left;
 process.stdout.write(JSON.stringify(out));
 """
+ESTIMATES_JS = ROOT / "src" / "loopmath" / "views" / "assets" / "estimates.js"
 
 
 def run_page(page: str, tmp_path: Path, hash_: str = "") -> dict[str, Any]:
-    """Run the page's inline script under node with a small DOM stub; return what it drew."""
+    """Run the page's detail blocks (`estimates.js`, which the page must embed as is) under node with a small DOM
+    stub on the page's own data; return what they drew. The whole page runs in headless Chrome elsewhere."""
+    assert ESTIMATES_JS.read_text(encoding="utf-8") in page
     page_path = tmp_path / "page.html"
     page_path.write_text(page, encoding="utf-8")
     harness = tmp_path / "harness.js"
     harness.write_text(_HARNESS, encoding="utf-8")
-    result = subprocess.run([NODE, str(harness), str(page_path), hash_], capture_output=True, text=True, timeout=60)
+    result = subprocess.run([NODE, str(harness), str(page_path), hash_, str(ESTIMATES_JS)], capture_output=True, text=True,
+                            timeout=60)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

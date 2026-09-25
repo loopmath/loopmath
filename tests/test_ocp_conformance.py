@@ -773,7 +773,7 @@ def test_cli_exit_codes(tmp_path, capsys, swarm):
 
 @pytest.mark.parametrize("kind", ["dep", "fan_in", "spawn"])
 def test_tier_is_required_on_every_v02_edge_whatever_its_kind(swarm, kind):
-    """Amendment (b), settled 14:15 (Analyst): a tier is required on every edge
+    """A tier is required on every edge
     of a v0.2 document whatever its kind, not only on artifact and launch
     edges. A dep, fan_in or spawn edge without one is a conformance error from
     both the schema (E010) and the checker (E160)."""

@@ -7,12 +7,12 @@ are ranked by gain per dollar of that price.
 - `goal+explore`: per backlog task, the goal and the exploration candidate with
   the highest `G / price` of the slate (with `--slate-size` above 2, the next
   ones too). Slates are taken greedily by the same ratio. After each take, the belief is conditioned on the
-  look-ahead mean (`conditioned`, decision D10) when it can be; otherwise the
+  look-ahead mean (`conditioned`) when it can be; otherwise the
   gain of every later slate asking the same question (the same exploration
   configuration in the same type and repo) is divided by one plus the times it
   was taken. Either way the plan does not ask the same question twice for free.
   Conditioning re-evaluates every open task, so it is exact for the first K
-  picks only (D58, D59): K is pinned by config `plan.exact_picks`, or else
+  picks only: K is pinned by config `plan.exact_picks`, or else
   conditioning stops when the next re-evaluation would take it past config
   `plan.time_budget_s` (default 30 s). Later picks are ranked by their last
   gains with the shrink above, and the output says so.
@@ -59,7 +59,7 @@ DEFAULT_TIME_BUDGET_S = 30.0
 
 # ---------------------------------------------------------------- backlog
 def read_backlog(path: Path) -> list[tuple[Task, dict[str, Any]]]:
-    """One JSON object per line: a Task dict, with unknown keys (such as `history`, D14) kept."""
+    """One JSON object per line: a Task dict, with unknown keys (such as `history`) kept."""
     from .commands import UserError, task_from_dict
 
     out = []
@@ -94,7 +94,7 @@ def price_dict(m: Money) -> dict[str, Any]:
 
 
 def member(cfg: Configuration, role: str, **more: Any) -> dict[str, Any]:
-    """A slate member with everything `run start` needs (D13: the full configuration dict).
+    """A slate member with everything `run start` needs (the full configuration dict).
 
     Every member carries its own `price` (its expected run cost; the members sum to the slate's),
     so a runner can reserve budget per run.
@@ -170,14 +170,14 @@ def plan_goal_explore(belief: Any, tasks: Sequence[tuple[Task, dict[str, Any]]],
                       clock=time.perf_counter) -> dict[str, Any]:
     """Greedy slates by `G / price` within the budget, one slate per task.
 
-    With `conditioned` (D10), every open task is re-evaluated under the updated
+    With `conditioned`, every open task is re-evaluated under the updated
     belief after each take, so the next ranking uses current gains. The update
     moves shared parent nodes, so no task is assumed unaffected. This holds for
     the first `exact_picks` picks, or, when that is None, while the next
     step is expected to keep the conditioning phase within `time_budget_s`: a
     soft budget, forecast from the mean evaluation time and the mean time a pick
     spends ranking and conditioning, so a slower step can overrun it (the first
-    pass always runs in full; D59). Later picks, and
+    pass always runs in full). Later picks, and
     every pick after the first without `conditioned`, are ranked by the last
     gains, a question's gain divided by one plus the times it was taken since
     (the shrink, stated in `notes`). `evaluations` counts the per-task
@@ -298,7 +298,7 @@ def left_out_notes(open_states: Sequence[TaskState], asked: Counter, k: int, lef
 
 
 def plan_limits(conf: Conf) -> tuple[float, int | None]:
-    """(`plan.time_budget_s`, `plan.exact_picks`) from config, checked (D59)."""
+    """(`plan.time_budget_s`, `plan.exact_picks`) from config, checked."""
     budget = conf.get("plan.time_budget_s", DEFAULT_TIME_BUDGET_S)
     if isinstance(budget, bool) or not isinstance(budget, (int, float)) or not budget > 0:
         raise ValueError(f"config plan.time_budget_s must be a positive number of seconds; got {budget!r}")
@@ -349,7 +349,7 @@ def best_option(st: TaskState, asked: Counter, k: int, room: float = float("inf"
 
 
 def with_history(slate: dict[str, Any], line: dict[str, Any]) -> dict[str, Any]:
-    """Carry the backlog line's `history` (D14) so the runner needs no join back to the backlog."""
+    """Carry the backlog line's `history` so the runner needs no join back to the backlog."""
     if isinstance(line.get("history"), dict):
         slate["history"] = line["history"]
     return slate
@@ -514,7 +514,7 @@ def allowed_models(conf: Conf, models: Sequence[str] | None) -> list[tuple[str, 
 
 def asked_tasks(tasks: Sequence[tuple[Task, dict[str, Any]]]) -> tuple[list[tuple[Task, dict[str, Any]]],
                                                                         dict[str, str]]:
-    """Backlog tasks as the belief sees them, and the made-up id behind each asked id (D89).
+    """Backlog tasks as the belief sees them, and the made-up id behind each asked id.
 
     A line without an id gets one made up for the call, which seeded the belief's draw of the
     task's effect, so the same backlog on the same fit gave another plan each time. The belief
@@ -657,7 +657,7 @@ def plan_summary(result: dict[str, Any]) -> list[str]:
         # the backlog line's title when it has one: an id made up for this call means nothing to the reader
         name = s["task"].get("title") or s["task"]["id"]
         pu = s["price"]["usd"]
-        price = noted(usd(pu["mean"]), Interval(pu["mean"], pu["lo"], pu["hi"]))  # D107
+        price = noted(usd(pu["mean"]), Interval(pu["mean"], pu["lo"], pu["hi"]))
         lines.append(f"  {name} ({s['task']['type']}): {labels}: {price}{extra}")
     if len(result["slates"]) > 18:
         lines.append(f"  ... {len(result['slates']) - 18} more (use --json)")

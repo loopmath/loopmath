@@ -337,8 +337,7 @@ def _slug(s: object) -> str:
 def _stage_number(stage: dict | None, key: str, empty_reason: str) -> tuple[int | None, str | None]:
     """(value, reason): the stage's number for `key`, or `None` with the reason
     it is unknown. A number is only ever what the stage said; a stage that said
-    nothing, or nothing for this key, yields `None`, never 0 (EXTRACTOR-SPEC
-    section 0, rule 1). `key` may be dotted (`tiers.ungraded`); a per-harness
+    nothing, or nothing for this key, yields `None`, never 0. `key` may be dotted (`tiers.ungraded`); a per-harness
     dict counts through its `total`, or the sum of its integer members."""
     if not stage:
         return None, empty_reason
@@ -362,8 +361,7 @@ def _stage_number(stage: dict | None, key: str, empty_reason: str) -> tuple[int 
 
 def _pipeline_counters(diag: dict, coverage: dict, price_warnings: dict, *, since, limit, files_outside_window) -> dict:
     """Flatten what ingest, grading and pricing excluded or could not do into
-    `Graph.meta` keys (EXTRACTOR-SPEC section 0, rule 1: every exclusion is
-    counted in `Graph.meta` and printed). Prefixed by stage so they never
+    `Graph.meta` keys. Prefixed by stage so they never
     collide with the extractor's own counters. A number a stage did not report
     is `None` beside a `<key>_reason` string, never 0: zero only when the stage
     said zero."""

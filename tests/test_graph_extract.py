@@ -1,6 +1,6 @@
 """Skeleton extractor on the synthetic transcripts under tests/fixtures/graph/skeleton/.
 
-The fixture is one small swarm, hand-written (EXTRACTOR-SPEC.md section 7):
+The fixture is one small swarm, hand-written:
 
 - `lead` (top, /ws/alpha, 10:00 to 10:10) spawns two subagents through Task calls
   whose ids match the subagents' `.meta.json` (`plan`, declared type Plan, and `dev`);

@@ -1,8 +1,5 @@
 """Handler for `loopmath onboard`.
 
-Owner: lane 03. Spec: design/0.1/02-commands.md section 4, 08-lanes.md section 3;
-decisions D4 to D7, D11, D25, D28 and D39 in the lane questions log.
-
     loopmath onboard [--since 90d] [--labeler claude:MODEL|codex:MODEL|command:CMD|none]
                      [--yes] [--dry-run] [--home PATH] [--json]
 
@@ -12,7 +9,7 @@ group into the store (lane 7), write the usual workflow per (type, repo) to conf
 run a first fit (lane 5), and print what was found and what could not be classified.
 Every write-path dependency is checked before the labeller is asked to spend money.
 
-The labeller is the user's choice (D39): `--labeler`, else config `onboard.labeler`.
+The labeller is the user's choice: `--labeler`, else config `onboard.labeler`.
 With neither, onboard does everything except labelling and exits 2 so the
 orchestrator can ask the user. A `--labeler` choice is saved to config once the run
 goes ahead with it (after the cost is approved).
@@ -43,7 +40,7 @@ from . import usual as U
 SCHEMA = "loopmath.onboard/1"
 MIN_CONFIDENCE = 0.3
 LABELER_KEY = "onboard.labeler"
-EXIT_NO_LABELER = EXIT_NOT_FOUND  # D39: onboard exits 2 until the user has chosen a labeller
+EXIT_NO_LABELER = EXIT_NOT_FOUND  # Onboard exits 2 until the user has chosen a labeller
 NO_LABELER = ("no labeller chosen. Choose the model that labels your history (an agent running onboard asks its "
               "user and never picks one), then rerun with --labeler " + " | ".join(f.split(" ", 1)[0] for f in L.FORMS)
               + ". Local models, GPT and Claude all work; the confirmed choice is saved as config onboard.labeler")
@@ -105,7 +102,7 @@ def onboard(args: argparse.Namespace) -> int:
     since = str(getattr(args, "since", None) or "").strip() or "90d"  # blank reads as the default
     try:
         since_days = since_window(since)
-    except ValueError as exc:  # the one --since reader (D89, D109); `3m` is ambiguous and exits 2
+    except ValueError as exc:  # the one --since reader; `3m` is ambiguous and exits 2
         return fail(str(exc), getattr(exc, "exit_code", EXIT_USER))
     notes: list[str] = []
 
@@ -118,18 +115,20 @@ def onboard(args: argparse.Namespace) -> int:
         return default if value is None else value
 
     subtypes = [str(s) for s in (cfg("subtypes", []) or [])]
-    try:  # the user's choice only; there is no default labeller (D39)
+    features = taskmodel.features_from_config(cfg("features"))  # the declared keys the labeller fills
+    try:  # the user's choice only; there is no default labeller
         labeler, labeler_from = L.choose_labeler(getattr(args, "labeler", None), cfg(LABELER_KEY), which=deps.which)
     except L.LabelError as exc:
         return fail(str(exc))
 
-    # The one line printed even when stderr is captured: the wait that follows can be long (D94).
+    # The one line printed even when stderr is captured: the wait that follows can be long.
     print(f"onboard: reading Claude Code and Codex history, {_window_words(since)}; "
           "a large history can take several minutes", file=sys.stderr, flush=True)
     hist = deps.load_history(since_days, logs=deps.logs, progress=_progress, stage=_stage)
     now = deps.now()
     groups, before_window = H.in_window(H.group_sessions(hist.graph, hist.by_id), since_days, now=now)
     H.read_heads(groups, head=deps.head)
+    groups, skipped = H.skip_pipeline(groups, cfg("onboard.skip"))  # not the user's work, never stored
     _stage(f"{_n(len(groups), 'session group')}; inferring workflows")
 
     unclassified: dict[str, str] = {}
@@ -156,7 +155,7 @@ def onboard(args: argparse.Namespace) -> int:
     batches = L.chunks(summaries)
     expected = None
     if labeler is not None and labeler.name != "none" and summaries:
-        system = taskmodel.label_instructions(subtypes)
+        system = taskmodel.label_instructions(subtypes, features)
         expected = L.estimate([L.build_prompt(b) for b in batches], system, len(summaries), labeler)
 
     payload: dict[str, Any] = {
@@ -166,7 +165,8 @@ def onboard(args: argparse.Namespace) -> int:
         "window": _window(groups),
         "sessions": dict(Counter(n.harness or "unknown" for g in groups for n in g.nodes)),
         "files": dict(hist.files),
-        "groups": {"total": len(groups), "to_label": len(summaries), "before_window": before_window},
+        "groups": {"total": len(groups), "to_label": len(summaries), "before_window": before_window,
+                   "skipped": skipped},
         "cost_in_logs": _log_cost(groups),
         "labeler": {"chosen": labeler is not None, "spec": labeler.spec if labeler else None,
                     "from": labeler_from, "saved": False, "calls": len(batches) if expected else 0,
@@ -174,13 +174,17 @@ def onboard(args: argparse.Namespace) -> int:
     }
     if labeler is None:
         payload["labeler"]["forms"] = list(L.FORMS)
+        # Each labeller this machine can run, priced, for the orchestrator's one question.
+        payload["labeler"]["options"] = L.options([L.build_prompt(b) for b in batches],
+                                                  taskmodel.label_instructions(subtypes, features), len(summaries),
+                                                  which=deps.which)
 
     prompts = {s["id"]: s["prompt"] for s in summaries}  # the keyword guess reads what a labeller would
     if dry_run:
         preview, rejected = L.keyword_labels(summaries, prompts)
         keywords_decide = labeler is not None and labeler.name == "none"
         if keywords_decide:  # with a model labeller the guess is only a preview
-            unclassified.update(rejected)
+            unclassified.update(H.as_untyped(preview, rejected)[1])
         payload["preview"] = {"how": "keyword guess" + ("" if keywords_decide else "; the labeller decides for real"),
                               "by_type": dict(Counter(v["type"] for v in preview.values()).most_common()),
                               "unmatched": len(rejected)}
@@ -189,13 +193,13 @@ def onboard(args: argparse.Namespace) -> int:
         return _finish(payload, groups, {}, unclassified, [], None, notes, as_json, labeler)
 
     if labeler is None:
-        # Everything except labelling was done; the orchestrator asks the user (D39).
+        # Everything except labelling was done; the orchestrator asks the user.
         payload["needs"] = "labeler"
         _finish(payload, groups, {}, unclassified, [], None, notes, as_json, labeler)
         print(f"onboard: {NO_LABELER}", file=sys.stderr)
         return EXIT_NO_LABELER
 
-    # The approval: one batch, one yes (D6).
+    # The approval: one batch, one yes.
     if labeler.name != "none" and summaries:
         if not getattr(args, "yes", False):
             line = _cost_line(expected)
@@ -207,12 +211,12 @@ def onboard(args: argparse.Namespace) -> int:
                 print("stopped: no labelling call was made and nothing was written", file=sys.stderr)
                 return EXIT_USER
     if labeler_from == "flag" and config is not None and cfg(LABELER_KEY) != labeler.spec:
-        config.set(LABELER_KEY, labeler.spec)  # the confirmed choice (D39)
+        config.set(LABELER_KEY, labeler.spec)  # the confirmed choice
         config.save()
         payload["labeler"]["saved"] = True
     if labeler.name != "none" and summaries:
         _stage(f"labelling {_n(len(summaries), 'group')} in {_n(len(batches), 'call')}")
-        run = L.run_batches(batches, labeler, subtypes=subtypes, runner=deps.runner, progress=_chunk_progress)
+        run = L.run_batches(batches, labeler, subtypes=subtypes, features=features, runner=deps.runner, progress=_chunk_progress)
         labels, rejected = run.labels, run.rejected
         payload["labeler"]["actual"] = run.cost
         payload["labeler"]["calls"] = run.calls
@@ -225,14 +229,15 @@ def onboard(args: argparse.Namespace) -> int:
     else:
         labels, rejected = L.keyword_labels(summaries, prompts)
         labeled_by = {"how": "inferred", "tier": "heuristic", "rule": "keywords", "version": LABEL_VERSION}
+    labels, rejected = H.as_untyped(labels, rejected)  # G1: no type is type unknown, not left out
     unclassified.update(rejected)
 
-    # Habit runs (D4: Store.import_run replaces a run with the same id).
+    # Habit runs (Store.import_run replaces a run with the same id).
     written: list[dict] = []
     org = cfg("org")
     by_id = {g.id: g for g in to_label}
     for gid, lab in labels.items():
-        if lab["confidence"] < MIN_CONFIDENCE:
+        if lab["confidence"] < MIN_CONFIDENCE and lab["type"] != taskmodel.UNKNOWN_TYPE:
             unclassified[gid] = "labeller not confident"
             continue
         g = by_id[gid]
@@ -335,7 +340,9 @@ def _terminal(p: dict, labeler: L.Labeler | None) -> list[str]:
         by_type = p["classified"]["by_type"]
         lines.append(f"  classified: {_n(p['classified']['total'], 'run')} written"
                      + (": " + ", ".join(f"{k} {v:,}" for k, v in by_type.items()) if by_type else ""))
-        untyped = p["unclassified"]["by_reason"].get("no keyword matched", 0)
+        untyped = p["classified"]["by_type"].get(taskmodel.UNKNOWN_TYPE, 0)
+    if p["groups"].get("skipped"):
+        lines.append("  skipped, not your work: " + ", ".join(f"{k} {v:,}" for k, v in p["groups"]["skipped"].items()))
     un = p["unclassified"]
     if un["total"]:
         lines.append(f"  not classified: {un['total']:,} (" + ", ".join(f"{k} {v:,}" for k, v in un["by_reason"].items()) + ")")

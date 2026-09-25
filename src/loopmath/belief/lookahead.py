@@ -1,4 +1,4 @@
-"""One-step look-ahead gain (paper Remark 5.9; spec 04 section 6), and `conditioned` (D10).
+"""One-step look-ahead gain (paper Remark 5.9; spec 04 section 6), and `conditioned`.
 
 `lookahead(state, task, explore, goal, candidates)` simulates one more run of `explore` on
 `task`:
@@ -8,14 +8,23 @@
   standard normal, step 0.2 over 6 sd each way: `min_c ell_after(c)` has kinks where the best
   candidate changes, and Gauss-Hermite rules converge slowly there (5 points overstated `G` by
   15 to 20 percent against brute force; tests/belief/test_belief_lookahead.py);
-- updates: exact rank-one Gaussian updates of the cost head and of a score head; the success
-  head's observation is linearized at the current mean (one Newton step). The gate head is
-  not updated. Nodes a head has not seen take part as independent `N(0, phi^2)` effects;
-- `ell` for every candidate is recomputed in closed form after each outcome:
+- updates: exact rank-one Gaussian updates of the cost head and of a score head. The gate head
+  is not updated. Nodes a head has not seen take part as independent `N(0, phi^2)` effects;
+- the success head's update is exact Bayes over its joint draws: every candidate's chance
+  `s(eta)` in each of the 400 draws (the known nodes' draws plus each unseen node's own draws,
+  shared by every row that has it), times Gauss-Hermite nodes on an unseen task's effect, which
+  every row shares (so a new task's id does not move the gain). The verdict reweights the
+  draws by its likelihood, `q s + (1 - q)(1 - s)` or its complement, and `g` after it is the
+  reweighted mean. `g` now, `P(z)` and `g` after come from the same draws, so each candidate's
+  `g` after, averaged over `z`, is its `g` now. A Newton step linearized at the mean did not
+  hold this: with a success logit variance near 10 it lowered every related candidate's
+  expected `g` by 6 points and turned `G` negative on a prior-only store;
+- `ell` for every candidate is recomputed after each outcome, the cost in closed form:
   `E[C] = sum over rows of width * E[r(k)] * exp(mu + (v + sigma^2) / 2)` (E[r(k)] from the
   gate draws, which the update leaves alone, with an unseen task's gate effect integrated out
-  as in the prediction means, D98) and `g = s(mu / sqrt(1 + pi v / 8))` (probit
-  approximation) or `p_reach`. `ell_now` uses the same formulas, so `G` has no Monte Carlo bias.
+  as in the prediction means), and `g` as above or `p_reach`. `ell_now` uses the same formulas,
+  so no candidate's expected `ell` after the run is above its `ell` now (the cost grid's cut
+  tails can only lower it), and `G` is not negative before its clip.
 
 `G = max(0, min_c ell_now(c) - E[min_c ell_after(c)])`. `p_beats_goal` is the share of the
 400 joint draws in which `explore` has lower `ell` than `goal`. `posterior_shift` gives the
@@ -33,8 +42,9 @@ from scipy import sparse
 from scipy.special import expit, ndtr
 
 from ..types import AcceptanceRule, Configuration, Interval, LookaheadResult, Task
-from .design import cost_rest, task_terms
-from .state import MIN_SCORE_SWITCH, N_DRAWS, PREDICT_SOURCE, FitState, HeadState, inverse_transform, transform
+from .design import cost_rest
+from .state import (MIN_SCORE_SWITCH, N_DRAWS, PREDICT_SOURCE, FitState, HeadState, _GW, _GX, inverse_transform,
+                    transform)
 
 LOOKAHEAD_Q = 0.95  # reliability of the simulated run's verdict (tier "reported")
 QUAD_STEP = 0.2
@@ -112,21 +122,53 @@ class _Prepared:
     success: _Rows
     score: _Rows | None
     score_name: str | None
+    chance: np.ndarray | None = None  # (n_configs, m): s(eta) per joint draw and task node, when g is success
+    weight: np.ndarray | None = None  # (m,): each column's weight, summing to 1
+
+
+def _success_draws(state: FitState, task: Task, plans: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Every configuration's success chance in each joint draw of the success head, and the draws' weights.
+
+    A row's draws hold the known nodes' draws and each unseen node's own draws, which every row with that node
+    shares. The task part is common to every row; its unseen effect (a new task's node, say) is drawn by the
+    task's id, so here it is a shared Gauss-Hermite dimension instead: one more axis of the joint sample, not a
+    per-row integral, and a new task's id then does not move the gain."""
+    head = state.heads["success"]
+    tp = state._task_parts(task)["success"]
+    eta = np.stack([tp.known + state._row(head, plan["run"]).draws for plan in plans])  # (n, draws)
+    n, d = eta.shape
+    if tp.s2 > 0:
+        eta = (eta[:, None, :] + math.sqrt(tp.s2) * _GX[None, :, None]).reshape(n, -1)  # column k * d + j
+        return expit(eta), np.repeat(_GW, d) / d
+    return expit(eta), np.full(d, 1.0 / d)
+
+
+def _success_update(prep: _Prepared, ei: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Exact Bayes for one simulated verdict on configuration `ei`: `P(z)` for z = 1, 0 (2,), every
+    configuration's `g` now (n,) and after each verdict (2, n). Each draw's weight splits between the two
+    verdicts in proportion to their likelihoods, which sum to 1, so `P(z) @ g_after` is `g_now` exactly."""
+    p, w = prep.chance, prep.weight
+    q = LOOKAHEAD_Q
+    pe = p[ei]
+    joint = np.stack([q * pe + (1.0 - q) * (1.0 - pe), (1.0 - q) * pe + q * (1.0 - pe)]) * w  # (2, m)
+    pz = joint.sum(axis=1)
+    return pz, p @ w, (joint @ p.T) / pz[:, None]
 
 
 def _prepare(state: FitState, task: Task, configs: list[Configuration], rule: AcceptanceRule | None) -> _Prepared:
-    key = ("lookahead", tuple(task_terms(task, PREDICT_SOURCE)), tuple(c.id for c in configs),
+    key = ("lookahead", tuple(state.task_terms(task)), tuple(c.id for c in configs),
            repr(rule))
     cached = state._cache.get(key)
     if cached is not None:
         return cached
     out = state._predict_many(task, configs, rule, None)
-    tt = task_terms(task, PREDICT_SOURCE)
-    cost_rows, coef, owner_r, owner_c, run_rows = [], [], [], [], []
+    tt = state.task_terms(task)
+    cost_rows, coef, owner_r, owner_c, run_rows, plans = [], [], [], [], [], []
     for ci, (cfg, (_, d)) in enumerate(zip(configs, out)):
         plan = state._plan(cfg)
+        plans.append(plan)
         st = plan["st"]
-        reach = d["reach"]  # E[r(k)] with the unseen task effect on the gates integrated out (D98)
+        reach = d["reach"]  # E[r(k)] with the unseen task effect on the gates integrated out
         for (piece, k), rest in plan["cost"].items():
             owner_r.append(ci)
             owner_c.append(len(cost_rows))
@@ -142,6 +184,8 @@ def _prepare(state: FitState, task: Task, configs: list[Configuration], rule: Ac
                      _Rows.build(state.heads["cost"], cost_rows), np.array(coef), owner,
                      _Rows.build(state.heads["success"], run_rows),
                      _Rows.build(state.heads[f"score:{score_name}"], run_rows) if score_name else None, score_name)
+    if score_name is None:
+        prep.chance, prep.weight = _success_draws(state, task, plans)
     state._cache[key] = prep
     return prep
 
@@ -151,11 +195,11 @@ def _explore_cost_obs(state: FitState, task: Task, config: Configuration) -> tup
     and the number of pieces (the observation's noise variance is sigma^2 / n)."""
     plan = state._plan(config)
     st = plan["st"]
-    tt = task_terms(task, PREDICT_SOURCE)
+    tt = state.task_terms(task)
     acc: dict[str, list] = {}
     n = len(st.pieces)
     for piece in st.pieces:
-        for node, parent, value in tt + list(cost_rest(st, piece, 1)):
+        for node, parent, value in tt + list(cost_rest(st, piece, 1, source=PREDICT_SOURCE)):
             if node in acc:
                 acc[node][1] += value / n
             else:
@@ -176,9 +220,30 @@ def _score_g(state: FitState, rows: _Rows, name: str, rule: AcceptanceRule, mu, 
     return ndtr(z) if better == "higher" else ndtr(-z)
 
 
-def lookahead(state: FitState, task: Task, explore: Configuration, goal: Configuration,
-              candidates: Sequence[Configuration], rule: AcceptanceRule | None = None, *,
-              rescue_usd: float | None = None) -> LookaheadResult:
+@dataclass
+class _Outcomes:
+    """One simulated run of `explore`: the outcomes' weights `W` (x, o) over the cost grid x and the verdict or
+    score grid o, and every candidate's cost, `g` and `ell` now (c,) and after each outcome."""
+
+    ei: int
+    W: np.ndarray
+    pz: np.ndarray  # (o,)
+    cost_now: np.ndarray
+    cost_after: np.ndarray  # (x, c)
+    g_now: np.ndarray
+    g_after: np.ndarray  # (o, c)
+    ell_now: np.ndarray
+    ell: np.ndarray  # (x, o, c)
+    score_now: np.ndarray | None = None
+    s_after: np.ndarray | None = None  # (o, c)
+
+    def raw_gain(self) -> float:
+        """`min_c ell_now(c) - E[min_c ell_after(c)]`, before `G` clips it at 0."""
+        return float(self.ell_now.min() - np.sum(self.W * self.ell.min(axis=2)))
+
+
+def _outcomes(state: FitState, task: Task, explore: Configuration, goal: Configuration,
+              candidates: Sequence[Configuration], rule: AcceptanceRule | None, rescue_usd: float | None) -> _Outcomes:
     configs: list[Configuration] = []
     seen: set[str] = set()
     for c in list(candidates) + [explore, goal]:
@@ -219,33 +284,26 @@ def lookahead(state: FitState, task: Task, explore: Configuration, goal: Configu
         g_after = _score_g(state, sr, prep.score_name, rule, mu_after, v_after)
         s_after = _score_raw(state, sr, prep.score_name, mu_after)
     else:
-        sr = prep.success
-        e_mu, e_var = float(sr.mu[ei]), float(sr.var[ei])
-        kap = _row_cov(sr, ei)
-        g_now = _probit(sr.mu, sr.var)
-        q = LOOKAHEAD_Q
-        pbar = float(_probit(np.array([e_mu]), np.array([e_var]))[0])
-        s = float(expit(e_mu))
-        a = 2.0 * q - 1.0
-        pi1 = min(max((1.0 - q) + a * s, 1e-12), 1 - 1e-12)
-        dpi = a * s * (1.0 - s)
-        info = max(dpi * dpi / (pi1 * (1.0 - pi1)), 1e-12)
-        v_after = sr.var - kap * kap / (e_var + 1.0 / info)
-        p1 = q * pbar + (1.0 - q) * (1.0 - pbar)
-        pz = np.array([p1, 1.0 - p1])
-        g_after = np.stack([_probit(sr.mu + kap * dpi * (z / pi1 - (1.0 - z) / (1.0 - pi1)) / (info * e_var + 1.0),
-                                    v_after) for z in (1.0, 0.0)])
+        pz, g_now, g_after = _success_update(prep, ei)
 
     ell_now = cost_now + (1.0 - g_now) * R
-    best_now = int(np.argmin(ell_now))
     W = _QW[:, None] * pz[None, :]  # (x, o)
     ell = cost_after[:, None, :] + (1.0 - g_after[None, :, :]) * R  # (x, o, c)
+    return _Outcomes(ei, W, pz, cost_now, cost_after, g_now, g_after, ell_now, ell, score_now, s_after)
+
+
+def lookahead(state: FitState, task: Task, explore: Configuration, goal: Configuration,
+              candidates: Sequence[Configuration], rule: AcceptanceRule | None = None, *,
+              rescue_usd: float | None = None) -> LookaheadResult:
+    o = _outcomes(state, task, explore, goal, candidates, rule, rescue_usd)
+    W, ell, g_now, g_after, cost_now, cost_after = o.W, o.ell, o.g_now, o.g_after, o.cost_now, o.cost_after
+    best_now = int(np.argmin(o.ell_now))
     j = np.argmin(ell, axis=2)
     ix, io = np.indices(j.shape)
     exp_min = float(np.sum(W * ell[ix, io, j]))
     exp_g = float(np.sum(W * g_after[io, j]))
     exp_c = float(np.sum(W * cost_after[ix, j]))
-    gain = max(0.0, float(ell_now[best_now]) - exp_min)
+    gain = max(0.0, float(o.ell_now[best_now]) - exp_min)
     gains: dict[str, float | None] = {
         "usd": gain,
         "success_pp": 100.0 * (exp_g - float(g_now[best_now])),
@@ -253,11 +311,11 @@ def lookahead(state: FitState, task: Task, explore: Configuration, goal: Configu
         if cost_now[best_now] > 0 else None,
         "score": None,
     }
-    if score_now is not None:
-        gains["score"] = float(np.sum(W * s_after[io, j])) - float(score_now[best_now])
+    if o.score_now is not None:
+        gains["score"] = float(np.sum(W * o.s_after[io, j])) - float(o.score_now[best_now])
     ell_d = state.ell_draws(task, [explore, goal], rule, rescue_usd=rescue_usd)
     p_beats = float(np.mean(ell_d[0] < ell_d[1]))
-    shift = {"p_success": _spread(pz, g_after[:, ei]), "cost_usd": _spread(_QW, cost_after[:, ei])}
+    shift = {"p_success": _spread(o.pz, g_after[:, o.ei]), "cost_usd": _spread(_QW, cost_after[:, o.ei])}
     return LookaheadResult(gain_per_run=gains, p_beats_goal=p_beats, posterior_shift=shift)
 
 
@@ -286,7 +344,7 @@ def _spread(w: np.ndarray, v: np.ndarray) -> Interval:
     return Interval(mean=float(np.sum(w * v)), lo=float(lo), hi=float(hi))
 
 
-# ---------------------------------------------------------------- conditioned (D10)
+# ---------------------------------------------------------------- conditioned
 
 def _condition_head(head: HeadState, terms: Sequence[tuple], tau2: float) -> HeadState:
     """Variance-only rank-one update of one head for one observation row with noise `tau2`."""
@@ -338,7 +396,7 @@ def conditioned(state: FitState, task: Task, config: Configuration, rule: Accept
     terms, n_obs = _explore_cost_obs(state, task, config)
     for name in ("cost", "tokens"):
         heads[name] = _condition_head(state.heads[name], terms, state.heads[name].sigma ** 2 / n_obs)
-    run_terms = task_terms(task, PREDICT_SOURCE) + list(state._plan(config)["run"])
+    run_terms = state.task_terms(task) + list(state._plan(config)["run"])
     succ = state.heads["success"]
     heads["success"] = _condition_head(succ, run_terms, 1.0 / _info(float(_Rows.build(succ, [run_terms]).mu[0])))
     if rule is not None and rule.score is not None and f"score:{rule.score.name}" in state.heads:

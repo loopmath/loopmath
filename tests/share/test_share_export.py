@@ -67,7 +67,7 @@ def test_since_keeps_recent_runs_only(store, capsys):
 
 
 def test_since_is_read_by_lane_7s_one_reader(store, capsys):
-    """D89, D109: share takes `--since` from `store.ids.parse_since`, the reader every command shares; its forms
+    """Share takes `--since` from `store.ids.parse_since`, the reader every command shares; its forms
     are tested there. The planted runs started days before any clock that runs these tests."""
     assert share_commands.parse_since is store_ids.parse_since
     assert not hasattr(export, "parse_since")
@@ -78,7 +78,7 @@ def test_since_is_read_by_lane_7s_one_reader(store, capsys):
 @pytest.mark.parametrize("since, code, words", [("3m", 2, "ambiguous: use 90d, 12w or a date"),
                                                 ("last tuesday", 1, "--since last tuesday")])
 def test_an_unreadable_since_writes_nothing(store, tmp_path, capsys, since, code, words):
-    """D109: `3m` (months or minutes?) exits 2; anything else unreadable exits 1. No file, no output."""
+    """`3m` (months or minutes?) exits 2; anything else unreadable exits 1. No file, no output."""
     out = tmp_path / "shared.json.gz"
     assert cli.main(["share", "--out", str(out), "--since", since, "--home", str(store)]) == code
     captured = capsys.readouterr()

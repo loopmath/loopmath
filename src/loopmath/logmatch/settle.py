@@ -1,10 +1,8 @@
 """Settle a run's attempts against the session logs (for `run finish`, lane 7).
 
-Owner: lane 02. Spec: design/0.1/ (02 `run finish`, 03 section 6; Analyst D27).
-
 `settle_attempt` matches one attempt and fills what the logs know: `session`,
 the four-stream `cost` with dollars, `basis`, tariff and, when the tokens ran
-on more than one model, their split by model (Analyst D71), and any missing
+on more than one model, their split by model, and any missing
 `started_at`, `ended_at`, `harness`, `model` and `effort`. Values the
 orchestrator already wrote are kept, except that the cost streams are
 replaced by the measured ones. A declared model the log never ran is kept
@@ -14,13 +12,12 @@ with the reason. `settle_run` does every attempt, the ones that name their
 session first, so a heuristic match never takes a session another attempt
 named, and returns the counts `run finish --json` reports.
 
-A `--session self` attempt is clipped to its own window (Analyst D47, see
+A `--session self` attempt is clipped to its own window (see
 `clip`). One with no `ended_at` is clipped at run finish: `finished_at`, else
 the run's `ended_at`, else the clock; that time becomes its `ended_at` and
 the clip record says `to_finish`, which a later settle keeps.
 
-A session that more than one attempt names is counted once (Analyst D87,
-D88). Clipped attempts keep their window's cost; the rest of the session
+A session that more than one attempt names is counted once. Clipped attempts keep their window's cost; the rest of the session
 (its whole cost minus those windows) is split equally among the attempts
 that name it whole, per model and stream, whole tokens with the remainder
 to the earlier attempts. Those attempts get basis `allocated`, keep tier
@@ -65,7 +62,7 @@ def _merge_cost(old: Any, new: dict[str, Any]) -> dict[str, Any]:
     """`new` over `old`, keeping `old`'s fields that are not measured here."""
     merged = {k: v for k, v in (old or {}).items() if k not in _STREAMS and k != "ext"}
     ext = dict((old or {}).get("ext") or {})
-    # The split is measured with the streams; its absence means one model (D71).
+    # The split is measured with the streams; its absence means one model.
     ext.pop(MODEL_TOKENS_KEY, None)
     merged.update(new)
     ext.update(new.get("ext") or {})
@@ -199,9 +196,9 @@ def settle_run(
 
     `summary` is `{verified, heuristic, unmatched: [{attempt, reason}],
     skipped: [{attempt, reason}], shared: [{session, attempts}], usd}`; `usd`
-    sums the attempts that have dollars, each session once (D87), and is None
+    sums the attempts that have dollars, each session once, and is None
     when none has. `finished_at` (else the run's `ended_at`, else the clock)
-    is the run finish time for D47 clipping.
+    is the run finish time for clipping.
     """
     finish = finished_at or (doc.get("run") or {}).get("ended_at") or _now()
     out = copy.deepcopy(doc)
@@ -231,7 +228,7 @@ def settle_run(
 
 
 def _share_sessions(attempts: list[dict[str, Any]], matched: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Count each session once when several attempts name it (D87); see the module docstring."""
+    """Count each session once when several attempts name it; see the module docstring."""
     by_session: dict[str, list[int]] = {}
     for i in sorted(matched):
         by_session.setdefault(str(matched[i]["session"]), []).append(i)
@@ -256,7 +253,7 @@ def _share_sessions(attempts: list[dict[str, Any]], matched: dict[int, dict[str,
                 cost["usd"] = round(usd / len(whole), 6)
             cost["basis"] = "allocated"
             ext = cost["ext"]
-            if ext.get(MODEL_TOKENS_KEY) != {}:  # {}: several models, no split (D71), stays so
+            if ext.get(MODEL_TOKENS_KEY) != {}:  # {}: several models, no split, stays so
                 ext.pop(MODEL_TOKENS_KEY, None)
                 kept = {m: fields for m, fields in share.items() if any(fields.values())}
                 if kept:

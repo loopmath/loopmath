@@ -8,11 +8,9 @@ The store is read through lane 7's `Store`: every `runs/*.ocp.json` with its pen
 merged (`Store.run_doc`), and `receipts/*.json`; readers never take the lock. `z`, `q` and `tier`
 come from lane 5's `belief.outcome.outcome_evidence`.
 
-D63: a row's `tier` and `q` are null whenever its `z` is null. `Evidence` always carries a tier
+A row's `tier` and `q` are null whenever its `z` is null. `Evidence` always carries a tier
 (`asserted`, q 0.7, when nothing was used), but with no outcome there is nothing for them to
 qualify, and "unknown (asserted)" would read like an asserted verdict.
-
-Owner: lane 12. Spec: design/0.1/.
 """
 
 from __future__ import annotations
@@ -26,7 +24,7 @@ from typing import Any, Iterable, Mapping
 from ..belief.outcome import outcome_evidence
 from ..output import EXIT_NOT_FOUND, EXIT_OK, EXIT_USER, emit_json, fail
 from ..store.home import Store, StoreError
-from ..store.ids import parse_since  # the one `--since` reader (D89, D109): `m` is ambiguous, exit 2
+from ..store.ids import parse_since  # the one `--since` reader: `m` is ambiguous, exit 2
 from ..store.lock import read_json
 from ..store.runs import run_cost as store_run_cost
 from ..types import AcceptanceRule
@@ -34,7 +32,7 @@ from . import common
 from .common import as_dict, config_label, fmt_money, fmt_pct, fmt_usd, num
 
 SCHEMA = "loopmath.view.runs/1"
-DETAIL_CAP = 300  # D12: full detail for the newest 300 runs in the filtered set
+DETAIL_CAP = 300  # Full detail for the newest 300 runs in the filtered set
 DETAIL_BYTES = 24_000_000  # and at most this much embedded detail, so the page stays loadable
 DEFAULT_RULE = {"name": "tests", "definition": "tests pass", "requires": ["tests"], "score": None,
                 "excludes_events": ["revert", "incident"], "window_days": 14}
@@ -177,9 +175,9 @@ def _started(doc: Mapping[str, Any]) -> str | None:
 
 
 def run_cost(doc: Mapping[str, Any]) -> dict:
-    """The run's cost as lane 7's store defines it (`store.runs.run_cost`, D101, D103): `usd` is None,
+    """The run's cost as lane 7's store defines it (`store.runs.run_cost`): `usd` is None,
     unknown, unless every attempt is priced. A session several attempts name is split among them by
-    lane 2 (D88), so the shares sum to the session once."""
+    lane 2, so the shares sum to the session once."""
     cost = store_run_cost(dict(doc))
     return {"usd": cost["usd"], "tokens": cost["tokens"]}
 
@@ -232,7 +230,7 @@ def row_from_doc(doc: Mapping[str, Any], signals: list[dict], receipt: Mapping[s
         "state": _state(doc),
         "cost": cost,
         "z": ev.get("z"),
-        "q": ev.get("q") if ev.get("z") is not None else None,  # D63: no outcome, nothing to qualify
+        "q": ev.get("q") if ev.get("z") is not None else None,  # No outcome, nothing to qualify
         "tier": ev.get("tier") if ev.get("z") is not None else None,
         "score": num(score_sig.get("value")) if score_sig else None,
         "rounds": _rounds(doc),
@@ -293,7 +291,7 @@ def build_view(root: Path, filters: Mapping[str, Any] | None = None, *, run: str
 
     `filters`: `type`, `repo`, `since`, `slate` (as given on the command line). With `run`,
     `runs` holds that run only and `selected` its full detail (None when it does not exist).
-    With `details`, the newest `DETAIL_CAP` rows also get full detail under `details` (D12).
+    With `details`, the newest `DETAIL_CAP` rows also get full detail under `details`.
     """
     now = now or _now()
     filters = {k: v for k, v in (filters or {}).items() if v not in (None, "")}

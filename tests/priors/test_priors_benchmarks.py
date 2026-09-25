@@ -1,4 +1,4 @@
-"""Published benchmark results (lane 11, D36, D50, D54): the shipped file, its checker, and lane 5's factors."""
+"""Published benchmark results (lane 11): the shipped file, its checker, and lane 5's factors."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def _small() -> dict:
 def test_shipped_file_is_clean_and_covers_every_current_model():
     data = load_benchmarks()
     assert check_benchmarks(data) == []
-    assert missing_models(data) == []  # D50: every one of the 12 has a published result
+    assert missing_models(data) == []  # Every one of the 12 has a published result
     assert set(coverage(data)) == set(MODELS) and len(MODELS) == 12
     assert chr(0x2014) not in BENCHMARKS_TOML.read_text(encoding="utf-8")
     success = [r for r in data["result"] if r["benchmark"] == "aa-terminal-bench-4.0"]
@@ -55,7 +55,7 @@ def test_shipped_file_is_what_the_generator_writes():
 def test_tokens_values_are_the_three_published_streams():
     data = load_benchmarks()
     rows = [r for r in data["result"] if r["benchmark"] == "aa-terminal-bench-4.0-tokens"]
-    assert rows  # D54: lane 5 reads the tokens kind
+    assert rows  # Lane 5 reads the tokens kind
     for r in rows:
         parts = dict(p.rsplit(" ", 1) for p in r["note"].split(" (input includes")[0].split(", "))
         assert r["value"] == sum(int(v) for v in parts.values()) and set(parts) == {"input", "answer", "reasoning"}

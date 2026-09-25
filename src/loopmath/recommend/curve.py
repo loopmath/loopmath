@@ -2,7 +2,7 @@
 
 `ell` is the expected dollars to an accepted result: `E[C_run] + (1 - g) C_rescue`.
 The recommender sets `C_rescue` from config `rescue.kind` and always hands it to
-the belief as `rescue_usd=` (decision D9), so the belief's `ell` is the one
+the belief as `rescue_usd=`, so the belief's `ell` is the one
 source of truth.
 """
 

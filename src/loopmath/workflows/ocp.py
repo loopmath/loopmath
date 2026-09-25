@@ -1,9 +1,9 @@
-"""`types.Workflow` and `Configuration` to and from OCP 2.2 to 2.4 (D29 to D32).
+"""`types.Workflow` and `Configuration` to and from OCP 2.2 to 2.4.
 
 The forward direction (`workflow_to_ocp`, `settings_to_ocp`) is lane 01's
-`loopmath.ocp.emit` (D2); these functions call it. The inverse is this lane's.
+`loopmath.ocp.emit`; these functions call it. The inverse is this lane's.
 
-Mapping (D29 to D32):
+Mapping:
 - pieces `{id, role, width}`; roles verbatim, never rewritten;
 - artifacts `{id, kind}`, kind from `Workflow.extra["artifact_kinds"]`, else the
   id when it is a recommended kind, else `other`;
@@ -39,7 +39,7 @@ Resolver = Callable[[str, int | None], Workflow | None]
 
 
 class CycleError(ValueError):
-    """The workflow graph has a cycle; repair loops belong in control (D3)."""
+    """The workflow graph has a cycle; repair loops belong in control."""
 
 
 def default_gate_rule(role: str | None) -> str:

@@ -1,4 +1,4 @@
-"""`python -m loopmath` runs the same CLI as the `loopmath` command (D91)."""
+"""`python -m loopmath` runs the same CLI as the `loopmath` command."""
 
 from __future__ import annotations
 

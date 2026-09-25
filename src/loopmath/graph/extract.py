@@ -3,7 +3,7 @@
 Input is the list of priced run records `ingest.parse_all` -> `grade_all` ->
 `price_all` produces (plain dicts, one per session). Output is a `Graph`. No
 model calls; every relation comes from a structural fact in the logs, and the
-modules below are named after them (EXTRACTOR-SPEC.md section 2):
+modules below are named after them:
 
 1. `scan.py`: one pass over each transcript (Task calls, Bash commands, file
    writes and reads); `bashwrites.py` (A1) adds Bash-written files, `codexio.py`

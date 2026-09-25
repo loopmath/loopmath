@@ -2,14 +2,14 @@
 
 - The shipped bundle (lane 11) enters the fit as data, each run under its `source` node
   (`sweep`, `e0`, `rq1`, `repo_history`). `bundle_docs()` reads it through lane 11's
-  `loopmath.priors.bundle_docs()` (D37); `bundle_entries()` pairs each run with its manifest
-  source, so a store run with a shipped label stays the user's (D118 N2).
+  `loopmath.priors.bundle_docs()`; `bundle_entries()` pairs each run with its manifest
+  source, so a store run with a shipped label stays the user's.
 - Shared imports (lane 8) enter under their `shared:<org>` source through
-  `share.import_.shared_runs(home)` (D22).
+  `share.import_.shared_runs(home)`.
 - Benchmark priors (`priors/benchmarks.toml`, layout D36) become Gaussian prior factors on
   version nodes: success head, the logit gap to the benchmark's reference model with variance
   `1 / (w p (1 - p))`; cost head, the log cost ratio with variance `1 / w`; tokens head
-  (`kind = "tokens"`, published total tokens for the evaluation, D54), the log token ratio
+  (`kind = "tokens"`, published total tokens for the evaluation), the log token ratio
   with variance `1 / w`. `w` is config `benchmark_prior_weight` (default 5): one benchmark
   result counts like about 5 runs.
 """
@@ -30,7 +30,7 @@ PACKAGE_PRIORS = Path(__file__).resolve().parent.parent / "priors"
 
 
 def bundle_docs(bundle_dir: Path | None = None, without: tuple[str, ...] = ()) -> Iterator[dict]:
-    """OCP v0.3 run documents of the shipped prior bundle, or of `bundle_dir` (lane 11's reader, D37)."""
+    """OCP v0.3 run documents of the shipped prior bundle, or of `bundle_dir` (lane 11's reader)."""
     from .. import priors as lane11
 
     yield from lane11.bundle_docs(without=tuple(without), directory=bundle_dir)
@@ -61,7 +61,7 @@ def bundle_sources(bundle_dir: Path | None = None) -> list[str]:
 
 
 def shared_docs(home: Path) -> Iterator[dict]:
-    """Runs imported from other organizations (lane 8's `shared_runs`, D22)."""
+    """Runs imported from other organizations (lane 8's `shared_runs`)."""
     from ..share.import_ import shared_runs
 
     yield from shared_runs(home)
@@ -92,7 +92,7 @@ def _model_terms(model: str, effort: str | None, sign: float) -> list[tuple[str,
 
 
 def benchmark_factors(path: Path | None = None, *, weight: float = BENCHMARK_PRIOR_WEIGHT) -> list[FactorSpec]:
-    """Prior factors from `benchmarks.toml` (D36 layout). A missing file gives no factors."""
+    """Prior factors from `benchmarks.toml`. A missing file gives no factors."""
     path = path or benchmark_path()
     if not path.is_file():
         return []
@@ -123,7 +123,7 @@ def benchmark_factors(path: Path | None = None, *, weight: float = BENCHMARK_PRI
                 p_ref = min(max(ref_value, 0.01), 0.99)
                 gap = math.log(p / (1 - p)) - math.log(p_ref / (1 - p_ref))
                 out.append(FactorSpec("success", terms, gap, 1.0 / (weight * p * (1 - p)), note))
-            elif kind in ("cost", "tokens") and value > 0 and ref_value > 0:  # D54: tokens feed the tokens head only
+            elif kind in ("cost", "tokens") and value > 0 and ref_value > 0:  # Tokens feed the tokens head only
                 out.append(FactorSpec(kind, terms, math.log(value / ref_value), 1.0 / weight, note))
     return out
 

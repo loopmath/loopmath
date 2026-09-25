@@ -1,4 +1,4 @@
-"""Tariffs and four-stream costs (spec 01 section 2.5, 03 section 6; Analyst D27)."""
+"""Tariffs and four-stream costs (spec 01 section 2.5, 03 section 6)."""
 
 import hashlib
 from pathlib import Path

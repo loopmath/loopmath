@@ -31,7 +31,7 @@ EFFORT_ORDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xh
 
 _ANTHROPIC_FAMILIES = ("opus", "sonnet", "fable", "haiku")
 
-# Role words: the types.py vocabulary is canonical (D32). OCP's recommended words
+# Role words: the types.py vocabulary is canonical. OCP's recommended words
 # and common synonyms fold onto it for readers that group by role (lane 05's role
 # node); a superset of lane 05's local table, so both give the same word.
 ROLE_ALIASES: dict[str, str] = {
@@ -46,7 +46,7 @@ ROLE_ALIASES: dict[str, str] = {
 
 
 def normalize_role(role: str | None) -> str | None:
-    """Fold a role word onto the types.py vocabulary (D32); unknown words pass through lowercased."""
+    """Fold a role word onto the types.py vocabulary; unknown words pass through lowercased."""
     if role is None:
         return None
     key = str(role).strip().lower()

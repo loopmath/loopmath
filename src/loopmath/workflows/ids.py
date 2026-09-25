@@ -1,6 +1,6 @@
 """Canonical JSON and configuration ids: `cfg_` + the first 12 hex of SHA-256 (OCP 2.2).
 
-D2: the id has one definition, in OCP terms, owned by lane 01 as
+The id has one definition, in OCP terms, owned by lane 01 as
 `loopmath.ocp.canonical`. The functions here keep their public names over
 `types` objects: they map through `workflow_to_ocp` and `settings_to_ocp` and
 call lane 01's `config_id`, `canonical_json` and `canonical_workflow`.
@@ -20,7 +20,7 @@ from .ocp import settings_to_ocp, workflow_to_ocp
 
 
 def config_id_ocp(workflow_ocp: Mapping[str, Any], settings_ocp: Mapping[str, Any]) -> str:
-    """The id from OCP objects (lane 01's definition, D2)."""
+    """The id from OCP objects (lane 01's definition)."""
     return _canonical.config_id(workflow_ocp, settings_ocp)
 
 

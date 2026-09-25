@@ -1,4 +1,4 @@
-"""Model labeler and scorer for the labeling eval (EXTRACTOR-SPEC.md section 8, D2).
+"""Model labeler and scorer for the labeling eval.
 
 The labeler reads `dataset.jsonl` (written by `loopmath.graph.dataset`), batches the node items
 in file order, `BATCH_SIZE` per call, and builds one prompt per batch (`PROMPT_VERSION`,

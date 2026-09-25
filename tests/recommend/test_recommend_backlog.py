@@ -65,7 +65,7 @@ def fakes(tmp_path, monkeypatch):
     monkeypatch.setattr(wf, "catalog", lambda: {"solo": SOLO, "implement_review": IR, "plan_implement_review": PIR})
     home = tmp_path / "home"
     home.mkdir()
-    # D59: tests pin plan.exact_picks so plans do not depend on the machine's speed
+    # Tests pin plan.exact_picks so plans do not depend on the machine's speed
     (home / "config.toml").write_text('goal = "p90"\n\n[plan]\nexact_picks = 100\n')
     return home
 
@@ -368,14 +368,14 @@ def test_plan_json_members_carry_the_full_configuration(cli_env, capsys):
     for s in obj["slates"]:
         assert s["slt"].startswith("slt_")
         for m in s["members"]:
-            c = Configuration.from_dict(m["config"])  # D13
+            c = Configuration.from_dict(m["config"])
             assert c.id == m["config_id"] and m["label"] == c.label() and m["source"] == "designed"
             assert set(m["settings"]) == {p.id for p in c.workflow.pieces}
         # each member's own price (a runner reserves budget per run); together they are the slate's price
         assert sum(m["price"]["usd"]["mean"] for m in s["members"]) == pytest.approx(s["price"]["usd"]["mean"])
     assert obj["slates"][0]["members"][0]["price"]["usd"]["mean"] == pytest.approx(3.00)  # the goal's run
     by_task = {s["task"]["id"]: s for s in obj["slates"]}
-    assert by_task["tsk_b01"]["history"] == HISTORY and "history" not in by_task["tsk_b02"]  # D14
+    assert by_task["tsk_b01"]["history"] == HISTORY and "history" not in by_task["tsk_b02"]
     assert by_task["tsk_b01"]["task"]["source"] == "repo_history"
 
 
@@ -395,7 +395,7 @@ def test_plan_text_summary_and_grid_without_a_fit(cli_env, capsys):
 
 
 def test_the_same_backlog_on_the_same_fit_gets_the_same_plan(cli_env, capsys, tmp_path):
-    """D89: a backlog line without an id got one made up for the call, which seeded the belief's draw of the
+    """A backlog line without an id got one made up for the call, which seeded the belief's draw of the
     task's effect, so each call gave another plan."""
     _, state, _ = cli_env
     base = make_belief()

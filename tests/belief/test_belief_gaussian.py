@@ -53,7 +53,7 @@ def test_laplace_gradient_matches_finite_differences(rows, head, q_one):
 
 @pytest.mark.parametrize("q", [0.7, 0.98])
 def test_logistic_laplace_uses_the_observed_posterior_hessian(q):
-    """D68: with q < 1 the Fisher and observed Hessians differ; the covariance and evidence use the observed one."""
+    """With q < 1 the Fisher and observed Hessians differ; the covariance and evidence use the observed one."""
     from scipy import sparse
     from scipy.special import expit
 

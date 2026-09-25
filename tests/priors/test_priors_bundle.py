@@ -71,7 +71,7 @@ def test_reduction_recomputes_the_configuration_id_when_it_drops_content():
     new = out["run"]["configuration"]
     assert "run-secret" not in json.dumps(out)
     assert new["id"] == ocpdoc.config_id(new["workflow"], new["settings"]) != cfg["id"]
-    assert out["run"]["ext"]["dev.loopmath.share"]["original_config_id"] == cfg["id"]  # D46
+    assert out["run"]["ext"]["dev.loopmath.share"]["original_config_id"] == cfg["id"]
     assert validate_bundle_doc(out)[0] == []
 
 
@@ -147,7 +147,7 @@ def test_read_api_is_not_shadowed_by_a_submodule(tmp_path):
         importlib.import_module(f"loopmath.priors.{mod.name}")  # binds the submodule's name on the package
     for name in ("bundle_dir", "manifest", "sources", "bundle_docs", "iter_runs"):
         assert callable(getattr(priors, name)), name
-    assert priors.sources() == sorted(priors.manifest()["sources"]) != []  # D94: a priors/sources.py hid this
+    assert priors.sources() == sorted(priors.manifest()["sources"]) != []  # A priors/sources.py hid this
     assert priors.sources(tmp_path) == []
 
 
@@ -269,7 +269,7 @@ def test_prior_build_has_no_default_input_folder(capsys, monkeypatch, tmp_path):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LOOPMATH_PRIOR_SOURCES", "e0")
     code, _, err = _cli(["prior", "build", "--out", str(tmp_path / "b")], capsys)
-    assert code == 1 and "--e0-corpus PATH" in err and "LOOPMATH_E0_CORPUS" in err  # D70
+    assert code == 1 and "--e0-corpus PATH" in err and "LOOPMATH_E0_CORPUS" in err
     assert not (tmp_path / "b").exists()
     from loopmath.priors import registry
 

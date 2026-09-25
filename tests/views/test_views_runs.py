@@ -56,7 +56,7 @@ def test_fixture_page_runs_without_errors(fixture_json, probe, tmp_path):
     assert out["exceptions"] == [] and out["console_errors"] == [] and out["network"] == []
     r = out["result"]
     assert r["rows"] == 4 and r["opened"] == 4
-    with_detail = {data["selected"]["run"]} | set(data.get("details") or {})  # D12: details for every row
+    with_detail = {data["selected"]["run"]} | set(data.get("details") or {})  # Details for every row
     assert r["graphs"] == len(with_detail)
     assert r["filter_outcome"] == 2 and r["filter_slate"] == 2 and r["filter_source"] == 1
 
@@ -138,7 +138,7 @@ def _json(capsys, argv):
 
 
 def test_a_row_without_an_outcome_blanks_tier_and_q(tmp_path, v03):
-    # D63: Evidence always has a tier (asserted, q 0.7, when nothing was used); a row whose z is null shows none.
+    # Evidence always has a tier (asserted, q 0.7, when nothing was used); a row whose z is null shows none.
     s = v03.signal
     docs = [v03.run_doc("run_none"),
             v03.run_doc("run_err", signals=[s("sig_e", "verdict", "tests", "error", "2026-09-20T10:59:00-07:00", "reported")])]
@@ -167,7 +167,7 @@ def test_rows_from_v03_documents(store, v03):
     assert rows["run_b"]["slate"] == rows["run_c"]["slate"] == "slt_1"
     assert rows["run_b"]["preference"]["winner"] == "run_b" and rows["run_c"]["z"] == 0.0
     d = rows["run_d"]
-    # D7: no verdict is inferred for a habit run, so z is unknown; D63: the row then blanks tier and q,
+    # No verdict is inferred for a habit run, so z is unknown; D63: the row then blanks tier and q,
     # though Evidence says asserted, 0.7.
     assert d["source"] == "habit" and d["z"] is None and d["tier"] is None and d["q"] is None
     assert d["receipt"]["predicted"] is None
@@ -196,7 +196,7 @@ def test_json_command_and_filters(store, capsys):
 
 
 def test_since_is_read_by_the_store_and_minutes_or_months_is_refused(store, capsys):
-    # D109: the store's one --since reader; `m` could be minutes or months, so it exits 2 and lists nothing
+    # The store's one --since reader; `m` could be minutes or months, so it exits 2 and lists nothing
     assert runs.parse_since is ids.parse_since
     for ambiguous in ("3m", "90M", "1.5 m"):
         for extra in ([], ["--json"]):
@@ -399,7 +399,7 @@ def _claude_session(root, turns):
 
 
 def test_a_session_named_whole_and_as_self_counts_once_in_the_run_and_the_totals(tmp_path, v03, capsys):
-    """D101, D103: the run's cost is the store's `run_cost` over lane 2's split, not a sum of whole sessions."""
+    """The run's cost is the store's `run_cost` over lane 2's split, not a sum of whole sessions."""
     from loopmath.logmatch.match import LogRoots
     from loopmath.logmatch.settle import settle_attempt, settle_run
 
@@ -425,7 +425,7 @@ def test_a_session_named_whole_and_as_self_counts_once_in_the_run_and_the_totals
 
 
 def test_a_run_with_an_unpriced_attempt_has_unknown_dollars_as_the_store_says(tmp_path, v03):
-    """D101: one definition of a run's cost. An unpriced attempt makes the dollars unknown, never a partial sum."""
+    """One definition of a run's cost. An unpriced attempt makes the dollars unknown, never a partial sum."""
     from loopmath.store.runs import run_cost
 
     doc = v03.run_doc("run_part", attempts=[v03.attempt("run_part.a1", "impl", 1, "2026-09-20T10:00:00-07:00", "2026-09-20T10:30:00-07:00", 1.25),
@@ -438,7 +438,7 @@ def test_a_run_with_an_unpriced_attempt_has_unknown_dollars_as_the_store_says(tm
 
 
 def test_a_predicted_cost_above_its_interval_keeps_its_mean_with_the_note(tmp_path, v03, capsys, probe):
-    """D107: in the terminal and on the page; the embedded JSON keeps the numbers as they are."""
+    """In the terminal and on the page; the embedded JSON keeps the numbers as they are."""
     note = "the average is pulled up by rare very large outcomes"
     doc = v03.run_doc("run_t")
     receipt = {"id": "rct_t", "rec": "rec_t", "run": "run_t", "fit": "fit_t",

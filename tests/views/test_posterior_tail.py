@@ -1,4 +1,4 @@
-"""D107: a mean above its interval's upper end means a real heavy tail. The view keeps the mean and adds
+"""A mean above its interval's upper end means a real heavy tail. The view keeps the mean and adds
 "the average is pulled up by rare very large outcomes" in text and HTML; the JSON is unchanged."""
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def _gate_workflow() -> dict:
 
 
 def test_terminal_bare_means_carry_the_note_too():
-    """D107 note 2: expected rounds and tokens are shown without bounds, and still get the note."""
+    """Expected rounds and tokens are shown without bounds, and still get the note."""
     data = {"fit": {"id": "fit_x", "at": "t", "n_runs": 3}, "levels": {}, "workflow": P.enrich_workflow(_gate_workflow())}
     lines = P.summary_lines(data)
     review = next(ln for ln in lines if ln.startswith("  review:"))
@@ -103,7 +103,7 @@ def test_json_is_unchanged_and_the_terminal_says_it(tmp_path, capsys, monkeypatc
 
 def test_page_and_python_use_the_same_words():
     assert P.TAIL_NOTE is common.TAIL_NOTE  # one string, lane 12's views/common.py
-    assert f"var TAIL_NOTE = '{common.TAIL_NOTE}';" in P.PAGE_JS
+    assert f"var TAIL_NOTE = '{common.TAIL_NOTE}';" in common.asset("estimates.js")
 
 
 @needs_node
@@ -131,7 +131,7 @@ def test_page_shows_the_note_in_cells_tips_prose_and_under_the_graph(tmp_path):
 
 @needs_node
 def test_page_bare_means_in_the_graph_gates_and_heatmap(tmp_path):
-    """D107 note 2 on the page: the graph's gate and loop labels, per-round gate passes and heatmap cells show means only."""
+    """On the page: the graph's gate and loop labels, per-round gate passes and heatmap cells show means only."""
     workflow = _gate_workflow()
     cells = [NodeSummary("family_effort", "opus|max", "cost", iv(0.5, -1.0, 0.9), iv(3.0, 0.5, 2.5), 12, "family:opus", {"user": 12}),
              NodeSummary("family_effort", "opus|low", "cost", iv(-0.2, -0.4, 0.0), iv(0.8, 0.7, 1.0), 12, "family:opus", {"user": 12})]

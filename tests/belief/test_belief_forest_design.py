@@ -50,7 +50,7 @@ def test_structure_single_gate_loop_and_budget_semantics():
     st = structure(simdata.config(simdata.IR, simdata.SETTINGS[0]))
     assert st.k_max == 3
     assert st.loops == [((0,), ["implement", "review"])]
-    # D30: budget 0 reads as 1; D69: the loop stays, with one round, so its gates still decide reach
+    # Budget 0 reads as 1; D69: the loop stays, with one round, so its gates still decide reach
     wf = Workflow("ir0", 1, "", simdata.IR.pieces, simdata.IR.artifacts, simdata.IR.edges,
                   Control(gates=simdata.IR.control.gates, budget_rounds=0))
     st0 = structure(Configuration("cfg_x", wf, {p.id: simdata.SETTINGS[0] for p in wf.pieces}))
@@ -127,7 +127,7 @@ def test_infrastructure_failures_give_no_gate_observations():
 
 def test_cost_weights_and_sources():
     assert _cost_weight({"basis": "measured"}) == 1.0
-    assert _cost_weight({"basis": "allocated"}) == 0.7  # D27
+    assert _cost_weight({"basis": "allocated"}) == 0.7
     assert _cost_weight({"basis": "asserted"}) == 0.0
     assert data_source({"run": {"task": {"source": {"kind": "live"}}}}) == "user"
     assert data_source({"run": {"task": {"source": {"kind": "sweep"}}}}) == "sweep"
@@ -155,7 +155,7 @@ def _run_with_cost(cost):
 
 
 def test_mixed_model_attempts_are_repriced_part_by_part():
-    """D67, D71: each model's tokens at that model's current rate; never one model's rate for all of them."""
+    """Each model's tokens at that model's current rate; never one model's rate for all of them."""
     both = _usd("gpt-6-sol", 1000) + _usd("claude-opus-5", 1000)
     assert both != pytest.approx(2 * _usd("gpt-6-sol", 1000))
     # no split in the cost object, only logmatch parts: the split is summed from them
@@ -199,7 +199,7 @@ def test_parse_run_reads_a_simulated_document():
 
 
 def test_check_attempts_are_counted_apart_from_drops():
-    # D86: the harness's test runs (no model, no piece, no usage) are not evidence and not dropped.
+    # The harness's test runs (no model, no piece, no usage) are not evidence and not dropped.
     docs, _ = simdata.simulate(1, seed=3)
     doc = copy.deepcopy(docs[0])
     doc["nodes"].append({"id": "tests", "kind": "gate", "gate": {"rule": "tests"}, "state": "done"})

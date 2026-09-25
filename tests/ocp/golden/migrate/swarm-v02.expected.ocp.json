@@ -4,7 +4,7 @@
     "name": "loopmath",
     "version": "0.1.0.dev0",
     "framework": "claude-code",
-    "source_contract": "dagr_graph/1",
+    "source_contract": "loopmath_graph/1",
     "emitted_at": "2026-08-31T12:00:00Z",
     "capabilities": {
       "groups": true,

@@ -1,6 +1,6 @@
 """Migrate OCP v0.1 and v0.2 documents (and contract v3 run files) to v0.3 (spec 01 section 4).
 
-Owner: lane 01. `migrate_doc` never mutates its input and is idempotent:
+`migrate_doc` never mutates its input and is idempotent:
 migrating a migrated document returns an equal document. What it adds, each
 only when absent:
 
@@ -16,8 +16,7 @@ only when absent:
 - `run.configuration = {source: habit}`, plus the inferred workflow and
   settings when `infer` returns one (lane 04's `loopmath.workflows.infer`),
   with the inference confidence in `ext["dev.loopmath.inferred"]`. `infer`
-  reads the migrated document, or for a contract run file the original file
-  (D51).
+  reads the migrated document, or for a contract run file the original file.
 
 A contract v3 run file converts through `loopmath.ocp.contractv3` to v0.1
 first.
@@ -45,7 +44,7 @@ class MigrationError(ValueError):
 def infer_configuration(doc: dict[str, Any]) -> tuple[dict[str, Any], float] | None:
     """Lane 04's workflow inference over the document, as an OCP configuration.
 
-    The document itself goes to inference (D51): `from_ocp` would drop node
+    The document itself goes to inference: `from_ocp` would drop node
     kinds and roles. None when inference cannot read the document: InferError,
     or any other error on a malformed one.
     """
@@ -66,7 +65,7 @@ def _list(value: Any) -> list[Any]:
 def migrate_doc(doc: dict[str, Any], *, infer: Infer | None = infer_configuration) -> dict[str, Any]:
     """Return the v0.3 form of an OCP v0.1 or v0.2 document or a contract v3 run file."""
     origin = None
-    source = doc  # what inference reads: a contract run file keeps ext.experiment, which convert drops (D51)
+    source = doc  # what inference reads: a contract run file keeps ext.experiment, which convert drops
     if contractv3.is_contract_run(doc):
         origin = f"dagr/{doc.get('dagr', 1)}"
         try:

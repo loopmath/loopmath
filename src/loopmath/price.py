@@ -215,7 +215,7 @@ def price_run(record: dict, table: PriceTable) -> dict:
 
     A record whose session ran more than one model carries `tokens_by_model`
     (`RunRecord.to_dict`), and each part is priced at its own model's rate
-    and summed (Analyst D62). When any part has no price row, or has tokens
+    and summed. When any part has no price row, or has tokens
     under no model, or the session could not be split by model, `usd` is
     None and `unpriced_models` names the parts: no part is ever priced as
     another model.
@@ -230,12 +230,12 @@ def price_run(record: dict, table: PriceTable) -> dict:
 # `cache_creation_tokens`, else its 5m and 1h halves, else 0 (it is optional).
 _OCP_TOKEN_FIELDS = {"in": "input_tokens", "cache_read": "cached_input_tokens", "out": "output_tokens"}
 _CACHE_WRITE_HALVES = ("cache_creation_5m_tokens", "cache_creation_1h_tokens")
-# The split's key for tokens no model is known for; never priced (Analyst D71).
+# The split's key for tokens no model is known for; never priced.
 UNLABELLED_MODEL = "unknown"
 
 
 def price_model_tokens(model_tokens: dict, table: PriceTable) -> dict:
-    """Price a per-model token split, each model at its own rate, summed (Analyst D62, D67, D71).
+    """Price a per-model token split, each model at its own rate, summed.
 
     `model_tokens` is `cost.ext["dev.loopmath.model_tokens"]`:
     `{model_id: {input_tokens, cached_input_tokens, cache_creation_tokens,
@@ -269,7 +269,7 @@ def _ocp_streams(fields: dict) -> dict | None:
 
 
 def _price_parts(record: dict, parts: list, table: PriceTable) -> dict:
-    """Every model part of a mixed-model record at its own rate, summed (D62)."""
+    """Every model part of a mixed-model record at its own rate, summed."""
     model = record.get("model")
 
     def withheld(reason: str, unpriced: list | None = None) -> dict:
@@ -411,7 +411,7 @@ def price_all(records: list[dict], table: PriceTable) -> tuple[list[dict], dict]
     A priced record is its own file's usage (one session file, or one resumed
     Codex thread) and never includes a child session: a sub-agent's own file
     and a Codex child thread are records of their own, priced on their own,
-    so summing a parent and its children counts each once (Analyst D64).
+    so summing a parent and its children counts each once.
     Returns `(priced_records, warnings)`; `warnings` tallies todo-priced and
     unpriced runs by model, unpriced runs by `reason` (a record with a
     missing or malformed token stream still has a model, so it would

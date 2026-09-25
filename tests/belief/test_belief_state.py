@@ -54,7 +54,7 @@ def test_load_and_predict_shapes(s, task, sim_fit):
     assert p.cost.tokens.mean > 1000 and 1 <= p.rounds.mean <= 3
     assert set(p.per_piece) == {"plan", "implement", "review"}
     assert p.per_piece["plan"].gate_pass is None and p.per_piece["implement"].gate_pass is not None
-    # D60: piece costs are full-run contributions that add up to the run; cost_per_round is one execution
+    # Piece costs are full-run contributions that add up to the run; cost_per_round is one execution
     assert math.isclose(sum(pp.cost.usd.mean for pp in p.per_piece.values()), p.cost.usd.mean, rel_tol=1e-9)
     plan, impl = p.per_piece["plan"], p.per_piece["implement"]
     assert plan.cost_per_round == plan.cost  # runs once
@@ -225,7 +225,7 @@ def _means(p):
 
 
 def test_new_task_means_do_not_depend_on_the_task_id(s, task):
-    """D98: an unseen task's effect is integrated out of the means, so two new tasks that differ
+    """An unseen task's effect is integrated out of the means, so two new tasks that differ
     only in id get the same means and the same look-ahead gain; their draws still differ."""
     sweep = simdata.config(simdata.SWEEP, simdata.SETTINGS[0])
     cfgs = [sweep, simdata.config(simdata.IR, simdata.SETTINGS[2]), simdata.config(simdata.SOLO, simdata.SETTINGS[1])]
@@ -242,7 +242,7 @@ def test_new_task_means_do_not_depend_on_the_task_id(s, task):
 
 
 def test_new_task_means_are_what_the_draws_estimate(s, task):
-    """D98: averaged over many new tasks in new repos (each with its own seeded draws of the unseen
+    """Averaged over many new tasks in new repos (each with its own seeded draws of the unseen
     effects), the draws' means converge to the integrated means."""
     cfg = simdata.config(simdata.SWEEP, simdata.SETTINGS[0])
     new = [_new_task(task, i, repo=f"someone/repo-{i}") for i in range(200)]
@@ -261,7 +261,7 @@ def test_new_task_means_are_what_the_draws_estimate(s, task):
 
 def _reference_state(cfg, level: str, new: Task):
     """A fit that knows every node of the configuration's rows at effect 0, except those of one
-    level, which are unseen with scale 1 on the cost head and 0 elsewhere (D106)."""
+    level, which are unseen with scale 1 on the cost head and 0 elsewhere."""
     from pathlib import Path
 
     from loopmath.belief.design import task_terms
@@ -353,7 +353,7 @@ def _mean_inverse_iid(n: int) -> float:
 
 @pytest.mark.parametrize("k", [0, 1, 2, 3, 4, 5, 7, 19, 60, 400])
 def test_the_inverse_cost_rule_is_bounded(k):
-    """D108: whatever the number of axes, the rule has at most MAX_POINTS points: a Gauss-Hermite
+    """Whatever the number of axes, the rule has at most MAX_POINTS points: a Gauss-Hermite
     grid up to four axes, a fixed Sobol set beyond."""
     from loopmath.belief import state as S
 
@@ -387,7 +387,7 @@ def test_a_long_chain_integrates_within_the_point_budget(monkeypatch):
 
 @pytest.mark.parametrize("rescue", [None, 0.0])
 def test_without_a_rescue_the_inverse_cost_is_not_computed(monkeypatch, rescue):
-    """D108: the rescue's tokens per dollar only matter when there is a rescue."""
+    """The rescue's tokens per dollar only matter when there is a rescue."""
     from loopmath.belief import state as S
 
     def fail(*_a, **_k):

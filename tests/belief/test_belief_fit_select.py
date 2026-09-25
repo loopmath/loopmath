@@ -1,4 +1,4 @@
-"""`--fit ID` on recommend and posterior: read a kept fit instead of `fits/latest` (FINDINGS I9, D91)."""
+"""`--fit ID` on recommend and posterior: read a kept fit instead of `fits/latest` (FINDINGS I9)."""
 
 from __future__ import annotations
 

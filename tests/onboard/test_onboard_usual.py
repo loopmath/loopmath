@@ -1,4 +1,4 @@
-"""Usual workflow per (type, repo) and its config tables (D5)."""
+"""Usual workflow per (type, repo) and its config tables."""
 
 from __future__ import annotations
 

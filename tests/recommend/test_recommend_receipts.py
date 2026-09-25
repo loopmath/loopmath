@@ -122,7 +122,7 @@ def run_doc(config: dict, *, rec_id: str | None = "rec_TEST", signals=("sig_test
 
 
 def test_an_unpriced_attempt_leaves_the_run_dollars_unknown():
-    # D62, D67: $1.10 priced plus an attempt without dollars is not a $1.10 run; tokens stay the full sum
+    # $1.10 priced plus an attempt without dollars is not a $1.10 run; tokens stay the full sum
     rec, _ = stored_rec()
     doc = run_doc(GOAL.to_dict())
     del doc["attempts"][1]["cost"]["usd"]

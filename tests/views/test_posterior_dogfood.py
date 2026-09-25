@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from loopmath import cli
 from loopmath.output import EXIT_NOT_FOUND
+from loopmath.views import common
 from loopmath.views import posterior as P
 from tests.views._posterior_helpers import needs_node, run_page
 
@@ -54,7 +55,7 @@ def test_missing_workflow_says_what_to_pass(tmp_path, capsys, monkeypatch):
 
 
 def test_untyped_group_is_named_for_people():
-    """D92: the prior's `unknown` task type (the E0 runs) reads as untyped, in the terminal and on the page."""
+    """The prior's `unknown` task type (the E0 runs) reads as untyped, in the terminal and on the page."""
     assert P.key_text(_node("type", "unknown")) == "untyped (no task type recorded)" == P.UNTYPED
     assert P.key_text(_node("type", "feature")) == "feature"
     assert P.key_text(_node("repo", "unknown")) == "unknown"
@@ -62,7 +63,7 @@ def test_untyped_group_is_named_for_people():
     assert "  type untyped (no task type recorded): x1.00 (0.90 to 1.10), 12 runs, shared data" in lines
     child = {**_node("repo", "unknown/acme/app"), "support": 0, "parent": "type:unknown"}
     assert P._support_text(child) == "no runs here: the parent's estimate (type untyped (no task type recorded)), widened"
-    assert f"var UNTYPED = '{P.UNTYPED}';" in P.PAGE_JS
+    assert f"var UNTYPED = '{P.UNTYPED}';" in common.asset("estimates.js")
 
 
 @needs_node

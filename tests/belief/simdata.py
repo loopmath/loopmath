@@ -63,6 +63,12 @@ FIXED = {  # true fixed effects per head
     "score": {"fixed:intercept": 0.0, "control:budget": 0.1, "control:width": 0.1},
 }
 KIND = {"cost": "cost", "tokens": "cost", "gate": "logit", "success": "logit", "score": "score"}
+# Levels of the 0.1 design draw their true effects from Truth.rng in the order they are met, as the tests
+# were written against. A level added later (psrc, fsrc) draws from its own stream, so adding one moves
+# no other true effect.
+LEVELS_0_1 = frozenset({"org", "type", "repo", "subtype", "task", "provider", "family", "model", "effort",
+                        "family_effort", "harness", "role", "role_family", "topology", "position", "feature",
+                        "source", "gate"})
 SIGMA = {"cost": 0.5, "tokens": 0.45, "score": 0.6}
 
 
@@ -86,7 +92,7 @@ def all_configs() -> list[Configuration]:
 
 
 def workflow_to_ocp(wf: Workflow) -> dict:
-    """OCP 2.3 workflow with the D29 control mapping."""
+    """OCP 2.3 workflow with the control mapping."""
     return {
         "id": wf.id, "version": wf.version, "title": wf.title,
         "pieces": [{"id": p.id, "role": p.role, "width": p.width} for p in wf.pieces],
@@ -112,6 +118,15 @@ class Truth:
     scale_mult: float = 1.0
     effects: dict[str, dict[str, float]] = field(default_factory=dict)
     sigma: dict[str, float] = field(default_factory=lambda: dict(SIGMA))
+    streams: dict[str, np.random.Generator] = field(default_factory=dict)
+
+    def _rng(self, level: str) -> np.random.Generator:
+        if level in LEVELS_0_1:
+            return self.rng
+        if level not in self.streams:  # seeded from the truth's seed and the level, without using rng
+            key = int.from_bytes(level.encode(), "little")
+            self.streams[level] = np.random.default_rng([self.rng.bit_generator.seed_seq.entropy, key])
+        return self.streams[level]
 
     def value(self, head: str, node: str) -> float:
         base = head.split(":", 1)[0]
@@ -121,7 +136,8 @@ class Truth:
             if group is None:
                 table[node] = FIXED[base].get(node, 0.0)
             else:
-                table[node] = float(self.rng.normal(0.0, default_scale(group, KIND[base]) * self.scale_mult))
+                rng = self._rng(group.split(":", 1)[0])
+                table[node] = float(rng.normal(0.0, default_scale(group, KIND[base]) * self.scale_mult))
         return table[node]
 
     def eta(self, head: str, terms) -> float:

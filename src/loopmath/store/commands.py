@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..output import EXIT_LOCKED, EXIT_NOT_FOUND, EXIT_OK, EXIT_USER, emit_json, html_path, write_html
-from ..taskmodel import normalize_features
-from ..types import TASK_TYPE_IDS, TIERS, Configuration, Setting, Signal, Task
+from ..taskmodel import BUILTIN_FEATURES, HORIZON_KEY, FeatureSet, horizon_value, parse_horizon
+from ..types import TASK_TYPE_IDS, TIERS, AcceptanceRule, Configuration, Setting, Signal, Task
 from . import runs as R
 from .config import KNOWN_ROOTS, ConfigError, coerce, split_key
 from .home import EndBeforeStart, NotFound, Store, StoreError, ValidationFailed
@@ -46,11 +46,11 @@ def handler(schema: str) -> Callable:
                 return fn(args)
             except StoreLocked as exc:
                 return _error(args, schema, str(exc), EXIT_LOCKED)
-            except (NotFound, EndBeforeStart) as exc:  # D87: an end before the start exits 2 too
+            except (NotFound, EndBeforeStart) as exc:  # An end before the start exits 2 too
                 return _error(args, schema, str(exc), EXIT_NOT_FOUND)
             except ValidationFailed as exc:
                 return _error(args, schema, str(exc), EXIT_USER, validation=exc.result)
-            except (StoreError, ConfigError, ValueError) as exc:  # a ValueError may carry its code (D89: --since 3m exits 2)
+            except (StoreError, ConfigError, ValueError) as exc:  # a ValueError may carry its code (--since 3m exits 2)
                 return _error(args, schema, str(exc), getattr(exc, "exit_code", EXIT_USER))
 
         return run
@@ -96,28 +96,58 @@ def _outcome_word(z: float | None) -> str:
 
 
 # ================================================================ run start
-def _features(pairs: list[str]) -> dict[str, str]:
+def _features(pairs: list[str], features: FeatureSet | None = None) -> dict[str, str]:
     raw: dict[str, str] = {}
     for p in pairs or []:
         if "=" not in p:
             raise UserError(f"--feature takes K=V, got {p!r}")
         k, v = p.split("=", 1)
         raw[k] = v
-    return normalize_features(raw)
+    return (features or BUILTIN_FEATURES).store(raw)
 
 
-def task_from_args(args: argparse.Namespace, org: str | None) -> Task:
+# What recommend's task block adds to the task for the view; a run never stores them. The horizon and the
+# inherited values come back as features (rec_features).
+REC_TASK_VIEW = ("group_chain", "support", "horizon", "inherited_features", "notes")
+
+
+def rec_features(rec: dict[str, Any] | None, task_type: Any, repo: Any) -> dict[str, str]:
+    """What a stored recommendation priced its task with beyond the given features: the horizon it
+    used (given, or inherited from the fit) and the values the fit filled in. A run started from it
+    keeps them, as it keeps its rule (`rec_rule`). Empty for a task of another type or repo."""
+    block = (rec or {}).get("task")
+    if not isinstance(block, dict) or block.get("type") != task_type or block.get("repo") != repo:
+        return {}
+    out = {str(k): str(v) for k, v in (block.get("inherited_features") or {}).items()}
+    h = block.get("horizon") if isinstance(block.get("horizon"), dict) else {}
+    if h.get("from") not in (None, "none"):
+        out[HORIZON_KEY] = horizon_value(h.get("seconds")) or "none"
+    return out
+
+
+def task_from_args(args: argparse.Namespace, org: str | None, loaded: dict[str, Any] | None = None,
+                   features: FeatureSet | None = None, rec: dict[str, Any] | None = None) -> Task:
+    """The task from --task-file, or from `loaded` (a stored recommendation, for --choice), then the flags.
+    With a recommendation (`loaded`, or `rec` for plain --rec) the features it priced fill the keys the
+    task and the flags leave out (`rec_features`). Declared values are stored raw (`FeatureSet.store`)."""
     data: dict[str, Any] = {}
-    if args.task_file:
+    priced_by = loaded if loaded is not None else rec  # the recommendation, never the task file
+    source = loaded  # what the task is read from: the recommendation (--choice) or the task file
+    if loaded is not None:
+        data = dict(loaded.get("task") if isinstance(loaded.get("task"), dict) else loaded)
+    elif args.task_file:
         try:
-            loaded = json.loads(Path(args.task_file).expanduser().read_text(encoding="utf-8"))
+            source = from_file = json.loads(Path(args.task_file).expanduser().read_text(encoding="utf-8"))
         except FileNotFoundError:
             raise NotFound(f"no task file {args.task_file}") from None
         except ValueError as exc:
             raise UserError(f"{args.task_file}: not JSON: {exc}") from None
-        if not isinstance(loaded, dict):
+        if not isinstance(from_file, dict):
             raise UserError(f"{args.task_file}: a task is a JSON object")
-        data = dict(loaded.get("task") if isinstance(loaded.get("task"), dict) else loaded)
+        data = dict(from_file.get("task") if isinstance(from_file.get("task"), dict) else from_file)
+    if isinstance(source, dict) and isinstance(source.get("task"), dict):  # a recommendation's task block
+        for key in REC_TASK_VIEW:
+            data.pop(key, None)
     for key, attr in (("type", "task_type"), ("repo", "repo"), ("subtype", "subtype"), ("title", "title"),
                       ("base_commit", "base_commit")):
         value = getattr(args, attr, None)
@@ -127,14 +157,23 @@ def task_from_args(args: argparse.Namespace, org: str | None) -> Task:
         raise UserError("a task needs a type and a repo (--type T --repo R, or --task-file)")
     if data["type"] not in TASK_TYPE_IDS:
         raise UserError(f"task type {data['type']!r} is not one of {', '.join(TASK_TYPE_IDS)}")
-    features = normalize_features(data.get("features") or {}) if isinstance(data.get("features"), dict) else {}
-    features.update(_features(args.feature))
-    data["features"] = features
+    fs = features or BUILTIN_FEATURES
+    given = data.get("features") if isinstance(data.get("features"), dict) else {}
+    feats = fs.store(rec_features(priced_by, data["type"], data["repo"]))
+    feats.update(fs.store(given or {}))
+    feats.update(_features(args.feature, features))
+    if getattr(args, "horizon", None) is not None:  # `none` is a given open-ended horizon (spec 04 section 1)
+        try:
+            parse_horizon(args.horizon)
+        except ValueError as exc:
+            raise UserError(f"--horizon: {exc}") from None
+        feats[HORIZON_KEY] = horizon_value(args.horizon) or "none"
+    data["features"] = feats
     data.setdefault("id", new_id("tsk"))
     if org and not data.get("org"):
         data["org"] = org
     data.setdefault("labeled_by", "orchestrator")
-    data.pop("history", None)  # D14 backlog lines carry it for lane 10; the run keeps the task only
+    data.pop("history", None)  # backlog lines carry it for lane 10; the run keeps the task only
     return Task.from_dict(data)
 
 
@@ -164,7 +203,7 @@ def _as_config(data: dict[str, Any]) -> Configuration | dict[str, Any]:
 
 
 def resolve_config(store: Store, value: str, rec: str | None) -> Configuration | dict[str, Any]:
-    """D13: a configuration id seen in a stored recommendation or a stored run; or a JSON file holding one."""
+    """A configuration id seen in a stored recommendation or a stored run; or a JSON file holding one."""
     path = Path(value).expanduser()
     if value.endswith(".json") and path.is_file():
         try:
@@ -240,7 +279,7 @@ def parse_set(items: list[str]) -> dict[str, Setting]:
 
 
 def config_from_workflow(value: str, sets: list[str], home: Path) -> Configuration:
-    """D81: the file's `[settings.<piece>]` first, `--set` overriding per piece; `--set` is needed only for
+    """The file's `[settings.<piece>]` first, `--set` overriding per piece; `--set` is needed only for
     the pieces the file leaves unset. The id is lane 4's, as `workflows validate` prints it."""
     from ..workflows.ids import make_config
 
@@ -274,11 +313,126 @@ def _rec_picks(store: Store, rec: str) -> str:
     return f" ({rec} offers {', '.join(named)})" if named else ""
 
 
-@handler("run.start")
-def run_start(args: argparse.Namespace) -> int:
-    store = _store(args)
-    conf = store.config()
-    task = task_from_args(args, conf.get("org") or None)
+def _model_id(model: Any) -> Any:
+    return (model.get("id") or model.get("raw")) if isinstance(model, dict) else model
+
+
+def piece_settings(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each piece in workflow order with its setting, so an orchestrator never reads the configuration."""
+    settings = cfg.get("settings") or {}
+    out = []
+    for piece in (cfg.get("workflow") or {}).get("pieces") or []:
+        s = settings.get(piece.get("id")) or {}
+        out.append({"piece": piece.get("id"), "role": piece.get("role"), "width": piece.get("width", 1),
+                    "harness": s.get("harness"), "model": _model_id(s.get("model")), "effort": s.get("effort")})
+    return out
+
+
+def config_label(cfg: dict[str, Any]) -> str:
+    """'implement_review: claude-opus-5-5/high, gpt-6-astra/xhigh', as Configuration.label() writes it."""
+    parts = [f"{p['model']}/{p['effort']}" for p in piece_settings(cfg) if p["model"]]
+    return f"{(cfg.get('workflow') or {}).get('id')}: " + ", ".join(parts)
+
+
+def _open_run(store: Store, args: argparse.Namespace, task: Task, cfg: Any, *, source: str, slate: str | None,
+              rule: Any, base_commit: str | None, started_at: str | None = None) -> dict[str, Any]:
+    """Store one run and its before-receipt; the run start JSON for it."""
+    run = store.new_run(task, cfg, source=source, rec=args.rec, slate=slate, rule=rule, base_commit=base_commit,
+                        started_at=started_at)
+    doc = store.run_doc(run)
+    stored = doc["run"]["configuration"]
+    cfg_id = stored["id"]
+    requested = cfg.id if isinstance(cfg, Configuration) else (cfg or {}).get("id")
+    if requested and requested != cfg_id:  # the stored id is always the canonical hash (E190)
+        print(f"note: configuration {requested} is recorded under its canonical id {cfg_id}", file=sys.stderr)
+    receipt: dict[str, Any] = {"receipt": None, "reason": "no --rec"}
+    if args.rec:
+        from .finish import before_receipt
+
+        receipt = before_receipt(store, doc, args.rec, task=task,
+                                 config=cfg if isinstance(cfg, Configuration) else None, rule=rule)
+        if receipt["receipt"] is None:
+            print(f"note: no receipt: {receipt['reason']}", file=sys.stderr)
+    return {"run": run, "slate": slate, "path": str(store.run_path(run)), "config": cfg_id,
+            "config_requested": requested if requested and requested != cfg_id else None,
+            "task": doc["run"].get("task", {}).get("id"), "rule": rule.name, "source": source,
+            "label": config_label(stored), "pieces": [n.get("id") for n in doc.get("nodes") or []],
+            "piece_settings": piece_settings(stored), "receipt": receipt}
+
+
+def _choice_members(payload: dict[str, Any], choice: dict[str, Any]) -> list[tuple[str, str]]:
+    """(configuration id, source) per run of a choice. A configuration is `usual` only when it is the
+    reference and the reference is the user's habit (recommend/2 `reference.kind`); a pair's second
+    member is the exploration pick."""
+    ref = payload.get("reference") or {}
+    ref_cfg = ref.get("config")
+    ref_id = ref_cfg.get("id") if isinstance(ref_cfg, dict) else ref_cfg
+    habit = ref.get("kind") == "usual"
+    members = [m for m in choice.get("members") or [choice.get("config")] if m]
+    if not members:
+        raise UserError(f"choice {choice.get('key')!r} names no configuration")
+    first = (members[0], "usual" if habit and members[0] == ref_id else "alternative")
+    return [first] + ([(m, "exploration") for m in members[1:]] if choice.get("key") == "pair" else [])
+
+
+def rec_rule(args: argparse.Namespace, payload: dict[str, Any] | None, conf: Any) -> AcceptanceRule:
+    """The acceptance rule a run is judged by. For a run from a recommendation (`--rec`), the rule the
+    recommendation was made for, as stored, so the receipt compares the prediction with an outcome
+    under the same rule. `--rule NAME` replaces it on purpose. The configured default applies when
+    there is no recommendation or it was stored without a rule."""
+    if args.rule:
+        return conf.rule(args.rule)
+    stored = (payload or {}).get("rule")
+    return AcceptanceRule.from_dict(stored) if isinstance(stored, dict) and stored.get("name") else conf.rule(None)
+
+
+def start_choice(args: argparse.Namespace, store: Store, conf: Any, *, single: str | None = None,
+                 started_at: str | None = None) -> dict[str, Any]:
+    """`run start --rec REC --choice KEY`: the task from the recommendation, configurations and sources
+    from the choice; a pair opens a slate with both runs. `single` is the error for a choice of several
+    runs when the caller opens one (`run record`)."""
+    if args.config or args.workflow or args.set or args.task_file:
+        raise UserError("--choice takes the task and configuration from the recommendation; drop --task-file, "
+                        "--config, --workflow and --set")
+    if args.source:
+        raise UserError("--choice sets the source itself; drop --source")
+    if not args.rec:
+        raise UserError("--choice KEY needs --rec REC, the recommendation it comes from")
+    payload = store.rec(args.rec)
+    if payload is None:
+        raise NotFound(f"no recommendation {args.rec} in {store.home}")
+    choices = [c for c in payload.get("choices") or [] if isinstance(c, dict)]
+    choice = next((c for c in choices if c.get("key") == args.choice), None)
+    if choice is None:
+        keys = ", ".join(str(c.get("key")) for c in choices) or "none"
+        raise UserError(f"{args.rec} has no choice {args.choice!r} (its choices: {keys})")
+    members = _choice_members(payload, choice)
+    if single and len(members) > 1:
+        raise UserError(single)
+    if len(members) > 1 and (args.slate or args.new_slate):
+        raise UserError("a pair opens its own slate; drop --slate and --new-slate")
+    task = task_from_args(args, conf.get("org") or None, loaded=payload, features=conf.features_or_builtin())
+    configs = [(resolve_config(store, cfg_id, args.rec), source) for cfg_id, source in members]  # all found first
+    slate = new_id("slt") if len(members) > 1 or args.new_slate else None
+    if args.slate:
+        if not any(True for _ in store.runs(slate=args.slate)):
+            raise NotFound(f"no slate {args.slate}; start the first member with --new-slate")
+        slate = args.slate
+    rule = rec_rule(args, payload, conf)
+    base = args.base_commit or getattr(task, "base_commit", None)
+    runs = [_open_run(store, args, task, cfg, source=source, slate=slate, rule=rule, base_commit=base,
+                      started_at=started_at) for cfg, source in configs]
+    return {"choice": args.choice, "rec": args.rec, "task": runs[0]["task"], "slate": slate, "rule": rule.name,
+            "runs": [{k: v for k, v in r.items() if k not in ("slate", "task", "rule")} for r in runs]}
+
+
+def start_plain(args: argparse.Namespace, store: Store, conf: Any, *, started_at: str | None = None) -> dict[str, Any]:
+    """`run start` from task flags or a task file, and --config or --workflow with --source."""
+    if not args.source:
+        raise UserError("give --source (usual, alternative, exploration, user_edit, habit or designed), "
+                        "or --rec REC --choice KEY")
+    payload = store.rec(args.rec) if args.rec else None
+    task = task_from_args(args, conf.get("org") or None, features=conf.features_or_builtin(), rec=payload)
     if args.rec and not args.config and not args.workflow:  # name the configurations the recommendation offers
         raise UserError(f"give --config CFG{_rec_picks(store, args.rec)}, or --workflow FILE.toml")
     if args.config:
@@ -295,33 +449,28 @@ def run_start(args: argparse.Namespace) -> int:
         if not any(True for _ in store.runs(slate=args.slate)):
             raise NotFound(f"no slate {args.slate}; start the first member with --new-slate")
         slate = args.slate
-    rule = conf.rule(args.rule)
-    run = store.new_run(task, cfg, source=args.source, rec=args.rec, slate=slate, rule=rule,
-                        base_commit=args.base_commit)
-    doc = store.run_doc(run)
-    cfg_id = doc["run"]["configuration"]["id"]
-    requested = cfg.id if isinstance(cfg, Configuration) else (cfg or {}).get("id")
-    if requested and requested != cfg_id:  # the stored id is always the canonical hash (D2, E190)
-        print(f"note: configuration {requested} is recorded under its canonical id {cfg_id}", file=sys.stderr)
-    receipt: dict[str, Any] = {"receipt": None, "reason": "no --rec"}
-    if args.rec:
-        from .finish import before_receipt
+    rule = rec_rule(args, payload, conf)
+    return _open_run(store, args, task, cfg, source=args.source, slate=slate, rule=rule,
+                     base_commit=args.base_commit, started_at=started_at)
 
-        receipt = before_receipt(store, doc, args.rec, task=task,
-                                 config=cfg if isinstance(cfg, Configuration) else None, rule=rule)
-        if receipt["receipt"] is None:
-            print(f"note: no receipt: {receipt['reason']}", file=sys.stderr)
-    payload = {"run": run, "slate": slate, "path": str(store.run_path(run)), "config": cfg_id,
-               "config_requested": requested if requested and requested != cfg_id else None,
-               "task": doc["run"].get("task", {}).get("id"), "rule": rule.name,
-               "pieces": [n.get("id") for n in doc.get("nodes") or []], "receipt": receipt}
-    lines = [run] + ([slate] if args.new_slate else [])
+
+@handler("run.start")
+def run_start(args: argparse.Namespace) -> int:
+    store = _store(args)
+    conf = store.config()
+    if getattr(args, "choice", None):
+        out = start_choice(args, store, conf)
+        slate = out["slate"]
+        lines = [f"{r['run']}  {r['label']} ({r['source']})" for r in out["runs"]] + ([slate] if slate else [])
+        return _out(args, "run.start", out, lines)
+    payload = start_plain(args, store, conf)
+    lines = [payload["run"]] + ([payload["slate"]] if args.new_slate else [])
     return _out(args, "run.start", payload, lines)
 
 
 # ================================================================ run attempt, artifact
 def _self_session(harness: str) -> str:
-    """Analyst D26: exact under Claude Code, an error anywhere else."""
+    """Exact under Claude Code, an error anywhere else."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if harness != "claude-code":
         raise UserError("--session self names the Claude Code session running this command; "
@@ -383,7 +532,7 @@ def _finish_lines(res: dict[str, Any]) -> list[str]:
              f"cost: {_money(c['usd'], c['tokens'])}"
              + (f" ({_count(c['attempts_not_costed'], 'attempt')} without dollars{known})" if c["attempts_not_costed"] else ""),
              f"matched: {m['verified']} verified, {m['heuristic']} heuristic, {len(m['unmatched'])} unmatched"]
-    for s in res.get("shared") or []:  # D87, D100: a session that several attempts name
+    for s in res.get("shared") or []:  # A session that several attempts name
         names = s["attempts"]
         both = f"{', '.join(names[:-1])} and {names[-1]}" if len(names) > 1 else ", ".join(names)
         how = "its cost is split" if s.get("split") else "its cost is counted once in the run total"
@@ -467,7 +616,7 @@ def run_import(args: argparse.Namespace) -> int:
     payload = _read_import(store, Path(args.files[0]).expanduser(), args.files[0])
     run = payload["run"]
     lines = [run]
-    from ..priors import overlap_note, shipped_overlap  # D118 N2: say once when the prior holds this run
+    from ..priors import overlap_note, shipped_overlap  # Say once when the prior holds this run
     payload["shipped_overlap"] = shipped_overlap([run])
     lines += [n for n in [overlap_note(payload["shipped_overlap"])] if n]
     if args.finish and payload["state"] == R.FINISHED:
@@ -620,7 +769,7 @@ def _git_parent(cwd: str, sha: str) -> str | None:
 
 
 def find_runs_by_commit(store: Store, sha: str) -> dict[str, Any]:
-    """Analyst D17: artifact records first; else runs whose base commit is the parent of `sha` (heuristic).
+    """Artifact records first; else runs whose base commit is the parent of `sha` (heuristic).
 
     Several heuristic candidates and no artifact match is no match.
     """

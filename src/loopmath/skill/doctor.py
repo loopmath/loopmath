@@ -6,7 +6,7 @@ Six checks, each `ok`, `warn` or `fail`:
   store    the store root exists and is writable
   fit      `fits/latest` present, and its age
   prices   every model seen in the scan window has a price
-  skill    where the orchestrator skill is installed (and which Codex form)
+  skill    where the skill set is installed (and which Codex form), and whether it is whole and current
 
 Nothing here opens a network connection. Log files are read through the
 parse cache, read only; Codex auth files are never opened.
@@ -25,6 +25,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable, Mapping
 
+from ..belief.design import other_design
 from . import install as _install
 
 SCAN_DAYS = 30
@@ -132,7 +133,15 @@ def check_fit(home: Path, now: float) -> dict:
         return _check("fit", "warn", "no fit yet: run `loopmath fit` (or `loopmath onboard`)", present=False)
     at, stamp = _fit_time(latest)
     age_s = max(0.0, now - stamp)
-    return _check("fit", "ok", f"{latest.resolve().name}, {_age(age_s)} old", present=True,
+    try:
+        meta = json.loads((latest / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = None
+    why = other_design(meta) if isinstance(meta, dict) else None
+    if why is not None:  # the same check as `loopmath recommend`: this loopmath cannot use the fit
+        return _check("fit", "warn", why, present=True, usable=False, fit=latest.resolve().name, at=at,
+                      age_s=round(age_s))
+    return _check("fit", "ok", f"{latest.resolve().name}, {_age(age_s)} old", present=True, usable=True,
                   fit=latest.resolve().name, at=at, age_s=round(age_s))
 
 
@@ -168,18 +177,32 @@ def check_prices(models: Counter, parse: dict) -> dict:
                   f"(table as of {table.as_of})", **detail)
 
 
+def _install_cmd(place: dict) -> str:
+    return f"loopmath skill install --target {place['target']} --scope {place['scope']}"
+
+
 def check_skill(cwd: Path | None, env: Mapping[str, str] | None) -> dict:
+    """`ok` when the full set is installed and current for some target, with nothing old or partial
+    left anywhere; else a warning with the exact install command."""
     places = _install.status(cwd=cwd, env=env)
-    installed = [p for p in places if p["installed"]]
-    stale = [p for p in installed if not p["current"]]
-    if not installed:
-        return _check("skill", "warn", "not installed: run `loopmath skill install --target both`", places=places)
-    parts = [f"{p['target']} {p['scope']} ({'AGENTS.md block' if p['method'] == 'agents_block' else 'skill'})"
-             for p in installed]
-    if stale:
-        return _check("skill", "warn", "installed but older than this loopmath: run `loopmath skill install` again; "
-                      + ", ".join(parts), places=places)
-    return _check("skill", "ok", ", ".join(parts), places=places)
+    n = len(_install.SKILLS)
+    seen = [p for p in places if p["any"]]
+    if not seen:
+        return _check("skill", "warn", "not installed: run `loopmath skill install`", places=places)
+    problems = []
+    for p in seen:
+        where = f"{p['target']} {p['scope']}"
+        if p["old"]:
+            problems.append(f"{where} still has the 0.1 single skill: run `{_install_cmd(p)}`")
+        elif p["missing"]:
+            problems.append(f"{where} lacks {', '.join(p['missing'])}: run `{_install_cmd(p)}`")
+        elif not p["current"]:
+            problems.append(f"{where} is older than this loopmath: run `{_install_cmd(p)}`")
+    if problems:
+        return _check("skill", "warn", "; ".join(problems), places=places)
+    parts = [f"{p['target']} {p['scope']} ({'AGENTS.md block' if p['method'] == 'agents_block' else 'skills'})"
+             for p in seen]
+    return _check("skill", "ok", f"{n} skills: " + ", ".join(parts), places=places)
 
 
 def run_checks(home: Path, *, env: Mapping[str, str] | None = None, cwd: Path | None = None,

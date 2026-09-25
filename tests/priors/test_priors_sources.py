@@ -55,7 +55,7 @@ def test_e0_sessions_become_habit_runs_without_verdicts(tmp_path):
     by_tool = {d["run"]["ext"]["dev.loopmath.prior"]["tool"]: d for d in docs}
     cc = by_tool["claude-code"]
     run = cc["run"]
-    assert "signals" not in run and "acceptance_rule" not in run  # D7
+    assert "signals" not in run and "acceptance_rule" not in run
     assert "type" not in run["task"] and run["task"]["source"]["kind"] == "e0"
     assert run["configuration"]["source"] == "habit"
     assert run["provenance"] == {"kind": "logged", "chooser": "habit"}
@@ -87,7 +87,7 @@ def test_e0_repo_names_are_hashed_in_the_bundle(tmp_path):
 
 def test_e0_project_class_keeps_the_kind_not_the_name():
     assert [project_kind(c) for c in ("acme-orchestrated", "acme-agent", "other-dev", None)] == [
-        "orchestrated", "agent", "other", None]  # D70: the corpus classes name our own tools and workspaces
+        "orchestrated", "agent", "other", None]  # The corpus classes name our own tools and workspaces
 
 
 # ---------------------------------------------------------------- RQ1

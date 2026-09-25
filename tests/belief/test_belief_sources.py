@@ -1,4 +1,4 @@
-"""Where a run's source comes from (spec 04 section 1, D118 N2): store runs are the user's.
+"""Where a run's source comes from (spec 04 section 1): store runs are the user's.
 
 The store holds runs labelled with a shipped source name (`rq1`), some with the same ids
 as the shipped copies. The store copy wins, `--without rq1` keeps the user's runs, and the

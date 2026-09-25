@@ -107,7 +107,7 @@ def test_select_leaves_out_tasks_that_cannot_fail(repo):
     tasks["tests"]["history"]["validation"] = {"status": "verified", "fail_to_pass": [], "pass_to_pass": ["t::a"]}
     dropped: list[dict] = []
     picked = select_tasks(list(tasks.values()), per_repo={"toy": 2}, require_verified=["toy"], dropped=dropped)
-    assert [t["type"] for t in picked] == ["bug_fix"]  # D66: the parent already passes the test-only commit
+    assert [t["type"] for t in picked] == ["bug_fix"]  # The parent already passes the test-only commit
     assert [t["id"] for t in dropped] == [tasks["tests"]["id"]]
     assert len(select_tasks(list(tasks.values()), per_repo={"toy": 2})) == 2  # an unvalidated pick keeps both
 
@@ -119,7 +119,7 @@ def test_select_command_refuses_mistakes_and_writes_nothing(repo, tmp_path, caps
     cands.write_text("".join(json.dumps(t) + "\n" for t in tasks.values()))
     out = tmp_path / "tasks.jsonl"
     for args in (["--quota", "tyo=2"],                           # a misspelt repo would pick nothing from it
-                 ["--quota", "toy=2", "--verified", "tyo"],      # ... or skip its D66 filter
+                 ["--quota", "toy=2", "--verified", "tyo"],      # ... or skip its filter
                  ["--quota", "toy"], ["--quota", "toy=0"], [],   # no count, or no quota at all
                  ["--verified", "toy"]):
         with pytest.raises(SystemExit) as exc:
@@ -169,4 +169,4 @@ def test_shipped_task_set():
         assert h["test_files"] and h["test_cmd"] and h["changed_lines"] > 0 and h["files_changed"] > 0
         assert r["features"]["size"] in ("xs", "s", "m", "l", "xl")
         assert chr(0x2014) not in r["title"]
-        assert h["validation"]["status"] == "verified" and h["validation"]["fail_to_pass"]  # D66
+        assert h["validation"]["status"] == "verified" and h["validation"]["fail_to_pass"]

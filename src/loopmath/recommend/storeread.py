@@ -108,7 +108,7 @@ def index_rows(home: Path) -> Iterator[dict[str, Any]]:
 
 
 # Designed runs (loopmath-exp slates) are the planner's choice, not the user's habit: they feed the fit but not
-# the usual or the default usual's models, with no fallback to them (D74).
+# the usual or the default usual's models, with no fallback to them.
 NOT_HABIT_SOURCES = frozenset({"designed"})
 
 
@@ -155,7 +155,7 @@ def usual_from_history(home: Path, task_type: str, repo: str, *, now: _dt.dateti
 
 
 def usual_from_config(conf: Conf, task_type: str, repo: str) -> str | None:
-    """Decision D5: `[usual.<type>]` keyed by repo, then `"*"`; values are configuration ids."""
+    """`[usual.<type>]` keyed by repo, then `"*"`; values are configuration ids."""
     table = conf.get(f"usual.{task_type}")
     if isinstance(table, str):
         return table

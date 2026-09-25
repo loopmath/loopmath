@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
+from signal import SIGKILL  # not `import signal`: signal() below builds signal documents
 
 import pytest
 
@@ -43,7 +45,7 @@ def default_settings(workflow: dict) -> dict:
 
 
 def config_id(workflow: dict, settings: dict) -> str:
-    """The canonical configuration id (lane 1, D2) of an OCP v0.3 workflow and settings."""
+    """The canonical configuration id (lane 1) of an OCP v0.3 workflow and settings."""
     from loopmath.ocp.canonical import config_id as canonical_config_id
 
     return canonical_config_id(workflow, settings)
@@ -138,7 +140,15 @@ def probe(tmp_path):
             script_path = tmp_path / f"probe-{page.stem}.js"
             script_path.write_text(script, encoding="utf-8")
             args.append(str(script_path))
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-        assert proc.returncode == 0, proc.stderr
-        return json.loads(proc.stdout.strip().splitlines()[-1])
+        # Own process group, so a timeout kills Chrome with node rather than orphaning it.
+        with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              start_new_session=True) as proc:
+            try:
+                out, err = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, SIGKILL)
+                proc.communicate()
+                raise
+        assert proc.returncode == 0, err
+        return json.loads(out.strip().splitlines()[-1])
     return run

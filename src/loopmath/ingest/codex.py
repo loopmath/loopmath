@@ -54,7 +54,7 @@ parsing. Each file's last cumulative token reading is folded into the
 combined run, while compaction resets inside a file remain separate segments
 as before. A sub-agent thread has its own `id` and carries its parent's id in
 `session_id`; it is its own record, priced at its own model, with the parent
-in `parent_session` (Analyst D28, see `codex_support._session_id`).
+in `parent_session` (see `codex_support._session_id`).
 """
 
 from __future__ import annotations
@@ -193,7 +193,7 @@ def parse_session(path: "str | Path | list[str | Path]") -> "RunRecord | None":
     accumulator and a new segment starts from zero, so the reset segment is
     added on top of the earlier one instead of replacing it.
 
-    SPEC amendment (08-31, Analyst): `tokens` now carries four streams --
+    `tokens` now carries four streams --
     `in_`, `cache_read`, `cache_write`, `out` -- because the price table now
     prices a cache write separately from a cache read (up to 20x on
     Anthropic) and OpenAI bills cache writes at $0.00. `cached_input_tokens`

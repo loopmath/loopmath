@@ -266,7 +266,7 @@ def _warn_ws(report: Report, ws: str | None, key: str, text: str) -> None:
 
 def attach_e2(items: list[dict], labels: Labels, report: Report) -> None:
     """The verdict of every E2 run onto its dev session's node item (there is no referee
-    session to carry it: spec section 8, D0), with the tier the weaker of the verdict's
+    session to carry it: spec section 8), with the tier the weaker of the verdict's
     and the dev-session mapping's (a heuristic mapping cannot make a verified verdict a
     verified fact about the node; both original tiers are kept beside it), the run's
     roles onto the named sessions; every session absent from the graph under the run's

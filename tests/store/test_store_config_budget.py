@@ -1,4 +1,4 @@
-"""config.toml keys and rules (D5, D39, lane 9 research root) and budget spend."""
+"""config.toml keys and rules (lane 9 research root) and budget spend."""
 
 from __future__ import annotations
 

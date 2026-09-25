@@ -13,12 +13,12 @@ a piece runs only if the gates before it passed, so its weight is `r(k)` times t
 chances, and the loop goes round again unless every gate passed:
 `r(k + 1) = r(k) (1 - prod_g p_g(k))`. With one gate this is the formula above.
 
-Cost intervals are predictive (D35): alongside the expected cost per draw, one run is
+Cost intervals are predictive: alongside the expected cost per draw, one run is
 simulated per draw (run noise and gate outcomes), and the interval is its 10th and 90th
 percentiles. Rounds, success and `ell` are parameter-draw quantities. Without a generator,
-`compose` computes the expectations only (the mean path in state.py, D98).
+`compose` computes the expectations only (the mean path in state.py).
 
-Per piece (D60), `PieceDraws.exp_*` is the piece's expected full-run contribution, summed over
+Per piece, `PieceDraws.exp_*` is the piece's expected full-run contribution, summed over
 the rounds it runs, so pieces add up to the run. `cost_per_round()` gives the expected cost of
 one execution: the per-execution prediction when the piece's cost does not depend on the round
 (pieces that run once, or no round effects in the fit), else `E[C_piece] / E[executions]`.
@@ -149,7 +149,7 @@ def compose(st: Structure, cost_eta: dict, tokens_eta: dict, gate_eta: dict, *, 
 
 
 def cost_per_round(pd: PieceDraws):
-    """D60: the expected cost of one execution of a piece, as ((usd mean, usd values), (tokens mean,
+    """The expected cost of one execution of a piece, as ((usd mean, usd values), (tokens mean,
     tokens values)); None when the piece is expected never to run. The values give the interval:
     one simulated execution per draw when the cost does not depend on the round, else the
     simulated run's cost per execution (draws where the piece did not run are NaN)."""
@@ -177,7 +177,7 @@ def interval(values: np.ndarray, mean: float | None = None) -> tuple[float, floa
 
 
 def predictive(expected: np.ndarray, simulated: np.ndarray) -> tuple[float, float, float]:
-    """D35: the mean is E[C_run]; the range is the 10th and 90th percentiles of one simulated run per draw."""
+    """The mean is E[C_run]; the range is the 10th and 90th percentiles of one simulated run per draw."""
     lo, hi = np.percentile(simulated, [Q_LO, Q_HI])
     return float(np.mean(expected)), float(lo), float(hi)
 

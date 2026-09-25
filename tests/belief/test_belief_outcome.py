@@ -1,4 +1,4 @@
-"""outcome_evidence: the one place the model reads success (spec 03 section 5, D22)."""
+"""outcome_evidence: the one place the model reads success (spec 03 section 5)."""
 
 from __future__ import annotations
 

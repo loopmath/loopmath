@@ -1,4 +1,4 @@
-"""Workflow inference on graphs, OCP documents, sweep run files and RQ1 configs (D25, D33; lane 04)."""
+"""Workflow inference on graphs, OCP documents, sweep run files and RQ1 configs (lane 04)."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ RQ1 = _data_dir("LOOPMATH_RQ1_RUNS")
 def _check(result, nodes):
     config = result.configuration
     assert config.id == config_id(config.workflow, config.settings)
-    assert set(config.extra["node_vertex"]) == set(nodes)  # D25: every node
+    assert set(config.extra["node_vertex"]) == set(nodes)  # Every node
     assert set(config.extra["node_vertex"].values()) <= {p.id for p in config.workflow.pieces}
     assert set(config.settings) == {p.id for p in config.workflow.pieces}
     assert config.extra["shape"] == result.shape and config.extra["nearest_catalog"] == result.nearest_catalog
@@ -121,7 +121,7 @@ def _declared(workflow, nodes, attempts=()):
     r = infer_detail(doc)
     assert r.inferred_from == "configuration" and r.configuration.id == cfg.id
     pieces = {p.id for p in r.configuration.workflow.pieces}
-    assert set(r.node_vertex) == {n["id"] for n in nodes}  # D25: every node
+    assert set(r.node_vertex) == {n["id"] for n in nodes}  # Every node
     assert set(r.node_vertex.values()) <= pieces  # only pieces of the returned workflow
     assert r.configuration.extra["node_vertex"] == r.node_vertex
     return r

@@ -78,7 +78,9 @@ from .schema import Artifact, Graph, GraphEdge, GraphNode
 PRIVACY_PROFILES = ("metadata_only", "full")
 TIERS = ("verified", "heuristic", "reported")
 OCP_VERSION = "0.3"
-SOURCE_CONTRACT = "dagr_graph/1"
+SOURCE_CONTRACT = "loopmath_graph/1"
+# The value written before 0.2; the reader takes it as the same contract (ingest.ocp_convert).
+LEGACY_SOURCE_CONTRACT = "dagr_graph/1"
 EXT_KEY = "dev.loopmath.graph"
 # Documents written before the namespace switch; read through v0.4 (W182).
 LEGACY_EXT_KEY = "dev.dagr.graph"

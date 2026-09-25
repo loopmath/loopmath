@@ -56,7 +56,7 @@ def task_to_ocp(task: Task) -> dict[str, Any]:
 
 
 def configuration_to_ocp(cfg: Configuration) -> dict[str, Any]:
-    """The OCP configuration under its canonical id (D2, E190), never the declared one."""
+    """The OCP configuration under its canonical id (E190), never the declared one."""
     return emit.configuration_to_ocp(cfg)
 
 
@@ -128,6 +128,9 @@ def new_doc(*, run_id: str, task: Task, cfg_ocp: dict[str, Any], source: str, re
     if task.title and "title" not in run:
         run["title"] = task.title[:500]
     run["started_at"] = started_at
+    for ev in doc.get("events") or []:  # the skeleton's note is stamped when emitted; a given start wins
+        if ev.get("type") == "note" and ev.get("detail") == "run started":
+            ev["at"] = started_at
     run["workspace"] = task.repo
     if slate:
         run["slate"] = dict(slate)
@@ -392,7 +395,7 @@ def run_cost(doc: dict[str, Any]) -> dict[str, Any]:
             "with_tokens": with_tokens, "complete": complete, "tokens_complete": n > 0 and with_tokens == n}
 
 
-# ---------------------------------------------------------------- late events by commit (Analyst D17)
+# ---------------------------------------------------------------- late events by commit
 def _sha_hit(value: Any, sha: str) -> bool:
     if not isinstance(value, str):
         return False

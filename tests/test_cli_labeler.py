@@ -1,4 +1,4 @@
-"""`onboard --labeler` takes the user's chosen model and has no default (decision D39)."""
+"""`onboard --labeler` takes the user's chosen model and has no default."""
 
 from __future__ import annotations
 
