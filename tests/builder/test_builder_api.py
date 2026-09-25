@@ -32,6 +32,11 @@ S0, S1, S2, S3, S4, S5 = H.SETTINGS
 CATALOG = [H.make_config(H.SD.SOLO, {"implement": s}) for s in H.SETTINGS]
 CATALOG += [H.make_config(H.SD.IR, {"implement": a, "review": b}) for a in (S0, S4) for b in (S1, S5)]
 TASK = ["--type", "feature", "--repo", "acme/api"]
+SYNTH_MODELS = list(dict.fromkeys(s.model for s in H.SETTINGS))  # made-up models: offered through config (0.2.2)
+
+
+def allow_models(home, models) -> None:
+    (home / "config.toml").write_text("[models]\nallowed = [" + ", ".join(json.dumps(m) for m in models) + "]\n")
 
 
 def write_runs(home, configs) -> None:
@@ -61,6 +66,7 @@ def home(tmp_path, tmp_path_factory, monkeypatch):
     monkeypatch.setattr(bs, "load_latest", lambda h: fs)
     monkeypatch.setattr(wc, "candidates", catalog_candidates)
     write_runs(home, [H.USUAL] * 3)
+    allow_models(home, SYNTH_MODELS)
     return home
 
 
@@ -84,8 +90,13 @@ def recommend_json(capsys, *extra: str) -> tuple[dict, dict]:
     return obj, stored
 
 
+def as_recommend(bands: dict) -> dict:
+    """`bands` without the builder's `p_accepted_within` band (0.2.2), as `recommend --json` gives them."""
+    return {k: v for k, v in bands.items() if k != "p_accepted_within"}
+
+
 def without_chance(numbers: dict) -> dict:
-    return {k: v for k, v in numbers.items() if k != "chance"}
+    return {k: (as_recommend(v) if k == "bands" else v) for k, v in numbers.items() if k != "chance"}
 
 
 # ---------------------------------------------------------------- the context
@@ -93,15 +104,17 @@ def test_context_has_the_api_shape(home, capsys):
     obj, _ = recommend_json(capsys)
     s = session_for()
     ctx = json.loads(json.dumps(context_payload(s)))
-    assert list(ctx) == ["schema", "task", "rule", "fit", "rec", "rescue", "reference", "choices", "candidates",
-                         "catalog", "start"]
+    assert list(ctx) == ["schema", "task", "rule", "fit", "rec", "goal_config_id", "rescue", "reference", "choices",
+                         "candidates", "catalog", "start"]
+    assert ctx["goal_config_id"] == obj["goal"]["config"]
     assert ctx["schema"] == "loopmath.builder.context/1" and ctx["start"] is None and ctx["rec"] is None
     assert ctx["fit"]["id"] == obj["fit"]["id"] and ctx["fit"]["runs"] > 0
     assert ctx["rule"] == obj["rule"] and ctx["rescue"] == obj["rescue"]
-    assert {k: v for k, v in obj["reference"].items() if k != "prediction"} == ctx["reference"]
+    ref = {**ctx["reference"], "numbers": without_chance(ctx["reference"]["numbers"])}
+    assert {k: v for k, v in obj["reference"].items() if k != "prediction"} == ref
     assert [c["config"] for c in ctx["choices"]] == [c["config"] for c in obj["choices"]]
     for ch, want in zip(ctx["choices"], obj["choices"]):
-        assert {k: v for k, v in ch.items() if k != "configuration"} == want
+        assert {k: (as_recommend(v) if k == "bands" else v) for k, v in ch.items() if k != "configuration"} == want
         assert ch["configuration"]["id"] == ch["config"]
     cands = ctx["candidates"]
     assert 0 < len(cands) and all(set(c) >= {"config", "label", "numbers", "origin"} for c in cands)
@@ -111,8 +124,10 @@ def test_context_has_the_api_shape(home, capsys):
     cat = ctx["catalog"]
     assert set(cat) >= {"harnesses", "models", "efforts", "roles", "shapes"}
     models = {m["id"]: m for m in cat["models"]}
-    assert {s.model for s in H.SETTINGS} <= set(models) and all(m["runs_behind"] > 0 for m in models.values()
-                                                                if m["id"] in {s.model for s in H.SETTINGS})
+    assert {s.model for s in H.SETTINGS} <= set(models)
+    used = {s.model for s in H.USUAL.settings.values()}  # the store's three runs all used the usual
+    assert all(models[m]["runs_behind"]["total"] == 3 for m in used)
+    assert all(m["runs_behind"]["total"] == 0 for m in models.values() if m["id"] not in used)
     assert {"claude-code", "codex"} <= set(cat["harnesses"]) and "xhigh" in cat["efforts"]
     assert all(set(sh) >= {"id", "title", "pieces", "edges", "gates", "workflow"} for sh in cat["shapes"])
 
@@ -219,24 +234,25 @@ def test_invalid_configurations_get_readable_errors(home):
     cases = []
     bad = copy.deepcopy(good)
     bad["settings"]["implement"]["model"] = "gpt-0-unknown"
-    cases.append((bad, "model 'gpt-0-unknown' is not one the fit knows"))
+    cases.append((bad, "model 'gpt-0-unknown' is a retired or unknown model", "implement"))
     bad = copy.deepcopy(good)
     bad["workflow"]["pieces"][0]["width"] = 0
-    cases.append((bad, "width must be an integer >= 1"))
+    cases.append((bad, "width must be an integer >= 1", good["workflow"]["pieces"][0]["id"]))
     bad = copy.deepcopy(good)
     bad["workflow"]["control"]["gates"][0]["on_fail"] = "nowhere"
-    cases.append((bad, "on_fail 'nowhere' is not a piece"))
+    cases.append((bad, "on_fail 'nowhere' is not a piece", good["workflow"]["control"]["gates"][0]["after"]))
     bad = copy.deepcopy(good)
     del bad["settings"]["review"]
-    cases.append((bad, "piece 'review' has no setting"))
+    cases.append((bad, "piece 'review' has no setting", "review"))
     bad = copy.deepcopy(good)
     bad["settings"]["review"] = {"harness": "codex"}
-    cases.append((bad, "setting 'review' has no model"))
-    cases.append(({"settings": {}}, "config.workflow: expected an object"))
-    cases.append(("not a config", "send {\"config\""))
-    for cfg, words in cases:
+    cases.append((bad, "setting 'review' has no model", "review"))
+    cases.append(({"settings": {}}, "config.workflow: expected an object", None))
+    cases.append(("not a config", "send {\"config\"", None))
+    for cfg, words, piece in cases:  # 0.2.2: each error is {piece, message}, tied to the piece it is about
         out = predict(s, {"config": cfg})
-        assert out["ok"] is False and any(words in e for e in out["errors"]), (words, out["errors"])
+        assert out["ok"] is False and any(words in e["message"] and e["piece"] == piece for e in out["errors"]), (
+            words, piece, out["errors"])
         assert "numbers" not in out
     assert predict(s, None)["ok"] is False
 
@@ -262,7 +278,8 @@ def test_a_new_configuration_gets_the_id_loopmath_computes(home):
     d2 = copy.deepcopy(d)
     del d2["settings"]["implement"]["harness"]
     out = predict(s, {"config": d2})
-    assert out["ok"] and out["config_id"] == want.id and any("harness claude-code" in w for w in out["warnings"])
+    assert out["ok"] and out["config_id"] == want.id and any(
+            "harness claude-code" in w["message"] and w["piece"] == "implement" for w in out["warnings"])
 
 
 # ---------------------------------------------------------------- start points

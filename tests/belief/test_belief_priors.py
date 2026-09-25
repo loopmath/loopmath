@@ -100,3 +100,21 @@ def test_tokens_factors_reach_the_tokens_head_only(tmp_path):
                 + sum(v * h.mean[h.index[n]] for n, v in user if n in h.index))
 
     assert abs(gap(state) - math.log(2.5)) < abs(gap(plain) - math.log(2.5))  # pulled toward the benchmark
+
+
+def test_fresh_store_config_weight_is_the_weight_the_fit_records(capsys, tmp_path):
+    """22X: `config get benchmark_prior_weight` on a fresh store printed 1.0 while the fit used 5.0."""
+    from loopmath.belief.priors import BENCHMARK_PRIOR_WEIGHT
+    from loopmath.cli import main
+
+    home = tmp_path / "lm"
+    capsys.readouterr()
+    assert main(["config", "get", "benchmark_prior_weight", "--home", str(home), "--json"]) == 0
+    shown = json.loads(capsys.readouterr().out)["value"]
+    path = tmp_path / "benchmarks.toml"
+    path.write_text(TOML, encoding="utf-8")
+    docs, _ = simdata.simulate(80, seed=71, source="live")
+    fitted = F.fit(home, docs=docs, benchmarks=path, now=datetime.fromisoformat("2026-09-23T12:00:00-07:00"),
+                   bundle_dir=tmp_path / "none")
+    meta = json.loads((fitted / "meta.json").read_text())
+    assert shown == meta["options"]["benchmark_prior_weight"] == BENCHMARK_PRIOR_WEIGHT == 5.0

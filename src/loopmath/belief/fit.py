@@ -36,6 +36,7 @@ from .design import (DESIGN_VERSION, Term, Unusable, cost_row, gate_row, parse_r
 from .features import FeatureTally, add_horizon, drop_features, horizon_nodes, horizon_specs
 from .block import leaf_split
 from .forest import Forest, default_scale, fixed_sd, scale_group
+from .pricing import PRICE_NODE, PRICE_PRIOR_SD, STREAMS, fit_offsets, price_term
 from .gaussian import N_DRAWS, Factors, GaussianHead, HeadFit, LogisticHead, Prior
 from .state import SCORE_CLAMP, inverse_transform, transform  # noqa: F401  (re-exported)
 
@@ -163,6 +164,7 @@ class HeadRows:
     sources: list[str] = field(default_factory=list)
     types: list[str] = field(default_factory=list)
     not_repriced: int = 0  # cost rows on recorded dollars, not the current tariff
+    prices: dict = field(default_factory=dict)  # cost head: the fit's price offsets (pricing.fit_offsets)
 
     def add(self, terms, y, w, run, source, ttype):
         self.rows.append(terms)
@@ -213,6 +215,8 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
     stored: set[str] = set()  # run ids of the user's store, whose copy wins
     overlap: Counter = Counter()
     labels: Counter = Counter()
+    model_runs: dict[str, set[str]] = defaultdict(set)  # the price offset's inputs (spec 04 section 2)
+    model_streams: dict[str, list[float]] = defaultdict(lambda: [0.0] * len(STREAMS))
     for item in docs:
         origin, doc = item if isinstance(item, tuple) else (None, item)
         if origin is not None and _excluded(origin, without):
@@ -258,6 +262,10 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
             if a.usd:
                 heads["cost"].add(terms, math.log(a.usd), a.weight, pr.run_id, pr.source, ttype)
                 heads["cost"].not_repriced += not a.repriced
+                model_runs[a.setting.model].add(pr.run_id)
+                acc = model_streams[a.setting.model]
+                for i, v in enumerate(a.streams):
+                    acc[i] += v
             if a.tokens:
                 heads["tokens"].add(terms, math.log(a.tokens), a.weight, pr.run_id, pr.source, ttype)
         for gi, k, passed in pr.gates:
@@ -289,8 +297,32 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
     coding = tally.horizon_coding()  # the horizon terms need every run's horizon first (spec 04 section 1)
     for hr in heads.values():
         hr.rows = add_horizon(drop_features(hr.rows, tally.nodes), hr.runs, tally.run_horizon, coding)
+    add_prices(heads["cost"], {m: len(r) for m, r in model_runs.items()}, model_streams)
     return (heads, score_info, dict(dropped), dict(runs_by_source), {c: dict(n) for c, n in config_support.items()},
             dict(checks), dict(overlap), dict(labels), tally)
+
+
+def add_prices(hr: HeadRows, runs: dict[str, int], streams: dict[str, list[float]]) -> None:
+    """The price offset (spec 04 section 2): the fit's offsets from its runs and token mix under the current price
+    table, and each cost row with its model's `price:offset` term (`pricing.price_term`, as at prediction)."""
+    hr.prices = fit_offsets(runs, streams, design_rows._price_table())
+    offsets = hr.prices["models"]
+    if not offsets:
+        return
+    rows = []
+    for row in hr.rows:
+        model = next((n[len("model:"):] for n, _, _ in row if n.startswith("model:")), None)
+        term = price_term(offsets, model) if model else ()
+        rows.append(row + list(term) if term else row)
+    hr.rows = rows
+
+
+def price_spec(hr: HeadRows) -> list:
+    """The prior that holds `price:offset` at 1, on the cost head of a fit with offsets, --no-prior included."""
+    if not hr.prices.get("models"):
+        return []
+    return [prior_data.FactorSpec("cost", [(PRICE_NODE, None, 1.0)], 1.0, PRICE_PRIOR_SD ** 2,
+                                  f"{PRICE_NODE} held at 1, prior N(1, {PRICE_PRIOR_SD}^2)")]
 
 
 # ---------------------------------------------------------------- matrices and priors
@@ -532,6 +564,8 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             nodes = horizon_nodes(hr.rows)
             if nodes:  # the horizon priors, --no-prior included (spec 04 section 1)
                 head_specs += horizon_specs(name, hr.kind, nodes)
+            if name == "cost":  # the price offset (spec 04 section 2)
+                head_specs += price_spec(hr)
             fitted[name] = fit_head(hr, forest, head_specs, eb=eb)
         fit_id = new_fit_id(fits, now)
         partial = fits / f"{fit_id}.partial"
@@ -592,6 +626,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             "design_version": DESIGN_VERSION,
             "features": {**tally.report, **({"error": features_error} if features_error else {})},
             "horizons": tally.horizon_report(),
+            "price_offsets": heads_rows["cost"].prices,
         }
         if full:
             meta["full"] = _full_check(fitted)

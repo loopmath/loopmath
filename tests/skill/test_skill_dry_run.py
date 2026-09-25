@@ -67,8 +67,10 @@ else:
 from loopmath.cli import main
 sys.exit(main(sys.argv[1:]))
 """
+# The synthetic history's models are not current ones (0.2.2 retires them by default), so the journey names
+# them, as 0.2.1 took the models in the usual when none were set.
 RECOMMEND = ("recommend", "--type", "bug_fix", "--repo", "acme/app", "--title", "Fix the crash on empty input",
-             "--feature", "size=s", "--feature", "lang=python")
+             "--feature", "size=s", "--feature", "lang=python", "--models", "opus-5,sonnet-5,gpt-5.6-sol")
 LABELER = """\
 import json, sys
 req = json.load(sys.stdin)

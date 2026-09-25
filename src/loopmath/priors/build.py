@@ -244,4 +244,28 @@ def run_rq1(ocp_dir: Path) -> SourceResult:
                         {"runs": len(docs), "config_ids_changed": changed})
 
 
-RUNNERS: dict[str, Callable[[Path], SourceResult]] = {"sweep": run_sweep, "e0": run_e0, "rq1": run_rq1}
+def run_lanes(input_dir: Path) -> SourceResult:
+    from .lanes import CONVERTER_VERSION, INPUT_FILE, iter_lanes
+
+    path = input_dir / INPUT_FILE
+    if not path.is_file():
+        raise BundleError(f"lanes input {input_dir} has no {INPUT_FILE}")
+    counts: dict = {}
+    docs = list(iter_lanes(input_dir, producer_version=__version__, counts=counts))
+    inputs = {"description": "our own agent build lanes (lane 22L): metadata-only rows from the lane records, "
+                             "reviews and session logs", **digest_files([path])}
+    notes = [
+        "implementer lanes with reviews: catalog implement_review, one round per review up to the first merge, "
+        "tokens measured per round from the implementer's log; follow-up work after the first merge not bundled",
+        "review attempts carry the verdict and the reviewer lane's session tokens divided by the reviews it gave "
+        "(cost basis allocated); reviewer lanes are not runs of their own",
+        "implementer lanes with no review record: catalog solo, settled_unverified, cost and tokens heads only",
+        "integration lanes, lanes still running and lanes with no matching log are left out (counted by the "
+        "extractor, not here)",
+        "tokens from loopmath's own Claude Code and Codex parsers; dollars priced with the packaged prices.toml",
+    ]
+    return SourceResult("lanes", docs, inputs, CONVERTER_VERSION, notes, [], counts)
+
+
+RUNNERS: dict[str, Callable[[Path], SourceResult]] = {"sweep": run_sweep, "e0": run_e0, "rq1": run_rq1,
+                                                      "lanes": run_lanes}

@@ -129,6 +129,7 @@ class Recommendation:
     rescue_config: Configuration | None = None  # the `retry` rescue workflow
     bands: dict[str, dict[str, dict[str, list[float]]]] = field(default_factory=dict)  # by id (`band_set`)
     most_likely: Candidate | None = None  # with a score target, the highest mean chance (I19)
+    retired: dict[str, list[str]] = field(default_factory=dict)  # by id: models not offered (0.2.2); never a pick
 
     def label(self, cfg: Configuration) -> str:
         return self.labels.get(cfg.id) or wide_label(cfg)
@@ -190,9 +191,10 @@ class Recommendation:
 
     def reference_dict(self) -> dict[str, Any]:
         u = self.usual
+        retired = {"retired_models": list(self.retired[u.config.id])} if u.config.id in self.retired else {}
         return {"kind": self.reference_kind, "from": self.usual_from, "config": u.config.to_dict(),
                 "label": self.label(u.config), "prediction": u.prediction.to_dict(),
-                "numbers": self.numbers(u.prediction), "text": self.reference_text()}
+                "numbers": self.numbers(u.prediction), "text": self.reference_text(), **retired}
 
     def chance(self, pred: Prediction) -> dict[str, Any]:
         of = "an accepted result"
@@ -235,7 +237,7 @@ class Recommendation:
                 explore_config=pick.candidate.config.id, price_now_usd=r6(pick.price.usd.mean),
                 gain_per_future_run_usd=r6(float(pick.gain_per_run.get("usd") or 0.0)),
                 payback_runs=pick_payback(pick), p_beats_goal=r6(pick.p_beats_goal))
-        if self.usual.config.id != goal.config.id:
+        if self.usual.config.id != goal.config.id and self.usual.config.id not in self.retired:
             title = "Run your usual workflow" if self.is_usual else (
                 "Run the reference workflow: your best recorded workflow" if self.reference_kind == "best_recorded"
                 else "Run the reference workflow: the default workflow")
@@ -535,14 +537,18 @@ def draw_share(belief: Any, task: Task, rule: AcceptanceRule, preds: Sequence[Pr
 
 def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configuration, usual_from: str,
               configs: Sequence[tuple[Configuration, str]], settings: Settings | None = None,
-              diff: DiffFn | None = None, keep: Sequence[str] = ()) -> Recommendation:
+              diff: DiffFn | None = None, keep: Sequence[str] = (), offered: Sequence[str] | None = None
+              ) -> Recommendation:
     """Rank the candidates and build every part of the recommendation.
 
     `configs` holds (configuration, origin) pairs from the candidate generator; the
     usual workflow is added when missing. `keep` lists configuration ids that
     survive the top-200 cut whatever their rank (`--workflow` files, recorded
     configurations). `usual_from` says whether `usual` is the user's usual
-    (`flag`, `history`, `config`) or a reference (`recorded`, `default`).
+    (`flag`, `history`, `config`) or a reference (`recorded`, `default`). With `offered` (model ids, 0.2.2),
+    a configuration using any other model is retired: predicted and kept as the reference, labelled
+    "(retired model)", but never the goal, the default, a curve row, an alternative, the exploration or
+    rescue workflow, the most likely or a choice.
     """
     st = settings or Settings()
     diff_fn = safe_diff(diff)
@@ -554,9 +560,14 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     for cfg, origin in configs:
         if cfg.id not in unique:
             unique[cfg.id] = (cfg, origin)
+    allowed = set(offered or ())
+    retired = {cfg.id: ms for cfg, _ in unique.values()
+               if offered is not None and (ms := list(dict.fromkeys(s.model for s in cfg.settings.values()
+                                                                    if s.model not in allowed)))}
     rescue_cfg = None
     if (st.rescue_kind or "retry") == "retry":
-        pool = [cfg for cfg, origin in unique.values() if origin in RESCUE_POOL]
+        pool = [cfg for cfg, origin in unique.values() if origin in RESCUE_POOL and cfg.id not in retired] or \
+            [cfg for cfg, origin in unique.values() if origin in RESCUE_POOL]
         rescue, rescue_cfg = retry_rescue_of(belief, task, rule, pool, st)
     else:
         usual_pred = predict_one(belief, task, usual, rule, None)
@@ -568,13 +579,15 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     if st.search and search_mod.searchable(belief):
         # spec 05 section 1a: the candidates' settings and shapes define the space; catalog and edit
         # configurations lie inside it, so only the usual, user and recorded ones are predicted as written
-        space = search_mod.space_from(list(unique.values()), usual, copies=st.search_copies)
+        space = search_mod.space_from([v for v in unique.values() if v[0].id not in retired], usual,
+                                      copies=st.search_copies)
         if space.settings and space.cases:
             found = search_mod.search(belief, task, rule, rescue.usd, space, draws=st.search_draws,
                                       per_objective=st.search_per_objective)
             unique = {cid: v for cid, v in unique.items() if cid == usual.id or v[1] not in ("catalog", "edit")}
             for cfg, origin in found.configs:
-                unique.setdefault(cfg.id, (cfg, origin))
+                if offered is None or all(s.model in allowed for s in cfg.settings.values()):
+                    unique.setdefault(cfg.id, (cfg, origin))
     cfgs = [c for c, _ in unique.values()]
     bands: dict[str, Any] = {}
     preds, medians = predict_with_medians(belief, task, cfgs, rule, rescue, bands)
@@ -589,13 +602,22 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     cands = [Candidate(cfg, unique[cfg.id][1], diff_fn(usual, cfg) if cfg.id != usual.id else (), pred)
              for cfg, pred in zip(cfgs, preds)]
     cands.sort(key=lambda c: ell_key(c.prediction))
-    all_preds = [c.prediction for c in cands]
+    for c in cands:  # polish may add configurations
+        if offered is not None and c.config.id not in retired:
+            ms = list(dict.fromkeys(s.model for s in c.config.settings.values() if s.model not in allowed))
+            if ms:
+                retired[c.config.id] = ms
+    picks = [c for c in cands if c.config.id not in retired]
+    if not picks:
+        raise ValueError(f"no candidate workflow uses only the offered models ({', '.join(offered or ())}); "
+                         "name the models to consider with --models or config models.allowed")
+    all_preds = [c.prediction for c in picks]
     share = draw_share(belief, task, rule, all_preds, by_id)
     rows = curve_mod.curve(all_preds, share=share)  # every prediction; the top-200 cut is the stored list only
-    likely = most_likely_of(cands) if rule.score is not None else None
+    likely = most_likely_of(picks) if rule.score is not None else None
     kept_ids = {usual.id, *keep, *(r.config for r in rows if r.config is not None)}
     kept_ids |= {c.id for c in (rescue_cfg, likely.config if likely else None) if c is not None}
-    top = cands[:TOP_N]
+    top = picks[:TOP_N]
     top_ids = {c.config.id for c in top}
     top += [c for c in cands if c.config.id in kept_ids and c.config.id not in top_ids]
     top.sort(key=lambda c: ell_key(c.prediction))
@@ -615,8 +637,10 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     choice = "default" if goal_level_wanted is None else f"p{goal_level_wanted}"
 
     # spec 05 section 3; the usual is never an alternative, its numbers are the deltas' baseline
-    alternatives = [c for c in top if c.config.id not in (goal_c.config.id, usual.id)][:N_ALTERNATIVES]
-    exploration = explore(belief, task, goal_c, top, rule=rule, rescue_usd=rescue.usd, spend=st.spend,
+    alternatives = [c for c in top if c.config.id not in (goal_c.config.id, usual.id)
+                    and c.config.id not in retired][:N_ALTERNATIVES]
+    offer = [c for c in top if c.config.id not in retired]
+    exploration = explore(belief, task, goal_c, offer, rule=rule, rescue_usd=rescue.usd, spend=st.spend,
                           cap=st.cap, auto_payback_runs=st.auto_payback_runs, screen_size=st.screen_size)
     explore_kind = st.default_pick if st.default_pick in ("best_value", "max_gain") else "best_value"
     shown = [usual, default_c.config, goal_c.config, *(c.config for c in alternatives)]
@@ -626,6 +650,9 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
         if slot.pick is not None:
             shown += [slot.pick.candidate.config, *(c.config for c in slot.pick.runner_ups)]
     labels = shown_labels(shown)
+    for cid in retired:
+        if cid in labels or cid == usual.id:
+            labels[cid] = f"{labels.get(cid) or wide_label(by_id.get(cid) or usual)} (retired model)"
     backed = score_backed(rule, usual_c.prediction)
     label_of = lambda cfg: labels.get(cfg.id) or wide_label(cfg)  # noqa: E731
     rescue_label = label_of(rescue_cfg) if rescue_cfg is not None else None
@@ -652,7 +679,8 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     likely_c = next((c for c in top if c.config.id == likely.config.id), None) if likely else None
     return Recommendation(task, rule, usual_c, usual_from, top, rows, default_c, goal_c, goal_level, choice,
                           goal_note, alternatives, exploration, rescue, message, explore_kind, notes, labels,
-                          kind, medians, search_json, wins, on_front, strategy, rescue_cfg, bands, likely_c)
+                          kind, medians, search_json, wins, on_front, strategy, rescue_cfg, bands, likely_c,
+                          {k: v for k, v in retired.items() if k in {c.config.id for c in top}})
 
 
 def most_likely_of(cands: Sequence[Candidate]) -> Candidate | None:

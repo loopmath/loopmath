@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.2.2 (2026-09-25)
+
+### Workflow builder
+
+- `loopmath builder` serves the builder page: build your own workflow and see its estimates change with every edit. At the top, a chart of the chance to reach the target against cost (per run or per accepted result): your build is a large point that moves on each edit and leaves a trail of earlier builds, the options are numbered rings and the candidates dots; tap a point to start from it. In the middle, the workflow as a graph: tap a piece to change its model, effort, width or gate target on the piece itself; add and remove pieces, undo and redo. Below it, the next steps: every one-step change of your build, ranked by more chance, cheaper per accepted result or cheaper run; tap one to preview it on the chart, Apply to take it. Beside them, "Your build": its four numbers with their intervals, the change against the recommended option, and Copy build, a label to paste to your agent.
+- `POST /api/predict_many` estimates a list of workflows in one call, in order, each exactly as `POST /api/predict` would.
+- Every number carries `bands` (50, 80, 90 and 95% intervals), now also for the chance within the attempts. A prediction gives the expected review `rounds` and, for each piece a gate follows, `gate_pass`, the chance the gate approves.
+- Errors and warnings name the piece they are about: `{piece, message}` (plain strings in 0.2.1).
+- `/api/context` gains `goal_config_id`. The catalog counts the runs behind each model by role and effort (`runs_behind: {total, by_role, by_effort}`, a count in 0.2.1) and the runs of each role (`roles: [{id, runs}]`, names in 0.2.1).
+- `--start CFG` opens any option's or candidate's configuration; with `--rec REC` the builder answers for a stored recommendation.
+
+### recommend: the current models
+
+- With neither `--models` nor `models.allowed` set, `recommend` and the builder offer the current models: claude-opus-5-5, gpt-6-astra, gpt-6-sol, gpt-6-luna, claude-sonnet-5 and claude-fable-5-1 (0.2.1 took the models of your usual workflow).
+- A workflow on a model outside that list is retired: its runs stay data, and a usual workflow on it stays the reference line, labelled "(retired model)" (`reference.retired_models` in the JSON), but it is never the pick, a choice, a candidate or the rescue. With no candidate on the offered models, `recommend` exits 1 and says to name them with `--models` or `models.allowed`. The builder answers a retired model with an error on its piece.
+
+### Planning page
+
+- Each option has a line "Customize in the builder" with the command `loopmath builder --rec <rec> --start <config>` and a Copy button: the page is a file and cannot start the builder itself.
+
+### Prior
+
+- The prior adds Terminal-Bench 2.1 as run by Artificial Analysis (one harness, Terminus 2, for nine of the twelve current models, with token use). SWE-Bench Pro is not added: its public leaderboard lists none of the current models.
+- A new shipped source, `lanes`: 49 runs of loopmath's own build lanes: 29 implement_review runs, claude-opus-5-5 implementing and gpt-6-astra reviewing, with their 72 review rounds and verdicts; 20 solo runs (9 on claude-opus-5-5, 9 on gpt-6-astra, one each on gpt-6-sol and claude-fable-5-1). No date or clock time ships: each run starts at 1970-01-01 UTC and keeps its real durations. `fit --without lanes` leaves it out.
+- A model version's run cost moves with its list price. A version with few runs of its own is priced from its family's runs, scaled by its price against theirs; the price counts like 5 of its own runs (`meta.json` `price_offsets`). With no runs of your own (solo at high effort, a feature task in a new repo), mean run cost and 80% predictive range (10th to 90th percentile of one simulated run), 0.2.1 in brackets: gpt-6-sol $10.83 ($0.39 to $21.80; $18.85), gpt-6-luna $0.29 ($0.01 to $0.61; $0.75), claude-opus-5-5 $28.77 ($0.90 to $61.50; $32.12), claude-fable-5-1 $48.71 ($1.59 to $114.19; $72.72), gpt-6-astra $19.09 ($0.42 to $34.48; $18.98). These include the lanes runs and Terminal-Bench 2.1.
+- With no runs of your own, `recommend` for a feature task now picks plan_implement_review gpt-6-sol/medium, gpt-6-luna/xhigh, gpt-6-sol/low: 81% in one run, $1.91 a run, $5.87 per accepted result (0.2.1: plan_implement_review gpt-6-astra/low three times, $10.80 a run, $15.35 per accepted result).
+
+### Fixes
+
+- `config get benchmark_prior_weight` shows 5.0, the weight the fit uses (it showed 1.0).
+- An imported share is the source `shared:<org_hash>` in `fit`, `meta.json` and `fit --without`, the name `prior import-shared` prints (it was `shared:shared:<org_hash>`, so `fit --without shared:<org_hash>` failed). If you imported a share file, refit after upgrading: old fits keep the `shared:shared:<hash>` source name until the next fit.
+
 ## 0.2.1 (2026-09-25)
 
 ### recommend: cost per accepted result and the rescue

@@ -39,6 +39,20 @@ def test_shipped_file_is_clean_and_covers_every_current_model():
     success = [r for r in data["result"] if r["benchmark"] == "aa-terminal-bench-4.0"]
     ref = next(r for r in success if r["model"] == "claude-opus-5")
     assert ref["effort"] == "max" and round(ref["value"] * 198) == 97
+    tb21 = [r for r in data["result"] if r["benchmark"] == "aa-terminal-bench-2.1"]
+    ref = next(r for r in tb21 if r["model"] == "claude-opus-5")
+    assert ref["effort"] == "max" and round(ref["value"] * 267) == 238
+    assert all(abs(r["value"] * 267 - round(r["value"] * 267)) < 1e-3 for r in tb21)  # k of 267, to 6 places
+    # 0.2.2 lane 22K: no Terminal-Bench 2.1 result is published for these three; the cells stay missing
+    assert {"claude-opus-5-5", "gpt-6-sol", "gpt-6-luna"}.isdisjoint(r["model"] for r in tb21)
+
+
+def test_one_harness_inside_each_benchmark():
+    """The gaps compare models, not scaffolds: every result of a benchmark ran on that benchmark's harness."""
+    data = load_benchmarks()
+    harness = {b["id"]: b["harness"] for b in data["benchmark"]}
+    assert len(harness) == 4
+    assert all(r["harness"] == harness[r["benchmark"]] for r in data["result"])
 
 
 def test_shipped_file_is_what_the_generator_writes():
@@ -47,15 +61,21 @@ def test_shipped_file_is_what_the_generator_writes():
     spec.loader.exec_module(maker)
     import json
 
-    evidence = json.loads(maker.EVIDENCE.read_text(encoding="utf-8"))
     shipped = BENCHMARKS_TOML.read_text(encoding="utf-8")
-    assert maker.render(maker.results(evidence)) == shipped
+    assert maker.render(maker.all_results()) == shipped
+    # 0.2.2 lane 22K: Terminal-Bench 4.0 read again on 09-25 equals the 09-23 pin, variant for variant
+    old = json.loads(maker.EVIDENCE.read_text(encoding="utf-8"))["records"]
+    new = json.loads(maker.EVIDENCE_21.read_text(encoding="utf-8"))["records"]
+    assert set(old) == set(new) and all(new[s]["terminalBench40"] == old[s]["terminalBench40"] for s in old)
+    for name in ("tbench-2-1-2026-09-25.json", "scale-swe-bench-pro-2026-09-25.json"):  # pinned, no row used
+        pin = json.loads((maker.HERE / name).read_text(encoding="utf-8"))
+        assert pin["rows"] and pin["rows_used"] == [] and pin["url"].startswith("https://")
 
 
 def test_tokens_values_are_the_three_published_streams():
     data = load_benchmarks()
-    rows = [r for r in data["result"] if r["benchmark"] == "aa-terminal-bench-4.0-tokens"]
-    assert rows  # Lane 5 reads the tokens kind
+    rows = [r for r in data["result"] if r["benchmark"] in ("aa-terminal-bench-4.0-tokens", "aa-terminal-bench-2.1-tokens")]
+    assert {r["benchmark"] for r in rows} == {"aa-terminal-bench-4.0-tokens", "aa-terminal-bench-2.1-tokens"}
     for r in rows:
         parts = dict(p.rsplit(" ", 1) for p in r["note"].split(" (input includes")[0].split(", "))
         assert r["value"] == sum(int(v) for v in parts.values()) and set(parts) == {"input", "answer", "reasoning"}
@@ -107,3 +127,11 @@ def test_lane5_factors_follow_spec_04_section_5():
     gap = math.log(p / (1 - p)) - math.log(p_ref / (1 - p_ref))
     match = [f for f in success if "gpt-6-astra" in f.note and f"{p}" in f.note]
     assert match and math.isclose(match[0].mean, gap) and math.isclose(match[0].var, 1 / (5 * p * (1 - p)))
+    # Terminal-Bench 2.1 (lane 22K): its own reference, claude-opus-5 at max on that benchmark
+    rows = [r for r in data["result"] if r["benchmark"] == "aa-terminal-bench-2.1"]
+    p_ref = next(r["value"] for r in rows if r["model"] == "claude-opus-5")
+    p = next(r["value"] for r in rows if r["model"] == "gpt-6-astra" and r["effort"] == "max")
+    gap = math.log(p / (1 - p)) - math.log(p_ref / (1 - p_ref))
+    match = [f for f in success if f.note.startswith(f"aa-terminal-bench-2.1: gpt-6-astra {p} ")]
+    assert len(match) == 1 and math.isclose(match[0].mean, gap) and math.isclose(match[0].var, 1 / (5 * p * (1 - p)))
+    assert len([f for f in factors if f.head == "tokens" and f.note.startswith("aa-terminal-bench-2.1-tokens:")]) == 10

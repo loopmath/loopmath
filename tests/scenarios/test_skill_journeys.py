@@ -243,7 +243,9 @@ def test_plan_brief_has_what_the_skill_reads_and_the_page(planned):
     assert [c["key"] for c in brief["choices"]][0] == "goal" and len(brief["choices"]) <= 5  # 0.2.1: most_likely
     assert brief["reference"]["kind"] == "best_recorded" and "your usual" not in json.dumps(brief).lower()
     # 0.2.1: p_accepted_within and option on up to five choices (bands stay out of the brief): 12,000 from 10,000
-    assert Path(brief["page"]).is_file() and len(planned["brief"][1]) < 12_000
+    # 0.2.2: with the lanes prior the goal here is not the reference, so the goal carries its try-then-rescue
+    # strategy (null before): 14,000
+    assert Path(brief["page"]).is_file() and len(planned["brief"][1]) < 14_000
     assert all("bands" not in c for c in brief["choices"]) and "bands" not in brief["reference"]["numbers"]
 
 

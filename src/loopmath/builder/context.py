@@ -21,7 +21,8 @@ from typing import Any
 from ..output import EXIT_NOT_FOUND, EXIT_OK, fail, home as home_dir
 from ..recommend import commands as C
 from ..recommend import engine, storeread
-from ..recommend.engine import Recommendation
+from ..recommend.curve import accepted_within
+from ..recommend.engine import Recommendation, r6
 from ..recommend.storeread import Conf
 from ..types import AcceptanceRule, Configuration, Task
 
@@ -45,6 +46,8 @@ class Session:
     cache: OrderedDict = field(default_factory=OrderedDict)  # config id -> predict answer
     context: dict[str, Any] | None = None
     models: dict[str, int] | None = None  # `known_models`, read once
+    home: Any = None  # the store, for the runs behind each model
+    offered: list[str] = field(default_factory=list)  # `commands.offered_models`: the models the page offers
 
 
 # ---------------------------------------------------------------- start
@@ -68,6 +71,13 @@ def asked_task(task: Task, id_given: bool, belief: Any, rule: AcceptanceRule, co
         return task
     key_of = getattr(C, "question_key", None)
     return C.question_task(task, key_of(belief) if callable(key_of) else belief.fit_id, rule, configs)
+
+
+def offered_kw(models: list[str]) -> dict[str, Any]:
+    """`offered=` for `engine.recommend` when it takes it (0.2.2), so the builder asks what `recommend` asks."""
+    import inspect
+
+    return {"offered": models} if "offered" in inspect.signature(engine.recommend).parameters else {}
 
 
 def build_session(args: argparse.Namespace) -> tuple[Session | None, int]:
@@ -98,6 +108,7 @@ def build_session(args: argparse.Namespace) -> tuple[Session | None, int]:
         spend, cap = C.budget(home, conf)
         settings = C.settings_from(conf, args, spend, cap)
         models = C.model_list(getattr(args, "models", None))
+        offered = C.offered_models(conf, models)
     except C.NotFound as exc:
         return None, fail(str(exc), EXIT_NOT_FOUND)
     except ValueError as exc:
@@ -125,12 +136,12 @@ def build_session(args: argparse.Namespace) -> tuple[Session | None, int]:
         asked = asked_task(task, id_given, belief, rule, [usual, *(c for c, _ in configs)])
         rec = engine.recommend(belief, asked, rule, usual=usual, usual_from=usual_from, configs=configs,
                                settings=settings, diff=C.diff_fn(), keep=[*(u.id for u in user),
-                                                                        *(r.id for r in recorded)])
+                                                                        *(r.id for r in recorded)],
+                               **offered_kw(offered))
         rec.task = task
         start = None
         if getattr(args, "start", None):
-            found = rec.by_id(args.start)
-            start = found.config if found is not None else storeread.find_config(home, args.start)
+            start = rec_config(rec, args.start) or storeread.find_config(home, args.start)
             if start is None:
                 raise C.NotFound(f"configuration {args.start} not found in this recommendation, earlier "
                                  f"recommendations or stored runs")
@@ -139,7 +150,20 @@ def build_session(args: argparse.Namespace) -> tuple[Session | None, int]:
     except ValueError as exc:
         return None, fail(str(exc))
     fit = {**C.fit_info(belief, now), "runs": int(getattr(belief, "n_runs", 0) or 0)}
-    return Session(belief, asked, rule, rec, fit, rec_id=getattr(args, "rec", None), start=start), EXIT_OK
+    return Session(belief, asked, rule, rec, fit, rec_id=getattr(args, "rec", None), start=start,
+                   home=home, offered=offered), EXIT_OK
+
+
+def rec_config(rec: Recommendation, cfg_id: str) -> Configuration | None:
+    """A configuration of the recommendation by id: a candidate (every choice is one), the reference or the
+    rescue workflow."""
+    found = rec.by_id(cfg_id)
+    if found is not None:
+        return found.config
+    for cfg in (rec.usual.config, rec.rescue_config):
+        if cfg is not None and cfg.id == cfg_id:
+            return cfg
+    return None
 
 
 # ---------------------------------------------------------------- catalog
@@ -161,14 +185,72 @@ def rec_configs(rec: Recommendation) -> list[Configuration]:
 
 
 def known_models(session: Session) -> dict[str, int]:
-    """Model id -> runs behind it: the fit's models and any a candidate uses (0 runs when the fit has no node)."""
+    """Model id -> runs the fit has behind it, for the offered models (0.2.2: `recommend`'s list, so a retired
+    model is not offered), in offered order; without a list, the fit's models and any a candidate uses."""
     if session.models is None:
-        out = fit_models(session.belief)
-        for cfg in rec_configs(session.rec):
-            for s in cfg.settings.values():
-                out.setdefault(s.model, 0)
+        fit = fit_models(session.belief)
+        if session.offered:
+            out = {m: fit.get(m, 0) for m in session.offered}
+        else:
+            out = fit
+            for cfg in rec_configs(session.rec):
+                for s in cfg.settings.values():
+                    out.setdefault(s.model, 0)
         session.models = out
     return session.models
+
+
+def retired_ids(rec: Recommendation) -> dict[str, list[str]]:
+    return dict(getattr(rec, "retired", None) or {})
+
+
+def recorded_runs(home: Any) -> list[tuple[Configuration, int]]:
+    """Every configuration the store's runs used, with its number of runs (one run document read per
+    configuration, as `storeread.recorded_configs` reads them)."""
+    from collections import Counter
+
+    if home is None:
+        return []
+    counts: Counter = Counter()
+    run_of: dict[str, str] = {}
+    for row in storeread.run_rows(home):
+        cfg = row.get("config")
+        if cfg:
+            counts[str(cfg)] += 1
+            if row.get("run"):
+                run_of[str(cfg)] = str(row["run"])
+    out = []
+    for cfg_id, n in counts.items():
+        doc = storeread.read_json(home / "runs" / f"{run_of[cfg_id]}.ocp.json") if cfg_id in run_of else None
+        conf = doc.get("run", {}).get("configuration") if isinstance(doc, dict) else None
+        cfg = storeread.config_from_any(conf) if conf else None
+        if cfg is not None:
+            out.append((cfg, n))
+    return out
+
+
+def runs_behind(home: Any) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """(by model: `{total, by_role, by_effort}`, by role: runs) from the user's recorded runs. A run counts
+    once per model, once per (model, role), once per (model, role, effort) and once per role."""
+    models: dict[str, dict[str, Any]] = {}
+    roles: dict[str, int] = {}
+    for cfg, n in recorded_runs(home):
+        used: set[tuple[str, str, str]] = set()
+        for p in cfg.workflow.pieces:
+            s = cfg.settings.get(p.id)
+            if s is not None and s.model:
+                used.add((s.model, p.role, s.effort or ""))
+        for role in {p.role for p in cfg.workflow.pieces}:
+            roles[role] = roles.get(role, 0) + n
+        for model in {m for m, _, _ in used}:
+            m = models.setdefault(model, {"total": 0, "by_role": {}, "by_effort": {}})
+            m["total"] += n
+            for role in {r for mm, r, _ in used if mm == model}:
+                m["by_role"][role] = m["by_role"].get(role, 0) + n
+            for _, role, effort in (u for u in used if u[0] == model):
+                e = m["by_effort"].setdefault(role, {})
+                e[effort] = e.get(effort, 0) + n
+    return models, roles
 
 
 def catalog(session: Session) -> dict[str, Any]:
@@ -177,16 +259,19 @@ def catalog(session: Session) -> dict[str, Any]:
 
     seen = [s for cfg in rec_configs(session.rec) for s in cfg.settings.values()]
     harnesses = list(dict.fromkeys([*DEFAULT_EFFORTS, *(s.harness for s in seen)]))
-    models = sorted(known_models(session).items(), key=lambda kv: (-kv[1], kv[0]))
+    behind, role_runs = runs_behind(session.home)
+    empty = {"total": 0, "by_role": {}, "by_effort": {}}
+    order = {m: i for i, m in enumerate(known_models(session))}
+    models = sorted(order, key=lambda m: (-behind.get(m, empty)["total"], order[m]))
     by_harness = {h: list(efforts_for(h)) for h in harnesses}
     efforts = sort_efforts([e for v in by_harness.values() for e in v] + [s.effort for s in seen])
     return {
         "harnesses": harnesses,
-        "models": [{"id": m, "family": family_of(m), "harness": harness_for(m), "runs_behind": n}
-                   for m, n in models],
+        "models": [{"id": m, "family": family_of(m), "harness": harness_for(m),
+                    "runs_behind": behind.get(m, empty)} for m in models],
         "efforts": list(efforts),
         "efforts_by_harness": by_harness,
-        "roles": list(KNOWN_ROLES),
+        "roles": [{"id": r, "runs": role_runs.get(r, 0)} for r in dict.fromkeys([*KNOWN_ROLES, *role_runs])],
         "shapes": [{"id": wf.id, "title": wf.title,
                     "pieces": [{"id": p.id, "role": p.role, "width": p.width} for p in wf.pieces],
                     "edges": [list(e) for e in wf.edges],
@@ -196,8 +281,27 @@ def catalog(session: Session) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- the context
+def within_bands(bands: dict[str, Any], rescue: Any) -> dict[str, Any]:
+    """`bands` with `p_accepted_within`, mapped end by end from the chance band (`g + (1 - g) p_fix` is
+    increasing in `g`, as `Recommendation.within` reads its interval)."""
+    chance = bands.get("chance") if isinstance(bands, dict) else None
+    if not isinstance(chance, dict):
+        return bands
+
+    def f(g: Any) -> float | None:
+        return None if g is None else r6(accepted_within(float(g), rescue))
+
+    return {**bands, "p_accepted_within": {lv: [f(v[0]), f(v[1])] for lv, v in chance.items()}}
+
+
+def numbers_of(rec: Recommendation, pred: Any) -> dict[str, Any]:
+    """`Recommendation.numbers()` with the `p_accepted_within` band."""
+    n = rec.numbers(pred)
+    return {**n, "bands": within_bands(n["bands"], rec.rescue)}
+
+
 def candidate_entry(rec: Recommendation, c: Any) -> dict[str, Any]:
-    return {"config": c.config.to_dict(), "label": rec.label(c.config), "numbers": rec.numbers(c.prediction),
+    return {"config": c.config.to_dict(), "label": rec.label(c.config), "numbers": numbers_of(rec, c.prediction),
             "origin": c.origin, **rec.search_fields(c.config.id)}
 
 
@@ -210,12 +314,20 @@ def context_payload(session: Session) -> dict[str, Any]:
     choices = []
     for ch in core["choices"]:
         c = rec.by_id(ch["config"])
-        choices.append({**ch, "configuration": c.config.to_dict() if c is not None else None})
+        choices.append({**ch, "bands": within_bands(ch["bands"], rec.rescue),
+                        "configuration": c.config.to_dict() if c is not None else None})
     reference = {k: v for k, v in core["reference"].items() if k != "prediction"}
-    top = rec.candidates[:TOP_CANDIDATES]
+    reference["numbers"] = numbers_of(rec, rec.usual.prediction)
+    retired = retired_ids(rec)  # 0.2.2: a workflow on a retired model is the reference at most, never a candidate
+    offer = [c for c in rec.candidates if c.config.id not in retired]
+    top = offer[:TOP_CANDIDATES]
     ids = {c.config.id for c in top}
-    wanted = {rec.usual.config.id, *(ch["config"] for ch in core["choices"])}
-    top += [c for c in rec.candidates[TOP_CANDIDATES:]
+    # every option's workflows (the pair's exploration one too) and the rescue workflow, whatever the cutoff (22R B3)
+    wanted = {rec.usual.config.id, *(i for ch in core["choices"]
+                                     for i in (ch["config"], *ch.get("members", ()), ch.get("explore_config")) if i)}
+    if rec.rescue_config is not None:
+        wanted.add(rec.rescue_config.id)
+    top += [c for c in offer[TOP_CANDIDATES:]
             if c.config.id not in ids and (c.origin in KEEP_ORIGINS or c.config.id in wanted)]
     session.context = {
         "schema": SCHEMA,
@@ -223,6 +335,7 @@ def context_payload(session: Session) -> dict[str, Any]:
         "rule": core["rule"],
         "fit": session.fit,
         "rec": session.rec_id,
+        "goal_config_id": rec.goal.config.id,
         "rescue": core["rescue"],
         "reference": reference,
         "choices": choices,

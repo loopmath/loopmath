@@ -1,7 +1,8 @@
 """`loopmath builder`: one page and a JSON API on 127.0.0.1, answered from the session (spec 02, `builder`).
 
 `GET /` is the builder page, `GET /assets/<file>` a file from `views/assets/`, `GET /api/context` the
-session's context and `POST /api/predict` an edited configuration's numbers. The server binds 127.0.0.1
+session's context, `POST /api/predict` an edited configuration's numbers and `POST /api/predict_many` a list's
+(0.2.2). Errors are `{piece, message}`, the piece null for a request as a whole. The server binds 127.0.0.1
 only (port 0: a free port), prints its URL, opens the browser unless `--no-open`, and stops on Ctrl+C.
 """
 
@@ -19,12 +20,13 @@ from typing import Any
 
 from ..output import EXIT_OK, EXIT_USER, fail
 from .context import Session, build_session, context_payload
-from .predict import predict
+from .predict import err, predict, predict_many
 
 HOST = "127.0.0.1"
 MAX_BODY = 1 << 20  # a configuration is a few kilobytes
 ASSET_RE = re.compile(r"^/assets/([a-z][a-z0-9_-]*\.(?:css|js))$")
 TYPES = {"css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
+ROUTES = {"/api/predict": predict, "/api/predict_many": predict_many}
 
 
 def finite(obj: Any) -> Any:
@@ -99,37 +101,39 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 text = asset(m.group(1))
             except (FileNotFoundError, OSError):
-                self.send_json(404, {"ok": False, "errors": [f"no asset {m.group(1)}"]})
+                self.send_json(404, {"ok": False, "errors": [err(None, f"no asset {m.group(1)}")]})
                 return
             self.send(200, text.encode("utf-8"), TYPES[m.group(1).rsplit(".", 1)[1]])
         else:
-            self.send_json(404, {"ok": False, "errors": [f"no such path: {path}"]})
+            self.send_json(404, {"ok": False, "errors": [err(None, f"no such path: {path}")]})
 
     do_HEAD = do_GET
 
     def do_POST(self) -> None:  # noqa: N802 - the stdlib's name
         path = self.path.split("?", 1)[0]
-        if path != "/api/predict":
-            self.send_json(404, {"ok": False, "errors": [f"no such path: {path}"]})
+        route = ROUTES.get(path)
+        if route is None:
+            self.send_json(404, {"ok": False, "errors": [err(None, f"no such path: {path}")]})
             return
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = -1
         if n < 0 or n > MAX_BODY:
-            self.send_json(413, {"ok": False, "errors": ["the body must be one JSON object under 1 MB"]})
+            self.send_json(413, {"ok": False, "errors": [err(None, "the body must be one JSON object under 1 MB")]})
             self.close_connection = True
             return
         try:
             body = json.loads(self.rfile.read(n).decode("utf-8") or "null")
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            self.send_json(400, {"ok": False, "errors": [f"the body is not JSON: {exc}"]})
+            self.send_json(400, {"ok": False, "errors": [err(None, f"the body is not JSON: {exc}")]})
             return
         try:
-            out = predict(self.server.session, body)
+            out = route(self.server.session, body)
         except Exception as exc:  # noqa: BLE001 - one bad request must not stop the page
-            print(f"builder: predict failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            self.send_json(500, {"ok": False, "errors": [f"the prediction failed: {type(exc).__name__}: {exc}"]})
+            print(f"builder: {path} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            self.send_json(500, {"ok": False, "errors": [err(None, f"the prediction failed: {type(exc).__name__}: "
+                                                                    f"{exc}")]})
             return
         self.send_json(200, out)
 

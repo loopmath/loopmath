@@ -13,7 +13,7 @@ A term is `(node_id, parent_id, value)`. Rows:
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
@@ -25,6 +25,7 @@ from ..types import (
     Workflow,
 )
 from .forest import canonical_model_id, canonical_role, model_path
+from .pricing import price_term
 
 Term = tuple[str, "str | None", float]
 
@@ -324,12 +325,15 @@ def _effort_scaled(terms: tuple[Term, ...], weight: float) -> tuple[Term, ...]:
 
 
 def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None, *,
-              source: str | None = None, effort: float = 1.0) -> tuple[Term, ...]:
+              source: str | None = None, effort: float = 1.0,
+              prices: Mapping[str, float] | None = None) -> tuple[Term, ...]:
     """Cost and tokens rows without the task part: setting, role, topology, position, round, control,
     and with a `source` the position x source node `psrc:<shape>#<pos>|<source>` and the family x source
     node `fsrc:<family>|<source>` (spec 04 section 1). `effort` is the value of the terms a timebox caps, the
     effort and shape (topology, position) terms (`effort_weight`: below 1 under a timebox); the role, psrc and
-    fsrc terms stay at 1."""
+    fsrc terms stay at 1. `prices` is a fit's price offsets (`FitState.price_offsets`, spec 04 section 2): the
+    model's `price:offset` term goes last. The cost head has that node and the tokens head does not, so a
+    prediction's shared row prices only its cost."""
     s = setting or st.settings[piece]
     h, m, e = _s(s)
     shape = st.shape or st.workflow_id
@@ -343,7 +347,8 @@ def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None,
         fam = model_path(m)[1]
         terms += ((f"psrc:{position}|{source}", f"position:{position}", 1.0),
                   (f"fsrc:{fam}|{source}", f"family:{fam}", 1.0))
-    return terms + tuple(round_terms(k)) + tuple(_control_terms(st.k_max, st.widths[piece]))
+    return (terms + tuple(round_terms(k)) + tuple(_control_terms(st.k_max, st.widths[piece]))
+            + price_term(prices, m))
 
 
 def gate_rest(st: Structure, gate: GateInfo, k: int) -> tuple[Term, ...]:
@@ -421,6 +426,7 @@ class AttemptObs:
     weight: float
     setting: Setting
     repriced: bool = True  # False: the recorded dollars, not the current tariff
+    streams: tuple[float, ...] = ()  # input, cache read, cache write, output tokens (pricing.STREAMS order)
 
 
 @dataclass
@@ -458,8 +464,10 @@ def source_label(doc: dict) -> str:
     ext = run.get("ext") or {}
     share = ext.get("dev.loopmath.share")
     if isinstance(share, dict):
-        org = share.get("org") or share.get("org_hash") or (run.get("task") or {}).get("org") or "shared"
-        return f"shared:{org}"
+        # the importer writes `source` and `task.org` as `shared:<org_hash>` already: never prefix twice
+        org = (share.get("source") or share.get("org") or share.get("org_hash") or (run.get("task") or {}).get("org")
+               or "shared")
+        return "shared:" + str(org).removeprefix("shared:")
     src = (run.get("task") or {}).get("source")
     kind = src.get("kind") if isinstance(src, dict) else src
     kind = str(kind or "").strip().lower()
@@ -761,7 +769,9 @@ def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | 
         if weight <= 0 or ((usd is None or usd <= 0) and not tokens):
             dropped["attempt without usable cost"] = dropped.get("attempt without usable cost", 0) + 1
             continue
-        attempts.append(AttemptObs(piece, k, usd if usd and usd > 0 else None, tokens, weight, setting, repriced))
+        streams = tuple(_ocp_fields(cost)[name] for name in _OCP_TOKEN_FIELDS)
+        attempts.append(AttemptObs(piece, k, usd if usd and usd > 0 else None, tokens, weight, setting, repriced,
+                                   streams))
 
     gates = _gate_observations(doc, st, by_piece_round)
     use_rule = rule or rule_from_doc(doc)

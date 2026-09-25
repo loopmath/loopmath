@@ -149,6 +149,17 @@
   const copyText = id => OPT[id] ? `option ${OPT[id].n}: ${OPT[id].label || labelOf(id)}` : `workflow ${id}: ${labelOf(id)}`;
   const pairText = (a, b) => pairOpt && pairOpt.c.members[0] === a && pairOpt.c.members[1] === b ? `option ${pairOpt.n}: ${pairOpt.label || labelOf(a) + ' + ' + labelOf(b)}`
     : `${copyText(a)}, and beside it ${copyText(b)}`;
+  // 0.2.2 (22W): every numbered option can be opened in the workflow builder from its configuration (the pair from the
+  // workflow it tries beside the pick). The page is a static file and cannot start the builder, so the line shows the
+  // command with its own Copy button (`data-cmd`, apart from P4's "Copy option").
+  const builderCmd = id => D.rec && id ? `loopmath builder --rec ${D.rec} --start ${id}` : '';
+  const customLine = o => {
+    const id = o.key === 'pair' ? (o.c.explore_config || (o.c.members || [])[1]) : o.config, cmd = builderCmd(id);
+    return cmd ? `<div class="v-custom" data-option="${esc(o.n)}" data-cfg="${esc(id)}"><span class="v-note">Option ${esc(o.n)}: Customize in the builder</span>` +
+      `<span class="v-cmd"><code>${esc(cmd)}</code><button type="button" data-cmd="${esc(cmd)}">Copy</button></span></div>` : '';
+  };
+  const customLines = os => os.map(customLine).join('');
+  document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('[data-cmd]'); if (b) LM.copy(b.dataset.cmd, b); });
 
   // ------------------------------------------------------------ text helpers
   const usd = V.usd, pct = V.pct;
@@ -264,7 +275,8 @@
     if (FB) vs += ` <span id="fallback">${esc(fbNote)}${num(pick.sr) ? ` The score estimate gives the pick a ${pct(pick.sr)} chance to reach ${esc(fmt.x(target.target))}; no total uses it.` : ''}</span>`;
     if (priced) vs += ` A miss is rescued by ${esc(RESCUE.basis || RESCUE.kind)}${RESCUE.of ? ` (${esc(RESCUE.of)})` : ''}: about <b>${usd(RESCUE.usd)}</b>.`;
     else if (RESCUE) vs += ' No rescue is priced (rescue: none), so the cost per accepted result is the cost per run.';
-    return s + `<p class="v-vs" id="vs">${vs.trim()}</p>` + V.copyBtn(copyText(pick.id), COPY) + `</section>`;
+    return s + `<p class="v-vs" id="vs">${vs.trim()}</p>` + V.copyBtn(copyText(pick.id), COPY) +
+      customLines(OPTS.filter(o => o.key !== 'pair' && o.config === pick.id).slice(0, 1)) + `</section>`;
   }
 
   function threeBlock() {
@@ -274,7 +286,7 @@
       const [a, b] = D.pair.members, bet = pickFor(D.pair.explore_pick || 'best_value');
       s += `<p class="v-pairline" id="pairline">Or run the pick and <b>${esc(labelOf(b))}</b> side by side, then let a blinded referee choose.` +
         (bet && bet.price && bet.price.usd ? ` It costs ${usd(bet.price.usd.mean)} more now; trying it once is ${esc(savingText(bet.gain_per_run))}; there is a ${pct(bet.p_beats_goal)} chance it beats the recommended pick.` : '') + `</p>` +
-        V.copyBtn(pairText(a, b), COPY);
+        V.copyBtn(pairText(a, b), COPY) + customLines(OPTS.filter(o => o.key === 'pair'));
     }
     return s + `</section>`;
   }
@@ -317,6 +329,10 @@
     const ORIGIN = { catalog: 'from the catalog', edit: 'edits of the reference', recorded: 'you recorded',
       user: 'given with --workflow', front: 'found by the search', thompson: 'found in a search draw', polish: 'near the pick' };  // front, thompson, polish: lane 2A's search (0.2)
     const n = fit.n_runs || {};
+    if (D.rec && OPTS.length) {
+      out += sec('d-build', 'Customize an option in the builder', `${OPTS.length} option${OPTS.length === 1 ? '' : 's'}, each from its own workflow`,
+        customLines(OPTS) + `<p class="v-note">Run the command in a terminal: the builder opens this recommendation at that workflow on a local page, where you can change models, efforts, widths and pieces and see the estimates move.</p>`);
+    }
     out += sec('d-src', 'Where these numbers come from', `fit ${esc(fit.id || 'n/a')}, recommendation ${esc(D.rec || 'n/a')}`,
       `<dl class="v-kv"><dt>fit</dt><dd class="v-mono">${esc(fit.id || 'n/a')}${fit.at ? ' <span class="m">' + esc(fmt.dt(fit.at)) + '</span>' : ''}</dd>` +
       (num(n.user) || num(n.prior) ? `<dt>runs in the fit</dt><dd>${fmt.int(n.user || 0)} yours, ${fmt.int(n.prior || 0)} from the shipped prior</dd>` : '') +
@@ -389,7 +405,7 @@
     return `<tr class="v-opt-detail" data-for="${esc(r.id)}"><td colspan="${COLS.length}"><div class="v-gfull v-opt-graph" data-cfg="${esc(r.id)}"></div>` +
       (diff.length ? `<p class="v-note">Against ${esc(refShort)}: ${diff.map(esc).join('; ')}.</p>` : '') +
       (num(r.sr) ? `<p class="v-note v-sr">Score estimate: a ${pct(r.sr)} chance to reach ${esc(fmt.x(target.target))}, from too few scores; no total uses it.</p>` : '') +
-      V.copyBtn(copyText(r.id), COPY) + `</td></tr>`;
+      V.copyBtn(copyText(r.id), COPY) + (OPT[r.id] ? customLine(OPT[r.id]) : '') + `</td></tr>`;
   }
   const toggleRow = tr => { openRow = openRow === tr.dataset.cfg ? null : tr.dataset.cfg; table(); };
   const sortBy = th => {

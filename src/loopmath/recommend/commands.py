@@ -36,6 +36,11 @@ TARGET_RE = re.compile(r"^\s*([A-Za-z_][\w.:/-]*)\s*(>=|<=)\s*([-+]?(?:\d+\.?\d*
 DEFAULT_USUAL_SHAPE = "implement_review"
 FALLBACK_IMPLEMENTER = ("claude-code", "claude-opus-5-5", "high")
 FALLBACK_REVIEWER = ("codex", "gpt-6-astra", "xhigh")
+# The models offered when neither `--models` nor `models.allowed` is set (0.2.2): the current ones only. Any
+# other model is retired: its runs stay data for the fit and its workflow can be the reference line, but it is
+# never a pick, a choice or a candidate. First the fallback implementer, then the fallback reviewer, as
+# `models.allowed` order is read, so a store with no habits keeps the default usual it had.
+DEFAULT_MODELS = ("claude-opus-5-5", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "claude-sonnet-5", "claude-fable-5-1")
 REVIEW_ROLES = ("reviewer", "referee", "review", "select")
 # `--json --brief`: what an agent needs to show the choices and start one. The stored
 # recommendation and the full JSON keep everything; a key added to recommend/2 stays out unless listed.
@@ -236,6 +241,16 @@ def model_list(text: str | None) -> list[str] | None:
     return out or None
 
 
+def offered_models(conf: Conf, models: Sequence[str] | None) -> list[str]:
+    """`--models`, else config `models.allowed`, else `DEFAULT_MODELS`."""
+    return list(models or conf.get("models.allowed") or DEFAULT_MODELS)
+
+
+def retired_models(cfg: Configuration, offered: Sequence[str]) -> list[str]:
+    """The models a configuration uses that are not offered, in piece order."""
+    return list(dict.fromkeys(s.model for s in cfg.settings.values() if s.model not in set(offered)))
+
+
 # ---------------------------------------------------------------- usual workflow and candidates
 def family(model: str) -> str:
     """Model family (lane 4's `family_of`)."""
@@ -250,7 +265,7 @@ def default_usual(home: Path, conf: Conf, models: Sequence[str] | None) -> Confi
     from ..workflows.ids import config_id
 
     wf = catalog()[DEFAULT_USUAL_SHAPE]
-    allowed = list(models or conf.get("models.allowed") or [])
+    allowed = offered_models(conf, models)
     habits = [h for h in storeread.model_habits(home) if not allowed or h[1] in allowed]
     impl = habits[0] if habits else None
     if impl is None and allowed:
@@ -261,7 +276,8 @@ def default_usual(home: Path, conf: Conf, models: Sequence[str] | None) -> Confi
     if rev is None:
         others = [m for m in allowed if family(m) != family(impl[1])]
         if others:
-            rev = (harness_for(others[0]), others[0], "high")
+            rev = next((h for h in (FALLBACK_REVIEWER, FALLBACK_IMPLEMENTER) if h[1] == others[0]),
+                       (harness_for(others[0]), others[0], "high"))
         elif not allowed and family(FALLBACK_REVIEWER[1]) != family(impl[1]):
             rev = FALLBACK_REVIEWER
         else:
@@ -359,7 +375,7 @@ def allowed_settings(conf: Conf, models: Sequence[str] | None) -> dict[str, Any]
 def reference_for(belief: Any, task: Task, rule: AcceptanceRule, recorded: Sequence[Configuration],
                   models: Sequence[str] | None) -> Configuration | None:
     """With no usual, the best recorded configuration; with `--models`, among the recorded ones that
-    use only those models when there are any."""
+    use only those models when there are any. A workflow on a retired model can be the reference (0.2.2)."""
     pool = list(recorded)
     if models:
         allowed = set(models)
@@ -373,13 +389,10 @@ def candidate_configs(task: Task, usual: Configuration, conf: Conf, models: Sequ
     from ..workflows.candidates import candidates
 
     more = {"recorded": list(recorded)} if recorded else {}  # the plan passes none
-    pairs = list(candidates(task, usual=usual, allowed=allowed_settings(conf, models), user=user, **more))
-    keep = {usual.id, *(u.id for u in user), *(r.id for r in recorded)}
-    if models:
-        allowed = set(models)
-        pairs = [(c, o) for c, o in pairs
-                 if c.id in keep or all(s.model in allowed for s in c.settings.values())]
-    return pairs
+    offered = offered_models(conf, models)  # 0.2.2: a workflow on a retired model is never a candidate
+    pairs = list(candidates(task, usual=usual, allowed=allowed_settings(conf, offered), user=user, **more))
+    allowed = set(offered)
+    return [(c, o) for c, o in pairs if c.id == usual.id or all(s.model in allowed for s in c.settings.values())]
 
 
 def diff_fn():
@@ -630,7 +643,8 @@ def recommend(args: argparse.Namespace) -> int:
         asked = task if id_given else question_task(task, question_key(belief), rule, [usual, *(c for c, _ in configs)])
         rec = engine.recommend(belief, asked, rule, usual=usual, usual_from=usual_from, configs=configs,
                                settings=settings, diff=diff_fn(), keep=[*(u.id for u in user),
-                                                                        *(r.id for r in recorded)])
+                                                                        *(r.id for r in recorded)],
+                               offered=offered_models(conf, models))
         rec.task = task
     except NotFound as exc:
         return fail(str(exc), EXIT_NOT_FOUND)

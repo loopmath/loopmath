@@ -22,11 +22,13 @@ import hashlib
 from . import ocpdoc
 from .registry import PUBLIC_REPOS
 
-# Extension keys the bundle keeps: our own data-quality flags and the gate rules
-# that are part of the configuration id.
+# Extension keys the bundle keeps: our own data-quality flags, the gate rules
+# that are part of the configuration id, and the log-match mark an allocated
+# cost needs to conform (`lanes` writes only its shared-record form).
 KEEP_EXT = frozenset({
     "dev.loopmath.prior", "dev.loopmath.infra_error", "dev.loopmath.tokens_unknown",
     "dev.loopmath.shared_across_runs", "dev.loopmath.gate_rules", "dev.loopmath.share",
+    "dev.loopmath.logmatch",
 })
 _DROP_RUN = ("title", "workspace", "labels")
 _DROP_TASK = ("title", "base_commit")

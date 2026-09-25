@@ -338,6 +338,7 @@ def _add_learning(sub) -> None:
     q.add_argument("--sweep-dir", default=None, metavar="PATH", help="sweep results (default: LOOPMATH_SWEEP_DIR)")
     q.add_argument("--e0-corpus", default=None, metavar="PATH", help="E0 corpus (default: LOOPMATH_E0_CORPUS)")
     q.add_argument("--rq1-dir", default=None, metavar="PATH", help="RQ1 OCP documents (default: LOOPMATH_PRIOR_RQ1)")
+    q.add_argument("--lanes-dir", default=None, metavar="PATH", help="build lane rows (default: LOOPMATH_PRIOR_LANES)")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.priors.commands:build"))
     q = ps.add_parser("show", help="what the packaged prior bundle holds and where it came from")

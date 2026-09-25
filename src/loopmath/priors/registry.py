@@ -17,19 +17,22 @@ SWEEP = "sweep"
 E0 = "e0"
 RQ1 = "rq1"
 REPO_HISTORY = "repo_history"
+LANES = "lanes"
 BENCHMARK = "benchmark"
-BUNDLE_SOURCES = (SWEEP, E0, RQ1, REPO_HISTORY)
+BUNDLE_SOURCES = (SWEEP, E0, RQ1, REPO_HISTORY, LANES)
 
 # Public repo names that stay readable after the share reduction (spec 03,
-# section 7 hashes every other repo). Both are our own benchmark task sets.
-PUBLIC_REPOS = ("loopmath-sweep", "ale-bench")
+# section 7 hashes every other repo). The first two are our own benchmark task
+# sets; `loopmath` is this public repository, the one our build lanes worked in.
+PUBLIC_REPOS = ("loopmath-sweep", "ale-bench", "loopmath")
 
 # Inputs on the build machine, read only; nothing at run time needs them (the
 # bundle ships built). Each is an explicit path, the `prior build` flag or else
 # the environment variable, with no default folder. The sweep and E0
 # variables are the ones `research fit` and `analyze-e0` read.
-INPUT_FLAGS = {SWEEP: "--sweep-dir", E0: "--e0-corpus", RQ1: "--rq1-dir"}
-ENV_INPUTS = {SWEEP: "LOOPMATH_SWEEP_DIR", E0: "LOOPMATH_E0_CORPUS", RQ1: "LOOPMATH_PRIOR_RQ1"}
+INPUT_FLAGS = {SWEEP: "--sweep-dir", E0: "--e0-corpus", RQ1: "--rq1-dir", LANES: "--lanes-dir"}
+ENV_INPUTS = {SWEEP: "LOOPMATH_SWEEP_DIR", E0: "LOOPMATH_E0_CORPUS", RQ1: "LOOPMATH_PRIOR_RQ1",
+              LANES: "LOOPMATH_PRIOR_LANES"}
 
 
 class MissingInput(LookupError):

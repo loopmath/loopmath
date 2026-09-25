@@ -67,7 +67,7 @@ MIN_SCORE_SWITCH = 5  # spec 04 section 2: g = p_reach once the score head has 5
 BASE_HEADS = {"cost": ("gaussian", "cost"), "tokens": ("gaussian", "cost"), "gate": ("logistic", "logit"),
               "success": ("logistic", "logit")}
 TASK_CHAIN = ("task", "subtype", "repo", "type")
-FIXED_LEVELS = ("fixed", "round", "control")
+FIXED_LEVELS = ("fixed", "round", "control", "price")
 SCORE_CLAMP = (0.005, 0.995)
 _CACHE_LIMIT = 200_000
 MEAN_NODES = 12  # Gauss-Hermite nodes over an unseen normal effect
@@ -339,6 +339,8 @@ class FitState:
         self.sim_seed = _seed(self.seed_key, "simulate")
         # spec 04 section 1: the value of the timebox-capped terms (effort, shape) in a timeboxed task's cost rows
         self.timebox_effort = float(self.meta.get("timebox_effort", 1.0))
+        # spec 04 section 2: the fit's price offset per model (log scale); none in fits before 0.2.2
+        self.price_offsets: dict[str, float] = dict((self.meta.get("price_offsets") or {}).get("models") or {})
         if heads is None:
             heads = {}
             for name, hmeta in (self.meta.get("heads") or {}).items():
@@ -418,7 +420,8 @@ class FitState:
         for piece in st.pieces:
             rounds = st.k_max if st.piece_loop.get(piece) is not None else 1
             for k in range(1, rounds + 1):
-                cost[(piece, k)] = cost_rest(st, piece, k, source=PREDICT_SOURCE, effort=effort)
+                cost[(piece, k)] = cost_rest(st, piece, k, source=PREDICT_SOURCE, effort=effort,
+                                             prices=self.price_offsets)
         gate = {}
         for gi, g in enumerate(st.gates):
             for k in range(1, (st.k_max if st.gate_loop.get(gi) is not None else 1) + 1):

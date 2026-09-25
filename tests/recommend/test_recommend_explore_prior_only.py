@@ -3,13 +3,16 @@
 The store is the skill dry run's onboard fixture: a fresh task on a store with no runs of its own, where a
 success logit's variance is about 10. There a Newton step on the success head, linearized at the mean, lowered
 every related candidate's expected chance after the simulated run by about 6 points; that outweighed the gain of
-trying anything, so G clipped to 0 and no pair was offered on about one fit in six. The fits below are four that
-lost it (a fit's draws are seeded by its id). The success update is now exact over the draws.
+trying anything, so G clipped to 0 and no pair was offered on about one fit in six. The fits below were four that
+lost it when a fit's draws were seeded by its id; since 0.2.1 they are seeded by the fit's `seed_key`, a hash of
+its input rows, so the fixture's clock is pinned and the four ids now name four fits of the same data. The success
+update is now exact over the draws.
 """
 
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import importlib.util
 import io
 import json
@@ -35,6 +38,8 @@ _spec.loader.exec_module(fixture)
 
 SRC = Path(loopmath.__file__).resolve().parents[1]
 LOST = ("fit_20260924205028", "fit_20260924205053", "fit_20260924210158", "fit_20260924210206")
+# The fixture's sessions are dated from this clock, and the draws follow the data (seed_key), so it is pinned.
+CLOCK = dt.datetime(2026, 9, 20, 12, tzinfo=dt.timezone.utc)
 MANY_DRAWS = 8000
 LABELER = """\
 import json, sys
@@ -87,7 +92,7 @@ def runs(tmp_path_factory):
     """Onboard the fixture once, as the dry run does, then recommend on each lost fit, and on the first at
     MANY_DRAWS too."""
     tmp = tmp_path_factory.mktemp("prior_only")
-    hist = fixture.build_history(tmp)
+    hist = fixture.build_history(tmp, now=CLOCK)
     home = tmp / "home"
     home.mkdir()
     (home / ".claude").symlink_to(hist.logs)
@@ -97,7 +102,7 @@ def runs(tmp_path_factory):
            "LOOPMATH_CACHE_DIR": str(tmp / "cache"), "PYTHONPATH": str(SRC), "PYTHONDONTWRITEBYTECODE": "1",
            "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8"}
     res = subprocess.run([sys.executable, "-m", "loopmath", "onboard", "--labeler",
-                          f"command:{sys.executable} {tmp / 'labeler.py'}", "--yes", "--json"],
+                          f"command:{sys.executable} {tmp / 'labeler.py'}", "--since", "3650d", "--yes", "--json"],
                          env=env, cwd=tmp, text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
     assert res.returncode == 0, res.stderr[-800:]
     out = {}

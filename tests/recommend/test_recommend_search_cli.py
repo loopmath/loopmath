@@ -46,6 +46,9 @@ def home(tmp_path, tmp_path_factory, monkeypatch):
     monkeypatch.setattr(bs, "load_latest", lambda h: fs)
     monkeypatch.setattr(wc, "candidates", catalog_candidates)
     write_runs(home, [H.USUAL] * 3)
+    # 0.2.2: the synthetic fit's made-up models are offered through config, not retired by the default list
+    models = ", ".join(json.dumps(m) for m in dict.fromkeys(st.model for st in H.SETTINGS))
+    (home / "config.toml").write_text(f"[models]\nallowed = [{models}]\n")
     return home
 
 

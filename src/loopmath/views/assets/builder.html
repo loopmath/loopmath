@@ -4,106 +4,67 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>loopmath builder</title>
-<link rel="stylesheet" href="/assets/base.css">
-<style>
-  textarea { width: 100%; min-height: 320px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-    border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: #fff; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
-  .err { color: var(--red); }
-  pre { white-space: pre-wrap; margin: 0; }
-</style>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%226%22 fill=%22%232a52be%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/builder.css">
 </head>
 <body>
-<div class="app">
-  <div class="top">
-    <h1><span class="k">loopmath</span> builder</h1>
-    <p class="lede" id="lede">Loading the recommendation...</p>
-  </div>
-  <div class="panel">
-    <h2>Start from</h2>
-    <div class="row">
-      <select id="pick" aria-label="Start from a candidate"></select>
-      <button id="load">Load</button>
+<div class="wrap" id="app">
+  <header class="top">
+    <div class="brand">loop<span>math</span> <i>builder</i></div>
+    <div class="task"><b id="taskT">Loading the recommendation</b><small id="taskS"></small></div>
+    <span id="mode" class="mode busy">connecting</span>
+    <div class="hist">
+      <button class="ib" id="undo" aria-label="Undo" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5 2.5 6.5l3 3"/><path d="M2.8 6.5h6.7a4 4 0 0 1 0 8H7"/></svg>Undo</button>
+      <button class="ib" id="redo" aria-label="Redo" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m10.5 3.5 3 3-3 3"/><path d="M13.2 6.5H6.5a4 4 0 0 0 0 8H9"/></svg>Redo</button>
     </div>
-    <p class="muted small">A placeholder page: edit the configuration as JSON and press Estimate. The chosen design replaces this page.</p>
-  </div>
-  <div class="panel">
-    <h2>Configuration</h2>
-    <textarea id="cfg" spellcheck="false"></textarea>
-    <div class="row"><button id="go" class="on">Estimate</button><span id="state" class="muted small"></span></div>
-  </div>
-  <div class="panel">
-    <h2>Estimate</h2>
-    <div class="stats" id="stats"></div>
-    <pre id="out" class="mono"></pre>
-  </div>
+  </header>
+  <div id="body"><div class="loading">Loading the recommendation from loopmath</div></div>
 </div>
-<script>
-(function () {
-  "use strict";
-  var ctx = null;
-  var $ = function (id) { return document.getElementById(id); };
-  function usd(x) { return x == null ? "n/a" : "$" + Number(x).toFixed(2); }
-  function pct(x) { return x == null ? "n/a" : Math.round(100 * x) + "%"; }
-  function stat(value, name) {
-    var d = document.createElement("div"); d.className = "stat";
-    var b = document.createElement("b"); b.textContent = value;
-    var s = document.createElement("span"); s.textContent = name;
-    d.appendChild(b); d.appendChild(s); return d;
-  }
-  function show(res) {
-    var stats = $("stats"); stats.textContent = "";
-    if (!res.ok) {
-      $("out").className = "mono err";
-      $("out").textContent = (res.errors || []).join("\n");
-      return;
-    }
-    var n = res.numbers;
-    stats.appendChild(stat(pct(n.chance.mean), "chance of " + n.chance.of));
-    stats.appendChild(stat(usd(n.run_cost_usd.mean), "run cost"));
-    stats.appendChild(stat(usd(n.cost_per_accepted_usd.mean), "per accepted result"));
-    stats.appendChild(stat(res.rank.by_cost_per_accepted + " of " + res.rank.of, "rank by cost per accepted result"));
-    $("out").className = "mono";
-    $("out").textContent = res.label + "  [" + res.config_id + "]\n" +
-      (res.warnings && res.warnings.length ? "warnings: " + res.warnings.join("; ") + "\n" : "") +
-      JSON.stringify(res, null, 1);
-  }
-  function estimate() {
-    var body;
-    try { body = { config: JSON.parse($("cfg").value) }; }
-    catch (e) { show({ ok: false, errors: ["the configuration is not JSON: " + e.message] }); return; }
-    $("state").textContent = "estimating...";
-    var t0 = performance.now();
-    fetch("/api/predict", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-      .then(function (r) { return r.json(); })
-      .then(function (res) { $("state").textContent = Math.round(performance.now() - t0) + " ms"; show(res); })
-      .catch(function (e) { $("state").textContent = ""; show({ ok: false, errors: [String(e)] }); });
-  }
-  function load() {
-    var c = ctx.candidates[Number($("pick").value)];
-    $("cfg").value = JSON.stringify(c.config, null, 1);
-    estimate();
-  }
-  fetch("/api/context").then(function (r) { return r.json(); }).then(function (c) {
-    ctx = c;
-    $("lede").textContent = "Task: " + c.task.type + " in " + c.task.repo + ". Rule: " + c.rule.definition +
-      ". Reference: " + c.reference.label + ". Fit " + c.fit.id + ".";
-    var pick = $("pick"), start = 0;
-    c.candidates.forEach(function (x, i) {
-      var o = document.createElement("option");
-      o.value = String(i);
-      o.textContent = usd(x.numbers.cost_per_accepted_usd.mean) + " per accepted result: " + x.label;
-      pick.appendChild(o);
-      if (c.start && x.config.id === c.start.id) { start = i; }
-    });
-    pick.value = String(start);
-    if (c.start && c.candidates[start].config.id !== c.start.id) {
-      $("cfg").value = JSON.stringify(c.start, null, 1); estimate();
-    } else { load(); }
-  });
-  $("load").addEventListener("click", load);
-  $("go").addEventListener("click", estimate);
-})();
-</script>
+<template id="page">
+  <section class="bar">
+    <span class="lab">Start from</span><div class="chips" id="starts"></div>
+    <span class="lab">Shapes</span><div class="chips" id="shapes"></div>
+    <span class="lab">Pieces</span><div class="chips" id="palette"></div>
+  </section>
+  <main class="grid">
+    <div class="main">
+      <section class="card" id="chartCard">
+        <div class="ch">
+          <div class="h"><h2>Chance against cost</h2><span class="sub" id="chartSub">Your build moves with every edit. Tap a point to start from it.</span></div>
+          <div class="tseg" id="xsel"><button data-x="run" class="on">Cost per run</button><button data-x="cpa">Per accepted result</button></div>
+        </div>
+        <div class="chartwrap"><svg id="chart" role="img" aria-label="Chance to reach the target against cost"></svg></div>
+        <div class="legend" id="legend"></div>
+        <div class="tapcard empty" id="tapcard"></div>
+      </section>
+      <section class="card canvas" id="canvasCard">
+        <div class="ch"><div class="h"><h2 id="cvTitle">Your workflow</h2><span class="sub" id="cvSub"></span></div></div>
+        <svg id="cv" aria-label="Workflow canvas"></svg>
+        <div class="cfoot">
+          <span>Tap a piece to edit it</span>
+          <span><svg width="16" height="16"><circle cx="8" cy="8" r="5" fill="#fffdf8" stroke="#8d8374" stroke-width="1.6"/></svg>drag from a port to connect</span>
+          <span><svg width="22" height="16"><path d="M2 5 Q11 16 20 5" fill="none" stroke="#4a433a" stroke-width="1.4" stroke-dasharray="4 3"/></svg>review gate: drag the loop handle to the piece that redoes the work</span>
+          <span>stacked cards: parallel copies</span>
+        </div>
+        <div id="pop"></div>
+      </section>
+      <section class="card" id="nextCard">
+        <div class="ch">
+          <div class="h"><h2>Next steps</h2><span class="sub">Every one-step change to your build, predicted. Tap a row to see where it lands on the chart.</span></div>
+          <div class="tseg" id="rankby"><button data-r="chance" class="on">More chance</button><button data-r="cpa">Cheaper per accepted</button><button data-r="run">Cheaper run</button></div>
+        </div>
+        <div class="nhead"><span></span><span>Change</span><span>Chance</span><span>Per run</span><span>Per accepted</span><span></span></div>
+        <div id="nnote"></div>
+        <div class="nudges" id="nudges"></div>
+        <div class="nfoot" id="nfoot"></div>
+      </section>
+    </div>
+    <aside class="card side" id="side" aria-live="polite"></aside>
+  </main>
+  <div class="foot" id="foot"></div>
+</template>
+<div class="toast" id="toast" role="status"></div>
+<!-- builder.js asks loopmath builder for every number: GET /api/context, POST /api/predict, POST /api/predict_many -->
+<script src="/assets/builder.js"></script>
 </body>
 </html>

@@ -318,3 +318,24 @@ def test_reader_skips_a_damaged_stored_file(store, tmp_path, capsys):
     import_.priors_path(ours, obj["org_hash"]).write_bytes(gzip.compress(b'{"schema": "loopmath.share/1"}'))
     assert _import(ours, path) == 1
     assert "move it away" in capsys.readouterr().err
+
+
+def test_fit_counts_an_import_under_the_name_import_shared_prints(store, tmp_path, capsys):
+    """22X: share, import-shared, fit; the source is `shared:<org_hash>` and `--without` takes that name."""
+    path, obj = _share(tmp_path, store)
+    ours = tmp_path / "ours"
+    capsys.readouterr()
+    assert _import(ours, path) == 0
+    org = "shared:" + obj["org_hash"]
+    assert f"imported 3 runs as organization {org}:" in capsys.readouterr().out
+    assert cli.main(["fit", "--home", str(ours), "--json"]) == 0
+    fitted = json.loads(capsys.readouterr().out)
+    assert fitted["runs_by_source"][org] == 3 and not any(s.startswith("shared:shared:") for s in fitted["runs_by_source"])
+    assert cli.main(["fit", "--home", str(ours), "--without", org, "--json"]) == 0
+    out, err = capsys.readouterr()
+    assert "unknown source" not in err
+    without = json.loads(out)
+    assert without["options"]["without"] == [org] and org not in without["runs_by_source"]
+    assert without["dropped"][f"without {org}"] == 3
+    meta = json.loads((ours / "fits" / "latest" / "meta.json").read_text())
+    assert meta["options"]["without"] == [org] and org not in meta["runs_by_source"]

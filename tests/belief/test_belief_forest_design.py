@@ -131,7 +131,9 @@ def test_cost_weights_and_sources():
     assert _cost_weight({"basis": "asserted"}) == 0.0
     assert data_source({"run": {"task": {"source": {"kind": "live"}}}}) == "user"
     assert data_source({"run": {"task": {"source": {"kind": "sweep"}}}}) == "sweep"
-    assert data_source({"run": {"task": {}, "ext": {"dev.loopmath.share": {"org": "acme"}}}}) == "shared:acme"
+    # the shape `share.import_.shared_runs` writes: `task.org` and the share `source` already carry the prefix
+    imported = {"run": {"task": {"org": "shared:acme"}, "ext": {"dev.loopmath.share": {"source": "shared:acme"}}}}
+    assert data_source(imported) == "shared:acme"
 
 
 def _usd(model, n_in):

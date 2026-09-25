@@ -55,6 +55,7 @@ FIXED_SD: dict[str, tuple[float, float, float]] = {
     "round": (2.0, 2.0, 2.0),
     "control": (1.0, 1.0, 1.0),
     "horizon": (10.0, 10.0, 10.0),  # wide: the informative prior is a FactorSpec in fit() (spec 04 section 1)
+    "price": (10.0, 10.0, 10.0),  # wide: fit() holds `price:offset` at 1 by a FactorSpec (spec 04 section 2)
 }
 
 HYPER_SD = 0.7  # sd of the log-normal hyperprior on each phi, around the defaults above

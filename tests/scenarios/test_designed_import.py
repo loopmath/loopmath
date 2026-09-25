@@ -5,7 +5,8 @@ max, solo runs, a planner with 3 workers and 3 workers with no selector, each do
 source the package also ships (rq1). This module builds that shape from made-up numbers, 8 configurations on
 two tasks of one (type, repo), and checks what 0.1.1 promises:
 
-- `recommend` lists every recorded configuration as a candidate, `max` effort included;
+- `recommend --models` naming the runs' models lists every recorded configuration as a candidate, `max` effort
+  included (0.2.2: without it those models are retired, so their workflows are at most the reference);
 - with no habit, the reference is the best recorded workflow, and nothing is called "your usual";
 - `fit` counts store runs as the user's, whatever their task.source says, and `--without rq1` keeps them;
 - `status` names the current fit's options and counts;
@@ -162,7 +163,8 @@ def journey(tmp_path_factory):
         steps = {"docs": [json.loads(p.read_text()) for p in docs], "home": root / "home"}
         steps["fit"] = call_json("fit")
         steps["status"] = call("status")[1]
-        rec = ("recommend", "--type", "feature", "--repo", REPO, "--target", TARGET)
+        # 0.2.2: gpt-5.6 models are retired unless named; this benchmark user names the models they ran
+        rec = ("recommend", "--type", "feature", "--repo", REPO, "--target", TARGET, "--models", f"{SOL},{LUNA}")
         steps["rec"] = call_json(*rec)
         steps["rec_text"] = call(*rec)[1]
         steps["stored"] = json.loads((root / "home" / "recs" / f"{steps['rec']['rec']}.json").read_text())

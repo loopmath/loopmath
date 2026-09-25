@@ -26,6 +26,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ..belief.priors import BENCHMARK_PRIOR_WEIGHT
 from ..taskmodel import FeatureConfigError, FeatureSet, features_from_config
 from ..types import DEFAULT_RULE, AcceptanceRule, ScoreTarget
 from .lock import atomic_write_text
@@ -39,7 +40,7 @@ DEFAULTS: dict[str, Any] = {
     "models": {"allowed": []},
     "harnesses": ["claude-code", "codex"],
     "subtypes": [],
-    "benchmark_prior_weight": 1.0,
+    "benchmark_prior_weight": BENCHMARK_PRIOR_WEIGHT,  # the fit's fallback too: one default
     "explore": {"default_pick": "best_value"},
     "budget": {"period": "month"},
     "outcome": {"q": {"verified": 0.98, "reported": 0.95, "heuristic": 0.8, "asserted": 0.7}},

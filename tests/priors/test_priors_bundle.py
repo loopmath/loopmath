@@ -217,7 +217,7 @@ def test_prior_show_says_what_its_totals_leave_out(capsys, monkeypatch, tmp_path
     sweep = out.split("\nsweep:")[1].split("\n\n")[0]
     assert code == 0 and "(not counting 30 attempts with unknown usage)" in sweep
     assert "attempts by model (top 6 of 8): model-0 10," in sweep and "model-6" not in sweep
-    assert "not counting" not in out.split("\nrq1:")[1]  # nothing left out, nothing said
+    assert "not counting" not in out.split("\nrq1:")[1].split("\n\n")[0]  # nothing left out, nothing said
     assert "Analyst" not in out and "D19" not in out and "spec 03" not in out  # no internal decision ids
 
 

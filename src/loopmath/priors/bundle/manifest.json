@@ -195,8 +195,72 @@
     "lane 10's submission curve (dev.loopmath.rq1) is dropped by the share reduction"
    ],
    "warnings": []
+  },
+  "lanes": {
+   "file": "lanes.jsonl.gz",
+   "bytes": 9998,
+   "sha256": "fae23a8b8b6172179998febe26422e602519e591b45a7bcca0a2e3f8371bc749",
+   "runs": 49,
+   "converter": "lanes/1",
+   "inputs": {
+    "description": "our own agent build lanes (lane 22L): metadata-only rows from the lane records, reviews and session logs",
+    "files": 1,
+    "sha256": "a2ccdc078bec93c1b777d31c57912890374e3471f33241d118957fb7e0317760"
+   },
+   "validation": {
+    "checker": "loopmath.ocp.conformance (v0.3)",
+    "errors": 0,
+    "warnings": 0
+   },
+   "summary": {
+    "runs": 49,
+    "outcomes": {
+     "accepted": 29,
+     "unknown": 20
+    },
+    "types": {
+     "bug_fix": 7,
+     "docs": 2,
+     "feature": 20,
+     "infra": 1,
+     "refactor": 2,
+     "research": 17
+    },
+    "shapes": {
+     "implement_review": 29,
+     "solo": 20
+    },
+    "attempts_by_model": {
+     "claude-fable-5-1": 1,
+     "claude-opus-5-5": 81,
+     "gpt-6-astra": 81,
+     "gpt-6-sol": 1
+    },
+    "tokens": 1665361968,
+    "usd": 901.74,
+    "unpriced_attempts": 0,
+    "cost_unknown_attempts": 7
+   },
+   "counts": {
+    "runs_by_model_role": {
+     "claude-fable-5-1:implementer": 1,
+     "claude-opus-5-5:implementer": 38,
+     "gpt-6-astra:implementer": 9,
+     "gpt-6-sol:implementer": 1
+    },
+    "runs": 49,
+    "reviewer_rows": 4
+   },
+   "notes": [
+    "implementer lanes with reviews: catalog implement_review, one round per review up to the first merge, tokens measured per round from the implementer's log; follow-up work after the first merge not bundled",
+    "review attempts carry the verdict and the reviewer lane's session tokens divided by the reviews it gave (cost basis allocated); reviewer lanes are not runs of their own",
+    "implementer lanes with no review record: catalog solo, settled_unverified, cost and tokens heads only",
+    "integration lanes, lanes still running and lanes with no matching log are left out (counted by the extractor, not here)",
+    "tokens from loopmath's own Claude Code and Codex parsers; dollars priced with the packaged prices.toml"
+   ],
+   "warnings": []
   }
  },
- "size_bytes": 231537,
+ "size_bytes": 241535,
  "problems": []
 }
