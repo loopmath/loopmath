@@ -36,6 +36,16 @@ def _width(iv):
     return iv.hi - iv.lo
 
 
+def _success_eta_var(state, task, cfg):
+    """Posterior variance of the success head's linear predictor for (task, cfg), in closed form: the
+    interval widths from 400 draws flip with the draw seed when the two variances are close."""
+    from loopmath.belief.design import task_terms
+
+    h = state.heads["success"]
+    Xk, Xv, _, vphi = h.matrices([tuple(task_terms(task, "user")) + tuple(state._plan(cfg)["run"])])
+    return float(np.sum(np.asarray(Xk @ h.U) ** 2)) + float(np.sum(Xv.multiply(Xv) @ vphi ** 2))
+
+
 def test_load_and_predict_shapes(s, task, sim_fit):
     assert s.fit_id == sim_fit["path"].name and s.created_at
     p = s.predict(task, simdata.config(simdata.SWEEP, simdata.SETTINGS[0]))
@@ -107,8 +117,12 @@ def test_misclassification_widens_the_success_head(tmp_path):
     unsure = load(F.fit(tmp_path / "unsure", docs=noisy, no_prior=True, now=now))
     task = task_from_doc(docs[0])
     for cfg in simdata.all_configs()[:6]:
-        assert _width(unsure.predict(task, cfg).p_success) > _width(sure.predict(task, cfg).p_success)
-    assert np.std(unsure.heads["success"].draws, axis=1).mean() > np.std(sure.heads["success"].draws, axis=1).mean()
+        assert _success_eta_var(unsure, task, cfg) > _success_eta_var(sure, task, cfg)
+    # node-averaged sd in closed form: 0.5525 versus 0.5519 here, well inside the 400-draw noise
+    def node_sd(state):
+        return np.sqrt(np.sum(np.asarray(state.heads["success"].U) ** 2, axis=1)).mean()
+
+    assert node_sd(unsure) > node_sd(sure)
 
 
 def test_score_rule_switch(s, task):

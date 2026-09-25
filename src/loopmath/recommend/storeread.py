@@ -182,6 +182,48 @@ def model_habits(home: Path, limit: int = 500) -> list[tuple[str, str, str]]:
     return [k for k, _ in counts.most_common()]
 
 
+RECORDED_LIMIT = 60
+
+
+def recorded_configs(home: Path, task_type: str, repo: str, *,
+                     limit: int = RECORDED_LIMIT) -> tuple[list[tuple[Configuration, int]], str | None]:
+    """([(configuration, runs)], level): the configurations the store's runs used for (type, repo), else for
+    the type, most runs first, then the most recent (spec 05 section 1).
+
+    Every source counts, designed included: a recorded workflow is a candidate even when it is not the user's
+    habit (D74 keeps it out of the usual only). One run document is read per configuration.
+    """
+    by_repo: Counter = Counter()
+    by_type: Counter = Counter()
+    last: dict[str, int] = {}
+    run_of: dict[str, str] = {}
+    for i, row in enumerate(run_rows(home)):
+        cfg = row.get("config")
+        if not cfg or row.get("task_type") != task_type:
+            continue
+        by_type[cfg] += 1
+        if row.get("repo") == repo:
+            by_repo[cfg] += 1
+        last[cfg] = i
+        if row.get("run"):
+            run_of[cfg] = str(row["run"])
+    for counts, level in ((by_repo, "repo"), (by_type, "type")):
+        if not counts:
+            continue
+        out = []
+        for cfg_id in sorted(counts, key=lambda c: (-counts[c], -last.get(c, -1))):
+            doc = read_json(home / "runs" / f"{run_of.get(cfg_id)}.ocp.json") if cfg_id in run_of else None
+            conf = doc.get("run", {}).get("configuration") if isinstance(doc, dict) else None
+            cfg = config_from_any(conf) if conf else None
+            if cfg is not None:
+                out.append((cfg, counts[cfg_id]))
+            if len(out) >= limit:
+                break
+        if out:
+            return out, level
+    return [], None
+
+
 # ---------------------------------------------------------------- configurations by id
 def read_json(path: Path) -> Any:
     try:

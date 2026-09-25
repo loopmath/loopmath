@@ -319,7 +319,11 @@ def test_graph_tab_draws_every_catalog_shape(name, tmp_path):
     for a, b in workflow.edges:
         assert layout["pos"][a]["x"] < layout["pos"][b]["x"], (a, b)
     for piece in workflow.pieces:
-        assert f"{piece.id} <tspan" in graph
+        if piece.width > 1:  # I12: one box per worker, each with its setting
+            assert all(f"{piece.id} {k} of {piece.width} <tspan" in graph for k in range(1, piece.width + 1))
+            assert f"{piece.id} <tspan" not in graph
+        else:
+            assert f"{piece.id} <tspan" in graph
 
 
 @needs_node

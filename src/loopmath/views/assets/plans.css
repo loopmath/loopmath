@@ -25,3 +25,4 @@
 .pl-dot.sel { stroke: var(--ink); stroke-width: 3; }
 .pl-label { fill: var(--ink); font-size: 12px; font-weight: 600; cursor: pointer; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
 .pick h3 { margin-top: 0; }
+.kv dd.wide { grid-column: 1 / -1; }

@@ -154,11 +154,11 @@ def test_message_follows_the_template():
                         "has an 80% chance of an accepted result at about $2.00 (360,000 tokens). "
                         "Your goal is the 90% row: plan_implement_review")
     assert ("Trying solo: gpt-6-luna/low alongside it costs $0.40 (72,000 tokens) now. There is a 30% chance "
-            "it beats your goal. Trying it once is expected to save about $0.30 on each future similar run, so it "
-            "pays for itself after about 1 similar run.") in m
+            "it beats the recommended pick. Trying it once is expected to save about $0.30 on each future "
+            "similar run, so it pays for itself after about 1 similar run.") in m
     assert m.endswith(" The option with the biggest gain is solo: claude-opus-5-5/xhigh: it costs $5.00 "
-                      "(900,000 tokens) now, has a 45% chance to beat your goal, is expected to save about $1.00 "
-                      "per future similar run, and pays for itself after about 5 runs.")
+                      "(900,000 tokens) now, has a 45% chance to beat the recommended pick, is expected to "
+                      "save about $1.00 per future similar run, and pays for itself after about 5 runs.")
     assert chr(0x2014) not in m
 
 

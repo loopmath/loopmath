@@ -832,7 +832,7 @@
         "raw": {
           "type": "string",
           "maxLength": 200,
-          "description": "The label exactly as the producer knew it, always preserved (e.g. 'fable·xhigh', 'opus5.xhigh'). Canonicalization is the consumer's job; the raw label is the ground truth."
+          "description": "The label exactly as the producer knew it, always preserved (e.g. 'opus5.xhigh'). A label the source wrote with the effort in it, such as 'fable·xhigh', is kept as written; a producer never builds one itself (see effort). Canonicalization is the consumer's job; the raw label is the ground truth."
         },
         "id": {
           "type": "string",
@@ -889,12 +889,13 @@
         },
         "output_tokens": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "Output tokens, reasoning (thinking) tokens included. When the source reports reasoning separately from output, the producer adds it in here."
         },
         "reasoning_tokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Thinking/reasoning tokens when the provider reports them separately from output."
+          "description": "The reasoning (thinking) share of output_tokens, as a breakdown: output_tokens already includes these tokens, so a reader never adds the two."
         },
         "requests": {
           "type": "integer",
@@ -1045,7 +1046,7 @@
         "effort": {
           "type": "string",
           "maxLength": 100,
-          "description": "Reasoning-effort label as configured, e.g. low, medium, high, xhigh, max. Open set; producers must not fold it into the model label."
+          "description": "Reasoning-effort label as configured, e.g. low, medium, high, xhigh, max. Open set. Producers must not fold it into the model label: a producer never builds a fused label such as 'fable·xhigh' itself. When the source already wrote one, model.raw keeps it as written, and effort known separately goes here."
         },
         "cause": {
           "$ref": "#/$defs/cause"

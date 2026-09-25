@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shlex
@@ -158,6 +159,26 @@ def pull_substitutions(command: str, exclusions: Counter | None = None) -> tuple
         outer.append(char)
         index += 1
     return "".join(outer), inner
+
+
+@functools.lru_cache(maxsize=1024)
+def _prepare(command: str) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[tuple[str, int], ...]]:
+    counted: Counter = Counter()
+    prepared = without_heredoc_bodies(command, counted)
+    outer, substitutions = pull_substitutions(prepared, counted)
+    return outer, tuple(substitutions), tuple(tokens(outer, counted, prepared=True)), tuple(counted.items())
+
+
+def prepare(command: str, exclusions: Counter | None = None) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """`(outer, substitutions, tokens)` of one command: heredoc bodies removed, command
+    substitutions pulled out, the rest tokenized. The write and read scans both ask for
+    the same command, and commands repeat across sessions, so the work is kept for the
+    most recent ones; the exclusions it counts are added to `exclusions` on every call,
+    in the order they were first counted."""
+    outer, substitutions, toks, counted = _prepare(command)
+    for reason, count in counted:
+        exclude(exclusions, reason, count)
+    return outer, substitutions, toks
 
 
 def restore_substitutions(token: str, substitutions: list[str]) -> str:

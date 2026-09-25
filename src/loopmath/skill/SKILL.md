@@ -47,7 +47,7 @@ Then run `loopmath onboard --labeler CHOICE --dry-run` and show the user what it
    When the user states a score, runtime or quality goal, add a target: `--target 'heldout_perf>=2400'` or `--target 'runtime_s<=200'`. A named rule from config is `--rule NAME`.
 
 3. **Show the user the result, then ask.** Show the `message` field exactly as it is. Then show the `curve` as a short table (level, workflow, chance of success, cost in dollars and tokens). Then ask which of these to run:
-   - the usual workflow (`usual`);
+   - the reference workflow (`reference`): the user's usual workflow when they have one, else their best recorded workflow or the default (`reference.kind` says which; `usual` is null without a habit);
    - the goal pick, if it differs from the usual (`default_pick`, or the curve row the user names);
    - the pair with the best-value exploration: the goal plus `exploration.best_value`;
    - the pair with the biggest-gain exploration: the goal plus `exploration.max_gain`, when it is not `{same_as: "best_value"}`;
@@ -68,7 +68,7 @@ Keep the `rec` id from the output. You pass it to `run start`.
      --config CFG --source usual|alternative|exploration|user_edit --rec REC --json
    ```
 
-   `CFG` is the chosen configuration's id (`cfg_...`): for a pair, `pair.members` lists both; otherwise take `goal.config`, `default_pick.config` or a curve row's `config`, or `config.id` inside `usual`, an alternative, or `exploration.best_value.candidate` (or `max_gain`).
+   `CFG` is the chosen configuration's id (`cfg_...`): for a pair, `pair.members` lists both; otherwise take `goal.config`, `default_pick.config` or a curve row's `config`, or `config.id` inside `reference` (or `usual`), an alternative, or `exploration.best_value.candidate` (or `max_gain`). Use `--source usual` only when the run is the user's usual (`reference.kind` is `usual`); otherwise `alternative`.
 
    `--task-file rec.json` takes the task from the recommendation, with its id. For a pair, start the first member with `--new-slate` and the second with `--slate SLT` (the slate id printed by the first), both from the same `rec.json` and the same base commit: a slate holds one task, and task flags would make a new one. Keep each printed run id. Without a recommendation, give the task as flags instead: `--type TYPE --repo REPO [--feature K=V ...]`.
 

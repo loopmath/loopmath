@@ -55,6 +55,7 @@ from ..types import (
 from .compose import Intervals, RunDraws, compose, cost_per_round, interval
 from .design import Structure, cost_rest, gate_rest, run_rest, structure, task_terms
 from .forest import LEVEL_ALIASES, default_scale, display_level, level_of, node_key, scale_group
+from .block import BlockFactor, blocks, leading_diagonal
 from .gaussian import _cho, cov_factor
 
 N_DRAWS = 400
@@ -182,20 +183,39 @@ class HeadState:
         return self._mean
 
     @property
-    def chol(self) -> np.ndarray:
-        """Lower Cholesky factor of the posterior precision, as the fit computed it (D94)."""
+    def block(self) -> BlockFactor:
+        """The Cholesky factor of the posterior precision (D94), by blocks: the fit stores its leaf
+        nodes first, so only the core is dense (a fit stored otherwise has few leaves and factors
+        as before). It equals the dense factor of the stored precision."""
         if self._chol is None:
             p = len(self.nodes)
             P = sparse.csr_matrix((self._load("P_data"), self._load("P_indices"), self._load("P_indptr")),
                                   shape=(p, p))
-            self._chol = _cho(P.toarray())
+            l = leading_diagonal(P)
+            # a fit stored before the leaves-first order has few leaves: the dense factor, as before
+            self._chol = BlockFactor.factor(*blocks(P, l)) if 2 * l >= p else _cho(P.toarray())
         return self._chol
+
+    @property
+    def chol(self) -> np.ndarray:
+        """Lower Cholesky factor of the posterior precision, as the fit computed it (D94), dense."""
+        f = self.block
+        if isinstance(f, np.ndarray):
+            return f
+        R = np.zeros((f.l + f.c, f.l + f.c))
+        R[np.arange(f.l), np.arange(f.l)] = f.sd
+        R[f.l:, :f.l] = f.Bs.toarray()
+        R[f.l:, f.l:] = f.R
+        return R
 
     @property
     def U(self) -> np.ndarray:
         if self._U is None:
             U = self._load("U")
-            self._U = U if U is not None else cov_factor(self.chol)
+            if U is None:
+                f = self.block
+                U = cov_factor(f) if isinstance(f, np.ndarray) else f.cov_factor()
+            self._U = U
         return self._U
 
     @property
@@ -203,8 +223,9 @@ class HeadState:
         if self._draws is None:
             D = self._load("draws")
             if D is None:  # mean + U unit, as a triangular solve (U = chol^-T)
-                D = self.mean[:, None] + linalg.solve_triangular(self.chol, self.unit, trans="T", lower=True,
-                                                                  check_finite=False)
+                f = self.block
+                D = self.mean[:, None] + (linalg.solve_triangular(f, self.unit, trans="T", lower=True, check_finite=False)
+                                          if isinstance(f, np.ndarray) else f.solve_lt(self.unit))
             self._draws = D
         return self._draws
 

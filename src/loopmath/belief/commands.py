@@ -37,16 +37,22 @@ def _unknown_without(home: Path, without: tuple[str, ...]) -> str | None:
     """
     if not without:
         return None
-    from .design import data_source
+    from .design import data_source, source_label
     from .fit import store_docs, unknown_source_message, unknown_sources
     from .priors import shared_docs
 
     unknown, _ = unknown_sources(without)
     if not unknown:
         return None
-    seen = {data_source(doc) for doc in store_docs(home)} | {data_source(doc) for doc in shared_docs(home)}
+    stored = list(store_docs(home))
+    seen = ({"user"} if stored else set()) | {data_source(doc) for doc in shared_docs(home)}
     unknown, known = unknown_sources(without, seen)
-    return unknown_source_message(unknown, known) if unknown else None
+    if not unknown:
+        return None
+    labels = sorted({source_label(doc) for doc in stored} & set(unknown))
+    hint = (f"; {', '.join(labels)} is only a label on runs in your store, which are always the source user "
+            "(--without user leaves them out)") if labels else ""
+    return unknown_source_message(unknown, known) + hint
 
 
 def _summary(path: Path) -> dict:
@@ -57,6 +63,8 @@ def _summary(path: Path) -> dict:
         "seconds": meta.get("seconds"),
         "options": meta.get("options", {}),
         "runs_by_source": meta.get("runs_by_source", {}),
+        "shipped_overlap": meta.get("shipped_overlap", {}),
+        "user_labels": meta.get("user_labels", {}),
         "heads": {name: {"rows": h.get("n_rows"), "runs": h.get("n_runs"), "sigma": h.get("sigma"),
                          "rows_by_source": h.get("rows_by_source", {}),
                          "converged": (h.get("optimizer") or {}).get("converged")}
@@ -68,13 +76,19 @@ def _summary(path: Path) -> dict:
 
 
 def _print_summary(s: dict) -> None:
+    from ..priors import overlap_note
     from .fit import dropped_text
 
     f = s["fit"]
     n = f.get("n_runs") or {}
-    print(f"fit {f['id']} written to {s['path']} in {s.get('seconds')} s")
+    print(f"fit {f['id']} written to {s['path']} in {s.get('seconds')} s; recommend and posterior now read it")
     by_src = ", ".join(f"{k} {v}" for k, v in sorted(s["runs_by_source"].items(), key=lambda kv: -kv[1]))
-    print(f"runs: {n.get('prior', 0)} prior, {n.get('user', 0)} yours" + (f" ({by_src})" if by_src else ""))
+    labels = ", ".join(f"{k} {v}" for k, v in sorted((s.get("user_labels") or {}).items(), key=lambda kv: -kv[1]))
+    detail = "; ".join(x for x in (by_src, f"yours labelled {labels}" if labels else "") if x)
+    print(f"runs: {n.get('prior', 0)} prior, {n.get('user', 0)} yours" + (f" ({detail})" if detail else ""))
+    note = overlap_note(s.get("shipped_overlap"))
+    if note:
+        print(note)
     heads = list(s["heads"].items())[:12]
     width = max([22] + [len(name) for name, _ in heads])
     for name, h in heads:

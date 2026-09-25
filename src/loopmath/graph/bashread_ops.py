@@ -111,10 +111,9 @@ def pytest_paths(args: list[str]) -> list[str]:
 
 def reads_walk(command: str, ts: str | None, cwd: str | None, exclusions: Counter | None) -> list[dict]:
     reads: list[dict] = []
-    prepared = bashparse.without_heredoc_bodies(command)
-    outer, substitutions = bashparse.pull_substitutions(prepared)
+    _outer, substitutions, toks = bashparse.prepare(command)
     active_cwd = cwd
-    for segment in bashparse.segments(bashparse.tokens(outer, prepared=True, count_redirects=False)):
+    for segment in bashparse.segments(toks):
         plain_segment: list[str] = []
         for token in segment:
             for match in bashparse.SUBSTITUTION_RE.finditer(token):

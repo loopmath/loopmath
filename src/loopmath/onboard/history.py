@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
+from .. import gitwalk
 from ..graph.schema import Artifact, Graph, GraphEdge, GraphNode
 
 # Edges that mean "this session started that one". Artifact edges are left out.
@@ -204,19 +205,31 @@ def group_sessions(graph: Graph, records: dict[str, dict] | None = None) -> list
     members: dict[str, list[GraphNode]] = {}
     for n in graph.nodes:
         members.setdefault(find(n.id), []).append(n)
+    # Each edge and artifact is looked at once, not once per group: an edge belongs to the
+    # group holding both its ends, an artifact to every group holding one of its writers.
+    group_of = {i: find(i) for i in ids}
+    edges_of: dict[str, list[GraphEdge]] = {}
+    for e in graph.edges:
+        g = group_of.get(e.src)
+        if g is not None and group_of.get(e.dst) == g:
+            edges_of.setdefault(g, []).append(e)
+    arts_of: dict[str, list[Artifact]] = {}
+    for x in graph.artifacts:
+        for g in dict.fromkeys(group_of[w] for w in x.writers if w in group_of):
+            arts_of.setdefault(g, []).append(x)
 
     def start(n: GraphNode) -> _dt.datetime:
         return parse_ts(n.ts) or _FAR_FUTURE
 
     groups: list[SessionGroup] = []
-    for nodes in members.values():
+    for key, nodes in members.items():
         roots = [n for n in nodes if n.id not in has_parent] or nodes
         root = min(roots, key=lambda n: (start(n), n.id))
         rest = sorted((n for n in nodes if n.id != root.id), key=lambda n: (start(n), n.id))
         ordered = [root, *rest]
         node_ids = {n.id for n in ordered}
-        edges = [e for e in graph.edges if e.src in node_ids and e.dst in node_ids]
-        arts = [a for a in (group_artifact(x, node_ids) for x in graph.artifacts) if a is not None]
+        edges = edges_of.get(key, [])
+        arts = [a for a in (group_artifact(x, node_ids) for x in arts_of.get(key, ())) if a is not None]
         starts = [t for t in (parse_ts(n.ts) for n in ordered) if t]
         ends = [t + _dt.timedelta(seconds=float(n.wall_s)) for n in ordered
                 if (t := parse_ts(n.ts)) and isinstance(n.wall_s, (int, float))]
@@ -265,6 +278,8 @@ def _head(node: GraphNode) -> dict:
 
 _REMOTE_RE = re.compile(r"(?:[:/])([^/:]+)/([^/]+?)(?:\.git)?/?$")
 _repo_cache: dict[str, str] = {}
+_top_cache: dict[str, str | None] = {}     # git's top level, by worktree (or by folder when unsure)
+_origin_cache: dict[str, str | None] = {}  # the origin remote, by top level
 
 
 def remote_name(url: str) -> str | None:
@@ -299,10 +314,19 @@ def repo_for(cwd: str | None) -> str:
         probe = probe.parent
     name = None
     if probe.is_dir() and probe != probe.parent and probe != Path.home():
-        top = _git(["rev-parse", "--show-toplevel"], str(probe))
-        if top and Path(top) != Path.home():
-            url = _git(["remote", "get-url", "origin"], top)
-            name = (remote_name(url) if url else None) or Path(top).name
+        # Thousands of session folders sit in about a hundred worktrees: git is asked
+        # once per worktree and once per top level, and not at all outside any worktree.
+        kind, worktree = gitwalk.where(str(probe))
+        if kind != "none":
+            key = worktree if kind == "repo" else str(probe)
+            if key not in _top_cache:
+                _top_cache[key] = _git(["rev-parse", "--show-toplevel"], str(probe))
+            top = _top_cache[key]
+            if top and Path(top) != Path.home():
+                if top not in _origin_cache:
+                    _origin_cache[top] = _git(["remote", "get-url", "origin"], top)
+                url = _origin_cache[top]
+                name = (remote_name(url) if url else None) or Path(top).name
     name = name or workspace_name(cwd) or "unknown"
     _repo_cache[cwd] = name
     return name

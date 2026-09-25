@@ -335,8 +335,18 @@ class Unusable(ValueError):
     """A run document the fit cannot use; the message is the reason recorded in meta.json."""
 
 
-def data_source(doc: dict) -> str:
-    """spec 04 section 1 `source` level: user, sweep, e0, rq1, repo_history, benchmark, shared:<org>."""
+def data_source(doc: dict, origin: str | None = None) -> str:
+    """spec 04 section 1 `source` level: user, sweep, e0, rq1, repo_history, benchmark, shared:<org>.
+
+    The source is where the fit found the run (D118 N2): `origin` is `user` for a run in the
+    store, whatever its label says, the manifest source for a shipped run, `shared:<org>` for
+    an import. A document given without an origin falls back to its own label.
+    """
+    return origin or source_label(doc)
+
+
+def source_label(doc: dict) -> str:
+    """The source the document names itself: a user kind is `user`, a share export `shared:<org>`."""
     run = doc.get("run") or {}
     ext = run.get("ext") or {}
     share = ext.get("dev.loopmath.share")
@@ -351,12 +361,19 @@ def data_source(doc: dict) -> str:
     return kind
 
 
-def task_from_doc(doc: dict) -> Task:
+def task_from_doc(doc: dict, origin: str | None = None) -> Task:
+    """The task of a run document; `origin` is where the fit found it (see `data_source`).
+
+    When the origin overrides the document's own label, the label stays readable in
+    `task.extra["source_label"]`; it is not a model node (spec 04 section 1).
+    """
     run = doc.get("run") or {}
     t = run.get("task") or {}
     labels = run.get("labels") or {}
     features = t.get("features") or {}
     labeled = t.get("labeled_by")
+    source = data_source(doc, origin)
+    label = source_label(doc) if origin else source
     return Task(
         id=str(t.get("id") or labels.get("task") or run.get("id") or "unknown"),
         type=str(t.get("type") or labels.get("type") or "unknown"),
@@ -366,8 +383,9 @@ def task_from_doc(doc: dict) -> Task:
         org=t.get("org") or None,
         features={str(k): _feature_str(v) for k, v in features.items()},
         base_commit=t.get("base_commit"),
-        source=data_source(doc),
+        source=source,
         labeled_by=(labeled.get("how") if isinstance(labeled, dict) else labeled),
+        extra={"source_label": label} if label != source else {},
     )
 
 
@@ -581,8 +599,12 @@ def _check_name(a: dict, node: dict) -> str | None:
     return str(gate.get("rule") or node.get("id") or a.get("node") or a.get("harness") or "check")
 
 
-def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | None = None) -> ParsedRun:
-    """Everything the fit needs from one finished OCP v0.3 run document. Raises Unusable."""
+def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | None = None,
+              origin: str | None = None) -> ParsedRun:
+    """Everything the fit needs from one finished OCP v0.3 run document. Raises Unusable.
+
+    `origin` is where the fit found the document (`data_source`); None reads its label.
+    """
     from .outcome import outcome_evidence
 
     run = doc.get("run") or {}
@@ -590,7 +612,7 @@ def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | 
     if not isinstance(cfg, dict):
         raise Unusable("no configuration")
     config = config_from_doc(cfg)
-    task = task_from_doc(doc)
+    task = task_from_doc(doc, origin)
     source = task.source
     st = structure(config)
     dropped: dict[str, int] = {}

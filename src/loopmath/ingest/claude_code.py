@@ -122,6 +122,7 @@ from loopmath.ingest.base import (
     canonical_effort,
     canonical_model,
     iter_jsonl,
+    iter_jsonl_stream,
     normalize_check_cmd,
     parse_ts,
     summarize_writes,
@@ -189,7 +190,7 @@ def parse_session(path: str | Path) -> RunRecord | None:
     parsed lines; no message body is kept around past the line (or, for the
     final assistant line, past the boolean checks derived from it).
     """
-    rows = iter_jsonl(path)
+    rows = iter_jsonl_stream(path)
 
     session_id: str | None = None
     cwd: str | None = None

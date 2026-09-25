@@ -55,6 +55,30 @@ LM.Graph = (() => {
     return { nodes, byId, edges, back, cols };
   }
 
+  // I12: a piece of width n (2 to MAX_WORKERS) is drawn as n worker boxes, each with its setting and one worker's
+  // part of the piece's predicted cost: the cost model prices a piece as its width times one worker
+  // (belief/compose.py), so the part is the piece's figures divided by n. Wider pieces keep one box marked xn;
+  // a run's realized piece keeps one box too, since its attempts are recorded per piece.
+  const MAX_WORKERS = 6;
+  const scaled = (d, f) => { if (!d) return d; const r = Object.assign({}, d); ['mean', 'lo', 'hi', 'median'].forEach(k => { if (num(d[k])) r[k] = d[k] * f; }); return r; };
+  const perWorker = (p, n) => { if (!p) return p; const r = Object.assign({}, p); ['cost', 'cost_per_round'].forEach(k => { if (p[k]) r[k] = Object.assign({}, p[k], { usd: scaled(p[k].usd, 1 / n), tokens: scaled(p[k].tokens, 1 / n) }); }); return r; };
+  function workers(g) {
+    const wide = new Map((g.nodes || []).filter(n => n && n.kind !== 'artifact' && !n.realized && n.width > 1 && n.width <= MAX_WORKERS).map(n => [String(n.id), n.width]));
+    if (!wide.size) return g;
+    const ids = id => { const k = wide.get(String(id)); return k ? Array.from({ length: k }, (_, i) => `${id}#${i + 1}`) : [String(id)]; };
+    const last = id => ids(id)[ids(id).length - 1];
+    const nodes = [];
+    g.nodes.forEach(n => {
+      if (!n || !wide.has(String(n.id))) { nodes.push(n); return; }
+      const k = n.width, p = perWorker(n.prediction, k);
+      ids(n.id).forEach((id, i) => nodes.push(Object.assign({}, n, { id, name: `${n.id} ${i + 1} of ${k}`, piece: String(n.id), workers: k, width: 1, prediction: p })));
+    });
+    const edges = [];
+    (g.edges || []).forEach(e => { const a = Array.isArray(e) ? e[0] : e && e.from, b = Array.isArray(e) ? e[1] : e && e.to; if (a != null && b != null) ids(a).forEach(x => ids(b).forEach(y => edges.push({ from: x, to: y }))); });
+    const gates = (g.gates || []).map(gt => Object.assign({}, gt, { after: gt.after == null ? gt.after : last(gt.after), on_fail: gt.on_fail == null ? gt.on_fail : ids(gt.on_fail)[0] }));
+    return Object.assign({}, g, { nodes, edges, gates });
+  }
+
   const perRound = p => p && p.cost_per_round && p.cost_per_round.usd ? p.cost_per_round : null;
   function pieceLines(n) {
     const s = n.setting, p = n.prediction, r = n.realized, lines = [];
@@ -90,7 +114,8 @@ LM.Graph = (() => {
 
   function pieceTip(n) {
     const s = n.setting || {}, p = n.prediction, r = n.realized;
-    let h = `<b>${esc(n.id)}</b> <span class="m">${esc(n.role || '')}${n.width > 1 ? ', ' + esc(n.width) + ' parallel copies' : ''}</span>`;
+    let h = `<b>${esc(n.name || n.id)}</b> <span class="m">${esc(n.role || '')}${n.width > 1 ? ', ' + esc(n.width) + ' parallel copies' : ''}</span>`;
+    if (n.workers) h += `<br><span class="m">one of ${esc(n.workers)} parallel workers of ${esc(n.piece)}; the figures are one worker's part</span>`;
     if (n.setting) h += `<br>${esc(s.harness || 'harness n/a')}: ${esc(modelOf(s) || 'n/a')} / ${esc(s.effort || 'default')}${s.context_policy ? ' <span class="m">(context ' + esc(s.context_policy) + ')</span>' : ''}`;
     if (p) {
       if (p.cost) h += `<br>cost per run ${ivPlain(p.cost.usd, fmt.usd)}<br><span class="m">tokens per run ${ivPlain(p.cost.tokens, fmt.tok)}</span>`;
@@ -126,6 +151,7 @@ LM.Graph = (() => {
   function render(host, g, opts = {}) {
     host.innerHTML = '';
     if (!g || !Array.isArray(g.nodes) || !g.nodes.length) { host.innerHTML = '<p class="empty">No workflow graph for this configuration.</p>'; return; }
+    g = workers(g);
     const S = structure(g), box = new Map();
     S.nodes.forEach(n => {
       if (n.kind === 'artifact') { box.set(String(n.id), { w: Math.max(AW, Math.min(150, String(n.id).length * 6.4)), h: 34 + (n.versions && n.versions.length > 1 ? 12 : 0), art: true }); return; }
@@ -211,7 +237,7 @@ LM.Graph = (() => {
       const col = roleColor(n.role);
       mk('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 7, class: 'lmg-piece', stroke: col }, grp);
       mk('rect', { x: b.x, y: b.y, width: 5, height: b.h, rx: 2, fill: col }, grp);
-      label(grp, b.x + 12, b.y + 16, clip(`${id}${n.role && n.role !== id ? ' (' + n.role + ')' : ''}${n.width > 1 ? ' x' + n.width : ''}`, 28), 'lmg-t1');
+      label(grp, b.x + 12, b.y + 16, clip(n.name || `${id}${n.role && n.role !== id ? ' (' + n.role + ')' : ''}${n.width > 1 ? ' x' + n.width : ''}`, 28), 'lmg-t1');
       b.lines.forEach((ln, j) => label(grp, b.x + 12, b.y + 31 + j * 14, ln.t, ln.c));
       if (n.realized && n.realized.attempts.length) {
         const y = b.y + b.h - 17;
@@ -240,7 +266,7 @@ LM.Graph = (() => {
       host.appendChild(leg);
     }
   }
-  return { render, structure };
+  return { render, structure, workers };
 })();
 
 LM.RunGraph = (() => {

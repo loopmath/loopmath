@@ -247,7 +247,7 @@ def test_finish_lists_the_validation_warnings(capsys, home):
     cli(capsys, home, "run", "artifact", "--run", run, "--kind", "notes", "--path", "n.md", "--by", att["attempt"])
     code, out, err = cli(capsys, home, "run", "finish", "--run", run, "--no-fit")
     assert code == 0, err
-    assert "validation: ok, 1 warning(s)\n  warning W200 $['artifacts'][0]['kind']['value']: " in out
+    assert "validation: ok, 1 warning\n  warning W200 $['artifacts'][0]['kind']['value']: " in out
     assert "'notes' is outside the recommended vocabulary" in out and "not checked" not in out
 
 
@@ -523,7 +523,7 @@ def test_known_and_unknown_dollars_mixed(capsys, home, monkeypatch):
             "--cwd", str(home))
     code, text, err = cli(capsys, home, "run", "finish", "--run", run2, "--no-fit")
     assert code == 0, err
-    assert "1 attempt(s) without dollars; $0.50 known" in text
+    assert "1 attempt without dollars; $0.50 known" in text
 
 
 def _shared_settle(session):

@@ -217,7 +217,8 @@ def test_skill_dry_run_pair_with_command_agents(lm, tmp_path):
     rec_file.write_text(json.dumps(rec), encoding="utf-8")
 
     # Record: the pair from one rec.json and one base commit.
-    first_source = "usual" if members[0] == rec["usual"]["config"]["id"] else "alternative"
+    usual = rec["usual"] or {}  # null without a habit (recommend/2); the baseline is then `reference`
+    first_source = "usual" if members[0] == (usual.get("config") or {}).get("id") else "alternative"
     starts = [lm("run", "start", "--task-file", str(rec_file), "--base-commit", BASE, "--config", members[0],
                  "--source", first_source, "--rec", rec["rec"], "--new-slate", "--json")]
     slate = starts[0]["slate"]

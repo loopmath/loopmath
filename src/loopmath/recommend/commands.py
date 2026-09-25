@@ -29,7 +29,7 @@ from .engine import Recommendation, Settings
 from .message import TAIL, heavy, noted, pct, tail, tokens as fmt_tokens, usd as fmt_usd
 from .storeread import Conf
 
-SCHEMA = "loopmath.recommend/1"
+SCHEMA = "loopmath.recommend/2"
 VIEW_SCHEMA = "loopmath.view.plans/1"
 TARGET_RE = re.compile(r"^\s*([A-Za-z_][\w.:/-]*)\s*(>=|<=)\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*$")
 DEFAULT_USUAL_SHAPE = "implement_review"
@@ -155,9 +155,16 @@ def rule_from_args(args: argparse.Namespace, conf: Conf) -> AcceptanceRule:
 
 
 # ---------------------------------------------------------------- belief, budget, settings
-def load_belief(home: Path) -> tuple[Any, int]:
+def load_belief(home: Path, fit_id: str | None = None) -> tuple[Any, int]:
     from ..belief.state import load_latest
 
+    if fit_id:  # `--fit ID`: a kept fit instead of fits/latest
+        from ..belief.fit import UnknownFit, load_fit
+
+        try:
+            return load_fit(home, fit_id), EXIT_OK
+        except UnknownFit as exc:
+            return None, fail(str(exc), EXIT_NOT_FOUND)
     belief = load_latest(home)
     if belief is None:
         return None, fail("no fit yet: run `loopmath fit`, or `loopmath onboard` for a first fit from your "
@@ -314,12 +321,25 @@ def allowed_settings(conf: Conf, models: Sequence[str] | None) -> dict[str, Any]
     return out
 
 
+def reference_for(belief: Any, task: Task, rule: AcceptanceRule, recorded: Sequence[Configuration],
+                  models: Sequence[str] | None) -> Configuration | None:
+    """With no usual, the best recorded configuration (D118 N4); with `--models`, among the recorded ones that
+    use only those models when there are any."""
+    pool = list(recorded)
+    if models:
+        allowed = set(models)
+        pool = [c for c in pool if all(s.model in allowed for s in c.settings.values())] or pool
+    return engine.best_recorded(belief, task, rule, pool)
+
+
 def candidate_configs(task: Task, usual: Configuration, conf: Conf, models: Sequence[str] | None,
-                      user: Sequence[Configuration]) -> list[tuple[Configuration, str]]:
+                      user: Sequence[Configuration],
+                      recorded: Sequence[Configuration] = ()) -> list[tuple[Configuration, str]]:
     from ..workflows.candidates import candidates
 
-    pairs = list(candidates(task, usual=usual, allowed=allowed_settings(conf, models), user=user))
-    keep = {usual.id, *(u.id for u in user)}
+    more = {"recorded": list(recorded)} if recorded else {}  # the plan passes none
+    pairs = list(candidates(task, usual=usual, allowed=allowed_settings(conf, models), user=user, **more))
+    keep = {usual.id, *(u.id for u in user), *(r.id for r in recorded)}
     if models:
         allowed = set(models)
         pairs = [(c, o) for c, o in pairs
@@ -359,6 +379,8 @@ def build_payload(rec: Recommendation, belief: Any, rec_id: str, now) -> dict[st
     out["created_at"] = storeread.iso(now)
     if core.get("notes"):
         out["notes"] = core["notes"]
+    out["reference"] = core["reference"]  # recommend/2 keys after the /1 ones, so /1 readers keep their order
+    out["choices"] = core["choices"]
     return out
 
 
@@ -387,7 +409,7 @@ def view_payload(payload: dict[str, Any], rec: Recommendation) -> dict[str, Any]
         if k == "rec":
             view["generated_at"] = payload["created_at"]
     view.setdefault("generated_at", payload["created_at"])
-    view["candidates"] = [c.to_dict() for c in rec.candidates]
+    view["candidates"] = [rec.candidate_dict(c) for c in rec.candidates]
     view["graphs"] = {c.config.id: graph_of(c, rec.label(c.config)) for c in rec.candidates}
     return view
 
@@ -411,7 +433,8 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
              + ("" if rec.score_backed else f"; too few {rec.rule.score.name} scores to predict it, so each "
                                               f"chance is of an accepted result")
              + f"); fit {fit.get('id')} ({age_text})",
-             f"Usual ({payload['usual']['from']}): {named(rec.usual.config)}: {line_numbers(u, first=True)}",
+             baseline_line(rec, named(rec.usual.config), line_numbers(u, first=True, rec=rec)),
+             rescue_line(rec),
              "Curve:"]
     target = None
     if rec.rule.score is not None and rec.score_backed:
@@ -426,10 +449,13 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
         mark = ("uncertain",) if row.uncertain else ()
         if target:
             cost = row.prediction.cost.usd
+            rescue = ("" if rec.rescue.kind == "none"
+                      else f", expected rescue {fmt_usd(rec.numbers(row.prediction)['expected_rescue_usd'])}")
             lines.append(f"  to reach {target} with at least {row.levels[0]}% chance, run {rec.label(c.config)} "
-                         f"at {fmt_usd(cost.mean)}{paren(*mark, TAIL if heavy(cost) else '')}")
+                         f"at {fmt_usd(cost.mean)}{paren(typical(rec, row.prediction), *mark, TAIL if heavy(cost) else '')}"
+                         f"{rescue}, {fmt_usd(row.prediction.ell.usd.mean)} per accepted result")
         else:
-            lines.append(f"  {lv}%: {rec.label(c.config)}: {line_numbers(row.prediction, marks=mark)}")
+            lines.append(f"  {lv}%: {rec.label(c.config)}: {line_numbers(row.prediction, marks=mark, rec=rec)}")
     ell = rec.default.prediction.ell.usd
     lines.append(f"Default pick: {rec.label(rec.default.config)} ({fmt_usd(ell.mean)} per accepted result{tail(ell)})")
     goal = payload["goal"]
@@ -437,7 +463,7 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
     lines.append("Alternatives:")
     for a in payload["alternatives"][:5]:
         d = a["deltas"]
-        lines.append(f"  {a['label']}: {delta_words(d)}")
+        lines.append(f"  {a['label']}: {delta_words(d, 'the usual' if rec.is_usual else 'the reference')}")
     ex = rec.exploration
     lines.append(f"Exploration ({ex.method}):")
     for name, slot in (("best value", ex.best_value), ("biggest gain", ex.max_gain)):
@@ -451,7 +477,8 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
             paused = " [paused: budget cap reached]" if slot.state == "paused" else ""
             price = noted(fmt_usd(p.price.usd.mean), p.price.usd)
             lines.append(f"  {name}: {named(p.candidate.config)}: gain {fmt_usd(p.gain_per_run.get('usd') or 0)}"
-                         f"/run, {pct(p.p_beats_goal)} to beat goal, price {price}, payback {pay} runs{paused}")
+                         f"/run, {pct(p.p_beats_goal)} to beat the recommended pick, price {price}, "
+                         f"payback {pay} runs{paused}")
     lines.append(rec.message)
     lines.append(f"rec: {payload['rec']}")
     return lines[:25]
@@ -463,18 +490,48 @@ def paren(*parts: str) -> str:
     return f" ({'; '.join(parts)})" if parts else ""
 
 
-def line_numbers(p, *, first: bool = False, marks: tuple[str, ...] = ()) -> str:
-    """Chance, run cost and `ell`, which the first line spells out (D94); a mean above its interval's upper end
-    gets the D107 note in its parentheses, after any `marks` such as "uncertain"."""
+def baseline_line(rec: Recommendation, named: str, numbers: str) -> str:
+    """The usual, or the reference when the user has none (F4: never "usual" for a workflow not run)."""
+    if rec.is_usual:
+        return f"Usual ({rec.usual_from}): {named}: {numbers}"
+    which = "your best recorded workflow" if rec.reference_kind == "best_recorded" else "the default workflow"
+    return f"No usual workflow; reference: {which} ({named}): {numbers}"
+
+
+def rescue_line(rec: Recommendation) -> str:
+    """The rescue, named once at the top (I13): cost per accepted result is run cost plus P(fail) x rescue."""
+    r = rec.rescue
+    if r.kind == "none":
+        return "Rescue: none (rescue.kind none), so cost per accepted result is the run cost"
+    return (f"Rescue when a run fails: {fmt_usd(r.usd)} ({r.basis}); cost per accepted result = run cost "
+            f"+ chance of failure x rescue")
+
+
+def typical(rec: Recommendation | None, p) -> str:
+    """"median $X", the typical run next to the mean (I15), or "" without a recommendation."""
+    if rec is None:
+        return ""
+    return f"median {fmt_usd(rec.numbers(p)['run_cost_usd']['median'])}"
+
+
+def line_numbers(p, *, first: bool = False, marks: tuple[str, ...] = (), rec: Recommendation | None = None) -> str:
+    """Chance, run cost with its median, expected rescue and `ell`, which the first line spells out (D94); a
+    mean above its interval's upper end gets the D107 note in its parentheses, after any `marks` such as
+    "uncertain"."""
     ell = fmt_usd(p.ell.usd.mean)
     note = TAIL if heavy(p.ell.usd) else ""
     per = (f"expected cost per accepted result {ell}{paren('lower is better', *marks, note)}" if first
            else f"{ell} per accepted result{paren(*marks, note)}")
+    med = typical(rec, p)
+    rescue = ""
+    if rec is not None and rec.rescue.kind != "none":
+        rescue = f"expected rescue {fmt_usd(rec.numbers(p)['expected_rescue_usd'])}, "
     return (f"{noted(pct(p.p_success.mean) + ' success', p.p_success)}, {fmt_usd(p.cost.usd.mean)} a run "
-            f"({fmt_tokens(p.cost.tokens.mean)} tokens{tail(p.cost.usd, p.cost.tokens)}), {per}")
+            f"({(med + '; ') if med else ''}{fmt_tokens(p.cost.tokens.mean)} tokens"
+            f"{tail(p.cost.usd, p.cost.tokens)}), {rescue}{per}")
 
 
-def delta_words(d: dict[str, Any]) -> str:
+def delta_words(d: dict[str, Any], baseline: str = "the usual") -> str:
     """An alternative's differences from the usual in words (D94)."""
     pp = round(d["success_pp"])
     parts = [f"success {abs(pp)} point{'s' if abs(pp) != 1 else ''} {'higher' if pp > 0 else 'lower'}" if pp
@@ -483,8 +540,8 @@ def delta_words(d: dict[str, Any]) -> str:
         c = round(d["cost_pct"])
         parts.append(f"run cost {abs(c)}% {'higher' if c > 0 else 'lower'}" if c else "run cost about the same")
     e = round(d["ell_usd"], 2)
-    parts.append(f"{fmt_usd(abs(e))} {'more' if e > 0 else 'less'} per accepted result than the usual" if e
-                 else "the same per accepted result as the usual")
+    parts.append(f"{fmt_usd(abs(e))} {'more' if e > 0 else 'less'} per accepted result than {baseline}" if e
+                 else f"the same per accepted result as {baseline}")
     return ", ".join(parts)
 
 
@@ -503,16 +560,23 @@ def recommend(args: argparse.Namespace) -> int:
         return fail(str(exc), EXIT_NOT_FOUND)
     except ValueError as exc:
         return fail(str(exc))
-    belief, code = load_belief(home)
+    belief, code = load_belief(home, getattr(args, "fit", None))
     if belief is None:
         return code
     try:
         usual, usual_from = resolve_usual(home, conf, task, getattr(args, "usual", None), models)
+        recorded = [c for c, _ in storeread.recorded_configs(home, task.type, task.repo)[0]]
+        if usual_from == "default" and recorded:
+            asked = task if id_given else question_task(task, belief.fit_id, rule, recorded)
+            best = reference_for(belief, asked, rule, recorded, models)
+            if best is not None:
+                usual, usual_from = best, "recorded"
         user = [workflow_file_config(p, usual) for p in getattr(args, "workflow", None) or []]
-        configs = candidate_configs(task, usual, conf, models, user + store_user_configs(home, usual))
+        configs = candidate_configs(task, usual, conf, models, user + store_user_configs(home, usual), recorded)
         asked = task if id_given else question_task(task, belief.fit_id, rule, [usual, *(c for c, _ in configs)])
         rec = engine.recommend(belief, asked, rule, usual=usual, usual_from=usual_from, configs=configs,
-                               settings=settings, diff=diff_fn(), keep=[u.id for u in user])
+                               settings=settings, diff=diff_fn(), keep=[*(u.id for u in user),
+                                                                        *(r.id for r in recorded)])
         rec.task = task
     except NotFound as exc:
         return fail(str(exc), EXIT_NOT_FOUND)
@@ -520,7 +584,7 @@ def recommend(args: argparse.Namespace) -> int:
         return fail(str(exc))
     rec_id = "rec_" + storeread.ulid()
     payload = build_payload(rec, belief, rec_id, now)
-    stored = {"schema": SCHEMA, **payload, "candidates": [c.to_dict() for c in rec.candidates]}
+    stored = {"schema": SCHEMA, **payload, "candidates": [rec.candidate_dict(c) for c in rec.candidates]}
     storeread.save_rec(home, rec_id, stored)
     target = html_path("recommend", getattr(args, "html", None), getattr(args, "home", None))
     if target is not None:

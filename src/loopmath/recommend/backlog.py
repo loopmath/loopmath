@@ -568,9 +568,14 @@ def line_rule(value: Any, conf: Conf) -> AcceptanceRule:
 
 
 # ---------------------------------------------------------------- handler
+EXPERIMENTAL_NOTE = "loopmath plan is experimental and may change"
+
+
 def plan_command(args: argparse.Namespace) -> int:
     from .commands import NotFound, UserError, load_belief, model_list, rule_from_args, settings_from
 
+    # Hidden from `loopmath --help`; stdout and --json stay exactly as they were, because experiment sweeps call it.
+    print(EXPERIMENTAL_NOTE, file=sys.stderr)
     home = home_dir(getattr(args, "home", None))
     path = Path(args.backlog).expanduser()
     if not path.exists():

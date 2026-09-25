@@ -64,10 +64,9 @@ def destination(target: str, source: str, is_directory: bool) -> str:
 
 def writes_walk(command: str, ts: str | None, cwd: str | None, exclusions: Counter | None) -> list[dict]:
     writes: list[dict] = []
-    prepared = bashparse.without_heredoc_bodies(command, exclusions)
-    outer, substitutions = bashparse.pull_substitutions(prepared, exclusions)
+    _outer, substitutions, toks = bashparse.prepare(command, exclusions)
     active_cwd = cwd
-    for segment in bashparse.segments(bashparse.tokens(outer, exclusions, prepared=True)):
+    for segment in bashparse.segments(toks):
         plain_segment: list[str] = []
         for token in segment:
             for match in bashparse.SUBSTITUTION_RE.finditer(token):

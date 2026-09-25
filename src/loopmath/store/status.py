@@ -5,6 +5,7 @@ Reads only; never takes the store lock (readers never lock).
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,39 @@ def _size(home: Path) -> dict[str, Any]:
             fits += size if in_fits else 0
             files += 1
     return {"bytes": total, "files": files, "fits_bytes": fits}
+
+
+def fit_summary(home: Path, fit_id: str | None) -> dict[str, Any]:
+    """What the fit behind `fits/latest` used (I8): its options, run counts and overlap with the prior.
+
+    `runs` splits the fit's runs into `prior` (shipped sources), `user` and `shared` (imports);
+    empty for a fit written before 0.1.1 or with an unreadable meta.json.
+    """
+    if not fit_id:
+        return {}
+    try:
+        meta = json.loads((Path(home) / "fits" / fit_id / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(meta, dict):
+        return {}
+    by_source = meta.get("runs_by_source") if isinstance(meta.get("runs_by_source"), dict) else {}
+    shared = sum(int(v) for k, v in by_source.items() if str(k).startswith("shared"))
+    user = int(by_source.get("user", 0))
+    options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+    return {"options": {"no_prior": bool(options.get("no_prior")), "without": list(options.get("without") or []),
+                        "full": bool(options.get("full"))},
+            "runs": {"prior": sum(int(v) for v in by_source.values()) - user - shared, "user": user, "shared": shared},
+            "shipped_overlap": dict(meta.get("shipped_overlap") or {}),
+            "user_labels": dict(meta.get("user_labels") or {})}
+
+
+def fit_options_text(options: dict[str, Any]) -> str:
+    """`--no-prior --without rq1`, as the fit was run; empty for a plain fit."""
+    parts = ["--no-prior"] if options.get("no_prior") else []
+    parts += [f"--without {w}" for w in options.get("without") or []]
+    parts += ["--full"] if options.get("full") else []
+    return " ".join(parts)
 
 
 def _count(folder: Path, pattern: str) -> int:
@@ -104,6 +138,7 @@ def status_payload(store: Store, now: datetime | None = None) -> dict[str, Any]:
         spend = None
 
     fit = fit_state(home)
+    fit.update(fit_summary(home, fit.get("latest")))
     job = fit.get("job") or {}
     if job.get("status") == "failed" and not fit["running"]:
         warn("fit_failed", f"the last background fit failed: {job.get('error')}")
@@ -154,7 +189,19 @@ def status_lines(p: dict[str, Any]) -> list[str]:
     fit = p["fit"]
     job = fit.get("job") or {}
     if fit["latest"]:
-        lines.append(f"fit: {fit['latest']}, {_age(fit.get('age_s'))}")
+        from ..priors import overlap_note
+
+        text = f"fit: {fit['latest']}, {_age(fit.get('age_s'))}"
+        opts = fit_options_text(fit.get("options") or {})
+        runs = fit.get("runs")
+        if opts:
+            text += f", {opts}"
+        if runs:
+            text += f", runs {runs['prior']} prior + {runs['user']} yours" + (f" + {runs['shared']} shared" if runs["shared"] else "")
+        lines.append(text)
+        note = overlap_note(fit.get("shipped_overlap"))
+        if note:
+            lines.append(f"  {note}")
     else:
         lines.append("fit: none yet")
     if fit["running"]:

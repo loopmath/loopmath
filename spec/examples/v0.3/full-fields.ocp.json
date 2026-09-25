@@ -295,11 +295,6 @@
         "tier": "reported"
       }
     ],
-    "rescue": {
-      "kind": "none",
-      "cost_usd": 0.0,
-      "basis": "measured"
-    },
     "receipt": {
       "before": {
         "rec": "rec_ex01",

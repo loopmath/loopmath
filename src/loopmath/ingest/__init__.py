@@ -262,6 +262,23 @@ def _classify_skip(path: Path, harness: str) -> str:
     return "no assistant turns"
 
 
+def _parse_unit(job: "tuple[str, list[Path]]") -> "dict | None":
+    """One unit's record dict with `_signals`, or None when it yields no record.
+    Module level so a worker process can run it."""
+    from . import claude_code, codex
+
+    harness, unit = job
+    try:
+        rec = codex.parse_session(unit) if harness == "codex" else claude_code.parse_session(unit[0])
+    except Exception:  # a single malformed log must not kill the run
+        rec = None
+    if rec is None:
+        return None
+    d = rec.to_dict()
+    d["_signals"] = rec.grading_signals()
+    return d
+
+
 def parse_all(
     logs: str | Path | None = None,
     harnesses: "tuple[str, ...]" = ("claude-code", "codex"),
@@ -308,9 +325,9 @@ def parse_all(
     (`None` when not given), so a caller does not have to thread it through
     separately to explain the omitted count.
     """
-    from . import claude_code, codex
+    from . import codex
+    from .. import pool
 
-    parsers = {"claude-code": claude_code.parse_session, "codex": codex.parse_session}
     manifest = (
         _discovery_manifest(discover(logs, since_days=since_days))
         if discovered is None
@@ -360,26 +377,48 @@ def parse_all(
             reason = _SKIP_CAP_REASON
         diag["skip_reasons"][reason] = diag["skip_reasons"].get(reason, 0) + 1
 
+    # First pass: which units the cache answers and which need parsing. The misses
+    # are parsed together (in worker processes when there are many), then the second
+    # pass below walks every unit in order, exactly as a one-by-one parse would.
+    plans = []
+    misses: list[tuple[str, list[Path]]] = []
+    miss_weights: list[int] = []
     for harness in harnesses:
         harness_entries = found.get(harness, [])
         entries = harness_entries[:limit] if limit is not None else harness_entries
         paths = [path for path, _, _ in entries]
         stamps = {path: (mtime_ns, size) for path, mtime_ns, size in entries}
+        units = codex.group_session_paths(paths) if harness == "codex" else [[p] for p in paths]
+        plans.append((harness_entries, paths, stamps, units))
+        for unit in units:
+            unit_stamps = [stamps[path] for path in unit]
+            if any(mtime_ns is None or size is None for mtime_ns, size in unit_stamps):
+                continue
+            key = str(unit[0]) if len(unit) == 1 else "\0".join(str(path) for path in unit)
+            stamp = "|".join(f"{mtime_ns}:{size}" for mtime_ns, size in unit_stamps)
+            hit = cache.get(key)
+            if use_cache and isinstance(hit, dict) and hit.get("stamp") == stamp:
+                continue
+            misses.append((harness, unit))
+            miss_weights.append(sum(size for _, size in unit_stamps))
+    parsed = dict(zip(
+        ((h, tuple(u)) for h, u in misses),
+        pool.ordered_map(_parse_unit, misses, weights=miss_weights,
+                         done=(lambda i, n: progress("sessions", i, n)) if progress is not None else None),
+    ))
+
+    for harness, (harness_entries, paths, stamps, units) in zip(harnesses, plans):
         # FIX 2: what `limit` removed is counted here, at truncation time, not
         # inferred later from a difference of two other numbers a caller would
         # have to know to compute.
         diag["files_omitted_by_limit"][harness] = len(harness_entries) - len(paths)
-        parse = parsers[harness]
         # A resumed Codex thread may continue in another rollout file with
         # the same persisted session id. It must be parsed as one logical
         # stream before attempt_rule v1 sees the records; otherwise one user
-        # attempt is spuriously counted once per physical file.
-        units = codex.group_session_paths(paths) if harness == "codex" else [[p] for p in paths]
+        # attempt is spuriously counted once per physical file (units, above).
         n_ok = 0
         n_skip = 0
         for i, unit in enumerate(units):
-            if progress is not None and i % 200 == 0:
-                progress(harness, i, len(paths))
             key = str(unit[0]) if len(unit) == 1 else "\0".join(str(path) for path in unit)
             unit_stamps = [stamps[path] for path in unit]
             if any(mtime_ns is None or size is None for mtime_ns, size in unit_stamps):
@@ -400,19 +439,14 @@ def parse_all(
                 records.append(rec_d)
                 n_ok += 1
                 continue
-            try:
-                rec = parse(unit if harness == "codex" else unit[0])
-            except Exception:  # a single malformed log must not kill the run
-                rec = None
+            d = parsed[(harness, tuple(unit))]
             dirty = True
-            if rec is None:
+            if d is None:
                 cache[key] = {"stamp": stamp, "record": None}
                 n_skip += len(unit)
                 for path in unit:
                     _tally_skip(path, harness)
                 continue
-            d = rec.to_dict()
-            d["_signals"] = rec.grading_signals()
             cache[key] = {"stamp": stamp, "record": d}
             records.append(d)
             n_ok += 1

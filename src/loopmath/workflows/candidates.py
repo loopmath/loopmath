@@ -1,15 +1,19 @@
-"""Candidate configurations: usual, catalog x allowed settings, one-step edits, user workflows (spec 05 section 1).
+"""Candidate configurations: usual, user workflows, recorded configurations, one-step edits, catalog x allowed
+settings (spec 05 section 1).
 
 `candidates()` returns `(configuration, origin)` pairs, deduplicated by
-configuration id; origin is one of `usual`, `user`, `edit`, `catalog`, and a
-configuration found twice keeps the first origin in that order. Lane 06
-predicts and ranks them.
+configuration id; origin is one of `usual`, `user`, `recorded`, `edit`,
+`catalog`, and a configuration found twice keeps the first origin in that order.
+Lane 06 predicts and ranks them.
 
 `allowed` is the dict lane 06 builds from config:
 
     {"models": ["claude-opus-5-5", "gpt-6-astra"],   # models.allowed; empty = the models in usual and user
      "harnesses": ["claude-code", "codex"],           # allowed harnesses, or {model: harness}
      "efforts": {"codex": ["low", "high"]}}           # efforts per harness; default models.DEFAULT_EFFORTS
+
+Every effort a seen setting (the usual, user and recorded configurations) ran at
+is offered for its model as well.
 
 Catalog settings are linear, not a full product: in each shape the working
 pieces (planner, implementer, worker) share one allowed (model, effort), and
@@ -22,20 +26,22 @@ efforts that is about 420 catalog configurations, well inside `predict_many`'s
 from __future__ import annotations
 
 import dataclasses
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..types import Configuration, Setting, Task, Workflow
 from .ids import make_config
-from .models import efforts_for, family_of, harness_for, nearest_effort, provider_of
+from .models import efforts_for, family_of, harness_for, nearest_effort, provider_of, sort_efforts
 from .shapes import (DEFAULT_REVIEW_ROUNDS, MAX_ROUNDS, MAX_WIDTH, MIN_ROUNDS, MIN_WIDTH, ShapeParams, build_shape,
                      shape_params, work_piece)
 
-ORIGINS = ("usual", "user", "edit", "catalog")
+ORIGINS = ("usual", "user", "recorded", "edit", "catalog")
 CHECK_ROLES = ("reviewer", "referee", "tester")
 MAX_CHECKERS = 3
 MAX_CANDIDATES = 2000
+RECORDED_EDITS = 30  # recorded configurations whose one-step edits are candidates, the first by runs
 
 
 @dataclass(frozen=True)
@@ -45,12 +51,17 @@ class Allowed:
     models: tuple[str, ...]
     harness_of: Mapping[str, str] = field(default_factory=dict)
     efforts: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    seen_efforts: Mapping[str, tuple[str, ...]] = field(default_factory=dict)  # by model: efforts it ran at
 
     def harness(self, model: str) -> str:
         return self.harness_of[model]
 
     def efforts_of(self, model: str) -> tuple[str, ...]:
-        return efforts_for(self.harness(model), self.efforts)
+        return self.offered(self.harness(model), model)
+
+    def offered(self, harness: str, model: str) -> tuple[str, ...]:
+        """The efforts `harness` offers `model`, plus every effort the model was seen at, lowest first."""
+        return sort_efforts((*efforts_for(harness, self.efforts, model), *self.seen_efforts.get(model, ())))
 
     def setting(self, model: str, effort: str, like: Setting | None = None) -> Setting:
         """`model` at the offered effort nearest `effort`; context policy and options kept from `like`."""
@@ -81,8 +92,11 @@ def allowed_from(allowed: Mapping[str, Any] | Allowed | None, seen: Sequence[Set
         return allowed
     allowed = allowed or {}
     known: dict[str, str] = {}
+    seen_efforts: dict[str, list[str]] = {}
     for s in seen:
         known.setdefault(s.model, s.harness)
+        if s.effort and s.effort != "default":
+            seen_efforts.setdefault(s.model, []).append(s.effort)
     raw_models = allowed.get("models") or allowed.get("models.allowed") or list(known)
     raw_harnesses = allowed.get("harnesses") or {}
     mapping = dict(raw_harnesses) if isinstance(raw_harnesses, Mapping) else {}
@@ -96,7 +110,8 @@ def allowed_from(allowed: Mapping[str, Any] | Allowed | None, seen: Sequence[Set
         models.append(m)
         harness_of[m] = h
     efforts = {str(h): tuple(v) for h, v in (allowed.get("efforts") or {}).items() if v}
-    return Allowed(models=tuple(models), harness_of=harness_of, efforts=efforts)
+    return Allowed(models=tuple(models), harness_of=harness_of, efforts=efforts,
+                   seen_efforts={m: sort_efforts(v) for m, v in seen_efforts.items()})
 
 
 def is_check_role(role: str | None) -> bool:
@@ -204,7 +219,7 @@ def one_step_edits(config: Configuration, allowed: Mapping[str, Any] | Allowed |
         for m in al.models:
             if m != cur.model:
                 out.append(_replace_setting(config, p.id, al.setting(m, cur.effort, like=cur)))
-        for e in efforts_for(cur.harness, al.efforts):
+        for e in al.offered(cur.harness, cur.model):
             if e not in (cur.effort, "default"):
                 out.append(_replace_setting(config, p.id, dataclasses.replace(cur, effort=e)))
 
@@ -266,29 +281,76 @@ def _dedupe(pairs: Iterable[tuple[Configuration, str]], skip: Iterable[str] = ()
     return out
 
 
+def twin_key(cfg: Configuration) -> tuple:
+    """How a configuration runs: its pieces with their widths, settings and extras, the flow between pieces,
+    each gate with where it sends a failure (`on_fail`: repair or stop), the round cap and the control extras;
+    everything the fit's design reads. Two ids with one key differ only in details such as an input artifact,
+    the title or the workflow's `control.rescue`, which nothing prices (the rescue comes from the rule, spec 05
+    section 2). RQ1: `solo: gpt-5.6-luna/xhigh` recorded and in the catalog."""
+    wf = cfg.workflow
+    ids = {p.id for p in wf.pieces}
+    made = {a: p for p, a in wf.edges if p in ids and a not in ids}
+    flow = {(made[a], q) for a, q in wf.edges if a in made and q in ids} | {e for e in wf.edges if set(e) <= ids}
+    pieces = []
+    for p in wf.pieces:
+        s = cfg.settings.get(p.id)
+        pieces.append((p.id, p.role, p.width, _stable(p.extra),
+                       *((s.harness, s.model, s.effort) if s is not None else ())))
+    gates = tuple((g.after, g.rule, g.on_fail, _stable(g.extra)) for g in wf.control.gates)
+    return (wf.id, tuple(pieces), tuple(sorted(flow)), gates, wf.control.budget_rounds,
+            _stable(wf.control.extra))
+
+
+def _stable(extra: Mapping[str, Any] | None) -> str:
+    return json.dumps(extra or {}, sort_keys=True, default=str)
+
+
+def _drop_twins(pairs: Iterable[tuple[Configuration, str]]) -> list[tuple[Configuration, str]]:
+    """Drop an edit or catalog configuration that reads the same as one before it (`twin_key`)."""
+    seen, out = set(), []
+    for cfg, origin in pairs:
+        key = twin_key(cfg)
+        if origin in ("edit", "catalog") and key in seen:
+            continue
+        seen.add(key)
+        out.append((cfg, origin))
+    return out
+
+
 def candidates(task: Task, *, usual: Configuration | None, allowed: Mapping[str, Any] | None,
                user: Sequence[Configuration | Workflow] = (), home: str | Path | None = None,
-               limit: int = MAX_CANDIDATES) -> list[tuple[Configuration, str]]:
-    """Usual, user, one-step edits of the usual, then catalog x allowed settings; deduplicated by id.
+               limit: int = MAX_CANDIDATES, recorded: Sequence[Configuration] = ()) -> list[tuple[Configuration, str]]:
+    """Usual, user, recorded, one-step edits of the usual and of the recorded configurations, then catalog x
+    allowed settings; deduplicated by id.
 
-    `home` adds the valid user workflows in the store. The usual and every user
-    configuration are always kept; catalog configurations are cut first when the
-    list would pass `limit`. `task` is accepted for the contract; no step
-    depends on it yet.
+    `home` adds the valid user workflows in the store. `recorded` holds the
+    configurations the store's runs used for the task's (type, repo), else its
+    type, most runs first, designed runs included (spec 05 section 1): each keeps
+    its recorded shape, the first RECORDED_EDITS get one-step edits, and their
+    settings join the seen settings, so their models and efforts are allowed.
+    The usual, every user and every recorded configuration are always kept;
+    catalog configurations are cut first when the list would pass `limit`, then
+    edits. An edit or catalog configuration that reads the same as an earlier one
+    (`twin_key`) is dropped. `task` is accepted for the contract; no step depends on it yet.
     """
     users = user_configurations(user, usual)
     if home is not None:
         users += store_user_configurations(home, usual)
-    al = allowed_from(allowed, _settings_in([usual, *users]))
+    recorded = list(recorded)
+    al = allowed_from(allowed, _settings_in([usual, *users, *recorded]))
     pairs: list[tuple[Configuration, str]] = []
     if usual is not None:
         pairs.append((usual, "usual"))
     pairs += [(c, "user") for c in users]
+    pairs += [(c, "recorded") for c in recorded]
     if usual is not None:
         pairs += [(c, "edit") for c in one_step_edits(usual, al)]
+    for rec in recorded[:RECORDED_EDITS]:
+        pairs += [(c, "edit") for c in one_step_edits(rec, al)]
     pairs += [(c, "catalog") for c in catalog_configurations(al)]
-    out = _dedupe(pairs)
+    out = _drop_twins(_dedupe(pairs))
     if len(out) > limit:
-        kept = [x for x in out if x[1] != "catalog"]
-        out = kept + [x for x in out if x[1] == "catalog"][: max(0, limit - len(kept))]
+        kept = [x for x in out if x[1] not in ("catalog", "edit")]
+        rest = [x for x in out if x[1] == "edit"] + [x for x in out if x[1] == "catalog"]
+        out = kept + rest[: max(0, limit - len(kept))]
     return out

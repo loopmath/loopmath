@@ -13,11 +13,18 @@ from typing import Iterable, Mapping, Sequence
 
 from ..types import Setting
 
-# Efforts each harness offers, lowest first. Config `efforts.<harness>` overrides.
+# Efforts each harness offers, lowest first. Config `efforts.<harness>` overrides. Codex offers `max` for the
+# gpt-5.6 and gpt-6 models (the Codex model list, 2026-09-24); `ultra` is left out, since it delegates to more
+# agents and so changes the workflow's shape.
 DEFAULT_EFFORTS: dict[str, tuple[str, ...]] = {
     "claude-code": ("low", "medium", "high", "xhigh", "max"),
-    "codex": ("low", "medium", "high", "xhigh"),
+    "codex": ("low", "medium", "high", "xhigh", "max"),
 }
+
+# Codex models whose effort list stops at xhigh: gpt-5.5 in the Codex model list, and the older price-table
+# models the list no longer carries.
+NO_MAX_MODELS = frozenset({"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark",
+                           "gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-mini"})
 
 # Ordinal scale used to find the nearest offered effort.
 EFFORT_ORDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
@@ -83,10 +90,23 @@ def harness_for(model: str, overrides: Mapping[str, str] | None = None) -> str |
     return None
 
 
-def efforts_for(harness: str, overrides: Mapping[str, Sequence[str]] | None = None) -> tuple[str, ...]:
+def efforts_for(harness: str, overrides: Mapping[str, Sequence[str]] | None = None,
+                model: str | None = None) -> tuple[str, ...]:
+    """The efforts `harness` offers, lowest first: config `efforts.<harness>` when set, else the default,
+    without `max` for a `model` in NO_MAX_MODELS."""
     if overrides and harness in overrides:
         return tuple(overrides[harness])
-    return DEFAULT_EFFORTS.get(harness, ("default",))
+    offered = DEFAULT_EFFORTS.get(harness, ("default",))
+    if model is not None and model in NO_MAX_MODELS:
+        offered = tuple(e for e in offered if e != "max")
+    return offered
+
+
+def sort_efforts(efforts: Iterable[str]) -> tuple[str, ...]:
+    """Efforts without repeats, lowest first on EFFORT_ORDER; unknown words after, in first-seen order."""
+    seen = list(dict.fromkeys(efforts))
+    known = sorted((e for e in seen if e in EFFORT_ORDER), key=EFFORT_ORDER.index)
+    return tuple(known + [e for e in seen if e not in EFFORT_ORDER])
 
 
 def nearest_effort(effort: str, offered: Sequence[str]) -> str:

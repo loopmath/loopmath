@@ -308,7 +308,7 @@ def test_validate_warns_on_settings_that_cannot_run(capsys, home, tmp_path):
     code, obj, _ = run_json(capsys, "validate", str(odd), "--home", str(home))
     assert code == 0 and obj["valid"] and obj["config"]
     assert "setting 'implement': codex does not run claude-opus-5-5; claude-code does" in obj["warnings"]
-    assert "setting 'r1': effort 'ultra' is not one codex offers (low, medium, high, xhigh)" in obj["warnings"]
+    assert "setting 'r1': effort 'ultra' is not one codex offers (low, medium, high, xhigh, max)" in obj["warnings"]
     code, obj, _ = run_json(capsys, "validate", str(home / "workflows" / "mine.toml"), "--home", str(home))
     assert code == 0 and not any(w.startswith("setting ") for w in obj["warnings"])
     # config overrides: efforts.codex offers ultra here, and this home runs claude-opus-5-5 in codex

@@ -122,3 +122,26 @@ def test_unreadable_configurations_are_none():
     assert storeread.config_from_any(None) is None
     assert storeread.config_from_any({"id": "cfg_x"}) is None
     assert storeread.config_from_any({"workflow": {"ref": "no_such_shape", "version": 1}, "settings": {}}) is None
+
+
+def test_recorded_configs_count_every_source_by_repo_then_type(tmp_path):
+    """0.1.1 lane 1A (F3): designed runs are recorded configurations, most runs first, then the most recent;
+    a repo with none falls back to the type; a run document that does not load is skipped."""
+    from recommend_fakes import PIR, solo
+
+    a, b, c = solo("luna"), solo("sol"), cfg(PIR, plan="opusx", implement="opus", review="astra")
+    runs = [(a, "designed", "r/one"), (b, "designed", "r/one"), (b, "user", "r/one"), (c, "designed", "r/two")]
+    (tmp_path / "runs").mkdir()
+    rows = []
+    for i, (conf, source, repo) in enumerate(runs):
+        rows.append({"run": f"run_{i}", "task_type": "feature", "repo": repo, "config": conf.id, "source": source})
+        (tmp_path / "runs" / f"run_{i}.ocp.json").write_text(json.dumps({"run": {"configuration": conf.to_dict()}}))
+    rows.append({"run": "run_x", "task_type": "feature", "repo": "r/one", "config": "cfg_missing"})
+    rows.append({"run": "run_y", "task_type": "bug_fix", "repo": "r/one", "config": a.id})
+    (tmp_path / "runs" / "index.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    got, level = storeread.recorded_configs(tmp_path, "feature", "r/one")
+    assert level == "repo" and [(x.id, n) for x, n in got] == [(b.id, 2), (a.id, 1)]
+    got, level = storeread.recorded_configs(tmp_path, "feature", "r/new")
+    assert level == "type" and [x.id for x, _ in got] == [b.id, c.id, a.id]
+    assert [x.id for x, _ in storeread.recorded_configs(tmp_path, "feature", "r/new", limit=1)[0]] == [b.id]
+    assert storeread.recorded_configs(tmp_path, "docs", "r/one") == ([], None)

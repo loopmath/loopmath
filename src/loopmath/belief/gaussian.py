@@ -25,9 +25,10 @@ import math
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy import linalg, optimize, sparse
+from scipy import linalg, sparse
 from scipy.special import expit
 
+from .block import BlockFactor, leaf_split
 from .forest import HYPER_SD
 
 N_DRAWS = 400
@@ -73,13 +74,21 @@ class Prior:
 class HeadFit:
     kind: str  # "gaussian" | "logistic"
     mean: np.ndarray
-    cov_factor: np.ndarray  # U with U U' = posterior covariance (upper triangular)
     phi: np.ndarray
     sigma: float = 1.0
     log_evidence: float = float("nan")
     iterations: int = 0
     info: dict = field(default_factory=dict)
     precision: sparse.csr_matrix | None = None  # the matrix whose Cholesky factor gives U (D94)
+    _U: np.ndarray | None = field(default=None, repr=False)
+
+    @property
+    def cov_factor(self) -> np.ndarray:
+        """U with U U' = posterior covariance (upper triangular), from the precision on first use;
+        the fit itself never needs it."""
+        if self._U is None:
+            self._U = cov_factor(_cho(self.precision.toarray()))
+        return self._U
 
     def draws(self, seed: int, n: int = N_DRAWS) -> np.ndarray:
         z = np.random.default_rng(seed).standard_normal((len(self.mean), n))
@@ -115,8 +124,24 @@ def _inv_lower(R: np.ndarray) -> np.ndarray:
 
 # ---------------------------------------------------------------- Gaussian heads
 
+def _factor_precision(factors: "Factors | None", p: int) -> sparse.csr_matrix:
+    """F' V^-1 F as a sparse matrix (zero without factors)."""
+    if factors is None:
+        return sparse.csr_matrix((p, p))
+    return (factors.F.T @ factors.F.multiply(1.0 / factors.v[:, None])).tocsr()
+
+
+def _unperm(perm: np.ndarray, x: np.ndarray) -> np.ndarray:
+    out = np.empty_like(x)
+    out[perm] = x
+    return out
+
+
 class GaussianHead:
-    """y ~ N(Xb, sigma^2 / w), b ~ N(0, Lambda(phi)), optional prior factors."""
+    """y ~ N(Xb, sigma^2 / w), b ~ N(0, Lambda(phi)), optional prior factors.
+
+    The precision is factored by blocks (`block.py`): the leaf nodes (every task) are eliminated
+    in closed form and only the core's Schur complement is dense."""
 
     def __init__(self, X: sparse.csr_matrix, y: np.ndarray, w: np.ndarray, prior: Prior,
                  factors: Factors | None = None):
@@ -126,16 +151,30 @@ class GaussianHead:
         self.prior = prior
         self.n, self.p = self.X.shape
         Xw = self.X.multiply(self.w[:, None]).tocsr()
-        self.A = np.asarray((self.X.T @ Xw).todense())
+        self.As = (self.X.T @ Xw).tocsr()
         self.c = np.asarray(self.X.T @ (self.w * self.y)).ravel()
         self.yWy = float(np.sum(self.w * self.y * self.y))
         self.slw = float(np.sum(np.log(self.w)))
         self.factors = factors
-        self.Af = factors.A if factors is not None else np.zeros((self.p, self.p))
+        self.Afs = _factor_precision(factors, self.p)
         self.cf = factors.c if factors is not None else np.zeros(self.p)
         self.fVf = float(np.sum(factors.f ** 2 / factors.v)) if factors is not None else 0.0
         self.slv = float(np.sum(np.log(factors.v))) if factors is not None else 0.0
         self.sigma0 = self._sigma_start()
+        self.perm, self.l = leaf_split(abs(self.As) + abs(self.Afs))
+        perm, l = self.perm, self.l
+        Ap, Fp = self.As[perm][:, perm].tocsr(), self.Afs[perm][:, perm].tocsr()
+        self._Ab = (Ap.diagonal()[:l], Ap[l:, :l].tocsr(), Ap[l:, l:].toarray())
+        self._Fb = (Fp.diagonal()[:l], Fp[l:, :l].tocsr(), Fp[l:, l:].toarray())
+        self.Fp = factors.F[:, perm].tocsr() if factors is not None else None
+
+    @property
+    def A(self) -> np.ndarray:
+        return self.As.toarray()
+
+    @property
+    def Af(self) -> np.ndarray:
+        return self.Afs.toarray()
 
     def _sigma_start(self) -> float:
         if self.n < 2:
@@ -144,34 +183,42 @@ class GaussianHead:
         sd = math.sqrt(float(np.sum(self.w * (self.y - mu) ** 2) / np.sum(self.w)))
         return max(0.05, min(5.0, sd if sd > 0 else 1.0))
 
-    def _precision(self, lam: np.ndarray, s2: float) -> np.ndarray:
-        return self.A / s2 + self.Af + np.diag(1.0 / lam)
+    def _precision(self, lam: np.ndarray, s2: float) -> sparse.csr_matrix:
+        P = (self.As / s2 + self.Afs + sparse.diags(1.0 / lam)).tocsr()
+        P.eliminate_zeros()
+        return P
+
+    def _factor(self, lam: np.ndarray, s2: float) -> BlockFactor:
+        lp, l = lam[self.perm], self.l
+        (ad, aB, aC), (fd, fB, fC) = self._Ab, self._Fb
+        PCC = aC / s2 + fC
+        PCC[np.diag_indices_from(PCC)] += 1.0 / lp[l:]
+        return BlockFactor.factor(ad / s2 + fd + 1.0 / lp[:l], (aB / s2 + fB).tocsr(), PCC)
 
     def _solve(self, phi: np.ndarray, sigma: float):
         lam = self.prior.lam(phi)
         s2 = sigma * sigma
-        R = _cho(self._precision(lam, s2))
+        fac = self._factor(lam, s2)
         ctot = self.c / s2 + self.cf
-        m = linalg.cho_solve((R, True), ctot, check_finite=False)
-        return lam, s2, R, ctot, m
+        m = _unperm(self.perm, fac.solve(ctot[self.perm]))
+        return lam, s2, fac, ctot, m
 
     def objective(self, theta: np.ndarray) -> tuple[float, np.ndarray]:
         G = len(self.prior.groups)
         log_phi, log_sigma = theta[:G], theta[G]
         phi, sigma = np.exp(log_phi), math.exp(log_sigma)
-        lam, s2, R, ctot, m = self._solve(phi, sigma)
-        logdetP = 2.0 * float(np.sum(np.log(np.diag(R))))
+        lam, s2, fac, ctot, m = self._solve(phi, sigma)
+        logdetP = fac.logdet
         logp = -0.5 * (self.yWy / s2 + self.fVf - float(ctot @ m) + self.n * math.log(s2) - self.slw + self.slv
                        + float(np.sum(np.log(lam))) + logdetP + self.n * math.log(2 * math.pi))
-        Rinv = _inv_lower(R)
-        diag_S = np.sum(Rinv * Rinv, axis=0)
+        diag_S = _unperm(self.perm, fac.diag_inv())
         per_node = (m * m + diag_S) / lam - 1.0
         grad_phi = np.zeros(G)
         grouped = self.prior.group_idx >= 0
         np.add.at(grad_phi, self.prior.group_idx[grouped], per_node[grouped])
-        trAfS = float(np.sum((Rinv @ self.Af) * Rinv)) if self.factors is not None else 0.0
+        trAfS = float(np.sum(fac.quad(self.Fp) / self.factors.v)) if self.factors is not None else 0.0
         trAS = s2 * (self.p - trAfS - float(np.sum(diag_S / lam)))
-        rss = self.yWy - 2.0 * float(m @ self.c) + float(m @ self.A @ m)
+        rss = self.yWy - 2.0 * float(m @ self.c) + float(m @ (self.As @ m))
         grad_sigma = (rss + trAS) / s2 - self.n
         dphi = log_phi - np.log(self.prior.default_phi)
         logp += -0.5 * float(np.sum(dphi ** 2)) / HYPER_SD ** 2
@@ -191,22 +238,25 @@ class GaussianHead:
         if eb and self.n > 0:
             theta0 = np.concatenate([np.log(phi0), [math.log(sig0)]])
             bounds = [LOG_PHI_BOUNDS] * G + [(math.log(1e-3), math.log(20.0))]
+            from scipy import optimize  # only the fit needs it (about 0.1 s to import)
+
             res = optimize.minimize(self.objective, theta0, jac=True, method="L-BFGS-B", bounds=bounds,
                                     options={"maxiter": maxiter})
             theta = res.x if np.all(np.isfinite(res.x)) else theta0
             phi0, sig0 = np.exp(theta[:G]), math.exp(theta[G])
             iterations = int(res.nit)
             info = {"converged": bool(res.success), "message": str(res.message)}
-        lam, s2, R, ctot, m = self._solve(phi0, sig0)
+        lam, s2, _, _, m = self._solve(phi0, sig0)
         ev = -self.objective(np.concatenate([np.log(phi0), [math.log(sig0)]]))[0]
-        return HeadFit("gaussian", m, cov_factor(R), phi0, sig0, ev, iterations, info,
-                       sparse.csr_matrix(self._precision(lam, s2)))
+        return HeadFit("gaussian", m, phi0, sig0, ev, iterations, info, self._precision(lam, s2))
 
 
 # ---------------------------------------------------------------- logistic heads
 
 class LogisticHead:
-    """P(z = 1) = q s(Xb) + (1 - q)(1 - s(Xb)), b ~ N(0, Lambda(phi)), Laplace at the mode."""
+    """P(z = 1) = q s(Xb) + (1 - q)(1 - s(Xb)), b ~ N(0, Lambda(phi)), Laplace at the mode.
+
+    Precisions are factored by blocks, as in GaussianHead."""
 
     def __init__(self, X: sparse.csr_matrix, z: np.ndarray, q: np.ndarray, prior: Prior,
                  factors: Factors | None = None):
@@ -216,10 +266,22 @@ class LogisticHead:
         self.prior = prior
         self.n, self.p = self.X.shape
         self.factors = factors
-        self.Af = factors.A if factors is not None else np.zeros((self.p, self.p))
+        self.Afs = _factor_precision(factors, self.p)
         self.cf = factors.c if factors is not None else np.zeros(self.p)
         self._b = np.zeros(self.p)
         self.fisher_fallbacks = 0  # evidence evaluations whose observed Hessian was not positive definite
+        aX = abs(self.X)
+        self.perm, self.l = leaf_split((aX.T @ aX) + abs(self.Afs))
+        perm, l = self.perm, self.l
+        self.Xp = self.X[:, perm].tocsr()
+        self._XL, self._XC = self.Xp[:, :l].tocsr(), self.Xp[:, l:].tocsr()
+        self._XL2 = self._XL.multiply(self._XL).T.tocsr()
+        Fp = self.Afs[perm][:, perm].tocsr()
+        self._Fb = (Fp.diagonal()[:l], Fp[l:, :l].tocsr(), Fp[l:, l:].toarray())
+
+    @property
+    def Af(self) -> np.ndarray:
+        return self.Afs.toarray()
 
     def _loglik_terms(self, eta: np.ndarray):
         s = expit(eta)
@@ -265,37 +327,53 @@ class LogisticHead:
         g1 = f1 / f
         return -(f3 / f - 3.0 * g1 * f2 / f + 2.0 * g1 ** 3)
 
-    def _precision(self, b: np.ndarray, lam_inv: np.ndarray) -> tuple[np.ndarray, str, np.ndarray]:
-        """Cholesky factor of the Laplace precision at `b`: the observed Hessian of the log posterior,
-        or the Fisher one when the observed Hessian is not positive definite (D68); and that precision."""
+    def _blocks(self, o: np.ndarray, lam_inv: np.ndarray):
+        """(d, B, P_CC) of X' diag(o) X + diag(lam_inv) + Af in the leaf-first order."""
+        l = self.l
+        li = lam_inv[self.perm]
+        fd, fB, fC = self._Fb
+        d = np.asarray(self._XL2 @ o).ravel() + li[:l] + fd
+        XCo = self._XC.multiply(o[:, None]).tocsr()
+        B = (XCo.T @ self._XL).tocsr() + fB
+        PCC = np.asarray((self._XC.T @ XCo).todense())
+        PCC[np.diag_indices_from(PCC)] += li[l:]
+        return d, B.tocsr(), PCC + fC
+
+    def _hessian(self, o: np.ndarray, lam_inv: np.ndarray) -> sparse.csr_matrix:
+        H = (self.X.T @ self.X.multiply(o[:, None]) + sparse.diags(lam_inv) + self.Afs).tocsr()
+        H.eliminate_zeros()
+        return H
+
+    def _precision(self, b: np.ndarray, lam_inv: np.ndarray) -> tuple[BlockFactor, str, np.ndarray]:
+        """Factor of the Laplace precision at `b`: the observed Hessian of the log posterior, or the
+        Fisher one when the observed Hessian is not positive definite (D68); and its row weights."""
         eta = self.X @ b
-        XO = self.X.multiply(self._observed(eta)[:, None]).tocsr()
-        H = np.asarray((self.X.T @ XO).todense()) + np.diag(lam_inv) + self.Af
+        o = self._observed(eta)
         try:
-            return np.tril(linalg.cholesky(H, lower=True, check_finite=False)), "observed", H
+            return BlockFactor.factor(*self._blocks(o, lam_inv), strict=True), "observed", o
         except linalg.LinAlgError:
             _, _, info = self._loglik_terms(eta)
-            XI = self.X.multiply(info[:, None]).tocsr()
-            F = np.asarray((self.X.T @ XI).todense()) + np.diag(lam_inv) + self.Af
-            return _cho(F), "fisher", F
+            return BlockFactor.factor(*self._blocks(info, lam_inv)), "fisher", info
 
     def _logpost(self, b: np.ndarray, lam_inv: np.ndarray) -> float:
         ll = self._loglik_terms(self.X @ b)[0]
-        return ll - 0.5 * float(b @ (lam_inv * b)) - 0.5 * float(b @ self.Af @ b) + float(self.cf @ b)
+        return ll - 0.5 * float(b @ (lam_inv * b)) - 0.5 * float(b @ (self.Afs @ b)) + float(self.cf @ b)
 
     def mode(self, lam: np.ndarray, b0: np.ndarray | None = None, iters: int = 60):
         lam_inv = 1.0 / lam
         b = self._b.copy() if b0 is None else b0.copy()
         lp = self._logpost(b, lam_inv)
-        R = None
         for _ in range(iters):
             eta = self.X @ b
             _, g_eta, info = self._loglik_terms(eta)
-            grad = np.asarray(self.X.T @ g_eta).ravel() - lam_inv * b - self.Af @ b + self.cf
-            XI = self.X.multiply(info[:, None]).tocsr()
-            H = np.asarray((self.X.T @ XI).todense()) + np.diag(lam_inv) + self.Af
-            R = _cho(H)
-            step = linalg.cho_solve((R, True), grad, check_finite=False)
+            grad = np.asarray(self.X.T @ g_eta).ravel() - lam_inv * b - self.Afs @ b + self.cf
+            # Newton on the observed Hessian when it is positive definite: with q < 1 Fisher scoring
+            # converges linearly and stopped at `iters` with max|grad| near 3e-5 on real data
+            try:
+                fac = BlockFactor.factor(*self._blocks(self._observed(eta), lam_inv), strict=True)
+            except linalg.LinAlgError:
+                fac = BlockFactor.factor(*self._blocks(info, lam_inv))
+            step = _unperm(self.perm, fac.solve(grad[self.perm]))
             t = 1.0
             while True:
                 nb = b + t * step
@@ -306,40 +384,47 @@ class LogisticHead:
             b, lp = nb, nlp
             if float(np.max(np.abs(t * step))) < 1e-7:
                 break
-        R, kind, H = self._precision(b, lam_inv)
+        fac, kind, weights = self._precision(b, lam_inv)
         self._b = b
-        return b, R, lp, kind, H
+        return b, fac, lp, kind, weights
+
+    def _solve_indefinite(self, o: np.ndarray, lam_inv: np.ndarray, u: np.ndarray) -> np.ndarray:
+        """H^-1 u for the observed Hessian when it is not positive definite: blocks, S by LU."""
+        d, B, PCC = self._blocks(o, lam_inv)
+        if np.any(d == 0):
+            raise linalg.LinAlgError("singular leaf block")
+        l, up = self.l, u[self.perm]
+        Bd = B.multiply(1.0 / d[None, :]).tocsr()
+        S = PCC - (Bd @ B.T).toarray() if l else PCC
+        xC = linalg.solve(S, up[l:] - Bd @ up[:l], assume_a="sym", check_finite=False) if len(S) else up[l:]
+        xL = (up[:l] - B.T @ xC) / d
+        return _unperm(self.perm, np.concatenate([xL, xC]))
 
     def objective(self, log_phi: np.ndarray) -> tuple[float, np.ndarray]:
         phi = np.exp(log_phi)
         lam = self.prior.lam(phi)
-        b, R, lp, kind, _ = self.mode(lam)
-        logdetH = 2.0 * float(np.sum(np.log(np.diag(R))))
-        logev = lp - 0.5 * float(np.sum(np.log(lam))) - 0.5 * logdetH
-        Rinv = _inv_lower(R)
-        diag_S = np.sum(Rinv * Rinv, axis=0)
+        b, fac, lp, kind, _ = self.mode(lam)
+        logev = lp - 0.5 * float(np.sum(np.log(lam))) - 0.5 * fac.logdet
+        diag_S = _unperm(self.perm, fac.diag_inv())
         per_node = (b * b + diag_S) / lam - 1.0
         # implicit term: the mode moves with lam (through the observed Hessian) and the
         # information in log|H| moves with the mode
-        XR = np.asarray(self.X @ Rinv.T)
-        v = np.sum(XR * XR, axis=1)
+        v = fac.quad(self.Xp)
         eta = self.X @ b
         if kind == "observed":
             u = np.asarray(self.X.T @ (v * self._dobserved(eta))).ravel()
-            Hu = Rinv.T @ (Rinv @ u)
+            Hu = _unperm(self.perm, fac.solve(u[self.perm]))
         elif np.all(self.q >= 1.0):
             self.fisher_fallbacks += 1
             u = np.asarray(self.X.T @ (v * self._dinfo(eta))).ravel()
-            Hu = Rinv.T @ (Rinv @ u)
+            Hu = _unperm(self.perm, fac.solve(u[self.perm]))
         else:
             self.fisher_fallbacks += 1
             u = np.asarray(self.X.T @ (v * self._dinfo(eta))).ravel()
-            XO = self.X.multiply(self._observed(eta)[:, None]).tocsr()
-            Hobs = np.asarray((self.X.T @ XO).todense()) + np.diag(1.0 / lam) + self.Af
             try:
-                Hu = linalg.solve(Hobs, u, assume_a="sym", check_finite=False)
+                Hu = self._solve_indefinite(self._observed(eta), 1.0 / lam, u)
             except linalg.LinAlgError:
-                Hu = Rinv.T @ (Rinv @ u)
+                Hu = _unperm(self.perm, fac.solve(u[self.perm]))
         per_node -= Hu * b / lam
         grad = np.zeros(len(self.prior.groups))
         grouped = self.prior.group_idx >= 0
@@ -353,6 +438,8 @@ class LogisticHead:
         phi0 = self.prior.default_phi.copy() if phi is None else np.asarray(phi, float)
         iterations, info = 0, {}
         if eb and self.n > 0 and len(self.prior.groups):
+            from scipy import optimize  # only the fit needs it (about 0.1 s to import)
+
             res = optimize.minimize(self.objective, np.log(phi0), jac=True, method="L-BFGS-B",
                                     bounds=[LOG_PHI_BOUNDS] * len(self.prior.groups), options={"maxiter": maxiter})
             if np.all(np.isfinite(res.x)):
@@ -360,10 +447,10 @@ class LogisticHead:
             iterations = int(res.nit)
             info = {"converged": bool(res.success), "message": str(res.message)}
         lam = self.prior.lam(phi0)
-        b, R, lp, kind, H = self.mode(lam)
-        logev = lp - 0.5 * float(np.sum(np.log(lam))) - float(np.sum(np.log(np.diag(R))))
+        b, fac, lp, kind, weights = self.mode(lam)
+        logev = lp - 0.5 * float(np.sum(np.log(lam))) - 0.5 * fac.logdet
         info = {**info, "hessian": kind, "fisher_fallbacks": self.fisher_fallbacks}
-        return HeadFit("logistic", b, cov_factor(R), phi0, 1.0, logev, iterations, info, sparse.csr_matrix(H))
+        return HeadFit("logistic", b, phi0, 1.0, logev, iterations, info, self._hessian(weights, 1.0 / lam))
 
 
 # ---------------------------------------------------------------- updates (look-ahead, conditioned)

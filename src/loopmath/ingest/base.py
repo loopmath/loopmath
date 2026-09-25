@@ -17,6 +17,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 # Cache location when no store is named (see `cache_dir`). During the
 # three-swarm build every swarm points LOOPMATH_CACHE_DIR at its own worktree
@@ -323,6 +324,26 @@ def iter_jsonl(path: str | Path) -> "list[dict]":
     except OSError:
         return []
     return out
+
+
+def iter_jsonl_stream(path: str | Path) -> "Iterator[dict]":
+    """`iter_jsonl` one line at a time, for a parser that reads each line once: a large
+    session is never held in memory whole. An unopenable file yields nothing; a read
+    error part way yields the lines before it (the list form drops them all)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    except OSError:
+        return
 
 
 def workspace_name(cwd: str | None) -> str | None:

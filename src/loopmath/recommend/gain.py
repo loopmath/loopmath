@@ -20,6 +20,9 @@ from typing import Any, Sequence
 from ..types import AcceptanceRule, Candidate, ExplorationPick, Money, Task
 
 SCREEN_SIZE = 50
+# The look-ahead's pool: the best by ell, plus every screened candidate. On the RQ1 store (202 candidates) a pool of
+# 100 moved no gain by more than $0.002 against the full 200 and kept the same top three, for 0.7 s less (0.1.1).
+POOL_SIZE = 100
 QUALIFY_SHARE = 0.01  # G must exceed 1 percent of the goal's ell
 RUNNER_UPS = 3
 PAUSED = "budget cap reached"
@@ -159,7 +162,11 @@ def explore(belief: Any, task: Task, goal: Candidate, cands: Sequence[Candidate]
             rule: AcceptanceRule | None = None, rescue_usd: float | None = None, spend: float = 0.0,
             cap: float | None = None, auto_payback_runs: float | None = None,
             screen_size: int = SCREEN_SIZE) -> Exploration:
-    """Both exploration picks for `task` against `goal`, from the belief's look-ahead."""
+    """Both exploration picks for `task` against `goal`, from the belief's look-ahead over the POOL_SIZE best
+    candidates by `ell` (`cands` comes ranked) and the screened ones."""
     screened = screen(cands, goal.config.id, screen_size)
-    scored = lookahead_scores(belief, task, goal, screened, cands, rule, rescue_usd)
+    pool = list(cands[:POOL_SIZE])
+    ids = {c.config.id for c in pool}
+    pool += [c for c in screened if c.config.id not in ids]
+    scored = lookahead_scores(belief, task, goal, screened, pool, rule, rescue_usd)
     return choose(scored, goal, spend=spend, cap=cap, auto_payback_runs=auto_payback_runs)

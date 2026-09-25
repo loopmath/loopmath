@@ -388,14 +388,21 @@ def join_launches(
     # greedily: a session is claimed once; a call keeps taking sessions it contains
     # (a loop) but takes at most `capacity` sessions through the window, and never
     # mixes the two.
+    # Candidates per harness, in `calls` order: a call that does not name a session's
+    # harness never pairs with it. `calls` is sorted by start, so once a call starts
+    # after the session every later one does too.
+    by_harness: dict[str, list[_Call]] = {}
+    for t in calls:
+        for h in t.launch:
+            by_harness.setdefault(h, []).append(t)
     pairs: list[tuple[float, bool, float, str, str, _Call, bool]] = []
     for ce, cnid, c in sessions:
-        for t in calls:
-            if t.src == cnid or c.harness not in t.launch:
+        for t in by_harness.get(c.harness, ()):
+            if t.src == cnid:
                 continue
             lag = ce - t.st
             if lag < 0:
-                continue
+                break
             contained = t.contains(ce)
             if t.src_ws == c.workspace:
                 wlo, whi = t.window()
@@ -415,13 +422,14 @@ def join_launches(
     # Rule 2, last resort: codex sessions inside a long synchronous same-workspace
     # call naming nothing (`contains` is already False for backgrounded calls and
     # for calls that started after the session).
+    long_by_ws: dict[str | None, list[_Call]] = {}
+    for t in calls:
+        if not t.launch and not t.background and t.en is not None and t.en - t.st >= LONG_CALL_S:
+            long_by_ws.setdefault(t.src_ws, []).append(t)
     for ce, cnid, c in sessions:
         if cnid in chosen or c.source != "codex":
             continue
-        longs = [
-            t for t in calls
-            if t.src != cnid and t.src_ws == c.workspace and not t.launch and t.contains(ce) and t.en - t.st >= LONG_CALL_S
-        ]
+        longs = [t for t in long_by_ws.get(c.workspace, ()) if t.src != cnid and t.contains(ce)]
         if longs:
             t = max(longs, key=lambda t: (t.en - t.st, -t.st, t.src))
             chosen[cnid] = (t, True)

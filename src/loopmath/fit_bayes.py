@@ -16,7 +16,7 @@ BAYES_HINT = (
     "Install it with: pip install 'loopmath[bayes]'"
 )
 
-SEED = 20260901
+from .research_defaults import SEED  # noqa: F401  (re-exported)
 
 
 def require_bayes() -> None:

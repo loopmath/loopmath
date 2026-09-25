@@ -20,6 +20,9 @@ from loopmath.ocp.migrate import MigrationError, migrate_doc
 from ._common import MIGRATE_GOLDEN, example, load
 
 FULL = example("full-fields")
+# full-fields records an accepted run, so it has no run.rescue; the sweep gives
+# its copy one, so malformed rescue values are covered too.
+FULL["run"]["rescue"] = {"kind": "configuration", "ref": "usual", "cost_usd": 12.5, "basis": "measured"}
 NEW_FIELDS = [("run", k) for k in ("task", "configuration", "provenance", "acceptance_rule", "signals", "slate",
                                    "preferences", "rescue", "receipt")]
 NEW_FIELDS += [("nodes", 1, "vertex"), ("nodes", 1, "gate"), ("attempts", 0, "vertex"), ("attempts", 0, "round"),

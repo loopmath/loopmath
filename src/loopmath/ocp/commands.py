@@ -73,13 +73,15 @@ def validate(args: argparse.Namespace) -> int:
                      "findings": _finding_dicts(findings)})
         labels.append(label)
     ok = all(row["ok"] for row in rows)
+    passed = sum(row["ok"] for row in rows)
     if args.json:
-        emit_json("loopmath.ocp.validate/1", {"ok": ok, "files": rows})
+        emit_json("loopmath.ocp.validate/1", {"ok": ok, "files": rows, "passed": passed, "failed": len(rows) - passed})
     else:
         for row, label, findings in zip(rows, labels, results):
             verdict = "PASS" if row["ok"] else "FAIL"
             print(f"{verdict}  {row['path']}  ({label}; {_tally(row['errors'], row['warnings'])})")
             _print_findings(findings)
+        print(f"{passed} passed, {len(rows) - passed} failed")
     if missing:
         return EXIT_NOT_FOUND
     return EXIT_OK if ok else EXIT_USER

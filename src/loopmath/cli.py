@@ -321,7 +321,7 @@ def adapt_verb(args: argparse.Namespace) -> int:
 
 
 def _add_adapt(sub) -> None:
-    p = sub.add_parser("adapt", help="emit OCP v0.2 from an ADE store")
+    p = sub.add_parser("adapt", help="emit OCP v0.2 from an ADE store (loopmath ocp migrate converts it to v0.3)")
     p.add_argument("name", metavar="NAME", help="registered adapter name")
     p.add_argument("--out", default=None, help="write here instead of stdout (must be inside the git worktree of the current directory; parent directories are created)")
     p.add_argument("--store", action="append", default=[], metavar="PATH", help="use this store path instead of discovery (repeatable)")
@@ -383,7 +383,7 @@ def _add_validate_prices(sub) -> None:
 
 
 def _add_fit(sub) -> None:
-    from .fit import E1A_OBSERVE, SEED
+    from .research_defaults import E1A_OBSERVE, SEED
 
     research = sub.add_parser("research", help="E1 research verbs: fit, transfer-test (needs the [bayes] extra)")
     rsub = research.add_subparsers(dest="research_command", required=True)
@@ -451,9 +451,9 @@ def main(argv: list[str] | None = None) -> int:
     _add_adapt(sub)
     _add_verify_receipts(sub)
 
-    from .cli_registry import register as _register_v01
+    from . import cli_registry as _registry
 
-    _register_v01(sub)
+    _registry.register(sub)
 
     if _importlib_util.find_spec("matplotlib") is not None:
         # The E0 walkdown verb draws figures, so running it needs matplotlib.
@@ -472,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
         # cannot be imported at all the two verbs are simply absent and
         # `loopmath --help` still works. Never crash the whole CLI over an extra.
         pass
+
+    sub.metavar = _registry.command_metavar(sub)  # hidden commands stay callable, off the usage line
 
     raw_args = sys.argv[1:] if argv is None else argv
     if raw_args and raw_args[0] == "view":

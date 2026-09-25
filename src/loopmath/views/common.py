@@ -316,14 +316,16 @@ def normalize_workflow(workflow: Any, settings: Mapping[str, Any] | None = None)
 
 
 def config_label(config: Mapping[str, Any]) -> str:
-    """'implement_review: claude-opus-5-5/high, gpt-6-astra/xhigh', like `Configuration.label()`."""
+    """'implement_review: claude-opus-5-5/high, gpt-6-astra/xhigh', like `Configuration.label()`;
+    a piece of width n > 1 reads '3 x gpt-5.6-sol/xhigh' (I12)."""
     wf = normalize_workflow(config.get("workflow"), config.get("settings"))
     settings = config.get("settings") or {}
     parts = []
     for piece in wf["pieces"]:
         s = as_dict(settings.get(piece["id"]))
         if isinstance(s, Mapping):
-            parts.append(f"{model_name(s.get('model'))}/{s.get('effort', 'default')}")
+            width = piece.get("width") or 1
+            parts.append((f"{width} x " if width > 1 else "") + f"{model_name(s.get('model'))}/{s.get('effort', 'default')}")
     name = wf.get("id") or "workflow"
     return f"{name}: " + ", ".join(parts)
 

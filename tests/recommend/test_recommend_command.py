@@ -18,6 +18,7 @@ from recommend_fakes import IR, PIR, SOLO, TASK, FakeBelief, Num, TaskDrawBelief
 FIX = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "v0_1"
 
 USUAL = cfg(IR, implement="opus", review="astra")
+BASE = "No usual workflow; reference: the default workflow ("  # the text's baseline line without a habit (F4)
 GOAL = cfg(PIR, plan="opusx", implement="opus", review="astra")
 CHEAP = solo("luna")
 COSTLY = solo("opusx")
@@ -69,12 +70,13 @@ def test_json_has_the_contract_keys_in_fixture_order(env, capsys):
     assert code == 0
     fixture = json.loads((FIX / "recommend-binary.json").read_text())
     assert list(obj)[: len(fixture)] == list(fixture)
-    assert obj["schema"] == "loopmath.recommend/1"
+    assert obj["schema"] == "loopmath.recommend/2"
     assert obj["task"]["features"] == {"size": "s"}
     assert obj["task"]["group_chain"][0] == ["type", "feature"]
     assert obj["task"]["support"] == {"type": 40, "repo": 10, "task": 0}
     assert obj["fit"]["id"] == "fit_20260923170000" and obj["fit"]["age_s"] is not None
-    assert obj["usual"]["from"] == "default"
+    # no habit and no recorded run: the default is a reference, never "your usual" (F4)
+    assert obj["usual"] is None and obj["reference"]["kind"] == "default" and obj["reference"]["from"] == "default"
     assert [r["levels"] for r in obj["curve"]] == [[50], [70], [80], [90], [95], [99]]
     assert [r["config"] for r in obj["curve"]] == [CHEAP.id, MID.id, USUAL.id, GOAL.id, None, None]
     assert obj["goal"]["config"] == GOAL.id and obj["goal"]["level"] == 90
@@ -90,10 +92,12 @@ def test_json_has_the_contract_keys_in_fixture_order(env, capsys):
 def test_default_usual_is_implement_review_with_a_reviewer_of_another_family(env, capsys):
     code, obj = run_json(capsys, ["recommend", "--type", "feature", "--repo", "acme/app", "--json"])
     assert code == 0
-    s = obj["usual"]["config"]["settings"]
-    assert obj["usual"]["config"]["workflow"]["id"] == "implement_review"
+    s = obj["reference"]["config"]["settings"]
+    assert obj["reference"]["config"]["workflow"]["id"] == "implement_review"
     assert s["implement"]["model"] == "claude-opus-5-5" and s["review"]["model"] == "gpt-6-astra"
-    assert obj["usual"]["config"]["id"] == USUAL.id
+    assert obj["reference"]["config"]["id"] == USUAL.id and obj["usual"] is None
+    assert obj["reference"]["text"].startswith("no usual workflow; reference: the default workflow (")
+    assert "your usual" not in obj["message"].lower() and "your usual" not in json.dumps(obj).lower()
 
 
 def test_usual_comes_from_history_then_config(env, capsys):
@@ -131,7 +135,7 @@ def test_target_rule_and_task_file(env, capsys, tmp_path):
     assert obj["rule"]["score"] == {"name": "heldout_perf", "target": 2400.0, "better": "higher", "scale": "linear"}
     assert obj["rule"]["requires"] == []
     assert obj["task"]["id"] == "tsk_ale_1" and obj["task"]["history"] == {"commit": "abc"}
-    assert obj["usual"]["prediction"]["success_from"] == "score_head"
+    assert obj["reference"]["prediction"]["success_from"] == "score_head"
     assert "chance of reaching heldout_perf >= 2400" in obj["message"]
 
 
@@ -172,7 +176,7 @@ def test_html_writes_the_plans_view_with_candidates_and_graphs(env, capsys, tmp_
     # with --json, stdout stays one object and the path goes to stderr
     code = cli.main(["recommend", "--type", "feature", "--repo", "acme/app", "--html", str(target), "--json"])
     cap = capsys.readouterr()
-    assert json.loads(cap.out)["schema"] == "loopmath.recommend/1" and str(target) in cap.err
+    assert json.loads(cap.out)["schema"] == "loopmath.recommend/2" and str(target) in cap.err
 
 
 def test_exit_codes(env, capsys):
@@ -378,7 +382,7 @@ def test_the_text_names_the_ids_that_run_start_takes(env, capsys):
     def line(head):
         return next(x for x in lines if x.strip().startswith(head))
 
-    assert f"[{USUAL.id}]: " in line("Usual (")
+    assert f"[{USUAL.id}]): " in line(BASE)
     assert f"[{obj['goal']['config']}]" in line("Goal (")
     for kind, cid in zip(("best value:", "biggest gain:"), picks):
         assert f"[{cid}]:" in line(kind)
@@ -413,33 +417,36 @@ def test_a_mean_above_its_interval_says_the_average_is_pulled_up(env, capsys):
     _, obj = run_json(capsys, [*argv, "--json"])
     text = run_json(capsys, argv)[1]["_text"]
     lines = text.splitlines()
-    usual = next(x for x in lines if x.startswith("Usual ("))
-    ell = obj["usual"]["prediction"]["ell"]["usd"]
+    usual = next(x for x in lines if x.startswith(BASE))
+    ell = obj["reference"]["prediction"]["ell"]["usd"]
+    med = obj["reference"]["numbers"]["run_cost_usd"]["median"]
     assert ell["mean"] > ell["hi"]
-    assert usual.endswith(f"80% success, $2.00 a run (360,000 tokens; {TAIL}), expected cost per accepted result "
-                          f"${ell['mean']:,.2f} (lower is better; {TAIL})")
+    assert usual.endswith(f"80% success, $2.00 a run (median ${med:,.2f}; 360,000 tokens; {TAIL}), expected rescue "
+                          f"$0.50, expected cost per accepted result ${ell['mean']:,.2f} (lower is better; {TAIL})")
     assert f"at about $2.00 (360,000 tokens; {TAIL})." in obj["message"]
     # the lines that show the usual's numbers get the note, "uncertain" first when a row has both; others do not
     row = next(x for x in lines if x.startswith("  80%:"))
-    assert row.endswith(f"$2.00 a run (360,000 tokens; {TAIL}), ${ell['mean']:,.2f} per accepted result "
-                        f"(uncertain; {TAIL})")
+    assert row.endswith(f"$2.00 a run (median ${med:,.2f}; 360,000 tokens; {TAIL}), expected rescue $0.50, "
+                        f"${ell['mean']:,.2f} per accepted result (uncertain; {TAIL})")
     assert [x for x in lines if TAIL in x] == [usual, row, obj["message"]]
     goal = next(x for x in lines if x.startswith("  90%:"))
     assert goal.endswith(" per accepted result (uncertain)") and TAIL not in goal
-    assert set(obj) == set(plain) and obj["usual"]["prediction"].keys() == plain["usual"]["prediction"].keys()
+    assert set(obj) == set(plain) and obj["reference"]["prediction"].keys() == plain["reference"]["prediction"].keys()
     # review of 3673e43: the chance of success is a shown mean too; here only its interval is pulled up
     b = make_belief()
     b.nums[USUAL.id] = dataclasses.replace(b.nums[USUAL.id], g_half=-0.1)  # 80% above an upper end of 70%
     state["belief"] = b
     _, obj = run_json(capsys, [*argv, "--json"])
     lines = run_json(capsys, argv)[1]["_text"].splitlines()
-    pred = obj["usual"]["prediction"]
+    pred = obj["reference"]["prediction"]
+    med = obj["reference"]["numbers"]["run_cost_usd"]["median"]
     assert pred["p_success"]["mean"] > pred["p_success"]["hi"]
     assert all(pred[k]["usd"]["mean"] <= pred[k]["usd"]["hi"] for k in ("cost", "ell"))
-    usual = next(x for x in lines if x.startswith("Usual ("))
-    assert usual.endswith(f"80% success ({TAIL}), $2.00 a run (360,000 tokens), expected cost per accepted result "
-                          f"${pred['ell']['usd']['mean']:,.2f} (lower is better)")
-    assert f"has an 80% chance of an accepted result ({TAIL}) at about $2.00 (360,000 tokens)." in obj["message"]
+    usual = next(x for x in lines if x.startswith(BASE))
+    assert usual.endswith(f"80% success ({TAIL}), $2.00 a run (median ${med:,.2f}; 360,000 tokens), expected rescue "
+                          f"$0.50, expected cost per accepted result ${pred['ell']['usd']['mean']:,.2f} "
+                          f"(lower is better)")
+    assert f"with an 80% chance of an accepted result ({TAIL}) at about $2.00 (360,000 tokens)." in obj["message"]
 
 
 def test_the_text_says_what_ell_is_once_and_alternatives_differ_in_words(env, capsys):
@@ -450,13 +457,14 @@ def test_the_text_says_what_ell_is_once_and_alternatives_differ_in_words(env, ca
     _, obj = run_json(capsys, [*argv, "--json"])
     _, out = run_json(capsys, argv)
     text = out["_text"]
-    usual = next(x for x in text.splitlines() if x.startswith("Usual ("))
-    ell = obj["usual"]["prediction"]["ell"]["usd"]["mean"]
-    assert usual.endswith(f"80% success, $2.00 a run (360,000 tokens), expected cost per accepted result ${ell:,.2f} "
-                          f"(lower is better)")
+    usual = next(x for x in text.splitlines() if x.startswith(BASE))
+    ell = obj["reference"]["prediction"]["ell"]["usd"]["mean"]
+    med = obj["reference"]["numbers"]["run_cost_usd"]["median"]
+    assert usual.endswith(f"80% success, $2.00 a run (median ${med:,.2f}; 360,000 tokens), expected rescue $0.50, "
+                          f"expected cost per accepted result ${ell:,.2f} (lower is better)")
     assert text.count("expected cost per accepted result") == 1 and " ell " not in text and " pp" not in text
     for a in obj["alternatives"]:
-        assert f"  {a['label']}: {delta_words(a['deltas'])}" in text.splitlines()
+        assert f"  {a['label']}: {delta_words(a['deltas'], 'the reference')}" in text.splitlines()
     assert delta_words({"success_pp": 8.4, "cost_pct": -90.2, "ell_usd": -46.021}) == (
         "success 8 points higher, run cost 90% lower, $46.02 less per accepted result than the usual")
     assert delta_words({"success_pp": -1.2, "cost_pct": 4.0, "ell_usd": 0.5}) == (

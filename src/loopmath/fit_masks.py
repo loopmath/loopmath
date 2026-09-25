@@ -22,7 +22,7 @@ MODEL_SHORT = {
 }
 _FULL_MODEL_NAMES = set(MODEL_SHORT.values())
 
-E1A_OBSERVE = "luna:low,medium,xhigh;sol:medium;terra:medium"
+from .research_defaults import E1A_OBSERVE  # noqa: F401  (re-exported)
 E1B_REVEAL = "t7:opus,sonnet,fable"
 
 

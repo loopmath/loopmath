@@ -55,6 +55,7 @@ def referenced(view: Mapping[str, Any]) -> list[str]:
             ids.append(cid)
 
     add(view.get("usual"))
+    add(view.get("reference"))  # recommend/2: the baseline when there is no usual
     add(view.get("default_pick"))
     add(view.get("goal"))
     for row in view.get("curve") or ():
@@ -118,6 +119,7 @@ def _graphs(view: Mapping[str, Any], given: dict) -> dict:
         if pick:
             offer(pick.get("candidate"))
     offer(view.get("usual"))
+    offer(view.get("reference"))
     out: dict[str, Any] = {}
     for cid, (config, prediction) in sources.items():
         if cid in given:

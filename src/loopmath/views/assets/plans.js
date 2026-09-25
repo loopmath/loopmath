@@ -10,7 +10,7 @@
   // ------------------------------------------------------------ candidates by configuration id
   const BY = new Map();
   const cid = c => typeof c === 'string' ? c : c && c.config ? (typeof c.config === 'string' ? c.config : c.config.id) : null;
-  const add = c => { const id = cid(c); if (id && c.prediction && !BY.has(id)) BY.set(id, c); };
+  const add = c => { const id = cid(c); if (id && c.prediction && !BY.has(id)) BY.set(id, c); else if (id && BY.has(id) && c.numbers && !BY.get(id).numbers) BY.get(id).numbers = c.numbers; };
   (D.candidates || []).forEach(add);
   (D.alternatives || []).forEach(add);
   // A pick is {candidate | config, gain_per_run, ...}, {paused, would_have_been}, {none} or {same_as} (spec 02, 05).
@@ -19,10 +19,28 @@
   const pickFor = k => { const p = EX[k]; return p && p.same_as ? pickOf(EX[p.same_as]) : pickOf(p); };
   const EX = D.exploration || {};
   ['best_value', 'max_gain'].forEach(k => { const p = pickOf(EX[k]); if (p && p.candidate) add(p.candidate); });
-  if (D.usual && D.usual.config && D.usual.prediction) add({ config: D.usual.config, origin: 'usual', diff_vs_usual: [], prediction: D.usual.prediction });
-  const usualId = D.usual && D.usual.config ? (D.usual.config.id || D.usual.config) : null;
-  const usualPred = D.usual && D.usual.prediction;
-  const labelOf = id => { const c = BY.get(id), cfg = c && c.config; if (cfg && cfg.label) return cfg.label; if (id === usualId && D.usual.label) return D.usual.label; return (D.graphs && D.graphs[id] && D.graphs[id].label) || id; };
+  // The baseline the page compares against: the usual, else the reference (recommend/2: kind usual, best_recorded
+  // or default). Without a usual the page never says "your usual".
+  const REF = D.reference || null;
+  const BASE = D.usual && D.usual.config ? D.usual : REF && REF.config ? REF : null;
+  const isUsual = !!(D.usual && D.usual.config) || !!(REF && REF.kind === 'usual');
+  const baseMark = isUsual ? 'usual' : 'reference';
+  const baseWords = isUsual ? 'your usual' : 'the reference';
+  const baseIntro = isUsual ? 'This is your usual workflow.' : REF && REF.kind === 'best_recorded' ? 'This is the reference: no usual workflow, so your best recorded workflow stands in for it.' : 'This is the reference: no usual workflow and no recorded one, so the default workflow stands in for it.';
+  if (BASE && BASE.prediction) add({ config: BASE.config, origin: isUsual ? 'usual' : 'reference', diff_vs_usual: [], prediction: BASE.prediction, numbers: BASE.numbers });
+  const usualId = BASE ? (BASE.config.id || BASE.config) : null;
+  const usualPred = BASE && BASE.prediction;
+  // I12: a piece of width n > 1 reads '3 x gpt-5.6-sol/xhigh', as views/common.py config_label (the recommender's labels omit it)
+  const modelName = m => m && typeof m === 'object' ? m.id || m.raw : m;
+  const widthLabel = cfg => {
+    const ps = cfg && cfg.workflow && cfg.workflow.pieces, ss = (cfg && cfg.settings) || {};
+    if (!Array.isArray(ps) || !ps.some(p => (p.width || 1) > 1)) return null;
+    const parts = ps.map(p => [p, ss[p.id] || p.setting]).filter(([, s]) => s && typeof s === 'object')
+      .map(([p, s]) => `${(p.width || 1) > 1 ? p.width + ' x ' : ''}${modelName(s.model)}/${s.effort || 'default'}`);
+    return `${cfg.workflow.id || 'workflow'}: ${parts.join(', ')}`;
+  };
+  const labelOf = id => { const c = BY.get(id), cfg = c && c.config; const w = widthLabel(cfg); if (w) return w; if (cfg && cfg.label) return cfg.label; if (id === usualId && BASE.label) return BASE.label; return (D.graphs && D.graphs[id] && D.graphs[id].label) || id; };
+  const numbersOf = id => (BY.get(id) || {}).numbers || null;
 
   // ------------------------------------------------------------ what "success" means here
   const op = target && target.better === 'lower' ? '<=' : '>=';
@@ -30,22 +48,44 @@
   const scoreOf = p => isScore && p && p.scores ? p.scores[target.name] : null;
   // The rule's target carries no unit; the score predictions do.
   const unit = !isScore ? '' : target.unit || ([...BY.values()].map(c => scoreOf(c.prediction)).find(s => s && s.unit) || {}).unit || '';
-  // g: p_reach from the score head for score rules (when the score head was used), else p_success.
-  function g(p) {
+  // g: p_reach from the score head for score rules (when the score head was used), else p_success. Its 80 percent
+  // range (P3a) is `numbers.p_reach` (recommend/2) when given; else, with success_from score_head, p_success holds
+  // the same draws of g (belief/state.py sets g to the score head's reach draws), so its range is the reach range.
+  function g(p, nb) {
     if (!p) return null;
-    const s = scoreOf(p);
-    if (isScore && p.success_from === 'score_head' && s && num(s.p_reach)) return { mean: s.p_reach, lo: null, hi: null, from: 'score' };
+    const s = scoreOf(p), c = v => num(v) ? Math.max(0, Math.min(1, v)) : null, pr = nb && nb.p_reach;
+    if (isScore && pr && num(pr.mean) && num(pr.lo) && num(pr.hi)) return { mean: c(pr.mean), lo: c(pr.lo), hi: c(pr.hi), from: 'score' };
+    if (isScore && p.success_from === 'score_head' && s && num(s.p_reach)) {
+      const ps = p.p_success || {}, same = num(ps.mean) && Math.abs(ps.mean - s.p_reach) < 1e-6 && num(ps.lo) && num(ps.hi);
+      return { mean: s.p_reach, lo: same ? c(ps.lo) : null, hi: same ? c(ps.hi) : null, from: 'score' };
+    }
     if (!p.p_success) return null;
-    const c = v => num(v) ? Math.max(0, Math.min(1, v)) : null;
     return { mean: c(p.p_success.mean), lo: c(p.p_success.lo), hi: c(p.p_success.hi), from: 'success' };
   }
+  // I13: cost per accepted result = cost per run + P(fail) x the rescue; the expected rescue is the second term.
+  const RESCUE = D.rescue || null;
+  function rescueOf(p, nb) {
+    if (nb && num(nb.expected_rescue_usd)) return { usd: nb.expected_rescue_usd, fail: null };
+    const gg = g(p, nb);
+    return RESCUE && num(RESCUE.usd) && gg && num(gg.mean) ? { usd: (1 - gg.mean) * RESCUE.usd, fail: 1 - gg.mean } : null;
+  }
+  const rescueCell = (p, nb) => { const r = rescueOf(p, nb), gg = g(p, nb); if (!r) return 'n/a'; const fail = num(r.fail) ? r.fail : gg && num(gg.mean) ? 1 - gg.mean : null; return `${esc(fmt.usd(r.usd))}${num(fail) && RESCUE && num(RESCUE.usd) ? `<span class="sub">${esc(fmt.pct(fail))} x ${esc(fmt.usd(RESCUE.usd))}</span>` : ''}`; };
+  function rescueHtml() {
+    if (!RESCUE) return '';
+    if (RESCUE.kind === 'none' || !num(RESCUE.usd) || RESCUE.usd <= 0) return '<p class="note">No rescue is priced (rescue: none), so the cost per accepted result is the cost per run.</p>';
+    const what = RESCUE.basis || RESCUE.kind || 'rescue';
+    return `<p class="note">Cost per accepted result = cost per run + chance of failing x the rescue. The rescue: <b>${esc(what)}</b>${RESCUE.of ? ` (${esc(RESCUE.of)})` : ''}, about <b>${esc(fmt.usd(RESCUE.usd))}</b>${num(RESCUE.tokens) ? ` (${esc(fmt.tok(RESCUE.tokens))} tokens)` : ''}. The tables show the expected rescue, chance of failing x ${esc(fmt.usd(RESCUE.usd))}, in its own column.</p>`;
+  }
+  // I15: the median run cost beside the mean, when recommend/2 gives it.
+  const medianOf = nb => nb && nb.run_cost_usd && num(nb.run_cost_usd.median) ? nb.run_cost_usd : null;
+  const medianText = nb => { const m = medianOf(nb); return m ? `median ${fmt.usd(m.median)}${m.median_basis && m.median_basis !== 'draws' ? ' (approx.)' : ''}` : ''; };
   const gText = x => !x || !num(x.mean) ? 'n/a' : (num(x.lo) ? `${fmt.pct(x.mean)} <span class="rng-t">(${fmt.pct(x.lo)} to ${fmt.pct(x.hi)})</span>` : fmt.pct(x.mean)) + tailHtml(x);
   const isShared = p => !!p && (p.support === 0 || (fit.n_runs && fit.n_runs.user === 0));
 
   // ------------------------------------------------------------ marked points
   const marks = new Map();  // config id -> [labels]
   const mark = (id, label) => { if (!id) return; if (!marks.has(id)) marks.set(id, []); if (!marks.get(id).includes(label)) marks.get(id).push(label); };
-  mark(usualId, 'usual');
+  mark(usualId, baseMark);
   mark(D.default_pick && D.default_pick.config, 'default pick');
   mark(D.goal && D.goal.config, `goal${D.goal && num(D.goal.level) ? ' (' + D.goal.level + '%)' : ''}`);
   const bv = EX.best_value, mg = EX.max_gain;
@@ -77,7 +117,7 @@
   function points() {
     const out = [];
     BY.forEach((c, id) => {
-      const p = c.prediction, cost = p && p.cost && p.cost.usd, gg = g(p), s = scoreOf(p);
+      const p = c.prediction, cost = p && p.cost && p.cost.usd, gg = g(p, c.numbers), s = scoreOf(p);
       if (!cost || !num(cost.mean) || cost.mean <= 0) return;
       const y = yMode === 'score' ? (s && s.value ? s.value : null) : gg;
       if (!y || !num(y.mean)) return;
@@ -153,8 +193,8 @@
     svg.addEventListener('mousemove', ev => {
       const el = ev.target.closest && ev.target.closest('[data-cfg]');
       if (!el) { tip(null); return; }
-      const c = BY.get(el.dataset.cfg), p = c.prediction;
-      tip(`<b>${esc(labelOf(el.dataset.cfg))}</b>${marks.has(el.dataset.cfg) ? '<br>' + esc(marks.get(el.dataset.cfg).join(', ')) : ''}<br>${esc(gWords)}: ${gText(g(p))}<br>cost ${p.cost.usd ? esc(`${fmt.usd(p.cost.usd.mean)} (${fmt.usd(p.cost.usd.lo)} to ${fmt.usd(p.cost.usd.hi)})`) : 'n/a'}, ${fmt.tok(p.cost.tokens && p.cost.tokens.mean)} tokens${tailPlain(p.cost.usd, p.cost.tokens)}<br><span class="m">expected dollars to an accepted result ${fmt.usd(p.ell && p.ell.usd && p.ell.usd.mean)}${tailPlain(p.ell && p.ell.usd)}; click for detail</span>`, ev.clientX, ev.clientY);
+      const c = BY.get(el.dataset.cfg), p = c.prediction, nb = c.numbers, med = medianText(nb), r = rescueOf(p, nb);
+      tip(`<b>${esc(labelOf(el.dataset.cfg))}</b>${marks.has(el.dataset.cfg) ? '<br>' + esc(marks.get(el.dataset.cfg).join(', ')) : ''}<br>${esc(gWords)}: ${gText(g(p, nb))}<br>cost ${p.cost.usd ? esc(`${fmt.usd(p.cost.usd.mean)} (${fmt.usd(p.cost.usd.lo)} to ${fmt.usd(p.cost.usd.hi)})${med ? ', ' + med : ''}`) : 'n/a'}, ${fmt.tok(p.cost.tokens && p.cost.tokens.mean)} tokens${tailPlain(p.cost.usd, p.cost.tokens)}${r ? `<br>expected rescue ${esc(fmt.usd(r.usd))}` : ''}<br><span class="m">cost per accepted result ${fmt.usd(p.ell && p.ell.usd && p.ell.usd.mean)}${tailPlain(p.ell && p.ell.usd)}; click for detail</span>`, ev.clientX, ev.clientY);
     });
     svg.addEventListener('mouseleave', () => tip(null));
     svg.addEventListener('click', ev => { const el = ev.target.closest && ev.target.closest('[data-cfg]'); if (el) select(el.dataset.cfg, true); });
@@ -169,20 +209,22 @@
   function curveHtml() {
     const rows = (D.curve || []).map(r => {
       const goal = D.goal && r.config && r.config === D.goal.config && (!num(D.goal.level) || r.levels.includes(D.goal.level));
-      if (!r.reached || !r.config) return `<tr class="${goal ? 'hl' : ''}"><td>${esc(levelsText(r))}</td><td colspan="${isScore ? 6 : 5}" class="m">No candidate reaches this level${r.uncertain ? '; uncertain' : ''}.</td></tr>`;
-      const p = r.prediction || (BY.get(r.config) || {}).prediction || {}, s = scoreOf(p);
+      if (!r.reached || !r.config) return `<tr class="${goal ? 'hl' : ''}"><td>${esc(levelsText(r))}</td><td colspan="${isScore ? 7 : 6}" class="m">No candidate reaches this level${r.uncertain ? '; uncertain' : ''}.</td></tr>`;
+      const p = r.prediction || (BY.get(r.config) || {}).prediction || {}, s = scoreOf(p), nb = r.numbers || numbersOf(r.config);
       return `<tr class="row${goal ? ' hl' : ''}" data-cfg="${esc(r.config)}"><td>${esc(levelsText(r))}${goal ? ' <span class="badge mark">goal</span>' : ''}${r.uncertain ? ' <span class="badge unk" title="fewer than 80 percent of draws reach this level">uncertain</span>' : ''}</td>` +
-        `<td>${esc(labelOf(r.config))}</td><td>${gStack(g(p))} ${support(p.support)}${shared(isShared(p))}</td><td class="nw">${costStack(p.cost)}</td><td class="nw">${p.ell ? stack(p.ell.usd, fmt.usd) : 'n/a'}</td>` +
+        `<td>${esc(labelOf(r.config))}</td><td>${gStack(g(p, nb))} ${support(p.support)}${shared(isShared(p))}</td><td class="nw">${costStack(p.cost, nb)}</td><td class="nw">${rescueCell(p, nb)}</td><td class="nw">${p.ell ? stack(p.ell.usd, fmt.usd) : 'n/a'}</td>` +
         (isScore ? `<td class="nw">${s && s.value ? stack(s.value, v => fmt.score(v, s.unit)) : 'n/a'}</td>` : '') + `</tr>`;
     }).join('');
-    return `<div class="tablescroll"><table><thead><tr><th>level</th><th>workflow</th><th>${esc(gWords)}</th><th>cost per run</th><th title="ell: expected dollars to an accepted result, a rescue included when a run fails">cost per accepted result</th>${isScore ? `<th>expected ${esc(target.name)}</th>` : ''}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    return `<div class="tablescroll"><table><thead><tr><th>level</th><th>workflow</th><th>${esc(gWords)}</th><th>cost per run</th>${RESCUE_TH}<th title="${ELL_TITLE}">cost per accepted result</th>${isScore ? `<th>expected ${esc(target.name)}</th>` : ''}</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
+  const ELL_TITLE = 'ell: expected dollars to an accepted result, a rescue included when a run fails: cost per run + expected rescue';
+  const RESCUE_TH = '<th title="chance of failing x the rescue named at the top">expected rescue</th>';
   function altsHtml() {
     const alts = D.alternatives || [];
     if (!alts.length) return '<p class="empty">No alternatives.</p>';
-    return `<div class="tablescroll"><table><thead><tr><th>workflow</th><th>change from your usual</th><th>${esc(gWords)}</th><th>cost per run</th><th title="ell: expected dollars to an accepted result, a rescue included when a run fails">cost per accepted result</th></tr></thead><tbody>` + alts.map(c => {
-      const id = cid(c), p = c.prediction || {};
-      return `<tr class="row" data-cfg="${esc(id)}"><td>${esc(labelOf(id))}${marks.has(id) ? ' <span class="badge mark">' + esc(marks.get(id).join(', ')) + '</span>' : ''}</td><td class="small">${(c.diff_vs_usual || []).map(esc).join('<br>') || '<span class="m">same as usual</span>'}</td><td>${gText(g(p))}${delta(p, 'g')}</td><td class="nw">${costStack(p.cost)}${delta(p, 'cost')}</td><td class="nw">${p.ell ? fmt.usd(p.ell.usd.mean) + tailHtml(p.ell.usd) : 'n/a'}</td></tr>`;
+    return `<div class="tablescroll"><table><thead><tr><th>workflow</th><th>change from ${baseWords}</th><th>${esc(gWords)}</th><th>cost per run</th>${RESCUE_TH}<th title="${ELL_TITLE}">cost per accepted result</th></tr></thead><tbody>` + alts.map(c => {
+      const id = cid(c), p = c.prediction || {}, nb = c.numbers || numbersOf(id);
+      return `<tr class="row" data-cfg="${esc(id)}"><td>${esc(labelOf(id))}${marks.has(id) ? ' <span class="badge mark">' + esc(marks.get(id).join(', ')) + '</span>' : ''}</td><td class="small">${(c.diff_vs_usual || []).map(esc).join('<br>') || `<span class="m">same as ${baseWords}</span>`}</td><td>${gText(g(p, nb))}${delta(p, 'g')}</td><td class="nw">${costStack(p.cost, nb)}${delta(p, 'cost')}</td><td class="nw">${rescueCell(p, nb)}</td><td class="nw">${p.ell ? fmt.usd(p.ell.usd.mean) + tailHtml(p.ell.usd) : 'n/a'}</td></tr>`;
     }).join('') + '</tbody></table></div>';
   }
   function deltaText(p, what) {
@@ -191,11 +233,11 @@
     const a = p.cost && p.cost.usd && p.cost.usd.mean, b = usualPred.cost && usualPred.cost.usd && usualPred.cost.usd.mean;
     return num(a) && num(b) && b > 0 ? `${fmt.signed((a / b - 1) * 100, v => v.toFixed(0) + '%')} (${fmt.signed(a - b, fmt.usd)})` : '';
   }
-  const delta = (p, what) => { const t = deltaText(p, what); return t ? `<span class="sub">${esc(t)} vs usual</span>` : ''; };
+  const delta = (p, what) => { const t = deltaText(p, what); return t ? `<span class="sub">${esc(t)} vs ${baseMark}</span>` : ''; };
   // A value with its 80 percent range on a second, muted line: keeps table columns narrow.
   // `also`: other values shown in the cell (the tokens beside dollars), whose tail the note covers too
   const stack = (x, f, extra = '', also = []) => !x || !num(x.mean) ? 'n/a' : `${esc(f(x.mean))}<span class="sub">${num(x.lo) ? esc(f(x.lo) + ' to ' + f(x.hi)) : ''}${esc(extra)}</span>${[x, ...also].some(pulledUp) ? `<span class="sub tail">${TAIL_NOTE}</span>` : ''}`;
-  const costStack = m => !m || !m.usd ? 'n/a' : stack(m.usd, fmt.usd, m.tokens && num(m.tokens.mean) ? `, ${fmt.tok(m.tokens.mean)} tok` : '', [m.tokens]);
+  const costStack = (m, nb) => !m || !m.usd ? 'n/a' : stack(m.usd, fmt.usd, (medianOf(nb) ? `, ${medianText(nb)}` : '') + (m.tokens && num(m.tokens.mean) ? `, ${fmt.tok(m.tokens.mean)} tok` : ''), [m.tokens]);
   const gStack = x => !x || !num(x.mean) ? 'n/a' : num(x.lo) ? stack(x, fmt.pct) : fmt.pct(x.mean);
 
   // ------------------------------------------------------------ exploration
@@ -216,9 +258,11 @@
     return `about ${n} similar run${n === 1 ? '' : 's'}`;
   }
   function pickHtml(kind, p, paused) {
-    const id = pickCid(p);
+    const id = pickCid(p), c = BY.get(id) || p.candidate || {}, gg = g(c.prediction, c.numbers || numbersOf(id));
     return `<p class="note"><a href="#" data-pick="${esc(id)}">${esc(labelOf(id))}</a>${p.auto_ok ? ' <span class="badge acc" title="payback is below explore.auto_payback_runs">auto ok</span>' : ''}</p>` +
-      `<dl class="kv${paused ? ' m' : ''}"><dt>chance to beat the goal</dt><dd>${fmt.pct(p.p_beats_goal)}</dd>` +
+      `<dl class="kv${paused ? ' m' : ''}"><dt>${esc(gWords)}</dt><dd>${gText(gg)}</dd>` +
+      `<dt>chance it beats the recommended pick</dt><dd>${fmt.pct(p.p_beats_goal)}</dd>` +
+      `<dd class="small m wide">Not the ${esc(gWords)}: the chance that, once tried, this workflow turns out cheaper per accepted result than the recommended pick (marked goal).</dd>` +
       `<dt>price now</dt><dd>${moneyIv(p.price)}</dd>` +
       `<dt>trying it once</dt><dd>${savingText(p.gain_per_run)}</dd>` +
       `<dt>pays for itself after</dt><dd>${paybackText(p.payback_runs)}</dd>` +
@@ -243,7 +287,7 @@
   // ------------------------------------------------------------ side panel
   const graphFor = id => (D.graphs && D.graphs[id]) || null;
   function commandFor(id) {
-    const kinds = pickKinds(id), source = id === usualId ? 'usual' : kinds.length ? 'exploration' : 'alternative';
+    const kinds = pickKinds(id), source = id === usualId && isUsual ? 'usual' : kinds.length ? 'exploration' : 'alternative';
     const parts = ['loopmath run start'];
     if (task.type) parts.push('--type', shq(task.type));
     if (task.repo) parts.push('--repo', shq(task.repo));
@@ -259,23 +303,25 @@
     const c = BY.get(id), p = c.prediction || {}, s = scoreOf(p), cmd = commandFor(id);
     let h = `<h2><span>${esc(labelOf(id))}</span><button data-close>close</button></h2>`;
     h += `<p class="small m mono">${esc(id)}${c.origin ? ' <span class="badge src">' + esc(c.origin) + '</span>' : ''}${marks.has(id) ? ' ' + marks.get(id).map(m => `<span class="badge mark">${esc(m)}</span>`).join(' ') : ''}</p>`;
-    const gg = g(p);
+    const nb = c.numbers || null, gg = g(p, nb);
     h += `<p class="note">This configuration has a ${gg && num(gg.mean) ? fmt.pct(gg.mean) : 'unknown'} ${esc(gWords)} at about ${fmt.usd(p.cost && p.cost.usd && p.cost.usd.mean)} (${fmt.tok(p.cost && p.cost.tokens && p.cost.tokens.mean)} tokens) per run${tailPlain(gg, p.cost && p.cost.usd, p.cost && p.cost.tokens)}.</p>`;
     h += `<div class="cmd"><code>${esc(cmd)}</code><button data-copy="${esc(cmd)}">copy command</button></div>`;
     h += `<h3>Plan</h3><div id="p-graph" class="lmg"></div>`;
-    h += `<h3>Change from your usual</h3>${id === usualId ? '<p class="note">This is your usual workflow.</p>' : (c.diff_vs_usual || []).length ? '<ul class="small">' + c.diff_vs_usual.map(l => `<li>${esc(l)}</li>`).join('') + '</ul>' : '<p class="m small">No lines recorded.</p>'}`;
+    h += `<h3>Change from ${baseWords}</h3>${id === usualId ? `<p class="note">${esc(baseIntro)}</p>` : (c.diff_vs_usual || []).length ? '<ul class="small">' + c.diff_vs_usual.map(l => `<li>${esc(l)}</li>`).join('') + '</ul>' : '<p class="m small">No lines recorded.</p>'}`;
     const rows = [];
     const row = (label, x, f, extra) => rows.push(`<tr><td>${label}</td><td>${x ? stack(x, f) : 'n/a'}${extra || ''}</td><td>${x ? ivBar(x, { min: f === pctF ? 0 : undefined, max: f === pctF ? 1 : undefined }) : ''}</td></tr>`);
     const pctF = v => fmt.pct(v);
     if (gg && num(gg.lo)) row(esc(gWords), gg, pctF, ' ' + support(p.support) + shared(isShared(p)));
     else rows.push(`<tr><td>${esc(gWords)}</td><td>${gStack(gg)} ${support(p.support)}${shared(isShared(p))}</td><td></td></tr>`);
     if (isScore && gg && gg.from === 'success') rows.push(`<tr><td colspan="3" class="warn small">Fewer than 5 runs of this type carry ${esc(target.name)}, so this chance comes from the success head, not the score.</td></tr>`);
-    if (p.cost) { row('cost per run, dollars', p.cost.usd, fmt.usd); row('cost per run, tokens', p.cost.tokens, fmt.tok); }
+    if (p.cost) { row('cost per run, dollars', p.cost.usd, fmt.usd, medianOf(nb) ? ` <span class="m">${esc(medianText(nb))}</span>` : ''); row('cost per run, tokens', p.cost.tokens, fmt.tok); }
+    const resc = rescueOf(p, nb);
+    if (resc) rows.push(`<tr><td>expected rescue</td><td>${rescueCell(p, nb)}</td><td></td></tr>`);
     if (p.ell) row('cost per accepted result (ell, a rescue included)', p.ell.usd, fmt.usd);
     if (p.rounds) row('rounds', p.rounds, fmt.rounds);
     Object.values(p.scores || {}).forEach(sc => { if (sc && sc.value) row(`${esc(sc.name)}${arrow(sc.better)}`, sc.value, v => fmt.score(v, sc.unit), ` ${num(sc.p_reach) ? '<span class="m">reach ' + fmt.pct(sc.p_reach) + '</span> ' : ''}${support(sc.support)}`); });
     h += `<h3>Prediction (80 percent ranges)</h3><table class="small"><tbody>${rows.join('')}</tbody></table>`;
-    if (id !== usualId && usualPred) h += `<p class="note small">Against your usual: ${esc(deltaText(p, 'g') || 'n/a')} success, ${esc(deltaText(p, 'cost') || 'n/a')} cost per run.</p>`;
+    if (id !== usualId && usualPred) h += `<p class="note small">Against ${baseWords}: ${esc(deltaText(p, 'g') || 'n/a')} success, ${esc(deltaText(p, 'cost') || 'n/a')} cost per run.</p>`;
     pickKinds(id).forEach(k => { const pk = pickFor(k), paused = !!(EX[k].paused || (EX[k].same_as && EX[EX[k].same_as].paused)); h += `<h3>${TITLE[k]}${paused ? ' (paused)' : ''}</h3><p class="small m">${NOTE[k]}</p>` + pickHtml(k, pk, paused); });
     ['best_value', 'max_gain'].forEach(k => { const pk = pickOf(EX[k]); if (pk && (pk.runner_ups || []).some(r => cid(r) === id)) h += `<p class="note small">Runner-up for ${TITLE[k].toLowerCase()}.</p>`; });
     return h;
@@ -302,7 +348,7 @@
 
   // ------------------------------------------------------------ page
   const markButtons = [...marks.entries()].filter(([id]) => BY.has(id)).map(([id, ls]) => `<button data-pick="${esc(id)}">${esc(ls.join(', '))}</button>`).join(' ');
-  app.innerHTML = `<header class="top"><h1><span class="k">loopmath</span> plans</h1><p class="lede">${esc(D.message || 'No recommendation message.')}</p></header>` +
+  app.innerHTML = `<header class="top"><h1><span class="k">loopmath</span> plans</h1><p class="lede">${esc(D.message || 'No recommendation message.')}</p>${rescueHtml()}</header>` +
     `<section class="panel">${topHtml()}</section>` +
     `<div class="pl-layout"><div class="pl-main">` +
     `<section class="panel"><h2><span>Success against cost</span><span class="small">${isScore ? `<button data-y="g" class="on">chance to reach</button> <button data-y="score">expected ${esc(target.name)}</button>` : ''}</span></h2>` +

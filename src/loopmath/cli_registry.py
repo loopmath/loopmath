@@ -61,6 +61,9 @@ def task_types_verb(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+FIT_HELP = "read this kept fit instead of the latest one: a fit_ id from `loopmath status` or the fits folder"
+
+
 # ---------------------------------------------------------------- planning
 def _add_planning(sub) -> None:
     p = sub.add_parser("task-types", help="list task types and task features")
@@ -97,10 +100,13 @@ def _add_planning(sub) -> None:
                    "the [cfg_...] printed after a workflow")
     p.add_argument("--workflow", action="append", default=[], metavar="FILE.toml", help="also consider this workflow (repeatable)")
     p.add_argument("--models", default=None, metavar="M,M,...", help="restrict candidate models")
+    p.add_argument("--fit", default=None, metavar="ID", help=FIT_HELP)
     _common(p, html=True)
     p.set_defaults(func=_lazy("loopmath.recommend.commands:recommend"))
 
-    p = sub.add_parser("plan", help="slates worth running over a backlog, within a budget")
+    # Hidden: no help= keeps it out of the command list, and HIDDEN keeps it out of the usage line.
+    p = sub.add_parser("plan", description="Experimental, and hidden from loopmath --help: slates worth running "
+                                           "over a backlog, within a budget, for designed experiments.")
     p.add_argument("--backlog", required=True, metavar="tasks.jsonl", help='one task as JSON per line, such as '
                    '{"type": "bug_fix", "repo": "acme/api", "title": "..."}')
     p.add_argument("--budget-usd", required=True, type=float, metavar="X", help="dollars to spend over the whole backlog")
@@ -174,9 +180,10 @@ def _add_recording(sub) -> None:
     _common(q)
     q.set_defaults(func=_lazy("loopmath.store.commands:run_finish"))
 
-    q = rs.add_parser("import", help="store an OCP v0.3 run written by the orchestrator")
-    q.add_argument("file", metavar="FILE.ocp.json")
-    q.add_argument("--finish", action="store_true", help="also finish the run once stored")
+    q = rs.add_parser("import", help="store OCP v0.3 runs written by the orchestrator (files or a directory)")
+    q.add_argument("files", nargs="+", metavar="FILE.ocp.json|DIR", help="OCP documents, or a directory of *.ocp.json files")
+    q.add_argument("--finish", action="store_true", help="also finish each run once stored; one background refit at the end")
+    q.add_argument("--no-fit", action="store_true", help="do not start the background refit")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.store.commands:run_import"))
 
@@ -236,19 +243,24 @@ def labeler_spec(value: str) -> str:
 
 # ---------------------------------------------------------------- learning
 def _add_learning(sub) -> None:
-    p = sub.add_parser("fit", help="refit the belief from the prior bundle and your runs")
+    p = sub.add_parser("fit", help="refit the belief from the prior bundle and your runs",
+                       description="Builds the belief from the shipped prior and your runs and points fits/latest at it: "
+                                   "a new fit replaces the one recommend and posterior read. The 5 newest fits, and any a "
+                                   "receipt or stored recommendation names, are kept; recommend --fit ID and posterior "
+                                   "--fit ID read one of them. Runs in your store always count as yours.")
     p.add_argument("--background", action="store_true", help="start the fit and return at once")
     p.add_argument("--full", action="store_true", help="also run the PyMC check (needs the bayes extra)")
     p.add_argument("--no-prior", action="store_true", help="fit your runs alone, without the shipped prior, shared runs or benchmark factors")
     p.add_argument("--without", action="append", default=[], metavar="SOURCE",
-                   help="leave out one source: e0, sweep or rq1 (shipped prior), benchmark (benchmark prior factors), user (your runs), shared or shared:ORG (imported runs); repeatable")
+                   help="leave out one source: e0, sweep or rq1 (shipped prior; never your own runs, whatever their label), benchmark (benchmark prior factors), user (your runs), shared or shared:ORG (imported runs); repeatable")
     _common(p)
     p.set_defaults(func=_lazy("loopmath.belief.commands:fit"))
 
     p = sub.add_parser("onboard", help="turn your Claude Code and Codex history into runs and a first fit",
                        description="Reads your Claude Code and Codex history (read only), groups sessions, has the labeller you choose "
                                    "name each task type, records one habit run per group, saves your usual workflow per task type "
-                                   "and repo, and runs a first fit.")
+                                   "and repo, and runs a first fit. Reading the history uses up to 8 worker processes "
+                                   "(one per CPU); set LOOPMATH_WORKERS=1 to keep it in one process.")
     p.add_argument("--since", default="90d", metavar="D", help="how far back to read: 90d, 12w, 36h or a date (default 90d)")
     p.add_argument("--labeler", default=None, type=labeler_spec, metavar="claude:MODEL|codex:MODEL|command:CMD|none",
                    help="what labels task types: a model through your own claude or codex CLI, your own command, or none; there is no default, and your choice is saved as config onboard.labeler")
@@ -266,7 +278,7 @@ def _add_learning(sub) -> None:
     _common(p)
     p.set_defaults(func=_lazy("loopmath.share.commands:share"))
 
-    p = sub.add_parser("prior")  # hidden from the main help list
+    p = sub.add_parser("prior", help="the shipped prior bundle: show, build, import-shared")
     ps = p.add_subparsers(dest="prior_command", required=True)
     q = ps.add_parser("build", help="rebuild the packaged prior bundle from the sweep, E0 and RQ1 inputs")
     q.add_argument("--out", default=None, metavar="DIR", help="where to write the bundle (default: the packaged bundle folder, which it replaces)")
@@ -287,11 +299,13 @@ def _add_learning(sub) -> None:
 # ---------------------------------------------------------------- viewing
 def _add_viewing(sub) -> None:
     p = sub.add_parser("runs", help="previous runs (table, one run, HTML page)")
+    p.add_argument("run_id", nargs="?", default=None, metavar="RUN", help="show this one run in full, as --run RUN")
     p.add_argument("--type", dest="task_type", default=None, metavar="T", help="only this task type (see loopmath task-types)")
     p.add_argument("--repo", default=None, metavar="R", help="only this repository")
     p.add_argument("--since", default=None, metavar="D", help="only runs started since then: 90d, 2w, 12h, or a date or time such as 2026-09-01 or 2026-09-01T09:00 (local time)")
     p.add_argument("--slate", default=None, metavar="SLT", help="only this slate")
     p.add_argument("--run", default=None, metavar="RUN", help="show this one run in full; RUN is an id from the run column of loopmath runs")
+    p.add_argument("--wide", action="store_true", help="also show each run's cfg_ configuration id")
     _common(p, html=True)
     p.set_defaults(func=_lazy("loopmath.views.runs:command"))
 
@@ -302,6 +316,9 @@ def _add_viewing(sub) -> None:
     p.add_argument("--workflow", default=None, metavar="CFG|FILE.toml", help="also draw this configuration with each piece's estimate: a cfg_ id from loopmath recommend --json or your runs, or FILE.toml with settings")
     p.add_argument("--type", dest="task_type", default=None, metavar="T", help="task type for the workflow graph (default: the most common in your runs, else feature)")
     p.add_argument("--repo", default=None, metavar="R", help="repository for the workflow graph (default: the most common in your runs)")
+    p.add_argument("--subtype", default=None, metavar="S", help="your own subtype of the task type, as for recommend")
+    p.add_argument("--feature", action="append", default=[], metavar="K=V", help="task feature for the workflow graph (repeatable), as for recommend")
+    p.add_argument("--fit", default=None, metavar="ID", help=FIT_HELP)
     _common(p, html=True)
     p.set_defaults(func=_lazy("loopmath.views.posterior:command"))
 
@@ -343,6 +360,14 @@ def _add_viewing(sub) -> None:
     q.add_argument("--out", default=None, metavar="DIR", help="write each result to DIR as NAME.ocp.json; a result with errors is never written (needed for several files unless --json)")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.ocp.commands:migrate"))
+
+
+HIDDEN = frozenset({"plan"})  # callable, but not listed by `loopmath --help`
+
+
+def command_metavar(sub) -> str:
+    """The `{a,b,...}` command list for usage lines, without the hidden commands."""
+    return "{" + ",".join(name for name in sub.choices if name not in HIDDEN) + "}"
 
 
 def register(sub) -> None:

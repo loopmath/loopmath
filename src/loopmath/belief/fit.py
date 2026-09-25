@@ -30,6 +30,7 @@ from scipy import sparse
 
 from . import priors as prior_data
 from .design import Term, Unusable, cost_row, gate_row, parse_run, run_row, structure, task_terms
+from .block import leaf_split
 from .forest import Forest, default_scale, fixed_sd, scale_group
 from .gaussian import N_DRAWS, Factors, GaussianHead, HeadFit, LogisticHead, Prior
 from .state import SCORE_CLAMP, inverse_transform, transform  # noqa: F401  (re-exported)
@@ -54,12 +55,19 @@ class NothingToFit(ValueError):
     """No head has a row, so no fit was written and `fits/latest` did not move."""
 
 
+class UnknownFit(LookupError):
+    """`--fit ID` named no complete fit in the store."""
+
+
 FIXED_SOURCES = ("benchmark", "shared", "user")
+
+SHIPPED_COPY = "shipped copy of a stored run"
 
 REASON_NOTES = {
     "attempt without usable cost": "crashed or no usage reported",
     "attempt outside the workflow": "a model attempt at no piece of the run's workflow",
     "duplicate run id": "the same run found twice",
+    SHIPPED_COPY: "your store has the same run id; your copy is used",
     "no configuration": "the run records no workflow and settings",
     "workflow ref not resolved": "a workflow this version does not know",
     "workflow has no pieces": "an empty workflow",
@@ -168,11 +176,21 @@ def _excluded(source: str, without: tuple[str, ...]) -> bool:
     return False
 
 
-def collect_rows(docs: Iterable[dict], *, without: tuple[str, ...] = (), now: datetime | None = None):
+def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tuple[str, ...] = (),
+                 now: datetime | None = None):
     """Rows of every head from run documents, plus counts of what was used and dropped.
 
-    Returns (heads, score_info, dropped, runs_by_source, config_support, checks); `checks` counts
-    the non-model check attempts by check name, which are neither evidence nor dropped (D86).
+    `docs` yields documents, or `(origin, document)` pairs from `fit()`: `user` for the store
+    (read first), the manifest source for a shipped run, None to read the document's label
+    (spec 04 section 1, D118 N2). A shipped run whose id is in the store is left out as
+    `shipped copy of a stored run`, and a shipped source named in `without` is counted
+    without being parsed.
+
+    Returns (heads, score_info, dropped, runs_by_source, config_support, checks,
+    shipped_overlap, user_labels); `checks` counts the non-model check attempts by check name,
+    which are neither evidence nor dropped (D86); `shipped_overlap` counts, per shipped source,
+    the user's runs that are also in it; `user_labels` counts the user's runs by the source
+    their document names, when that is not `user`.
     """
     now = now or datetime.now().astimezone()
     heads = {name: HeadRows(name, *HEAD_KIND[name]) for name in HEAD_KIND}
@@ -184,9 +202,25 @@ def collect_rows(docs: Iterable[dict], *, without: tuple[str, ...] = (), now: da
     runs_by_source: Counter = Counter()
     config_support: dict[str, Counter] = defaultdict(Counter)
     seen: set[str] = set()
-    for doc in docs:
+    stored: set[str] = set()  # run ids of the user's store, whose copy wins (D118 N2)
+    overlap: Counter = Counter()
+    labels: Counter = Counter()
+    for item in docs:
+        origin, doc = item if isinstance(item, tuple) else (None, item)
+        if origin is not None and _excluded(origin, without):
+            if origin != "user" and prior_data.run_id_of(doc) in stored:
+                overlap[origin] += 1
+            dropped[f"without {origin}"] += 1  # counted, not parsed; `--without user` frees the shipped copies
+            continue
+        if origin == "user":
+            stored.add(prior_data.run_id_of(doc))
+        elif origin is not None:
+            if prior_data.run_id_of(doc) in stored:
+                overlap[origin] += 1
+                dropped[SHIPPED_COPY] += 1
+                continue
         try:
-            pr = parse_run(doc, now=now)
+            pr = parse_run(doc, now=now, origin=origin)
         except Unusable as exc:
             dropped[str(exc)] += 1
             continue
@@ -200,6 +234,8 @@ def collect_rows(docs: Iterable[dict], *, without: tuple[str, ...] = (), now: da
         if _excluded(pr.source, without):
             dropped[f"without {pr.source}"] += 1
             continue
+        if pr.source == "user" and pr.task.extra.get("source_label"):
+            labels[pr.task.extra["source_label"]] += 1
         for reason, n in pr.dropped.items():
             dropped[reason] += n
         checks.update(pr.checks)
@@ -241,7 +277,7 @@ def collect_rows(docs: Iterable[dict], *, without: tuple[str, ...] = (), now: da
         else:
             dropped[f"score {name} below {MIN_SCORE_RUNS} runs"] += len(hr.runs)
     return (heads, score_info, dict(dropped), dict(runs_by_source), {c: dict(n) for c, n in config_support.items()},
-            dict(checks))
+            dict(checks), dict(overlap), dict(labels))
 
 
 # ---------------------------------------------------------------- matrices and priors
@@ -323,6 +359,16 @@ def fit_head(hr: HeadRows, forest: Forest, factor_specs: list, *, eb: bool = Tru
     X, node_ids = build_matrix(hr.rows, forest, extra)
     prior = make_prior(node_ids, hr.kind)
     factors = make_factors(factor_specs, node_ids)
+    # leaves first (block.py): no two of the leading nodes share a row or a factor, so the stored
+    # precision's Cholesky factor is the block factor, rebuilt in O(c^3) by the state
+    aX = abs(X)
+    pattern = aX.T @ aX + (abs(factors.F).T @ abs(factors.F) if factors is not None else 0)
+    perm, _ = leaf_split(pattern)
+    X = X[:, perm].tocsr()
+    node_ids = [node_ids[i] for i in perm]
+    prior = Prior(prior.group_idx[perm], prior.fixed_var[perm], prior.groups, prior.default_phi)
+    if factors is not None:
+        factors = Factors(factors.F[:, perm].tocsr(), factors.f, factors.v)
     y = np.array(hr.y, float)
     w = np.array(hr.w, float)
     center, scale = 0.0, 1.0
@@ -419,17 +465,18 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         config = _read_config(home)
         weight = float(config.get("benchmark_prior_weight", prior_data.BENCHMARK_PRIOR_WEIGHT))
 
-        def all_docs() -> Iterator[dict]:
+        def all_docs() -> Iterator[dict | tuple[str | None, dict]]:
             if docs is not None:
                 yield from docs
                 return
-            yield from store_docs(home)
+            for doc in store_docs(home):  # the store first, so its copy of a shipped run wins
+                yield "user", doc
             if not no_prior:
-                yield from prior_data.bundle_docs(bundle_dir, without=without)
+                yield from prior_data.bundle_entries(bundle_dir)
                 yield from prior_data.shared_docs(home)
 
-        heads_rows, score_info, dropped, runs_by_source, config_support, checks = collect_rows(
-            all_docs(), without=without, now=now)
+        (heads_rows, score_info, dropped, runs_by_source, config_support, checks, overlap,
+         labels) = collect_rows(all_docs(), without=without, now=now)
         removed = {k[len("without "):] for k in dropped if k.startswith("without ")}
         unknown, known = unknown_sources(without, set(runs_by_source) | removed, bundle_dir)
         if unknown:
@@ -484,6 +531,8 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             "runs_by_source": runs_by_source,
             "n_runs": {"prior": sum(v for k, v in runs_by_source.items() if k != "user"),
                        "user": runs_by_source.get("user", 0)},
+            "shipped_overlap": overlap,
+            "user_labels": labels,
             "dropped": dropped,
             "not_model_attempts": checks,
             "heads": {name: {"engine": h["engine"], "kind": h["kind"], "sigma": float(h["fit"].sigma),
@@ -526,6 +575,37 @@ def _full_check(fitted: dict) -> dict:
     except ImportError as exc:
         return {"ran": False, "reason": f"the bayes extra is not installed ({exc.name})"}
     return compare(fitted)
+
+
+# ---------------------------------------------------------------- reading a kept fit
+
+def kept_fits(home: Path) -> list[str]:
+    """Complete fits on disk, oldest first (D91 keeps the newest KEEP_FITS and the named ones)."""
+    fits = Path(home) / "fits"
+    if not fits.is_dir():
+        return []
+    return sorted(p.name for p in fits.glob("fit_*")
+                  if p.is_dir() and not p.name.endswith(".partial") and (p / "meta.json").is_file())
+
+
+def fit_folder(home: Path, fit_id: str) -> Path:
+    """The folder of fit `fit_id` (`latest` is `fits/latest`); raises UnknownFit naming the kept fits."""
+    fits = Path(home) / "fits"
+    fid = str(fit_id or "").strip()
+    if fid == "latest" and (fits / "latest" / "meta.json").is_file():
+        return (fits / "latest").resolve()
+    kept = kept_fits(home)
+    if fid not in kept:
+        listed = ", ".join(kept[-KEEP_FITS - 3:]) if kept else "none yet (run `loopmath fit`)"
+        raise UnknownFit(f"no fit {fid} in {fits}; kept fits, newest last: {listed}")
+    return fits / fid
+
+
+def load_fit(home: Path, fit_id: str):
+    """The belief state of a kept fit, for `recommend --fit ID` and `posterior --fit ID`."""
+    from .state import load
+
+    return load(fit_folder(home, fit_id))
 
 
 # ---------------------------------------------------------------- background

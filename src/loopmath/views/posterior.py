@@ -28,7 +28,6 @@ from .common import TAIL_NOTE, embed_json, extract_data, html_target, write_page
 SCHEMA = "loopmath.view.posterior/1"
 SECTIONS = ("model", "effort", "role", "topology", "type", "repo", "feature")
 HEADS = ("cost", "success", "gate")
-MAX_WORKFLOWS = 8
 TERMINAL_LINES = 25
 
 # Fine level name (NodeSummary.level) -> view section. Levels not listed get their own section.
@@ -181,6 +180,16 @@ def _all_nodes(levels: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------- workflow graph
+def view_label(config: Configuration) -> str:
+    """`Configuration.label()` with each piece's width (I12): 'best_of_n: 3 x gpt-5.6-sol/xhigh'."""
+    parts = []
+    for piece in config.workflow.pieces:
+        s = config.settings.get(piece.id)
+        if s is not None:
+            parts.append((f"{piece.width} x " if piece.width > 1 else "") + f"{s.model}/{s.effort}")
+    return f"{config.workflow.id}: " + ", ".join(parts)
+
+
 def workflow_graph(config: Configuration, prediction: Any) -> dict[str, Any]:
     """The workflow graph dict the fixtures use: pieces with setting and prediction, artifacts, edges, gates."""
     per_piece = getattr(prediction, "per_piece", {}) or {}
@@ -195,7 +204,7 @@ def workflow_graph(config: Configuration, prediction: Any) -> dict[str, Any]:
             node["prediction"] = _node_dict(per_piece[piece.id])
         nodes.append(node)
     nodes += [{"id": a, "kind": "artifact"} for a in config.workflow.artifacts]
-    return {"config": config.id, "label": config.label(), "nodes": nodes,
+    return {"config": config.id, "label": view_label(config), "nodes": nodes,
             "edges": [{"from": a, "to": b} for a, b in config.workflow.edges],
             "gates": [g.to_dict() for g in config.workflow.control.gates],
             "budget_rounds": max(1, config.workflow.control.budget_rounds or 1)}
@@ -630,58 +639,156 @@ def _now() -> str:
     return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def choose_task(home: Path, task_type: str | None, repo: str | None) -> tuple[Task, str]:
-    """The task the graphs are computed for: the arguments, else the most common (type, repo) in the store."""
+def choose_task(home: Path, task_type: str | None, repo: str | None, subtype: str | None = None,
+                features: dict[str, str] | None = None) -> tuple[Task, str]:
+    """The task the graphs are computed for: the arguments, else the most common (type, repo) in the store.
+
+    `subtype` and `features` (`--subtype`, `--feature`, as `recommend`) go into the prediction either way.
+    """
     if task_type is not None and task_type not in TASK_TYPE_IDS:
         raise ViewError(f"unknown task type {task_type!r}; see loopmath task-types")
+    more = {"subtype": subtype or None, "features": dict(features or {})}
     if task_type and repo:
-        return Task(id="tsk_posterior_view", type=task_type, repo=repo), "arguments"
+        return Task(id="tsk_posterior_view", type=task_type, repo=repo, **more), "arguments"
     counts = Counter((r.get("task_type"), r.get("repo")) for r in _index_rows(home)
                      if r.get("task_type") in TASK_TYPE_IDS and r.get("repo")
                      and task_type in (None, r.get("task_type")) and repo in (None, r.get("repo")))
     if counts:
         (t, r), _ = counts.most_common(1)[0]
-        return Task(id="tsk_posterior_view", type=t, repo=r), "store"
-    return Task(id="tsk_posterior_view", type=task_type or "feature", repo=repo or "unknown"), "default"
+        return Task(id="tsk_posterior_view", type=t, repo=r, **more), "store"
+    return Task(id="tsk_posterior_view", type=task_type or "feature", repo=repo or "unknown", **more), "default"
+
+
+def task_features(items: Iterable[str]) -> tuple[dict[str, str], list[str]]:
+    """`--feature K=V` items as `recommend` reads them, and the keys the model does not know."""
+    from ..taskmodel import normalize_features
+
+    raw: dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ViewError(f"--feature takes K=V; got {item!r}")
+        k, v = item.split("=", 1)
+        raw[k.strip()] = v.strip()
+    feats = normalize_features(raw)
+    return feats, sorted(k[len("extra:"):] for k in feats if k.startswith("extra:"))
+
+
+def subtype_note(state: Any, task: dict[str, Any]) -> str | None:
+    """A note when `--subtype` names a subtype the fit has no runs of, with the ones it has."""
+    sub = task.get("subtype")
+    if not sub:
+        return None
+    ts = (getattr(state, "design", None) or {}).get("task_support") or {}
+    prefix = f"subtype:{task.get('type')}/{task.get('repo')}/"
+    if ts.get(prefix + sub):
+        return None
+    known = sorted(k[len(prefix):] for k in ts if k.startswith(prefix))
+    return (f"note: fit {state.fit_id} has no runs of subtype {sub} for {task.get('type')} in {task.get('repo')}"
+            + (f" (it has {', '.join(known)})" if known else "") + "; the estimates are for a new subtype")
 
 
 def _entry(state: Any, task: Task, config: Configuration, origin: str) -> dict[str, Any]:
     prediction = state.predict(task, config)
-    return {"config": config.id, "label": config.label(), "origin": origin,
+    return {"config": config.id, "label": view_label(config), "origin": origin, "group": config.workflow.id,
             "graph": workflow_graph(config, prediction),
             "per_piece": {k: _node_dict(v) for k, v in (prediction.per_piece or {}).items()},
             "gates": [], "prediction": _node_dict(prediction)}
 
 
-def _workflow_list(state: Any, home: Path, task: Task) -> list[dict[str, Any]]:
-    """The user's configurations for the task's (type, repo): the usual one, then recorded ones by count (D20)."""
-    ids: list[str] = []
+def choose_target(home: Path, task: Task, head: str | None, present: list[str]) -> dict[str, Any] | None:
+    """The head that orders the workflow list (I11): `--head` when it is success or a score, else the score the
+    newest recommendation for this task type targets, else success."""
+    if head == "success" or (head or "").startswith("score:"):
+        return {"head": head, "from": "argument"}
+    for path in _json_files(home / "recs"):
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(rec, dict) or (rec.get("task") or {}).get("type") not in (None, task.type):
+            continue
+        score = (rec.get("rule") or {}).get("score") or {}
+        if score.get("name") and f"score:{score['name']}" in present:
+            return {"head": f"score:{score['name']}", "better": score.get("better") or "higher",
+                    "target": score.get("target"), "from": "recommendation"}
+        break  # the newest recommendation for the type decides
+    return {"head": "success", "from": "default"} if "success" in present else None
+
+
+def target_value(prediction: dict[str, Any], target: dict[str, Any] | None) -> float | None:
+    """The prediction's mean on the target head as a sort key, bigger is better; None when not predicted."""
+    if not target:
+        return None
+    if target["head"] == "success":
+        value, better = (prediction.get("p_success") or {}).get("mean"), "higher"
+    else:
+        score = (prediction.get("scores") or {}).get(target["head"].split(":", 1)[1]) or {}
+        value, better = (score.get("value") or {}).get("mean"), score.get("better") or target.get("better")
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return -float(value) if better == "lower" else float(value)
+
+
+def order_workflows(entries: list[dict[str, Any]], target: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Grouped by workflow graph (I11): the usual's group first, then groups by their best configuration on the
+    target; inside a group the usual, then by runs, ties broken by the target, then by label."""
+    def key(e: dict[str, Any]) -> float:
+        v = target_value(e.get("prediction") or {}, target)
+        return -math.inf if v is None else v
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for e in entries:
+        groups.setdefault(str(e.get("group") or ""), []).append(e)
+    for members in groups.values():
+        members.sort(key=lambda e: (e.get("origin") != "usual", -int(e.get("runs") or 0), -key(e), str(e.get("label") or "")))
+    order = sorted(groups, key=lambda g: (not any(e.get("origin") == "usual" for e in groups[g]),
+                                          -max(key(e) for e in groups[g]), g))
+    return [e for g in order for e in groups[g]]
+
+
+def _run_config(home: Path, run: Any, cfg: str) -> Configuration | None:
+    """A configuration read from the one run document the index names for it."""
+    if not run:
+        return None
+    try:
+        found = _find_config_dict(json.loads((home / "runs" / f"{run}.ocp.json").read_text(encoding="utf-8")), cfg)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    return _read_config(found) if found is not None else None
+
+
+def _workflow_list(state: Any, home: Path, task: Task, target: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Every configuration recorded for the task's (type, repo) and the usual one (D20, I11), grouped by graph."""
     usual = _usual_config_id(home, task)
-    if usual:
-        ids.append(usual)
-    counts = Counter(r.get("config") for r in _index_rows(home)
-                     if r.get("task_type") == task.type and r.get("repo") == task.repo and r.get("config"))
-    ids += [cfg for cfg, _ in counts.most_common() if cfg not in ids]
+    rows = [r for r in _index_rows(home)
+            if r.get("task_type") == task.type and r.get("repo") == task.repo and r.get("config")]
+    counts = Counter(r["config"] for r in rows)
+    first_run: dict[str, Any] = {}
+    for r in rows:
+        first_run.setdefault(r["config"], r.get("run"))
+    ids = ([usual] if usual else []) + [cfg for cfg, _ in counts.most_common() if cfg != usual]
     out = []
     for cfg in ids:
-        if len(out) >= MAX_WORKFLOWS:
-            break
-        config = resolve_config(home, cfg)
+        config = _run_config(home, first_run.get(cfg), cfg) or resolve_config(home, cfg)
         if config is not None:
-            out.append(_entry(state, task, config, "usual" if cfg == usual else "recorded"))
-    return out
+            entry = _entry(state, task, config, "usual" if cfg == usual else "recorded")
+            entry["runs"] = counts.get(cfg, 0)
+            out.append(entry)
+    return order_workflows(out, target)
 
 
 def build_view(state: Any, *, home: Path, level: str = "all", head: str | None = None,
                workflow: str | None = None, task_type: str | None = None, repo: str | None = None,
-               now: str | None = None) -> dict[str, Any]:
+               now: str | None = None, subtype: str | None = None,
+               features: dict[str, str] | None = None) -> dict[str, Any]:
     """The `loopmath.view.posterior/1` object for a belief state (spec 03 section 8, D20)."""
     levels = group_levels(state.node_summary())
     present = heads_in(levels)
     if head is not None and head not in present:
         raise ViewError(f"no estimates for head {head!r} in fit {state.fit_id}; heads: {', '.join(present) or 'none'}")
     nodes = [n for n in _all_nodes(levels) if head is None or n["head"] == head]
-    task, task_from = choose_task(home, task_type, repo)
+    task, task_from = choose_task(home, task_type, repo, subtype, features)
+    target = choose_target(home, task, head, present)
     if workflow:
         path = Path(workflow).expanduser()
         if workflow.endswith(".toml") or path.is_file():
@@ -694,7 +801,7 @@ def build_view(state: Any, *, home: Path, level: str = "all", head: str | None =
                 raise ViewError(_config_not_found(workflow, home), EXIT_NOT_FOUND)
             entries = [_entry(state, task, config, "argument")]
     else:
-        entries = _workflow_list(state, home, task)
+        entries = _workflow_list(state, home, task, target)
     meta = _read_meta(home, state.fit_id)
     workflows = [enrich_workflow(e, nodes) for e in entries]
     data = {
@@ -704,6 +811,7 @@ def build_view(state: Any, *, home: Path, level: str = "all", head: str | None =
         "task": {"type": task.type, "repo": task.repo, "subtype": task.subtype, "features": dict(task.features),
                  "from": task_from},
         "head": head,
+        "target": target,
         "heads": {h: head_info(h, meta, state) for h in (present if head is None else [head])},
         "levels": filter_levels(levels, level=level, head=head),
         "workflow": workflows[0] if workflows else None,
@@ -814,7 +922,9 @@ def _workflow_lines(data: dict[str, Any]) -> list[str]:
     if not w:
         return []
     task = data.get("task") or {}
-    lines = [f"Graph: {w.get('label')}" + (f" for a {task['type']} task in {task['repo']}" if task else "")]
+    about = [x for x in [task.get("subtype")] + [f"{k}={v}" for k, v in (task.get("features") or {}).items()] if x]
+    lines = [f"Graph: {w.get('label')}" + (f" for a {task['type']} task in {task['repo']}" if task else "")
+             + (f" ({'; '.join(about)})" if task and about else "")]
     shares = w.get("shares") or {}
     for pid, pred in (w.get("per_piece") or {}).items():
         cost, per_round = pred.get("cost") or {}, pred.get("cost_per_round") or {}  # D60: run total, one execution
@@ -992,6 +1102,9 @@ select{font:inherit;padding:4px 6px;max-width:100%}
 font-size:12px;white-space:pre-line;pointer-events:none}
 code{background:var(--chip);padding:0 4px;border-radius:3px}
 details.more{margin:4px 0 8px}details.more summary{cursor:pointer;color:var(--ink2);font-size:12px;padding:4px 0}
+details.wfgroup{margin:0 0 4px;border:1px solid var(--rule);border-radius:6px;background:var(--panel)}
+details.wfgroup summary{cursor:pointer;padding:5px 10px}details.wfgroup table{margin:0 0 4px}
+table.wflist tr.on td{background:#e8f0fb}table.wflist a{color:var(--ink);text-decoration:none}table.wflist a:hover{text-decoration:underline}
 @media (max-width:700px){.app{padding:12px}td.bar,th.bar,col.bar{display:none}table.nodes{min-width:0}}
 """
 
@@ -1009,7 +1122,7 @@ PAGE_JS = r"""
   var LEVEL_WORDS = {family_effort: 'family x effort', role_family: 'role x family', model: 'version'};
   var UNTYPED = 'untyped (no task type recorded)';
   var TAIL_NOTE = 'the average is pulled up by rare very large outcomes';  // D107: same words in every view
-  var S = {head: null, wf: 0};
+  var S = {head: null, wf: 0, open: {}};
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -1376,7 +1489,45 @@ PAGE_JS = r"""
     });
     return {pos: pos, fwd: fwd, back: back, width: x + 30, height: 40 + (maxRows - 1) * RH + 86 + 30};
   }
+  // I12: a piece of width n is drawn as n worker boxes (up to MAX_WORKERS; above that one box marked xn), each with
+  // its setting and its part of the piece's cost. The cost model prices a piece as its width times one worker
+  // (belief/compose.py), so one worker's cost and range are the piece's divided by n.
+  var MAX_WORKERS = 6;
+  function copy(o, extra) { var r = {}; Object.keys(o || {}).forEach(function (k) { r[k] = o[k]; }); Object.keys(extra || {}).forEach(function (k) { r[k] = extra[k]; }); return r; }
+  function scaled(d, f) { if (!d) return d; var r = copy(d); ['mean', 'lo', 'hi', 'median'].forEach(function (k) { if (fin(d[k])) r[k] = d[k] * f; }); return r; }
+  function perWorker(pr, n) {
+    if (!pr) return pr;
+    var r = copy(pr);
+    ['cost', 'cost_per_round'].forEach(function (k) { if (pr[k]) r[k] = copy(pr[k], {usd: scaled(pr[k].usd, 1 / n), tokens: scaled(pr[k].tokens, 1 / n)}); });
+    return r;
+  }
+  function workers(w) {
+    var g = w.graph || {}, wide = {};
+    (g.nodes || []).forEach(function (n) { if ((n.kind || 'piece') === 'piece' && n.width > 1 && n.width <= MAX_WORKERS) wide[n.id] = n.width; });
+    if (!Object.keys(wide).length) return w;
+    function ids(id) { var out = []; for (var k = 1; k <= (wide[id] || 0); k++) out.push(id + '#' + k); return out.length ? out : [id]; }
+    function last(id) { var l = ids(id); return l[l.length - 1]; }
+    var nodes = [], per = copy(w.per_piece), shares = copy(w.shares);
+    (g.nodes || []).forEach(function (n) {
+      if (!wide[n.id]) { nodes.push(n); return; }
+      var pr = perWorker((w.per_piece || {})[n.id] || n.prediction, wide[n.id]);
+      ids(n.id).forEach(function (id, k) {
+        nodes.push(copy(n, {id: id, piece: n.id, name: n.id + ' ' + (k + 1) + ' of ' + wide[n.id], worker: k + 1, workers: wide[n.id], width: 1, prediction: pr}));
+        per[id] = pr;
+        shares[id] = fin((w.shares || {})[n.id]) ? w.shares[n.id] / wide[n.id] : null;
+      });
+    });
+    var edges = [];
+    (g.edges || []).forEach(function (e) {
+      var a = e.from != null ? e.from : e[0], b = e.to != null ? e.to : e[1];
+      ids(a).forEach(function (x) { ids(b).forEach(function (y) { edges.push({from: x, to: y}); }); });
+    });
+    return copy(w, {graph: copy(g, {nodes: nodes, edges: edges}), per_piece: per, shares: shares,
+      gates: (w.gates || []).map(function (gt) { return copy(gt, {after: gt.after && last(gt.after)}); }),
+      loops: (w.loops || []).map(function (lp) { return copy(lp, {from: ids(lp.from)[0], to: last(lp.to)}); })});
+  }
   function graphSvg(w) {
+    w = workers(w);
     var g = w.graph || {}, L = layout(g), byId = {}, shares = w.shares || {}, per = w.per_piece || {};
     (g.nodes || []).forEach(function (n) { byId[n.id] = n; });
     var PW = 214, PH = 86, AW = 120, AH = 28;
@@ -1416,7 +1567,7 @@ PAGE_JS = r"""
       }
       var pr = per[n.id] || n.prediction || {}, cost = pr.cost || {}, st = n.setting || {};
       var lines = [
-        [esc(n.id) + ' <tspan fill="#52514e" font-weight="400">(' + esc(n.role || '') + (n.width > 1 ? ' x' + n.width : '') + ')</tspan>', 13, 600],
+        [esc(n.name || n.id) + ' <tspan fill="#52514e" font-weight="400">(' + esc(n.role || '') + (n.width > 1 ? ' x' + n.width : '') + ')</tspan>', 13, 600],
         [esc((st.model || 'no setting') + (st.effort ? '/' + st.effort : '')), 12, 400],
         [esc(costLabel(pr)), 12, 400],
         [esc(tok((cost.tokens || {}).mean) + ' per run, ' + pct(shares[n.id]) + ' of cost'), 12, 400]];
@@ -1470,12 +1621,14 @@ PAGE_JS = r"""
   function costAbove(pr) { var c = perRound(pr); return above(c ? c.usd : (pr.cost || {}).usd); }
   function pieceTip(w, n) {
     var pr = (w.per_piece || {})[n.id] || n.prediction || {}, cost = pr.cost || {}, st = n.setting || {};
-    var lines = [n.id + ' (' + (n.role || '') + ')', (st.harness || '') + ' ' + (st.model || '') + (st.effort ? '/' + st.effort : ''),
+    var lines = [(n.name || n.id) + ' (' + (n.role || '') + (n.width > 1 ? ', ' + n.width + ' parallel copies' : '') + ')',
+      (st.harness || '') + ' ' + (st.model || '') + (st.effort ? '/' + st.effort : ''),
       'cost per round: ' + (perRound(pr) ? iv(perRound(pr).usd, usd) : 'not given'), 'cost per run: ' + iv(cost.usd, usd),
       'tokens per run: ' + iv(cost.tokens, tokn),
       'expected rounds: ' + iv(pr.rounds, function (v) { return num(v, 2); }), 'share of the run\'s cost: ' + pct((w.shares || {})[n.id])];
     if (pr.gate_pass) lines.push('gate pass per round: ' + iv(pr.gate_pass, pct));
-    effNodes(((w.effects || {}).pieces || {})[n.id]).forEach(function (e) {
+    if (n.workers) lines.push('one of ' + n.workers + ' parallel workers of piece ' + n.piece + '; the figures above are one worker\'s part');
+    effNodes(((w.effects || {}).pieces || {})[n.piece || n.id]).forEach(function (e) {
       lines.push(levelWord(e.level) + ' ' + keyText(e) + ' [' + headLabel(e.head) + ']: ' + fmtDisplay(e));
     });
     return lines.join('\n');
@@ -1488,6 +1641,60 @@ PAGE_JS = r"""
     else if (p.support != null) s += '; ' + p.support + (p.support === 1 ? ' run' : ' runs') + ' in the tightest group with data';
     return '<p class="note">' + esc(s) + '.</p>';
   }
+  // I11: every configuration, grouped by workflow graph in the order the view gives; a group opens when the
+  // drawn configuration is in it or the reader opened it.
+  function groupsOf(list) {
+    var order = [], by = {};
+    list.forEach(function (x, j) {
+      var gname = x.group || ((x.label || '').split(':')[0]) || 'workflow';
+      if (!by[gname]) { by[gname] = []; order.push(gname); }
+      by[gname].push(j);
+    });
+    return order.map(function (gname) { return {name: gname, items: by[gname]}; });
+  }
+  function targetOf(p) {
+    var t = D.target;
+    if (!t || !p) return null;
+    if (t.head === 'success') return {d: p.p_success, f: pct};
+    var sc = (p.scores || {})[t.head.split(':').slice(1).join(':')];
+    return sc && sc.value ? {d: sc.value, f: function (v) { return num(v, 0) + (sc.unit ? ' ' + sc.unit : ''); }} : null;
+  }
+  function targetWord() {
+    var t = D.target;
+    if (!t) return '';
+    return t.head === 'success' ? 'chance of an accepted result' : 'expected ' + t.head.split(':').slice(1).join(':');
+  }
+  function pickerHtml(list) {
+    var groups = groupsOf(list), tw = targetWord();
+    var s = '<p><label>Configuration: <select id="wfpick">';
+    groups.forEach(function (gr) {
+      s += '<optgroup label="' + esc(gr.name + ' (' + gr.items.length + ')') + '">';
+      gr.items.forEach(function (j) {
+        var x = list[j];
+        s += '<option value="' + j + '"' + (j === S.wf ? ' selected' : '') + '>' + esc(x.label || x.config) + (x.origin ? ' (' + esc(x.origin) + ')' : '') + '</option>';
+      });
+      s += '</optgroup>';
+    });
+    s += '</select></label></p>';
+    s += '<p class="note">' + list.length + ' configurations in ' + groups.length + (groups.length === 1 ? ' workflow graph' : ' workflow graphs') +
+      ', grouped by graph. In a group: your usual first, then by recorded runs' + (tw ? ', ties broken by ' + esc(tw) : '') + '. Click one to draw it.</p>';
+    groups.forEach(function (gr) {
+      var open = gr.items.indexOf(S.wf) >= 0 || S.open[gr.name];
+      s += '<details class="wfgroup"' + (open ? ' open' : '') + '><summary data-group="' + esc(gr.name) + '"><b>' + esc(gr.name) + '</b> <span class="lvl">' +
+        gr.items.length + (gr.items.length === 1 ? ' configuration' : ' configurations') + '</span></summary>' +
+        '<div class="scroll"><table class="compact wflist"><thead><tr><th>Configuration</th><th class="num">Runs</th>' + (tw ? '<th class="num">' + esc(tw) + '</th>' : '') +
+        '<th class="num">Cost per run</th></tr></thead><tbody>';
+      gr.items.forEach(function (j) {
+        var x = list[j], p = x.prediction || {}, t = targetOf(p), cost = (p.cost || {}).usd;
+        s += '<tr data-wf="' + j + '"' + (j === S.wf ? ' class="on"' : '') + '><td><a href="#graph" data-wf="' + j + '">' + esc(x.label || x.config) + '</a>' +
+          (x.origin === 'usual' ? ' <span class="tag">usual</span>' : '') + '</td><td class="num">' + (fin(x.runs) ? x.runs : '') + '</td>' +
+          (tw ? '<td class="num">' + (t && t.d && fin(t.d.mean) ? esc(t.f(t.d.mean)) : 'n/a') + '</td>' : '') +
+          '<td class="num">' + (cost && fin(cost.mean) ? esc(usd(cost.mean)) : 'n/a') + '</td></tr>';
+      });
+      s += '</tbody></table></div></details>';
+    });
+    return s;
+  }
   function graphHtml(i) {
     var list = (D.workflows && D.workflows.length) ? D.workflows : (D.workflow ? [D.workflow] : []);
     if (!list.length) {
@@ -1497,13 +1704,7 @@ PAGE_JS = r"""
     if (i != null) S.wf = i;
     if (S.wf >= list.length) S.wf = 0;
     var w = list[S.wf], s = '';
-    if (list.length > 1) {
-      s += '<p><label>Configuration: <select id="wfpick">';
-      list.forEach(function (x, j) {
-        s += '<option value="' + j + '"' + (j === S.wf ? ' selected' : '') + '>' + esc(x.label || x.config) + (x.origin ? ' (' + esc(x.origin) + ')' : '') + '</option>';
-      });
-      s += '</select></label></p>';
-    }
+    if (list.length > 1) s += pickerHtml(list);
     s += '<h2>' + esc(w.label || w.config) + '</h2><p class="note">Configuration <code>' + esc(w.config) + '</code>. ' +
       'Each piece shows its predicted cost per round with an 80% range (per run when the fit gives no per-round figure), ' +
       'its tokens per run and its share of the run\'s cost. ' +
@@ -1683,8 +1884,16 @@ PAGE_JS = r"""
     draw();
     show((location.hash || '').slice(1));
     document.addEventListener('click', function (ev) {
-      var t = ev.target && ev.target.closest ? ev.target.closest('[data-tab],[data-head]') : null;
+      var sum = ev.target && ev.target.closest ? ev.target.closest('summary[data-group]') : null;
+      if (sum && sum.getAttribute('data-group') != null) { S.open[sum.getAttribute('data-group')] = !(sum.parentNode && sum.parentNode.open); return; }  // before it toggles
+      var t = ev.target && ev.target.closest ? ev.target.closest('[data-tab],[data-head],a[data-wf]') : null;
       if (!t) return;
+      if (t.getAttribute('data-wf') != null) {
+        ev.preventDefault();
+        S.wf = +t.getAttribute('data-wf') || 0;
+        document.getElementById('tab-graph').innerHTML = graphHtml();
+        return;
+      }
       if (t.getAttribute('data-tab')) { show(t.getAttribute('data-tab')); if (history.replaceState) history.replaceState(null, '', '#' + t.getAttribute('data-tab')); }
       else { S.head = t.getAttribute('data-head'); draw(); }
     });
@@ -1711,22 +1920,42 @@ PAGE_JS = r"""
 
 
 # ---------------------------------------------------------------- handler
-def _load_state(home: Path) -> Any:
+def _load_state(home: Path, fit_id: str | None = None) -> Any:
+    if fit_id:  # `--fit ID`: a kept fit instead of fits/latest
+        from ..belief.fit import load_fit
+
+        return load_fit(home, fit_id)
     from ..belief.state import load_latest
 
     return load_latest(home)
 
 
 def command(args: argparse.Namespace) -> int:
+    import sys
+
+    from ..belief.fit import UnknownFit
+
     home = store_home(getattr(args, "home", None))
-    state = _load_state(home)
+    fit_id = getattr(args, "fit", None)
+    try:
+        state = _load_state(home, fit_id) if fit_id else _load_state(home)
+    except UnknownFit as exc:
+        return fail(str(exc), EXIT_NOT_FOUND)
     if state is None:
         return fail(f"no fit yet under {home}: run `loopmath fit` (or `loopmath onboard`) first", EXIT_NO_FIT)
     try:
+        features, unknown = task_features(getattr(args, "feature", None) or [])
+        if unknown:
+            print(f"note: loopmath does not model the feature {', '.join(unknown)} (see loopmath task-types); "
+                  "it is shown but does not change the estimates", file=sys.stderr)
         data = build_view(state, home=home, level=args.level or "all", head=args.head, workflow=args.workflow,
-                          task_type=args.task_type, repo=args.repo)
+                          task_type=args.task_type, repo=args.repo, subtype=getattr(args, "subtype", None),
+                          features=features)
     except ViewError as err:
         return fail(str(err), err.code)
+    note = subtype_note(state, data["task"])
+    if note:
+        print(note, file=sys.stderr)
     target = html_target(getattr(args, "html", None), "posterior", getattr(args, "home", None))
     if target is not None:  # with --json the path goes to stderr, so stdout holds only the JSON object
         write_page(target, render(data), json_mode=bool(args.json))

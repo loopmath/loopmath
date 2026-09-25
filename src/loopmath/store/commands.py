@@ -81,6 +81,10 @@ def _out(args: argparse.Namespace, schema: str, payload: dict[str, Any], lines: 
     return EXIT_OK
 
 
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
 def _money(usd: float | None, tokens: float | int | None) -> str:
     u = "unknown" if usd is None else f"${usd:,.2f}"
     t = "unknown tokens" if tokens is None else f"{int(tokens):,} tokens"
@@ -377,7 +381,7 @@ def _finish_lines(res: dict[str, Any]) -> list[str]:
     known = f"; ${c['usd_known']:,.2f} known" if c["usd"] is None and c.get("usd_known") is not None else ""
     lines = [f"run {res['run']} finished",
              f"cost: {_money(c['usd'], c['tokens'])}"
-             + (f" ({c['attempts_not_costed']} attempt(s) without dollars{known})" if c["attempts_not_costed"] else ""),
+             + (f" ({_count(c['attempts_not_costed'], 'attempt')} without dollars{known})" if c["attempts_not_costed"] else ""),
              f"matched: {m['verified']} verified, {m['heuristic']} heuristic, {len(m['unmatched'])} unmatched"]
     for s in res.get("shared") or []:  # D87, D100: a session that several attempts name
         names = s["attempts"]
@@ -387,7 +391,7 @@ def _finish_lines(res: dict[str, Any]) -> list[str]:
     for u in m["unmatched"][:8]:
         lines.append(f"  unmatched {u['attempt']}: {u['reason']}")
     warnings = res["validation"]["warnings"]
-    lines.append(f"validation: ok, {len(warnings)} warning(s)")
+    lines.append(f"validation: ok, {_count(len(warnings), 'warning')}")
     for w in warnings[:5]:
         lines.append(f"  warning {w.get('code', '')} {w.get('path', '')}: {w.get('message', '')}")
     if len(warnings) > 5:
@@ -395,14 +399,16 @@ def _finish_lines(res: dict[str, Any]) -> list[str]:
     ev = res.get("evidence") or {}
     lines.append(f"outcome: {_outcome_word(ev.get('z'))} (tier {ev.get('tier')}, q {ev.get('q')})")
     lines.append(f"receipt: {res['receipt']}" if res["receipt"] else "receipt: none (no stored recommendation for this configuration)")
-    fit = res.get("fit") or {}
-    if fit.get("started"):
-        lines.append(f"refit: started in the background (pid {fit.get('pid')})")
-    elif fit.get("queued"):
-        lines.append("refit: queued behind the fit already running")
-    else:
-        lines.append(f"refit: not started ({fit.get('reason', 'no fit')})")
+    lines.append(_fit_line(res.get("fit") or {}))
     return lines
+
+
+def _fit_line(fit: dict[str, Any]) -> str:
+    if fit.get("started"):
+        return f"refit: started in the background (pid {fit.get('pid')})"
+    if fit.get("queued"):
+        return "refit: queued behind the fit already running"
+    return f"refit: not started ({fit.get('reason', 'no fit')})"
 
 
 @handler("run.finish")
@@ -414,20 +420,16 @@ def run_finish(args: argparse.Namespace) -> int:
     return _out(args, "run.finish", res, _finish_lines(res))
 
 
-@handler("run.import")
-def run_import(args: argparse.Namespace) -> int:
-    from .finish import finish_run
-
-    store = _store(args)
-    path = Path(args.file).expanduser()
+def _read_import(store: Store, path: Path, label: str) -> dict[str, Any]:
+    """Read, migrate when needed and store one document: `{run, path, migrated_from, state, finished: None}`."""
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        raise NotFound(f"no file {args.file}") from None
+        raise NotFound(f"no file {label}") from None
     except ValueError as exc:
-        raise UserError(f"{args.file}: not JSON: {exc}") from None
+        raise UserError(f"{label}: not JSON: {exc}") from None
     if not isinstance(doc, dict):
-        raise UserError(f"{args.file}: an OCP document is a JSON object")
+        raise UserError(f"{label}: an OCP document is a JSON object")
     version = str(doc.get("ocp", ""))
     migrated = False
     if version in ("0.1", "0.2"):
@@ -435,19 +437,122 @@ def run_import(args: argparse.Namespace) -> int:
         doc = migrate_doc(doc)
         migrated = True
     elif version != "0.3":
-        raise UserError(f"{args.file} declares OCP {version!r}; run import reads 0.3 (0.1 and 0.2 are migrated)")
+        raise UserError(f"{label} declares OCP {version!r}; run import reads 0.3 (0.1 and 0.2 are migrated)")
     run = store.import_run(doc, finished=False)
     done = R.is_finished(store.run_doc(run))
-    payload: dict[str, Any] = {"run": run, "path": str(store.run_path(run)), "migrated_from": version if migrated else None,
-                               "state": R.FINISHED if done else R.OPEN, "finished": None}
+    return {"run": run, "path": str(store.run_path(run)), "migrated_from": version if migrated else None,
+            "state": R.FINISHED if done else R.OPEN, "finished": None}
+
+
+def _import_items(names: list[str]) -> list[tuple[str, Path | None]]:
+    """(label, path) per document: a directory gives its *.ocp.json files in name order, or (label, None) when it has none."""
+    items: list[tuple[str, Path | None]] = []
+    for name in names:
+        path = Path(name).expanduser()
+        if path.is_dir():
+            found = sorted(path.glob("*.ocp.json"))
+            items += [(str(f), f) for f in found] if found else [(name, None)]
+        else:
+            items.append((name, path))
+    return items
+
+
+@handler("run.import")
+def run_import(args: argparse.Namespace) -> int:
+    from .finish import finish_run
+
+    store = _store(args)
+    if len(args.files) != 1 or Path(args.files[0]).expanduser().is_dir():
+        return _import_many(args, store, _import_items(args.files))
+    payload = _read_import(store, Path(args.files[0]).expanduser(), args.files[0])
+    run = payload["run"]
     lines = [run]
-    if args.finish and done:
+    from ..priors import overlap_note, shipped_overlap  # D118 N2: say once when the prior holds this run
+    payload["shipped_overlap"] = shipped_overlap([run])
+    lines += [n for n in [overlap_note(payload["shipped_overlap"])] if n]
+    if args.finish and payload["state"] == R.FINISHED:
         print(f"note: {run} was already finished by loopmath; stored as finished, --finish skipped", file=sys.stderr)
     elif args.finish:
-        res = finish_run(store, run)
+        res = finish_run(store, run, no_fit=args.no_fit)
         payload["finished"] = res
         lines += _finish_lines(res)
     return _out(args, "run.import", payload, lines)
+
+
+FAILED_SHOWN = 10
+
+
+def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, Path | None]]) -> int:
+    """Several documents in one call. Each is stored on its own (a bad one does not stop the rest); with
+    --finish each run is finished without its own refit, and one refit starts at the end unless --no-fit."""
+    from .finish import finish_run
+
+    def deferred(_home: Path) -> dict[str, Any]:
+        return {"started": False, "reason": "one refit after the import"}
+
+    files: list[dict[str, Any]] = []
+    already = finished = 0
+    for label, path in items:
+        entry: dict[str, Any] = {"file": label}
+        try:
+            if path is None:
+                raise NotFound(f"no *.ocp.json files in {label}")
+            entry.update(_read_import(store, path, label))
+            if args.finish and entry["state"] == R.FINISHED:
+                already += 1
+            elif args.finish:
+                entry["finished"] = finish_run(store, entry["run"], no_fit=args.no_fit, spawn=deferred)
+                entry["state"] = R.FINISHED
+                finished += 1
+            entry = {"file": label, "ok": True, **{k: v for k, v in entry.items() if k != "file"}}
+        except StoreLocked:
+            raise
+        except (NotFound, EndBeforeStart) as exc:
+            entry.update(ok=False, error=str(exc), exit=EXIT_NOT_FOUND)
+        except ValidationFailed as exc:
+            first = (exc.result.get("errors") or [{}])[0] if isinstance(exc.result, dict) else {}
+            detail = f": {first.get('code', '')} {first.get('path', '')} {first.get('message', '')}".rstrip() if first else ""
+            entry.update(ok=False, error=f"{exc}{detail}", exit=EXIT_USER, validation=exc.result)
+        except (StoreError, ConfigError, ValueError, OSError) as exc:
+            entry.update(ok=False, error=f"{label}: {exc}" if isinstance(exc, OSError) else str(exc),
+                         exit=getattr(exc, "exit_code", EXIT_USER))
+        if not entry["ok"] and entry.get("run"):
+            entry["error"] = f"stored as {entry['run']} ({entry.get('state')}), then: {entry['error']}"
+        files.append(entry)
+
+    if args.no_fit:
+        fit: dict[str, Any] = {"started": False, "reason": "--no-fit"}
+    elif finished:
+        from .fitjob import spawn_fit
+
+        fit = spawn_fit(store.home)
+    else:
+        fit = {"started": False, "reason": "no run was finished by this import" + ("" if args.finish else "; use --finish")}
+    ok = [f for f in files if f["ok"]]
+    failed = [f for f in files if not f["ok"]]
+    imported_runs = [f["run"] for f in ok]  # every run this call stored, for notes over the whole import
+    payload = {"files": files, "runs": imported_runs, "imported": len(ok), "failed": len(failed), "finished": finished,
+               "already_finished": already, "fit": fit}
+    from ..priors import overlap_note, shipped_overlap
+
+    payload["shipped_overlap"] = shipped_overlap(imported_runs)  # once for the whole import
+    code = EXIT_NOT_FOUND if any(f["exit"] == EXIT_NOT_FOUND for f in failed) else EXIT_USER if failed else EXIT_OK
+    if args.json:
+        emit_json(_schema("run.import"), payload)
+        return code
+    lines = [f"FAIL  {f['file']}: {f['error']}" for f in failed[:FAILED_SHOWN]]
+    if len(failed) > FAILED_SHOWN:
+        lines.append(f"  and {len(failed) - FAILED_SHOWN} more failed (use --json for all)")
+    if len(lines) + len(ok) + 2 <= 25:
+        lines += [f"{f['run']}  {f['state']}" for f in ok]
+    summary = f"{_count(len(ok), 'run')} imported, {len(failed)} failed"
+    if args.finish:
+        summary += f"; {finished} finished" + (f", {already} already finished" if already else "")
+    lines += [summary, _fit_line(fit)]
+    lines += [n for n in [overlap_note(payload["shipped_overlap"])] if n]
+    for line in lines:
+        print(line)
+    return code
 
 
 # ================================================================ outcome

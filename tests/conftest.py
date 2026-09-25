@@ -1,11 +1,15 @@
-"""Synthetic fixture: a dozen fake sessions plus a few fake dag attempts, and
-the hook that makes the suite name what it did not run.
+"""Synthetic fixture: a dozen fake sessions plus a few fake dag attempts, the
+hook that makes the suite name what it did not run, and the isolation that
+keeps the suite out of the user's store.
 
 Shapes mirror parser-spec.md. No real corpus data appears here.
 """
 
 import json
 import os
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -38,11 +42,95 @@ NEEDS_PRIVATE_PATH = {
 }
 
 
+# Isolation. Before any test module is imported, LOOPMATH_HOME and
+# LOOPMATH_CACHE_DIR point at one temp folder for the whole session, whatever
+# the caller's shell set, so no test and no `python -m loopmath` subprocess
+# (children inherit os.environ) reads or writes ~/.loopmath. A test that needs
+# its own folder sets the variables itself (monkeypatch), which wins for that
+# test. The guard test (tests/test_home_guard.py) runs last and fails if any
+# path under ~/.loopmath appeared, changed or went away during the run; it
+# compares listings with mtimes and sizes, and never writes or deletes there.
+ISOLATED_VARS = ("LOOPMATH_HOME", "LOOPMATH_CACHE_DIR")
+USER_STORE = Path.home() / ".loopmath"
+HOME_GUARD_TEST = "tests/test_home_guard.py::"
+_USER_STORE_BEFORE = pytest.StashKey[dict]()
+_ISOLATION = pytest.StashKey[tuple]()
+
+
+def user_store_listing(root: Path = USER_STORE) -> dict[str, tuple[int, int]]:
+    """Every path under `root`, `root` included, with its mtime (ns) and size.
+
+    Empty when `root` does not exist. Symlinks are listed, not followed."""
+    listing: dict[str, tuple[int, int]] = {}
+    try:
+        st = os.lstat(root)
+    except OSError:
+        return listing
+    listing[str(root)] = (st.st_mtime_ns, st.st_size)
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            listing[path] = (st.st_mtime_ns, st.st_size)
+    return listing
+
+
+def pytest_configure(config):
+    config.stash[_USER_STORE_BEFORE] = user_store_listing()
+    folder = tempfile.mkdtemp(prefix="loopmath-tests-")
+    saved = {name: os.environ.get(name) for name in ISOLATED_VARS}
+    config.stash[_ISOLATION] = (folder, saved)
+    os.environ["LOOPMATH_HOME"] = os.path.join(folder, "home")
+    os.environ["LOOPMATH_CACHE_DIR"] = os.path.join(folder, "cache")
+
+
+def pytest_unconfigure(config):
+    folder, saved = config.stash.get(_ISOLATION, (None, {}))
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    if folder:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+@pytest.fixture
+def session_store_folder(pytestconfig) -> Path:
+    """The temp folder this session's LOOPMATH_HOME and LOOPMATH_CACHE_DIR sit in."""
+    return Path(pytestconfig.stash[_ISOLATION][0])
+
+
+@pytest.fixture
+def store_listing():
+    """`user_store_listing`, for tests of the guard itself."""
+    return user_store_listing
+
+
+@pytest.fixture
+def user_store_changes(pytestconfig):
+    """A function giving the paths under ~/.loopmath (or `root`) that were added,
+    changed or removed since the session started, as three sorted lists."""
+    def changes(root: Path = USER_STORE, before: dict | None = None):
+        before = pytestconfig.stash[_USER_STORE_BEFORE] if before is None else before
+        after = user_store_listing(root)
+        added = sorted(set(after) - set(before))
+        removed = sorted(set(before) - set(after))
+        changed = sorted(p for p in set(before) & set(after) if before[p] != after[p])
+        return added, changed, removed
+    return changes
+
+
 def pytest_collection_modifyitems(config, items):
     for item in items:
         for prefix, need in NEEDS_PRIVATE_PATH.items():
             if item.nodeid.startswith(prefix) and not os.path.exists(os.path.join(_ROOT, need)):
                 item.add_marker(pytest.mark.skip(reason=f"needs {need}, which the public tree leaves out"))
+    # The guard compares ~/.loopmath with its listing from before the run, so it runs last.
+    items.sort(key=lambda item: item.nodeid.startswith(HOME_GUARD_TEST))
 
 
 # pytest's own last line counts what it did not run ("1 deselected") without

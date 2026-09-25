@@ -116,6 +116,24 @@ def _nested_nonnegative_int(value: Any, path: tuple[str, ...]) -> int | None:
     return current
 
 
+def _message_tokens(tokens: Any, output_name: str) -> int | None:
+    """One assistant message's count for an OCP cost field, or None when unknown.
+
+    OCP's output_tokens includes reasoning, with reasoning_tokens as a breakdown.
+    OpenCode stores them apart: 1.17.11's session usage keeps output as
+    outputTokens - reasoningTokens and reasoning on its own, and its stats command
+    adds the two back. So output_tokens is output + reasoning here; a message with
+    no reasoning count adds 0.
+    """
+    value = _nested_nonnegative_int(tokens, _TOKEN_FIELDS[output_name])
+    if output_name != "output_tokens" or value is None:
+        return value
+    if _as_mapping(tokens).get("reasoning") is None:
+        return value
+    reasoning = _nested_nonnegative_int(tokens, ("reasoning",))
+    return None if reasoning is None else value + reasoning
+
+
 def _nonnegative_number(value: Any) -> int | float | None:
     if (
         isinstance(value, bool)
@@ -309,10 +327,9 @@ def _cost_record(
 ) -> tuple[dict[str, Any], dict[str, int]]:
     cost: dict[str, Any] = {"requests": len(assistants), "basis": "measured"}
     incomplete: dict[str, int] = {}
-    for output_name, source_path in _TOKEN_FIELDS.items():
+    for output_name in _TOKEN_FIELDS:
         values = [
-            _nested_nonnegative_int(item.get("tokens"), source_path)
-            for item in assistants
+            _message_tokens(item.get("tokens"), output_name) for item in assistants
         ]
         if all(value is not None for value in values):
             cost[output_name] = sum(value for value in values if value is not None)
@@ -352,9 +369,9 @@ def _message_models(
             ),
             "requests": len(messages),
         }
-        for output_name, source_path in _TOKEN_FIELDS.items():
+        for output_name in _TOKEN_FIELDS:
             values = [
-                _nested_nonnegative_int(message.get("tokens"), source_path)
+                _message_tokens(message.get("tokens"), output_name)
                 for message in messages
             ]
             if all(value is not None for value in values):

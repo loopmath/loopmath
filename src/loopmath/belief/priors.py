@@ -2,7 +2,8 @@
 
 - The shipped bundle (lane 11) enters the fit as data, each run under its `source` node
   (`sweep`, `e0`, `rq1`, `repo_history`). `bundle_docs()` reads it through lane 11's
-  `loopmath.priors.bundle_docs()` (D37).
+  `loopmath.priors.bundle_docs()` (D37); `bundle_entries()` pairs each run with its manifest
+  source, so a store run with a shipped label stays the user's (D118 N2).
 - Shared imports (lane 8) enter under their `shared:<org>` source through
   `share.import_.shared_runs(home)` (D22).
 - Benchmark priors (`priors/benchmarks.toml`, layout D36) become Gaussian prior factors on
@@ -33,6 +34,19 @@ def bundle_docs(bundle_dir: Path | None = None, without: tuple[str, ...] = ()) -
     from .. import priors as lane11
 
     yield from lane11.bundle_docs(without=tuple(without), directory=bundle_dir)
+
+
+def bundle_entries(bundle_dir: Path | None = None) -> Iterator[tuple[str, dict]]:
+    """(manifest source, document) for every shipped run: the fit's source for it (spec 04 section 1)."""
+    from .. import priors as lane11
+
+    yield from lane11.bundle_entries(directory=bundle_dir)
+
+
+def run_id_of(doc: dict) -> str:
+    from .. import priors as lane11
+
+    return lane11.run_id_of(doc)
 
 
 def bundle_sources(bundle_dir: Path | None = None) -> list[str]:

@@ -350,6 +350,18 @@ def render(data: Mapping[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------- terminal summary (at most 25 lines)
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _unit_suffix(name: Any, unit: Any) -> str:
+    """' UNIT', or '' when there is none or the name already says it (`heldout_perf 3140`, not `3140 perf`)."""
+    if not unit:
+        return ""
+    words = str(name or "").lower().replace("-", "_").split("_")
+    return "" if str(unit).lower() in words else f" {unit}"
+
+
 def _outcome_word(row: Mapping[str, Any]) -> str:
     z = row.get("z")
     word = "accepted" if z == 1 else "not accepted" if z == 0 else "unknown"
@@ -357,7 +369,8 @@ def _outcome_word(row: Mapping[str, Any]) -> str:
         word += f" ({row['tier']})"
     if row.get("score") is not None:
         meta = row.get("score_meta") or {}
-        word += f", {meta.get('name') or 'score'} {row['score']:g}{' ' + meta['unit'] if meta.get('unit') else ''}"
+        name = meta.get("name") or "score"
+        word += f", {name} {row['score']:g}{_unit_suffix(name, meta.get('unit'))}"
     return word
 
 
@@ -369,7 +382,7 @@ def _one_run_lines(row: Mapping[str, Any], sel: Mapping[str, Any], limit: int) -
              f"workflow   {cfg.get('label') or 'n/a'} [{cfg.get('id') or 'n/a'}]",
              f"source     {row.get('source') or 'n/a'}" + (f"  slate {row['slate']}" if row.get("slate") else ""),
              f"cost       {fmt_money(row['cost'].get('usd'), row['cost'].get('tokens'))} over "
-             f"{row.get('rounds') or 'n/a'} round(s)",
+             + (_count(row["rounds"], "round") if row.get("rounds") else "n/a rounds"),
              f"outcome    {_outcome_word(row)}"]
     pred = rc.get("predicted")
     if pred:
@@ -384,7 +397,7 @@ def _one_run_lines(row: Mapping[str, Any], sel: Mapping[str, Any], limit: int) -
     lines.append(f"attempts   {len(doc.get('attempts') or [])}, artifacts {len(doc.get('artifacts') or [])}, "
                  f"signals {len(sel.get('signals') or [])}")
     for sig in (sel.get("signals") or [])[: max(0, limit - len(lines))]:
-        unit = f" {sig['unit']}" if sig.get("unit") else ""
+        unit = _unit_suffix(sig.get("name"), sig.get("unit"))
         lines.append(f"  {str(sig.get('observed_at') or '')[:16]}  {sig.get('kind')} {sig.get('name')} = "
                      f"{sig.get('value')}{unit} ({sig.get('tier')}){'  late' if sig.get('late') else ''}")
     return lines[:limit]
@@ -401,8 +414,8 @@ def _empty_lines(filters: Mapping[str, Any]) -> list[str]:
             "Runs appear after `loopmath run start` and `loopmath run finish`, or after `loopmath run import FILE.ocp.json`."]
 
 
-def summary_lines(data: Mapping[str, Any], limit: int = 25) -> list[str]:
-    """The plain-text summary printed without `--json` or `--html`."""
+def summary_lines(data: Mapping[str, Any], limit: int = 25, *, wide: bool = False) -> list[str]:
+    """The plain-text summary printed without `--json` or `--html`; `wide` adds the cfg_ id column."""
     rows = data.get("runs") or []
     if not rows:
         return _empty_lines(data.get("filters") or {})
@@ -414,23 +427,28 @@ def summary_lines(data: Mapping[str, Any], limit: int = 25) -> list[str]:
     acc = sum(1 for r in known if r["z"] == 1)
     with_rc = [r for r in rows if (r.get("receipt") or {}).get("predicted")]
     inside = sum(1 for r in with_rc if r["receipt"].get("cost_in_interval") is True)
-    head = f"{len(rows)} runs, {fmt_money(usd, tok)}; "
+    head = f"{_count(len(rows), 'run')}, {fmt_money(usd, tok)}; "
     head += f"{acc} of {len(known)} with a known outcome accepted ({fmt_pct(acc / len(known))})" if known else "no known outcomes"
-    head += f"; cost inside its range for {inside} of {len(with_rc)} receipts" if with_rc else "; no receipts"
+    head += f"; cost inside its range for {inside} of {_count(len(with_rc), 'receipt')}" if with_rc else "; no receipts"
     notes = list(data.get("notes") or [])
     room = limit - 2 - len(notes)
     shown = rows[: room if len(rows) <= room else room - 1]
+    # the workflow column is the configuration label (graph, then model/effort per piece), so runs of one graph differ
     cells = [(str(r["run"]), str(r.get("started_at") or "n/a")[:16].replace("T", " "),
-              str((r.get("config") or {}).get("workflow") or "n/a")[:22], str(r.get("source") or "n/a")[:11],
+              str((r.get("config") or {}).get("label") or (r.get("config") or {}).get("workflow") or "n/a"),
+              str(r.get("source") or "n/a")[:11],
               fmt_usd(r["cost"].get("usd")), r.get("rounds") if r.get("rounds") is not None else "-",
-              _outcome_word(r)) for r in shown]
+              _outcome_word(r), str((r.get("config") or {}).get("id") or "n/a")) for r in shown]
     # the run id is never cut: it is what `--run RUN` takes
     w_run = max([len("run")] + [len(c[0]) for c in cells])
     w_wf = max([len("workflow")] + [len(c[2]) for c in cells])
     w_src = max([len("source")] + [len(c[3]) for c in cells])
-    lines = [head, f"{'run':<{w_run}}  {'started':<16}  {'workflow':<{w_wf}} {'source':<{w_src}} {'cost':>9} {'rnd':>3}  outcome"]
-    for run_id, started, wf, src, usd_s, rounds, word in cells:
-        lines.append(f"{run_id:<{w_run}}  {started:<16}  {wf:<{w_wf}} {src:<{w_src}} {usd_s:>9} {rounds!s:>3}  {word}")
+    w_cfg = max([len("config")] + [len(c[7]) for c in cells])
+    cfg_head = f" {'config':<{w_cfg}}" if wide else ""
+    lines = [head, f"{'run':<{w_run}}  {'started':<16}  {'workflow':<{w_wf}}{cfg_head} {'source':<{w_src}} {'cost':>9} {'rnd':>3}  outcome"]
+    for run_id, started, wf, src, usd_s, rounds, word, cfg in cells:
+        cfg_cell = f" {cfg:<{w_cfg}}" if wide else ""
+        lines.append(f"{run_id:<{w_run}}  {started:<16}  {wf:<{w_wf}}{cfg_cell} {src:<{w_src}} {usd_s:>9} {rounds!s:>3}  {word}")
     if len(rows) > len(shown):
         lines.append(f"... {len(rows) - len(shown)} more; --json or --html for all, --run RUN for one")
     return (lines + notes)[:limit]
@@ -441,7 +459,10 @@ def command(args: argparse.Namespace) -> int:
     root = common.store_home(getattr(args, "home", None))
     filters = {"type": getattr(args, "task_type", None), "repo": getattr(args, "repo", None),
                "since": getattr(args, "since", None), "slate": getattr(args, "slate", None)}
-    run = getattr(args, "run", None)
+    run, positional = getattr(args, "run", None), getattr(args, "run_id", None)
+    if run and positional and run != positional:  # `runs RUN` is `runs --run RUN`
+        return fail(f"two runs given ({positional} and --run {run}); give one", EXIT_USER)
+    run = run or positional
     json_mode = bool(getattr(args, "json", False))
     target = common.html_target(getattr(args, "html", None), "runs", getattr(args, "home", None))
     try:
@@ -455,6 +476,6 @@ def command(args: argparse.Namespace) -> int:
     if json_mode:
         emit_json(SCHEMA, data)
     elif target is None:
-        for line in summary_lines(data):
+        for line in summary_lines(data, wide=bool(getattr(args, "wide", False))):
             print(line)
     return EXIT_OK

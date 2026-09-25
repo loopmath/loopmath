@@ -421,7 +421,7 @@ def test_a_session_named_whole_and_as_self_counts_once_in_the_run_and_the_totals
     tokens = sum(whole_only[f] for f in ("input_tokens", "cached_input_tokens", "cache_creation_tokens", "output_tokens"))
     assert row["cost"]["usd"] == pytest.approx(whole_only["usd"], abs=1e-6) and row["cost"]["tokens"] == tokens  # once, not twice
     main(["runs", "--home", str(tmp_path / "home")])
-    assert capsys.readouterr().out.splitlines()[0].startswith(f"1 runs, {common.fmt_money(row['cost']['usd'], tokens)}")
+    assert capsys.readouterr().out.splitlines()[0].startswith(f"1 run, {common.fmt_money(row['cost']['usd'], tokens)}")
 
 
 def test_a_run_with_an_unpriced_attempt_has_unknown_dollars_as_the_store_says(tmp_path, v03):

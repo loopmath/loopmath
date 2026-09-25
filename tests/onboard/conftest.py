@@ -17,4 +17,6 @@ def history_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FixtureHisto
     from loopmath.onboard import history as history_mod
 
     history_mod._repo_cache.clear()
+    history_mod._top_cache.clear()
+    history_mod._origin_cache.clear()
     return build_history(tmp_path)

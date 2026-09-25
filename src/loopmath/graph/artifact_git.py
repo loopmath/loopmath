@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Callable
 
+from .. import gitwalk
 from .scan import epoch
 from .schema import GraphNode
 
@@ -43,24 +44,48 @@ def parse_git_log(text: str) -> list[dict]:
     return commits
 
 
-def git_from_disk(cwd: str, *, git_exe: str = GIT_EXE, git_log_args: tuple[str, ...] = GIT_LOG_ARGS) -> tuple[str, str] | str:
-    """Read a worktree's log without modifying it or contacting a network."""
-    if not cwd or not os.path.isdir(cwd):
-        return "no_cwd"
+def _toplevel(cwd: str, git_exe: str) -> tuple[str | None, str | None]:
+    """`(toplevel, None)` for a worktree folder, else `(None, reason)`."""
     try:
         top = subprocess.run([git_exe, "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True, text=True, timeout=30)
     except FileNotFoundError:
-        return "git_unavailable"
+        return None, "git_unavailable"
     except (OSError, subprocess.SubprocessError):
-        return "git_failed"
+        return None, "git_failed"
     if top.returncode != 0 or not top.stdout.strip():
-        return "not_a_worktree" if NOT_A_WORKTREE_RE.search(top.stderr or "") else "git_failed"
-    toplevel = top.stdout.strip()
+        return None, "not_a_worktree" if NOT_A_WORKTREE_RE.search(top.stderr or "") else "git_failed"
+    return top.stdout.strip(), None
+
+
+def _log(toplevel: str, git_exe: str, git_log_args: tuple[str, ...]) -> tuple[str, str] | str:
     try:
         log = subprocess.run([git_exe, *git_log_args], cwd=toplevel, capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return "log_failed"
     return (toplevel, log.stdout) if log.returncode == 0 else "log_failed"
+
+
+def git_from_disk(cwd: str, *, git_exe: str = GIT_EXE, git_log_args: tuple[str, ...] = GIT_LOG_ARGS,
+                  memo: dict | None = None) -> tuple[str, str] | str:
+    """Read a worktree's log without modifying it or contacting a network. With `memo`
+    (one dict per graph build), each folder's top level and each top level's log are
+    read once: many session folders share one worktree."""
+    if not cwd or not os.path.isdir(cwd):
+        return "no_cwd"
+    memo = {} if memo is None else memo
+    # Folders in one worktree share git's answer, and so do folders in none (git
+    # says the same "not a worktree" for each); when unsure, git is asked per folder.
+    kind, worktree = gitwalk.where(cwd)
+    top_key = ("top", git_exe, worktree if kind == "repo" else "" if kind == "none" else cwd)
+    if top_key not in memo:
+        memo[top_key] = _toplevel(cwd, git_exe)
+    toplevel, reason = memo[top_key]
+    if reason is not None:
+        return reason
+    log_key = ("log", git_exe, tuple(git_log_args), toplevel)
+    if log_key not in memo:
+        memo[log_key] = _log(toplevel, git_exe, git_log_args)
+    return memo[log_key]
 
 
 def iso(t: float | int) -> str:

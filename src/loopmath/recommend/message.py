@@ -5,8 +5,8 @@ The exact template, filled here:
 "Your usual workflow ({usual_label}) has a {g_usual}% chance of an accepted result at
 about {cost_usual} ({tokens_usual} tokens). {goal_sentence} Trying {explore_label}
 alongside it costs {price} ({price_tokens} tokens) now. There is a {p_beats}% chance it
-beats your goal. Trying it once is expected to save about {gain} on each future similar
-run, so it pays for itself after about {payback} similar runs.{max_gain_sentence}"
+beats the recommended pick. Trying it once is expected to save about {gain} on each future
+similar run, so it pays for itself after about {payback} similar runs.{max_gain_sentence}"
 
 The gain is lane 05's look-ahead value in dollars: an expectation over every outcome of the
 trial run, not a gain on the condition that it beats the goal, and its success, cost and score
@@ -19,6 +19,11 @@ note is keyed on it all the same.
 For score rules the chance reads "chance of reaching {name} {op} {target}". When a
 pick is paused by the budget cap or no candidate qualifies, plain variants of the
 exploration sentences say so instead.
+
+With no usual workflow the first sentence names the reference instead (spec 05
+section 1, D118 N4): "You have no usual workflow for this task; the reference is
+your best recorded workflow ({label}), with ..." (or "the default workflow"). A
+workflow the user did not run is never "your usual" (F4).
 """
 
 from __future__ import annotations
@@ -101,13 +106,18 @@ def saving(gain: dict[str, Any]) -> str:
     return usd(float(gain.get("usd") or 0.0))
 
 
+REFERENCE_NAMES = {"usual": "your usual workflow", "best_recorded": "your best recorded workflow",
+                   "default": "the default workflow"}
+
+
 def goal_sentence(goal_level: int | None, goal_label: str, goal_pred: Prediction, *, usual_id: str,
-                  goal_id: str, note: str | None, rule: AcceptanceRule | None) -> str:
+                  goal_id: str, note: str | None, rule: AcceptanceRule | None, reference: str = "usual") -> str:
     if goal_level is None:
         head = f"{note[0].upper()}{note[1:]}. " if note else ""
         if goal_id == usual_id:
+            which = "your usual workflow" if reference == "usual" else "the reference workflow"
             return head + (f"Your goal is the lowest expected cost to {success_phrase(rule)}, "
-                           f"which is your usual workflow.")
+                           f"which is {which}.")
         return head + (f"Your goal is the lowest expected cost to {success_phrase(rule)}: {goal_label}, "
                        "about " + noted(f"{usd(goal_pred.ell.usd.mean)} per accepted result", goal_pred.ell.usd)
                        + ".")
@@ -119,13 +129,19 @@ def goal_sentence(goal_level: int | None, goal_label: str, goal_pred: Prediction
 
 def compose(*, usual: Configuration, usual_pred: Prediction, goal: Configuration, goal_pred: Prediction,
             goal_level: int | None, goal_note: str | None, exploration: Exploration, rule: AcceptanceRule | None,
-            label: Callable[[Configuration], str] | None = None) -> str:
-    """The one-paragraph message for the user; `label` names configurations (the shown labels, D89)."""
+            label: Callable[[Configuration], str] | None = None, reference: str = "usual") -> str:
+    """The one-paragraph message for the user; `label` names configurations (the shown labels, D89).
+    `reference` is the baseline's kind: `usual`, `best_recorded` or `default`."""
     label_of = label or Configuration.label
     chance = noted(f"{a_pct(usual_pred.p_success.mean)} {chance_phrase(rule)}", usual_pred.p_success)
-    parts = [f"Your usual workflow ({label_of(usual)}) has {chance} at about {run_cost(usual_pred.cost)}.",
+    if reference == "usual":
+        first = f"Your usual workflow ({label_of(usual)}) has {chance} at about {run_cost(usual_pred.cost)}."
+    else:
+        first = (f"You have no usual workflow for this task; the reference is {REFERENCE_NAMES[reference]} "
+                 f"({label_of(usual)}), with {chance} at about {run_cost(usual_pred.cost)}.")
+    parts = [first,
              goal_sentence(goal_level, label_of(goal), goal_pred, usual_id=usual.id, goal_id=goal.id,
-                           note=goal_note, rule=rule)]
+                           note=goal_note, rule=rule, reference=reference)]
     bv, mg = exploration.best_value, exploration.max_gain
     if bv.state == "none":
         parts.append("No workflow is worth trying alongside it right now: none gains more than 1 percent "
@@ -138,8 +154,9 @@ def compose(*, usual: Configuration, usual_pred: Prediction, goal: Configuration
                      f"cap, so it is paused.")
     else:
         parts.append(f"Trying {name} alongside it costs {run_cost(p.price)} now. There is {a_pct(p.p_beats_goal)} "
-                     f"chance it beats your goal. Trying it once is expected to save about {saving(p.gain_per_run)} "
-                     f"on each future similar run, so it pays for itself after about {runs_text(p.payback_runs)}.")
+                     f"chance it beats the recommended pick. Trying it once is expected to save about "
+                     f"{saving(p.gain_per_run)} on each future similar run, so it pays for itself after about "
+                     f"{runs_text(p.payback_runs)}.")
     text = " ".join(parts)
     return text + max_gain_sentence(mg, label_of)
 
@@ -154,6 +171,6 @@ def max_gain_sentence(mg: Slot, label_of: Callable[[Configuration], str] = Confi
                 f"{noted(usd(p.price.usd.mean), p.price.usd)} passes your budget cap, so it is paused.")
     payback = 1 if p.payback_runs is None else max(1, round(p.payback_runs))
     return (f" The option with the biggest gain is {label}: it costs {run_cost(p.price)} now, has "
-            f"{a_pct(p.p_beats_goal)} chance to beat your goal, is expected to save about {saving(p.gain_per_run)} "
-            f"per future similar run, and pays for itself "
+            f"{a_pct(p.p_beats_goal)} chance to beat the recommended pick, is expected to save about "
+            f"{saving(p.gain_per_run)} per future similar run, and pays for itself "
             f"after about {payback} {'run' if payback == 1 else 'runs'}.")

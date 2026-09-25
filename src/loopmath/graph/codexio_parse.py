@@ -285,57 +285,59 @@ def _literal_end(text: str, start: int) -> int | None:
     return None
 
 
+_JS_OPEN = re.compile(r"[\"'`]|//|/\*")
+_JS_LINE_END = re.compile(r"[\r\n]")
+_JS_STRING_BODY = {q: re.compile(r"(?:[^\\%s]++|\\[\s\S])*+" % q) for q in "\"'`"}
+_code_map_memo: dict[str, bytearray] = {}
+
+
 def _js_code_map(script: str) -> bytearray:
     """One byte per character, true only for JavaScript code.
 
     The custom exec payload is source text, so a regex match inside a quoted example
     or a comment is not a tool call. Template literals are treated as literals in
     full; Codex wrappers use them for patch text, not executable interpolations.
+
+    Regex jumps from one string or comment opening to its end; the character loop it
+    replaced is the reference in tests/test_graph_codexio.py. The last map is kept,
+    since one script is asked about exec calls, then about patches.
     """
-    code = bytearray(b"\x01") * len(script)
+    hit = _code_map_memo.get(script)
+    if hit is not None:
+        return hit
+    n = len(script)
+    code = bytearray(b"\x01") * n
     i = 0
-    state = "code"
-    quote = ""
-    while i < len(script):
-        c = script[i]
-        nxt = script[i + 1] if i + 1 < len(script) else ""
-        if state == "code":
-            if c in "\"'`":
-                state, quote = "string", c
-                code[i] = 0
-            elif c == "/" and nxt == "/":
-                state = "line_comment"
-                code[i:i + 2] = b"\x00\x00"
-                i += 1
-            elif c == "/" and nxt == "*":
-                state = "block_comment"
-                code[i:i + 2] = b"\x00\x00"
-                i += 1
-        elif state == "string":
-            code[i] = 0
-            if c == "\\" and i + 1 < len(script):
-                code[i + 1] = 0
-                i += 1
-            elif c == quote:
-                state = "code"
-        elif state == "line_comment":
-            code[i] = 0
-            if c in "\r\n":
-                state = "code"
+    while True:
+        m = _JS_OPEN.search(script, i)
+        if m is None:
+            break
+        start = m.start()
+        opening = m.group()
+        if opening == "//":
+            nl = _JS_LINE_END.search(script, start + 2)
+            end = nl.end() if nl else n
+        elif opening == "/*":
+            close = script.find("*/", start + 2)
+            end = close + 2 if close >= 0 else n
         else:
-            code[i] = 0
-            if c == "*" and nxt == "/":
-                code[i + 1] = 0
-                i += 1
-                state = "code"
-        i += 1
+            body_end = _JS_STRING_BODY[opening].match(script, start + 1).end()
+            end = min(body_end + 1, n)  # the closing quote, or a lone final backslash
+        code[start:end] = bytes(end - start)
+        i = end
+    _code_map_memo.clear()
+    _code_map_memo[script] = code
     return code
 
 
 def _code_matches(pattern: re.Pattern, script: str):
-    """Regex matches whose first character is executable JS source."""
+    """Regex matches whose first character is executable JS source. The code map is
+    built only for a script the pattern matches at all."""
+    matches = list(pattern.finditer(script))
+    if not matches:
+        return iter(())
     code = _js_code_map(script)
-    return (m for m in pattern.finditer(script) if code[m.start()])
+    return (m for m in matches if code[m.start()])
 
 
 def exec_commands_from_js(script: str) -> tuple[list[dict], int]:

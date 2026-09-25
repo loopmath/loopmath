@@ -174,8 +174,11 @@ def test_pick_cards_and_headers_read_plainly(tmp_path, probe):
     assert "trying it onceexpected to save about $0.42 per future similar run" in best
     assert "expected to save about $0.95 per future similar run" in most
     assert all("gain if" not in c and "lower cost" not in c and "higher cost" not in c and "pp success" not in c
-               and "heldout_perf" not in c for c in (best, most))
-    assert "chance to beat the goal" in best and data["exploration"]["best_value"]["gain_per_run"]["score"] == -60.0
+               and "-60" not in c for c in (best, most))
+    assert data["exploration"]["best_value"]["gain_per_run"]["score"] == -60.0
+    # P3a: renamed, beside the chance to reach the target, with one line on the difference
+    assert "chance it beats the recommended pick" in best and "chance to beat the goal" not in best
+    assert "chance of reaching heldout_perf >= 2400" in best and "Not the chance of reaching heldout_perf >= 2400" in best
     heads = got["result"]["heads"]
     assert "ell" not in heads and heads.count("cost per accepted result") == 2
     assert sum(t.startswith("ell: expected dollars to an accepted result") for t in got["result"]["titles"]) == 2
@@ -235,5 +238,5 @@ def test_a_bare_mean_gets_the_note_when_its_prediction_is_pulled_up(tmp_path, pr
     assert got["exceptions"] == [] and got["console_errors"] == []
     r = got["result"]
     assert [i for i, row in enumerate(r["curve"]) if any(row)] == [0] and r["curve"][0][3]  # the cost cell of row 0
-    assert [i for i, row in enumerate(r["alts"]) if any(row)] == [0] and r["alts"][0][4]  # its cost per accepted result
+    assert [i for i, row in enumerate(r["alts"]) if any(row)] == [0] and r["alts"][0][5]  # its cost per accepted result
     assert r["cards"] == [True, False] and set(r["texts"]) == {note}

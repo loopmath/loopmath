@@ -47,6 +47,8 @@ loopmath onboard --labeler claude:claude-haiku-4-5 --yes        # record it and 
 - `command:<cmd>`, any local command such as `command:ollama run <model>`, so nothing leaves the machine;
 - `none`, to skip labelling.
 
+Reading the history uses up to 8 worker processes (one per CPU, at most 8). Set `LOOPMATH_WORKERS=1` to keep everything in one process, or another number to change the count.
+
 loopmath ships with a prior built from our own sweeps and experiments, so `recommend` gives an answer before you have any history. Your own runs then move it.
 
 ## The loop
@@ -57,7 +59,8 @@ The skill tells an orchestrator agent to follow these steps. You can run the sam
 # 1. Plan: classify the task, then ask.
 loopmath task-types
 loopmath recommend --type bug_fix --repo acme/api --feature size=s --feature lang=python --json
-#    the usual workflow, the success-cost curve, alternatives, two exploration picks, a suggested pair
+#    the usual workflow (without one, your best recorded workflow is the reference), the success-cost curve,
+#    alternatives, two exploration picks, a suggested pair
 
 # 2. Record: one run per workflow you run, one attempt per agent you launch.
 loopmath run start --type bug_fix --repo acme/api --base-commit SHA --config CFG --source usual --rec REC
@@ -81,6 +84,8 @@ A pair runs the goal workflow and an exploration pick from the same base commit,
 
 A run counts as a success when it is accepted under your rule. By default that means the task's tests pass. A rule can also be a score target: `loopmath recommend ... --target 'heldout_perf>=2400'` or `--target 'runtime_s<=200'` gives the expected score and the chance of reaching the target. Set standing rules and other options with `loopmath config set KEY VALUE`, and the spending cap with `loopmath budget --usd X --period month`.
 
+Runs recorded by another tool that writes OCP v0.3, such as an experiment runner, come in with `loopmath run import DIR --finish`: several files or a directory, with one refit at the end (`--no-fit` skips it). Runs in your store always count as yours, whatever source their documents name. `loopmath fit --without SOURCE` leaves out one shipped prior source, and `loopmath status` names the options of the current fit.
+
 ## The three views
 
 Each view is a self-contained HTML file written by a command; there is no server. The same numbers are available with `--json`.
@@ -95,9 +100,9 @@ Without a path, `--html` writes the page under `~/.loopmath/views/` and prints w
 
 | Group | Commands |
 |---|---|
-| Plan | `task-types`, `workflows` (list, show, validate, diff), `recommend`, `plan` |
+| Plan | `task-types`, `workflows` (list, show, validate, diff), `recommend` |
 | Record | `run` (start, attempt, artifact, finish, import), `outcome`, `budget`, `config` (get, set) |
-| Learn | `fit`, `onboard`, `share` |
+| Learn | `fit`, `onboard`, `share`, `prior` |
 | View | `runs`, `posterior`, `status`, `report`, `doctor` |
 | Skill | `skill` (install, uninstall, show) |
 | OCP | `ocp` (validate, migrate) |

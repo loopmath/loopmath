@@ -69,6 +69,7 @@ from .base import (
     canonical_effort,
     canonical_model,
     iter_jsonl,
+    iter_jsonl_stream,
     normalize_check_cmd,
     parse_ts,
     summarize_writes,
@@ -240,9 +241,9 @@ def parse_session(path: "str | Path | list[str | Path]") -> "RunRecord | None":
         never stored.
     """
     paths = [Path(path)] if isinstance(path, (str, Path)) else [Path(p) for p in path]
-    sources = [iter_jsonl(source) for source in paths]
-    if not any(sources):
-        return None
+    # One file at a time, one line at a time. Files with no lines at all end below
+    # with no token reading, so they still return None.
+    sources = (iter_jsonl_stream(source) for source in paths)
 
     session_meta_line = None
     first_turn_context_line = None

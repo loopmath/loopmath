@@ -27,9 +27,9 @@ GIT_EXE = "git"
 GIT_LOG_ARGS = _GIT_LOG_ARGS
 
 
-def git_from_disk(cwd: str) -> tuple[str, str] | str:
+def git_from_disk(cwd: str, memo: dict | None = None) -> tuple[str, str] | str:
     """Read a worktree's log, using compatibility-configurable git settings."""
-    return _git_from_disk(cwd, git_exe=GIT_EXE, git_log_args=GIT_LOG_ARGS)
+    return _git_from_disk(cwd, git_exe=GIT_EXE, git_log_args=GIT_LOG_ARGS, memo=memo)
 
 
 def git_fallback_writes(
@@ -50,8 +50,15 @@ def build_artifacts(
     meta: dict | None = None,
     git: Callable[[str], tuple[str, str] | str] | None = None,
 ):
-    """Build artifacts and edges while preserving the original call surface."""
-    return _build_artifacts(scans, nodes, meta=meta, git=git or git_from_disk)
+    """Build artifacts and edges while preserving the original call surface. Without a
+    `git`, one memo serves the whole build, so each worktree's log is read once."""
+    if git is None:
+        memo: dict = {}
+
+        def git(cwd: str) -> tuple[str, str] | str:
+            return git_from_disk(cwd, memo=memo)
+
+    return _build_artifacts(scans, nodes, meta=meta, git=git)
 
 
 __all__ = (

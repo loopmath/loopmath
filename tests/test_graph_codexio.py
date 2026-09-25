@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from loopmath.graph import codexio
+from loopmath.graph import codexio, codexio_parse
 from loopmath.graph.codexio import (
     codex_output_paths,
     exec_commands_from_js,
@@ -482,3 +482,69 @@ def test_missing_file_yields_empties_with_zero_records(tmp_path):
     assert out["origin"] == NO_META_ORIGIN
     assert out["meta"]["records"] == 0
     assert out["meta"]["origin_missing_session_meta"] == 1
+
+
+# ---------------------------------------------------------------- code map, regex against the loop
+
+
+def _reference_code_map(script: str) -> bytearray:
+    """The character loop `_js_code_map` replaced (0.1.0), kept as its specification."""
+    code = bytearray(b"\x01") * len(script)
+    i = 0
+    state = "code"
+    quote = ""
+    while i < len(script):
+        c = script[i]
+        nxt = script[i + 1] if i + 1 < len(script) else ""
+        if state == "code":
+            if c in "\"'`":
+                state, quote = "string", c
+                code[i] = 0
+            elif c == "/" and nxt == "/":
+                state = "line_comment"
+                code[i:i + 2] = b"\x00\x00"
+                i += 1
+            elif c == "/" and nxt == "*":
+                state = "block_comment"
+                code[i:i + 2] = b"\x00\x00"
+                i += 1
+        elif state == "string":
+            code[i] = 0
+            if c == "\\" and i + 1 < len(script):
+                code[i + 1] = 0
+                i += 1
+            elif c == quote:
+                state = "code"
+        elif state == "line_comment":
+            code[i] = 0
+            if c in "\r\n":
+                state = "code"
+        else:
+            code[i] = 0
+            if c == "*" and nxt == "/":
+                code[i + 1] = 0
+                i += 1
+                state = "code"
+        i += 1
+    return code
+
+
+@pytest.mark.parametrize("script", [
+    "", "a", "'", "\\", "'\\", "'a\\'b'c", "`x${y}`z", "a // c\nb", "a // c\rb", "a /* c */ b", "/*/ x", "/**/x",
+    "a /* never closed", "'never closed", "\"a\\\"b\" c", "x = '//not a comment'; tools.exec_command({cmd: 'ls'})",
+    "// tools.apply_patch(p)\ntools.apply_patch(p)", "'\\\n' tools", "`multi\nline` code",
+])
+def test_code_map_matches_the_character_loop(script):
+    codexio_parse._code_map_memo.clear()
+    assert codexio_parse._js_code_map(script) == _reference_code_map(script)
+
+
+def test_code_map_matches_the_character_loop_on_random_scripts():
+    import random
+
+    rng = random.Random(7)
+    alphabet = ['"', "'", "`", "/", "*", "\\", "\n", "\r", "a", " "]
+    for _ in range(20000):
+        script = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 20)))
+        codexio_parse._code_map_memo.clear()
+        assert codexio_parse._js_code_map(script) == _reference_code_map(script), script

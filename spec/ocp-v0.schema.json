@@ -146,7 +146,7 @@
     "modelRef": {
       "type": "object",
       "properties": {
-        "raw": { "type": "string", "maxLength": 200, "description": "The label exactly as the producer knew it, always preserved (e.g. 'fable·xhigh', 'opus5.xhigh'). Canonicalization is the consumer's job; the raw label is the ground truth." },
+        "raw": { "type": "string", "maxLength": 200, "description": "The label exactly as the producer knew it, always preserved (e.g. 'opus5.xhigh'). A label the source wrote with the effort in it, such as 'fable·xhigh', is kept as written; a producer never builds one itself (see effort). Canonicalization is the consumer's job; the raw label is the ground truth." },
         "id": { "type": "string", "maxLength": 200, "description": "Canonical provider model id when known, e.g. 'claude-fable-5'." },
         "family": { "type": "string", "maxLength": 100, "description": "Coarse family label for arm grouping, e.g. 'fable', 'opus5', 'sol5.6'." },
         "provider": { "type": "string", "maxLength": 100, "description": "e.g. 'anthropic', 'openai'." },
@@ -160,8 +160,8 @@
         "input_tokens": { "type": "integer", "minimum": 0, "description": "Uncached input tokens." },
         "cached_input_tokens": { "type": "integer", "minimum": 0, "description": "Input tokens served from cache (cache reads)." },
         "cache_creation_tokens": { "type": "integer", "minimum": 0, "description": "Input tokens written to cache, when the provider bills them separately." },
-        "output_tokens": { "type": "integer", "minimum": 0 },
-        "reasoning_tokens": { "type": "integer", "minimum": 0, "description": "Thinking/reasoning tokens when the provider reports them separately from output." },
+        "output_tokens": { "type": "integer", "minimum": 0, "description": "Output tokens, reasoning (thinking) tokens included. When the source reports reasoning separately from output, the producer adds it in here." },
+        "reasoning_tokens": { "type": "integer", "minimum": 0, "description": "The reasoning (thinking) share of output_tokens, as a breakdown: output_tokens already includes these tokens, so a reader never adds the two." },
         "requests": { "type": "integer", "minimum": 0, "description": "Number of model API requests aggregated into this record." },
         "usd": { "type": "number", "minimum": 0, "description": "Billed cost in US dollars when the producer knows it. Consumers should prefer recomputing from tokens and a dated price table." },
         "basis": {
@@ -212,7 +212,7 @@
         "n": { "type": "integer", "minimum": 1, "description": "1-based ordinal within the node." },
         "actor": { "type": "string", "maxLength": 200, "description": "Logical agent/role that ran the attempt (not a volatile runtime locator)." },
         "model": { "$ref": "#/$defs/modelRef" },
-        "effort": { "type": "string", "maxLength": 100, "description": "Reasoning-effort label as configured, e.g. low, medium, high, xhigh, max. Open set; producers must not fold it into the model label." },
+        "effort": { "type": "string", "maxLength": 100, "description": "Reasoning-effort label as configured, e.g. low, medium, high, xhigh, max. Open set. Producers must not fold it into the model label: a producer never builds a fused label such as 'fable·xhigh' itself. When the source already wrote one, model.raw keeps it as written, and effort known separately goes here." },
         "cause": { "$ref": "#/$defs/cause" },
         "status": {
           "enum": ["queued", "working", "done", "failed", "rejected", "canceled", "settled_unverified", "lost"],

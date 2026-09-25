@@ -89,7 +89,13 @@ Existing fields and extension keys are kept as they are.
 - A node's `state` is the producer's summary of its attempts. When learning
   from settled runs, trust attempt outcomes over node state.
 - `model.raw` keeps the producer's model label as written. Canonicalizing
-  model names is the reader's job.
+  model names is the reader's job. A producer never builds a label with the
+  effort fused in (such as `fable·xhigh`) itself; when the source wrote one,
+  `raw` keeps it, and effort known separately goes in `effort`.
+- `cost.output_tokens` includes reasoning tokens; `reasoning_tokens` is the
+  reasoning share of it, a breakdown. A producer whose source reports
+  reasoning apart from output adds it into `output_tokens`. A reader never
+  adds the two when totalling.
 
 ## 5. Privacy
 

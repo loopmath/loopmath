@@ -89,7 +89,7 @@ def test_five_message_usage_streams_and_session_usd_are_measured(doc):
         "input_tokens": 150,
         "cached_input_tokens": 15,
         "cache_creation_tokens": 3,
-        "output_tokens": 30,
+        "output_tokens": 37,  # output 30 plus reasoning 7: OpenCode counts them apart
         "reasoning_tokens": 7,
         "requests": 2,
         "usd": 0.0015,

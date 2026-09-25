@@ -23,9 +23,11 @@ orchestrator edits it for glue, nobody else.
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from pathlib import Path
 
+from .. import pool
 from .artifacts import build_artifacts
 from .cache import link_cache_get, link_cache_put
 from .codexio import scan_codex_session
@@ -81,6 +83,19 @@ def _scan_codex(path: Path) -> dict:
         if key is not None:
             link_cache_put(("codex", *key), hit)
     return hit
+
+
+def _scan_node(job: tuple[bool, str]) -> dict:
+    """One node's scan; module level so a worker process can run it."""
+    is_codex, path = job
+    return _scan_codex(Path(path)) if is_codex else scan_claude_session(Path(path))
+
+
+def _file_size(path: str) -> int:
+    try:
+        return os.stat(path).st_size
+    except OSError:
+        return 0
 
 
 def _join_spawns(nodes: dict[str, GraphNode], scans: dict[str, dict], meta: dict) -> list[GraphEdge]:
@@ -169,8 +184,9 @@ def extract(records: list[dict], *, workspaces: list[str] | None = None) -> Grap
 
     meta: dict = {"unlinked_subagents": 0, "unmatched_launches": 0, "unlaunched_codex": 0, "records_skipped_no_id_or_path": skipped_no_id_or_path}
     scans: dict[str, dict] = {}
-    for nid, n in nodes.items():
-        s = _scan_codex(Path(n.session_path)) if n.source == "codex" else scan_claude_session(Path(n.session_path))
+    jobs = [(n.source == "codex", n.session_path) for n in nodes.values()]
+    results = pool.ordered_map(_scan_node, jobs, weights=[_file_size(p) for _, p in jobs])
+    for (nid, n), s in zip(nodes.items(), results):
         # Own copies of the lists this function mutates, so a cache hit (L2) is never altered.
         scans[nid] = {**s, "writes": list(s["writes"]), "reads": list(s["reads"])}
         # Bash commands A1 inspected but could not turn into a path, by reason (never a fake path).

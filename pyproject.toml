@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopmath"
-version = "0.1.0"
+version = "0.1.1"
 description = "Plan agent workflows, record how they went, and learn from your own Claude Code and Codex logs"
 readme = "README.md"
 license = "MIT"

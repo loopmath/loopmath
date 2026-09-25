@@ -41,13 +41,15 @@ def test_checkers_prefer_another_provider_and_never_the_same_family():
     assert picks == ["gpt-6-astra", "gpt-6-sol", "gpt-5.6-luna"]
     picks = [s.model for s in al.checkers(Setting("codex", "gpt-6-astra", "xhigh"))]
     assert picks[0] == "claude-opus-5-5" and "gpt-6-astra" not in picks
-    assert al.checkers(Setting("claude-code", "claude-opus-5-5", "max"))[0].effort == "xhigh"  # codex has no max
+    assert al.checkers(Setting("claude-code", "claude-opus-5-5", "max"))[0].effort == "max"  # gpt-6 offers max
+    old = allowed_from({"models": ["claude-opus-5-5", "gpt-5.5"]})
+    assert old.checkers(Setting("claude-code", "claude-opus-5-5", "max"))[0].effort == "xhigh"  # gpt-5.5 does not
     assert allowed_from({"models": ["claude-opus-5-5"]}).checkers(OPUS) == [OPUS]
 
 
 def test_catalog_configurations_are_linear_and_reviewers_differ_in_family():
     configs = catalog_configurations({"models": SIX})
-    settings = 3 * 5 + 3 * 4
+    settings = 6 * 5  # codex offers max for the gpt-6 and gpt-5.6 models, as claude-code does
     assert len(configs) == settings * (1 + 3 + 1 + 3 + 3 + 3)
     assert len({c.id for c in configs}) == len(configs)
     for c in configs:

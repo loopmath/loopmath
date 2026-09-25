@@ -1,10 +1,17 @@
-"""The recommender's core: from a belief, a usual workflow and candidates to the
-`loopmath.recommend/1` object (spec 02 section 2, spec 05). No file or store IO
+"""The recommender's core: from a belief, a usual or reference workflow and candidates to the
+`loopmath.recommend/2` object (spec 02 section 2, spec 05). No file or store IO
 here, so every rule of spec 05 is testable on a fake belief.
+
+With no usual workflow (no `--usual`, no habit in the history, no config), the
+baseline is the reference workflow: the best recorded configuration, else the
+catalog default (spec 05 section 1, D118 N4). It plays the usual's part in the
+rescue and the deltas, and is never called "your usual".
 """
 
 from __future__ import annotations
 
+import dataclasses
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
@@ -17,6 +24,11 @@ from .message import compose
 
 TOP_N = 200
 N_ALTERNATIVES = 5
+# Where the baseline came from: `--usual`, history or config name the user's usual; otherwise it is a reference.
+USUAL_FROM = ("flag", "history", "config")
+REFERENCE_KINDS = ("usual", "best_recorded", "default")
+REFERENCE_TEXT = {"best_recorded": "no usual workflow; reference: your best recorded workflow ({label})",
+                  "default": "no usual workflow; reference: the default workflow ({label})"}
 PAIR_INSTRUCTIONS = (
     "same task and base commit",
     "separate worktrees",
@@ -28,6 +40,32 @@ PAIR_INSTRUCTIONS = (
 )
 
 DiffFn = Callable[[Configuration, Configuration], Sequence[str]]
+
+
+def reference_kind(usual_from: str) -> str:
+    """`usual` when the user named or ran the baseline, `best_recorded` or `default` when it is a reference."""
+    if usual_from in USUAL_FROM:
+        return "usual"
+    return "best_recorded" if usual_from == "recorded" else "default"
+
+
+def reference_text(kind: str, label: str) -> str:
+    """How the baseline is named: "your usual workflow (...)" only when it is the user's usual (F4)."""
+    if kind == "usual":
+        return f"your usual workflow ({label})"
+    return REFERENCE_TEXT[kind].format(label=label)
+
+
+def best_recorded(belief: Any, task: Task, rule: AcceptanceRule,
+                  recorded: Sequence[Configuration]) -> Configuration | None:
+    """The recorded configuration with the lowest expected cost per accepted result when it is its own rescue:
+    `E[C_run] + (1 - g) E[C_run] / g = E[C_run] / g` (D118 N4). None when none has a positive chance."""
+    if not recorded:
+        return None
+    preds = list(belief.predict_many(task, list(recorded), rule=rule, rescue_usd=None))
+    scored = [(p.cost.usd.mean / p.p_success.mean, p.cost.usd.mean, cfg.id, cfg)
+              for cfg, p in zip(recorded, preds) if p.p_success.mean > 0]
+    return min(scored, key=lambda x: x[:3])[3] if scored else None
 
 
 @dataclass
@@ -65,9 +103,97 @@ class Recommendation:
     explore_kind: str = "best_value"
     notes: list[str] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)  # shown labels by config id (`shown_labels`)
+    reference_kind: str = "usual"  # usual | best_recorded | default (spec 05 section 1)
+    medians: dict[str, tuple[float, str]] = field(default_factory=dict)  # run cost median and its basis, by id
 
     def label(self, cfg: Configuration) -> str:
-        return self.labels.get(cfg.id) or cfg.label()
+        return self.labels.get(cfg.id) or wide_label(cfg)
+
+    @property
+    def is_usual(self) -> bool:
+        return self.reference_kind == "usual"
+
+    def reference_text(self) -> str:
+        return reference_text(self.reference_kind, self.label(self.usual.config))
+
+    def numbers(self, pred: Prediction) -> dict[str, Any]:
+        """Run cost with its median, expected rescue, cost per accepted result and, for a score rule the fit
+        predicts, the chance to reach the target with its 80% range (I13, I15, P3a). The expected rescue is
+        `(1 - g) x C_rescue`, so run cost plus expected rescue is the cost per accepted result."""
+        med, basis = self.medians.get(pred.config) or interval_median(pred.cost.usd)
+        reach = None
+        if self.rule.score is not None:
+            if pred.success_from == "score_head":  # g holds the score head's draws of reaching the target
+                reach = {"mean": r6(pred.p_success.mean), "lo": r6(pred.p_success.lo), "hi": r6(pred.p_success.hi)}
+            else:
+                s = pred.scores.get(self.rule.score.name)
+                if s is not None and s.p_reach is not None:
+                    reach = {"mean": r6(s.p_reach), "lo": None, "hi": None}
+        ell, cost = pred.ell.usd, pred.cost.usd
+        return {"run_cost_usd": {"mean": r6(cost.mean), "median": r6(med), "lo": r6(cost.lo), "hi": r6(cost.hi),
+                                 "median_basis": basis},
+                "expected_rescue_usd": r6(max(0.0, ell.mean - cost.mean)),
+                "cost_per_accepted_usd": {"mean": r6(ell.mean), "lo": r6(ell.lo), "hi": r6(ell.hi)},
+                "p_reach": reach}
+
+    def candidate_dict(self, c: Candidate) -> dict[str, Any]:
+        return {**c.to_dict(), "label": self.label(c.config), "numbers": self.numbers(c.prediction)}
+
+    def reference_dict(self) -> dict[str, Any]:
+        u = self.usual
+        return {"kind": self.reference_kind, "from": self.usual_from, "config": u.config.to_dict(),
+                "label": self.label(u.config), "prediction": u.prediction.to_dict(),
+                "numbers": self.numbers(u.prediction), "text": self.reference_text()}
+
+    def chance(self, pred: Prediction) -> dict[str, Any]:
+        of = "an accepted result"
+        if self.rule.score is not None and self.score_backed:
+            op = ">=" if self.rule.score.better == "higher" else "<="
+            of = f"reaching {self.rule.score.name} {op} {self.rule.score.target:g}"
+        return {"mean": r6(pred.p_success.mean), "lo": r6(pred.p_success.lo), "hi": r6(pred.p_success.hi),
+                "of": of}
+
+    def choices(self) -> list[dict[str, Any]]:
+        """At most four options an agent shows before asking one question (spec 02 section 2): the goal
+        (recommended), the goal with the exploration pick beside it, the usual or reference, and the cheapest
+        workflow on the curve. Each names its members, cost per accepted result and chance."""
+        out: list[dict[str, Any]] = []
+
+        def add(key: str, title: str, c: Candidate, members: list[str], label: str | None = None,
+                **more: Any) -> None:
+            n = self.numbers(c.prediction)
+            out.append({"key": key, "title": title, "label": label or self.label(c.config), "config": c.config.id,
+                        "members": members, "cost_per_accepted_usd": n["cost_per_accepted_usd"],
+                        "chance": self.chance(c.prediction),
+                        "run_cost_usd": {"mean": n["run_cost_usd"]["mean"], "median": n["run_cost_usd"]["median"]},
+                        "expected_rescue_usd": n["expected_rescue_usd"], **more})
+
+        goal = self.goal
+        base = ("the usual workflow" if self.is_usual else
+                "the reference workflow") if goal.config.id == self.usual.config.id else ""
+        add("goal", "Run the recommended workflow" + (f", which is {base}" if base else ""), goal,
+            [goal.config.id], recommended=True)
+        slot = self.exploration.slot(self.explore_kind)
+        if slot.active:
+            pick = slot.pick
+            add("pair", f"Run the recommended workflow and try {self.label(pick.candidate.config)} beside it", goal,
+                [goal.config.id, pick.candidate.config.id],
+                f"{self.label(goal.config)} + {self.label(pick.candidate.config)}", recommended=False,
+                explore_config=pick.candidate.config.id, price_now_usd=r6(pick.price.usd.mean),
+                gain_per_future_run_usd=r6(float(pick.gain_per_run.get("usd") or 0.0)),
+                p_beats_goal=r6(pick.p_beats_goal))
+        if self.usual.config.id != goal.config.id:
+            title = "Run your usual workflow" if self.is_usual else (
+                "Run the reference workflow: your best recorded workflow" if self.reference_kind == "best_recorded"
+                else "Run the reference workflow: the default workflow")
+            add("reference", title, self.usual, [self.usual.config.id], recommended=False)
+        cheap = next((r for r in self.curve if r.reached and r.config is not None), None)
+        if cheap is not None and cheap.config not in {x["config"] for x in out}:
+            c = self.by_id(cheap.config)
+            if c is not None:
+                add("cheapest_run", f"Run the cheapest workflow with at least a {cheap.levels[0]}% chance", c,
+                    [c.config.id], recommended=False)
+        return out[:4]
 
     @property
     def score_backed(self) -> bool:
@@ -92,20 +218,31 @@ class Recommendation:
         return out
 
     def payload(self) -> dict[str, Any]:
-        """Everything in `loopmath.recommend/1` except task support, fit and rec (added by the command)."""
+        """Everything in `loopmath.recommend/2` except task support, fit and rec (added by the command)."""
         usual = self.usual
+        reference = self.reference_dict()
+        alternatives = []
+        for c in self.alternatives:
+            a = alt_dict(c, usual, self.rule, self.label(c.config))
+            a["numbers"] = self.numbers(c.prediction)
+            alternatives.append(a)
+        rescue = self.rescue.to_dict()
+        rescue["of"] = self.label(usual.config) if self.rescue.kind == "redo_usual" else None
         return {
             "rule": self.rule.to_dict(),
-            "usual": {"config": usual.config.to_dict(), "label": self.label(usual.config),
-                      "prediction": usual.prediction.to_dict(), "from": self.usual_from},
-            "rescue": self.rescue.to_dict(),
+            "reference": reference,
+            "usual": ({"config": reference["config"], "label": reference["label"],
+                       "prediction": reference["prediction"], "from": self.usual_from,
+                       "numbers": reference["numbers"]} if self.is_usual else None),
+            "rescue": rescue,
             "curve": [row_dict(r, self) for r in self.curve],
             "default_pick": {"config": self.default.config.id, "label": self.label(self.default.config)},
             "goal": {"level": self.goal_level, "config": self.goal.config.id, "label": self.label(self.goal.config),
                      "choice": self.goal_choice, **({"note": self.goal_note} if self.goal_note else {})},
-            "alternatives": [alt_dict(c, usual, self.rule, self.label(c.config)) for c in self.alternatives],
+            "alternatives": alternatives,
             "exploration": self.exploration.to_dict(),
             "pair": self.pair(),
+            "choices": self.choices(),
             "message": self.message,
             **({"notes": list(self.notes)} if self.notes else {}),
         }
@@ -117,7 +254,21 @@ def row_dict(row: CurveRow, rec: Recommendation) -> dict[str, Any]:
         c = rec.by_id(row.config)
         if c is not None:
             out["label"] = rec.label(c.config)
+    if row.prediction is not None:
+        out["numbers"] = rec.numbers(row.prediction)
     return out
+
+
+def r6(x: float | None) -> float | None:
+    return None if x is None else round(float(x), 6)
+
+
+def interval_median(iv: Any) -> tuple[float, str]:
+    """A run cost's median read from its 80% interval as log-normal (the geometric middle), when the belief
+    hands over no draws; basis "interval". A range that is not positive gives the mean back."""
+    if iv.lo > 0 and iv.hi > 0:
+        return math.sqrt(iv.lo * iv.hi), "interval"
+    return iv.mean, "mean"
 
 
 def deltas(c: Prediction, u: Prediction, rule: AcceptanceRule | None) -> dict[str, float | None]:
@@ -137,7 +288,7 @@ def deltas(c: Prediction, u: Prediction, rule: AcceptanceRule | None) -> dict[st
 
 def alt_dict(c: Candidate, usual: Candidate, rule: AcceptanceRule | None, label: str | None = None) -> dict[str, Any]:
     out = c.to_dict()
-    out["label"] = label or c.config.label()
+    out["label"] = label or wide_label(c.config)
     out["deltas"] = deltas(c.prediction, usual.prediction, rule)
     return out
 
@@ -153,16 +304,27 @@ def score_backed(rule: AcceptanceRule, pred: Prediction) -> bool:
     return rule.score is None or pred.success_from == "score_head"
 
 
+def wide_label(cfg: Configuration) -> str:
+    """`label()` with each piece's width when it runs more than one agent: 'best_of_n: 3 x gpt-5.6-sol/xhigh',
+    as `views.common.config_label` writes it, so a recorded shape and its width edits read apart."""
+    parts = []
+    for piece in cfg.workflow.pieces:
+        s = cfg.settings.get(piece.id)
+        if s is not None:
+            parts.append(f"{piece.width} x {s.model}/{s.effort}" if piece.width > 1 else f"{s.model}/{s.effort}")
+    return f"{cfg.workflow.id}: " + ", ".join(parts)
+
+
 def shown_labels(configs: Sequence[Configuration]) -> dict[str, str]:
     """Labels for configurations shown together, by id (D89).
 
-    `label()` names the shape, models and efforts only, so two configurations can print
+    `wide_label()` names the shape, widths, models and efforts only, so two configurations can print
     the same. Each of them then gets what tells it apart: its harnesses when no other
     one in the clash has the same, else its id, in the `[cfg_...]` form the runs view uses.
     """
     clashes: dict[str, dict[str, Configuration]] = {}
     for cfg in configs:
-        clashes.setdefault(cfg.label(), {})[cfg.id] = cfg
+        clashes.setdefault(wide_label(cfg), {})[cfg.id] = cfg
     out: dict[str, str] = {}
     for label, members in clashes.items():
         if len(members) == 1:
@@ -234,6 +396,28 @@ def predict_all(belief: Any, task: Task, configs: Sequence[Configuration], rule:
     return list(belief.predict_many(task, configs, rule=rule, rescue_usd=rescue.usd))
 
 
+def predict_with_medians(belief: Any, task: Task, configs: Sequence[Configuration], rule: AcceptanceRule,
+                         rescue: Rescue) -> tuple[list[Prediction], dict[str, tuple[float, str]]]:
+    """`predict_all`, and the median of each configuration's simulated run cost (I15), basis "draws".
+
+    The fit's `_predict_many` returns the simulated runs its intervals are read from beside the predictions
+    (`predict_many` is the same call without them), so the median costs no second pass. A belief without
+    it (a fake) gives no medians; `interval_median` then reads one from the interval.
+    """
+    fn = getattr(belief, "_predict_many", None)
+    if not callable(fn):
+        return predict_all(belief, task, configs, rule, rescue), {}
+    import numpy as np
+
+    out = fn(task, list(configs), rule, rescue.usd)
+    medians: dict[str, tuple[float, str]] = {}
+    for pred, extra in out:
+        sim = getattr((extra or {}).get("run"), "sim_usd", None)
+        if sim is not None and len(sim):
+            medians[pred.config] = (float(np.median(sim)), "draws")
+    return [p for p, _ in out], medians
+
+
 def draw_share(belief: Any, task: Task, rule: AcceptanceRule, preds: Sequence[Prediction],
                configs: dict[str, Configuration]):
     """Share of the belief's success draws at or above a level (D8), or None to use intervals."""
@@ -261,22 +445,28 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
 
     `configs` holds (configuration, origin) pairs from the candidate generator; the
     usual workflow is added when missing. `keep` lists configuration ids that
-    survive the top-200 cut whatever their rank (`--workflow` files).
+    survive the top-200 cut whatever their rank (`--workflow` files, recorded
+    configurations). `usual_from` says whether `usual` is the user's usual
+    (`flag`, `history`, `config`) or a reference (`recorded`, `default`).
     """
     st = settings or Settings()
     diff_fn = safe_diff(diff)
     goal_level_wanted = parse_goal(st.goal)
+    kind = reference_kind(usual_from)
 
     usual_pred = predict_one(belief, task, usual, rule, None)
     rescue = rescue_cost(st.rescue_kind, usual_pred, person_usd_per_hour=st.person_usd_per_hour,
                          hours=st.rescue_hours)
+    if rescue.kind == "redo_usual" and kind != "usual":
+        rescue = dataclasses.replace(rescue, basis="reference workflow repeated until accepted")
 
-    unique: dict[str, tuple[Configuration, str]] = {usual.id: (usual, "usual")}
+    origin_of_usual = {"usual": "usual", "best_recorded": "recorded", "default": "catalog"}[kind]
+    unique: dict[str, tuple[Configuration, str]] = {usual.id: (usual, origin_of_usual)}
     for cfg, origin in configs:
         if cfg.id not in unique:
             unique[cfg.id] = (cfg, origin)
     cfgs = [c for c, _ in unique.values()]
-    preds = predict_all(belief, task, cfgs, rule, rescue)
+    preds, medians = predict_with_medians(belief, task, cfgs, rule, rescue)
     by_id = {c.id: c for c in cfgs}
     cands = [Candidate(cfg, unique[cfg.id][1], diff_fn(usual, cfg) if cfg.id != usual.id else (), pred)
              for cfg, pred in zip(cfgs, preds)]
@@ -318,7 +508,8 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     backed = score_backed(rule, usual_c.prediction)
     message = compose(usual=usual, usual_pred=usual_c.prediction, goal=goal_c.config, goal_pred=goal_c.prediction,
                       goal_level=goal_level, goal_note=goal_note, exploration=exploration,
-                      rule=rule if backed else None, label=lambda cfg: labels.get(cfg.id) or cfg.label())
+                      rule=rule if backed else None, label=lambda cfg: labels.get(cfg.id) or wide_label(cfg),
+                      reference=kind)
     notes = []
     if not backed:
         notes.append(UNBACKED.format(score=rule.score.name, rule=rule.definition))
@@ -327,4 +518,5 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     if rescue.kind == "none":
         notes.append("rescue.kind is none: success is shown but not priced, so ell is the run cost")
     return Recommendation(task, rule, usual_c, usual_from, top, rows, default_c, goal_c, goal_level, choice,
-                          goal_note, alternatives, exploration, rescue, message, explore_kind, notes, labels)
+                          goal_note, alternatives, exploration, rescue, message, explore_kind, notes, labels,
+                          kind, medians)
