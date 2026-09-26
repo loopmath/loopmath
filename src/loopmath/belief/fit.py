@@ -526,7 +526,8 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
     with fit_lock(home, wait_s):
         remove_partials(home)
         config = _read_config(home)
-        weight = float(config.get("benchmark_prior_weight", prior_data.BENCHMARK_PRIOR_WEIGHT))
+        raw_weight = config.get("benchmark_prior_weight")  # unset: each benchmark's own weight (spec 04 section 5)
+        weight = None if raw_weight is None else float(raw_weight)
         try:
             features, features_error = FeatureSet.from_config(config.get("features")), None
         except FeatureConfigError as exc:  # a hand-edited config.toml: fit with the built-ins, say why
@@ -550,9 +551,10 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             raise UnknownSource(unknown_source_message(unknown, known))
         if not any(hr.rows for hr in heads_rows.values()):
             raise NothingToFit(_nothing_to_fit(no_prior, without, dropped))
-        specs = []
+        specs, bench_weights = [], {}
         if not no_prior and "benchmark" not in without:
             specs = prior_data.benchmark_factors(benchmarks, weight=weight)
+            bench_weights = prior_data.benchmark_weights(benchmarks, weight=weight)
         seed_key = input_key(heads_rows, specs, {"no_prior": no_prior, "without": sorted(without), "eb": eb,
                                                   "benchmark_prior_weight": weight})
         forest = Forest()
@@ -604,7 +606,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             "seed_key": seed_key, "timebox_effort": design_rows.TIMEBOX_EFFORT_COST,
             "timebox_terms": list(design_rows.TIMEBOX_LEVELS),
             "options": {"no_prior": no_prior, "without": list(without), "full": full, "eb": eb,
-                        "benchmark_prior_weight": weight},
+                        "benchmark_prior_weight": weight, "benchmark_weights": bench_weights},
             "runs_by_source": runs_by_source,
             "n_runs": {"prior": sum(v for k, v in runs_by_source.items() if k != "user"),
                        "user": runs_by_source.get("user", 0)},

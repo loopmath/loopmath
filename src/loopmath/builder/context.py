@@ -137,7 +137,7 @@ def build_session(args: argparse.Namespace) -> tuple[Session | None, int]:
         rec = engine.recommend(belief, asked, rule, usual=usual, usual_from=usual_from, configs=configs,
                                settings=settings, diff=C.diff_fn(), keep=[*(u.id for u in user),
                                                                         *(r.id for r in recorded)],
-                               **offered_kw(offered))
+                               own_runs=storeread.own_runs(home), **offered_kw(offered))
         rec.task = task
         start = None
         if getattr(args, "start", None):
@@ -305,6 +305,17 @@ def candidate_entry(rec: Recommendation, c: Any) -> dict[str, Any]:
             "origin": c.origin, **rec.search_fields(c.config.id)}
 
 
+def rescue_entry(session: Session, cfg: Configuration) -> dict[str, Any]:
+    """The rescue workflow as a candidate when the search did not offer it (22W N1, 0.2.3): predicted as a
+    candidate is, under the recommendation's task, rule and rescue, with origin `rescue`."""
+    rec = session.rec
+    bands: dict[str, Any] = {}
+    preds, medians = engine.predict_with_medians(session.belief, session.task, [cfg], session.rule, rec.rescue, bands)
+    view = with_numbers(rec, medians=medians, bands=bands)
+    return {"config": cfg.to_dict(), "label": rec.label(cfg), "numbers": numbers_of(view, preds[0]),
+            "origin": "rescue", **rec.search_fields(cfg.id)}
+
+
 def context_payload(session: Session) -> dict[str, Any]:
     """`GET /api/context` (spec 02, `builder`), built once per session."""
     if session.context is not None:
@@ -329,6 +340,10 @@ def context_payload(session: Session) -> dict[str, Any]:
         wanted.add(rec.rescue_config.id)
     top += [c for c in offer[TOP_CANDIDATES:]
             if c.config.id not in ids and (c.origin in KEEP_ORIGINS or c.config.id in wanted)]
+    candidates = [candidate_entry(rec, c) for c in top]
+    fix = rec.rescue_config
+    if fix is not None and fix.id not in retired and rec.by_id(fix.id) is None:
+        candidates.append(rescue_entry(session, fix))
     session.context = {
         "schema": SCHEMA,
         "task": C.task_block(rec.task, session.belief),
@@ -339,9 +354,10 @@ def context_payload(session: Session) -> dict[str, Any]:
         "rescue": core["rescue"],
         "reference": reference,
         "choices": choices,
-        "candidates": [candidate_entry(rec, c) for c in top],
+        "candidates": candidates,
         "catalog": catalog(session),
         "start": session.start.to_dict() if session.start is not None else None,
+        "own_runs": rec.own_runs,  # 0.2.3: the user's recorded runs; 0 leads each run cost with the typical run
     }
     return session.context
 

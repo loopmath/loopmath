@@ -5,8 +5,8 @@ success logit's variance is about 10. There a Newton step on the success head, l
 every related candidate's expected chance after the simulated run by about 6 points; that outweighed the gain of
 trying anything, so G clipped to 0 and no pair was offered on about one fit in six. The fits below were four that
 lost it when a fit's draws were seeded by its id; since 0.2.1 they are seeded by the fit's `seed_key`, a hash of
-its input rows, so the fixture's clock is pinned and the four ids now name four fits of the same data. The success
-update is now exact over the draws.
+its input rows, so each id gets its own pinned clock (and its own onboard and store): four clocks, four sets of
+rows, four seeds. The success update is now exact over the draws.
 """
 
 from __future__ import annotations
@@ -38,9 +38,17 @@ _spec.loader.exec_module(fixture)
 
 SRC = Path(loopmath.__file__).resolve().parents[1]
 LOST = ("fit_20260924205028", "fit_20260924205053", "fit_20260924210158", "fit_20260924210206")
-# The fixture's sessions are dated from this clock, and the draws follow the data (seed_key), so it is pinned.
+# The fixture's sessions are dated from its clock, and the draws follow the data (seed_key), so each fit's clock
+# is pinned, one minute apart: four seeds, the same every time.
 CLOCK = dt.datetime(2026, 9, 20, 12, tzinfo=dt.timezone.utc)
+CLOCKS = {fit_id: CLOCK + dt.timedelta(minutes=i) for i, fit_id in enumerate(LOST)}
 MANY_DRAWS = 8000
+# How many times the floor (1% of the goal's cost per accepted result) the pair's gain must clear. This depends on
+# the shipped prior and its repo salt, which reseeds the draws. On the 0.2.2 prior the four fits cleared it 18.5 to
+# 19.6 times. On 0.2.3's the goal is a claude-sonnet-5 and gpt-6-luna workflow at about $0.036 per accepted result,
+# so the floor fell about 6x (0.0022 to about 0.00036) and the gain more: the four fits clear it 4.3 to 7.3 times
+# and 8000 draws 4.4, so 5, the bar before, sat inside that spread.
+PAIR_MARGIN = 3
 LABELER = """\
 import json, sys
 req = json.load(sys.stdin)
@@ -84,15 +92,13 @@ def recommend_on(env: dict, fit_id: str, draws: int | None = None) -> dict:
                     for c in seen["screened"]]
         variance = L._prepare(state, task, [c.config for c in seen["screened"]], rule).success.var
     floor = G.QUALIFY_SHARE * seen["goal"].prediction.ell.usd.mean
-    return {"rec": rec, "outcomes": outcomes, "variance": variance, "floor": floor}
+    return {"rec": rec, "outcomes": outcomes, "variance": variance, "floor": floor, "seed_key": state.seed_key}
 
 
-@pytest.fixture(scope="module")
-def runs(tmp_path_factory):
-    """Onboard the fixture once, as the dry run does, then recommend on each lost fit, and on the first at
-    MANY_DRAWS too."""
+def onboarded(tmp_path_factory, clock: dt.datetime) -> dict:
+    """Onboard the fixture dated from `clock` into a new store, as the dry run does; the environment to use it."""
     tmp = tmp_path_factory.mktemp("prior_only")
-    hist = fixture.build_history(tmp, now=CLOCK)
+    hist = fixture.build_history(tmp, now=clock)
     home = tmp / "home"
     home.mkdir()
     (home / ".claude").symlink_to(hist.logs)
@@ -105,8 +111,15 @@ def runs(tmp_path_factory):
                           f"command:{sys.executable} {tmp / 'labeler.py'}", "--since", "3650d", "--yes", "--json"],
                          env=env, cwd=tmp, text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
     assert res.returncode == 0, res.stderr[-800:]
+    return env
+
+
+@pytest.fixture(scope="module")
+def runs(tmp_path_factory):
+    """Onboard the fixture at each lost fit's clock and recommend on that fit, and on the first at MANY_DRAWS too."""
     out = {}
     for fit_id in LOST:
+        env = onboarded(tmp_path_factory, CLOCKS[fit_id])
         out[fit_id] = recommend_on(env, fit_id)
         if fit_id == LOST[0]:
             out["many"] = recommend_on(env, fit_id, MANY_DRAWS)
@@ -121,11 +134,15 @@ def pair_pick(run: dict) -> dict:
     return pick
 
 
+def test_the_four_fits_have_four_seeds(runs):
+    assert len({runs[fit_id]["seed_key"] for fit_id in LOST}) == len(LOST)
+
+
 @pytest.mark.parametrize("fit_id", LOST)
 def test_a_fit_that_lost_its_pair_offers_one(runs, fit_id):
     run = runs[fit_id]
     assert run["rec"]["goal"]["config"]
-    assert pair_pick(run)["gain_per_run"]["usd"] > 5 * run["floor"]
+    assert pair_pick(run)["gain_per_run"]["usd"] > PAIR_MARGIN * run["floor"]
 
 
 @pytest.mark.parametrize("fit_id", LOST)
@@ -146,7 +163,7 @@ def test_the_pair_is_the_same_with_many_more_draws(runs):
     few, many = runs[LOST[0]], runs["many"]
     pick = pair_pick(many)
     assert pick["candidate"]["config"] == pair_pick(few)["candidate"]["config"]
-    assert pick["gain_per_run"]["usd"] > 5 * many["floor"]
+    assert pick["gain_per_run"]["usd"] > PAIR_MARGIN * many["floor"]
     for o in many["outcomes"]:
         np.testing.assert_allclose(o.pz @ o.g_after, o.g_now, rtol=1e-9, atol=0)
         assert o.raw_gain() > 0

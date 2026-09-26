@@ -65,6 +65,8 @@ Reading the history uses up to 8 worker processes (one per CPU, at most 8). Set 
 
 loopmath ships with a prior built from our own sweeps and experiments, so `recommend` gives an answer before you have any history. Your own runs then move it.
 
+The prior ships inside the package: our runs, in the shared form (no titles, paths, commands or free text), and the published benchmark results. They are the same files we fit with, and each release updates them. `onboard` and the results page say in one line which prior they start from, and `loopmath prior show` lists it source by source.
+
 ## The loop
 
 The plan and record skills take an agent through the loop in three commands:

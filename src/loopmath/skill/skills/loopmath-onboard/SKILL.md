@@ -18,7 +18,9 @@ Tell the user in one line: "Reading your Claude Code and Codex history, read onl
 loopmath onboard --dry-run --json
 ```
 
-Read `groups.total`, `groups.to_label`, `window.from`, `window.to`, `sessions`, `cost_in_logs.usd`, `labeler.chosen`, `labeler.spec`, `labeler.expected.usd`, `labeler.options[]` (`spec`, `title`, `expected.usd`).
+Read `prior.line`, `groups.total`, `groups.to_label`, `window.from`, `window.to`, `sessions`, `cost_in_logs.usd`, `labeler.chosen`, `labeler.spec`, `labeler.expected.usd`, `labeler.options[]` (`spec`, `title`, `expected.usd`).
+
+Show the user `prior.line` once, word for word. It says what the answers start from before any of their runs, the prior that ships inside loopmath: its version, its runs per source, the published benchmarks it holds and the date it was built. Do not repeat it later, and do not write the numbers yourself: they change with each release. `loopmath prior show` lists the same prior source by source.
 
 If `groups.to_label` is 0, there is nothing to label. Do not ask anything. Say what was found (`groups.total` groups, none with a prompt to label, or no sessions in the window), run `loopmath fit --json`, and go to step 4. Suggest `loopmath-import-runs` if the user has OCP files.
 

@@ -3,7 +3,8 @@
 Keys are dotted paths into the TOML tables: `org`, `acceptance_rule`,
 `rules.<name>`, `goal`, `rescue.kind`, `rescue.person_usd_per_hour`,
 `rescue.hours`, `rescue.decay`, `rescue.max_attempts`, `rescue.min_chance`, `models.allowed`, `harnesses`, `subtypes`, `labeler`,
-`benchmark_prior_weight`, `explore.default_pick`, `explore.auto_payback_runs`,
+`benchmark_prior_weight` (unset by default: each benchmark's own `weight` in
+`benchmarks.toml`; a number is one weight for every benchmark, 0 none), `explore.default_pick`, `explore.auto_payback_runs`,
 `referee.model`, `budget.usd`, `budget.period`, `outcome.q.<tier>`,
 `onboard.labeler` (Analyst D39: `claude:<model>`, `codex:<model>`,
 `command:<cmd>` or `none`, chosen by the user, never defaulted), and the
@@ -26,7 +27,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ..belief.priors import BENCHMARK_PRIOR_WEIGHT
 from ..taskmodel import FeatureConfigError, FeatureSet, features_from_config
 from ..types import DEFAULT_RULE, AcceptanceRule, ScoreTarget
 from .lock import atomic_write_text
@@ -40,7 +40,6 @@ DEFAULTS: dict[str, Any] = {
     "models": {"allowed": []},
     "harnesses": ["claude-code", "codex"],
     "subtypes": [],
-    "benchmark_prior_weight": BENCHMARK_PRIOR_WEIGHT,  # the fit's fallback too: one default
     "explore": {"default_pick": "best_value"},
     "budget": {"period": "month"},
     "outcome": {"q": {"verified": 0.98, "reported": 0.95, "heuristic": 0.8, "asserted": 0.7}},
@@ -58,6 +57,7 @@ LIST_KEYS = ("models.allowed", "harnesses", "subtypes")
 NUMBER_KEYS = ("rescue.person_usd_per_hour", "rescue.hours", "benchmark_prior_weight",
                "explore.auto_payback_runs", "budget.usd", "plan.time_budget_s")
 POSITIVE_KEYS = ("plan.time_budget_s",)
+NONNEGATIVE_KEYS = ("benchmark_prior_weight",)  # 0 turns the benchmark factors off
 COUNT_KEYS = ("plan.exact_picks",)  # whole numbers >= 0; lane 6 owns the defaults of the plan keys
 RESCUE_KEYS = ("rescue.decay", "rescue.max_attempts", "rescue.min_chance")  # `check_rescue`
 KNOWN_ROOTS = ("org", "acceptance_rule", "rules", "goal", "rescue", "models", "harnesses", "subtypes",
@@ -277,6 +277,8 @@ def coerce(key: str, value: str) -> Any:
             raise ConfigError(f"{dotted} takes a number, got {value!r}")
     if dotted in POSITIVE_KEYS and parsed is not None and parsed <= 0:
         raise ConfigError(f"{dotted} takes a number above 0, got {value!r}")
+    if dotted in NONNEGATIVE_KEYS and parsed is not None and parsed < 0:
+        raise ConfigError(f"{dotted} takes a number of 0 or more, got {value!r}")
     if dotted in COUNT_KEYS and parsed is not None:
         if isinstance(parsed, bool) or not isinstance(parsed, int) or parsed < 0:
             raise ConfigError(f"{dotted} takes a whole number of 0 or more, got {value!r}")

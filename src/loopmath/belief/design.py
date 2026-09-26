@@ -464,10 +464,12 @@ def source_label(doc: dict) -> str:
     ext = run.get("ext") or {}
     share = ext.get("dev.loopmath.share")
     if isinstance(share, dict):
-        # the importer writes `source` and `task.org` as `shared:<org_hash>` already: never prefix twice
+        # the importer writes `source` and `task.org` as `shared:<org_hash>` already: never prefix twice. With no
+        # org at all the source is `shared`, the name `fit --without shared` takes (0.2.3, 22X review N1)
         org = (share.get("source") or share.get("org") or share.get("org_hash") or (run.get("task") or {}).get("org")
-               or "shared")
-        return "shared:" + str(org).removeprefix("shared:")
+               or "")
+        name = str(org).removeprefix("shared:")
+        return f"shared:{name}" if name and name != "shared" else "shared"
     src = (run.get("task") or {}).get("source")
     kind = src.get("kind") if isinstance(src, dict) else src
     kind = str(kind or "").strip().lower()

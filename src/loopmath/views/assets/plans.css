@@ -37,3 +37,4 @@ table.v-t th[aria-sort="descending"] .v-arr::after { content: "\2193"; }
 .v-info { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; min-height: 0; padding: 0; margin: 0 0 0 3px; border: 1px solid var(--muted); border-radius: 50%; background: none; color: var(--muted); font: italic 700 10px/1 var(--serif); cursor: help; vertical-align: 1px; }
 .v-info:hover, .v-info:focus-visible { color: var(--accent); border-color: var(--accent); }
 .v-mk.opt { background: var(--ink); color: var(--surface); }
+.v-onboard code { white-space: nowrap; }

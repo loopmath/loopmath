@@ -28,7 +28,7 @@ def test_a_batch_import_names_the_shipped_overlap_once(capsys, home, tmp_path):
         (folder / f"{run}.ocp.json").write_text(json.dumps(finished_doc(run, usd=0.5)), encoding="utf-8")
     code, out, err = cli(capsys, home, "run", "import", str(folder), "--finish")
     assert code == 0, err
-    note = "2 of your runs are also in the shipped rq1 prior (same run ids): fits use your copies"
+    note = "2 of your runs are also in the shipped rq1 prior (same runs): fits use your copies"
     assert out.splitlines()[-1] == note and (out + err).count("shipped") == 1
     code, out, err = cli(capsys, home, "run", "import", str(folder), "--no-fit", "--json")
     assert code == 0, err

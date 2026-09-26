@@ -10,8 +10,11 @@
   version nodes: success head, the logit gap to the benchmark's reference model with variance
   `1 / (w p (1 - p))`; cost head, the log cost ratio with variance `1 / w`; tokens head
   (`kind = "tokens"`, published total tokens for the evaluation), the log token ratio
-  with variance `1 / w`. `w` is config `benchmark_prior_weight` (default 5): one benchmark
-  result counts like about 5 runs.
+  with variance `1 / w`. `w` is one model's share of the benchmark's weight `w_b` (0.2.3,
+  lane 23K): the `weight` of its `[[benchmark]]` table (default 5, about 5 runs), shared by
+  the model's k results on that benchmark, so each gets `w_b / k` and a model with five
+  efforts pulls as hard in total as a model with one. Config `benchmark_prior_weight`, when
+  set, is one `w_b` for every benchmark; 0 turns the factors off.
 """
 
 from __future__ import annotations
@@ -91,8 +94,30 @@ def _model_terms(model: str, effort: str | None, sign: float) -> list[tuple[str,
     return terms
 
 
-def benchmark_factors(path: Path | None = None, *, weight: float = BENCHMARK_PRIOR_WEIGHT) -> list[FactorSpec]:
-    """Prior factors from `benchmarks.toml`. A missing file gives no factors."""
+def benchmark_weights(path: Path | None = None, *, weight: float | None = None) -> dict[str, float]:
+    """Each benchmark's weight `w_b`: `weight` for every benchmark when it is given (config
+    `benchmark_prior_weight`), else the benchmark's own `weight` field, else 5. Empty for a missing file."""
+    path = path or benchmark_path()
+    if not path.is_file():
+        return {}
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    return {str(b["id"]): _weight_of(b, weight) for b in data.get("benchmark") or [] if b.get("id")}
+
+
+def _weight_of(bench: dict, weight: float | None) -> float:
+    if weight is not None:
+        return float(weight)
+    own = bench.get("weight")
+    return float(own) if isinstance(own, (int, float)) and not isinstance(own, bool) else BENCHMARK_PRIOR_WEIGHT
+
+
+def benchmark_factors(path: Path | None = None, *, weight: float | None = None) -> list[FactorSpec]:
+    """Prior factors from `benchmarks.toml`. A missing file gives no factors.
+
+    `weight` (config `benchmark_prior_weight`) overrides every benchmark's own weight; None reads
+    each benchmark's `weight`. A model's k results on one benchmark share its weight: each factor
+    has weight `w_b / k` (B1). A benchmark with weight 0 or less gives no factors.
+    """
     path = path or benchmark_path()
     if not path.is_file():
         return []
@@ -103,11 +128,15 @@ def benchmark_factors(path: Path | None = None, *, weight: float = BENCHMARK_PRI
     for bid, bench in benches.items():
         kind = str(bench.get("kind") or "success")
         ref = canonical_model_id(str(bench.get("reference") or ""))
+        w_b = _weight_of(bench, weight)
+        if w_b <= 0:
+            continue
         rows = [r for r in results if r["benchmark"] == bid]
         ref_rows = [r for r in rows if canonical_model_id(str(r["model"])) == ref]
         if not ref_rows:
             continue
         ref_value = float(ref_rows[0]["value"])
+        by_model: dict[str, list[tuple[str, list, float, dict]]] = {}  # model -> (head, terms, mean, row) per result
         for r in rows:
             model = canonical_model_id(str(r["model"]))
             if model == ref:
@@ -117,14 +146,24 @@ def benchmark_factors(path: Path | None = None, *, weight: float = BENCHMARK_PRI
             terms = _cancel(terms)
             if not terms:
                 continue
-            note = f"{bid}: {model} {value} against {ref} {ref_value} ({r.get('url', '')}, {r.get('date', '')})"
             if kind == "success":
                 p = min(max(value, 0.01), 0.99)
                 p_ref = min(max(ref_value, 0.01), 0.99)
                 gap = math.log(p / (1 - p)) - math.log(p_ref / (1 - p_ref))
-                out.append(FactorSpec("success", terms, gap, 1.0 / (weight * p * (1 - p)), note))
+                by_model.setdefault(model, []).append(("success", terms, gap, r))
             elif kind in ("cost", "tokens") and value > 0 and ref_value > 0:  # Tokens feed the tokens head only
-                out.append(FactorSpec(kind, terms, math.log(value / ref_value), 1.0 / weight, note))
+                by_model.setdefault(model, []).append((kind, terms, math.log(value / ref_value), r))
+        for model, items in by_model.items():
+            w = w_b / len(items)  # one budget per model and benchmark (B1)
+            share = f"weight {w_b:g} over {len(items)}" if len(items) > 1 else f"weight {w_b:g}"
+            for head, terms, mean, r in items:
+                note = (f"{bid}: {model} {float(r['value'])} against {ref} {ref_value} ({share}; "
+                        f"{r.get('url', '')}, {r.get('date', '')})")
+                if head == "success":
+                    p = min(max(float(r["value"]), 0.01), 0.99)
+                    out.append(FactorSpec("success", terms, mean, 1.0 / (w * p * (1 - p)), note))
+                else:
+                    out.append(FactorSpec(head, terms, mean, 1.0 / w, note))
     return out
 
 

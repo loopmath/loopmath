@@ -74,6 +74,45 @@ def run_cost(m: Any) -> str:
     return f"{usd(m.usd.mean)} ({tokens(m.tokens.mean)} tokens{tail(m.usd, m.tokens)})"
 
 
+WIDE_RANGE = 10.0  # N3 (0.2.3): a run cost range wider than this factor leads with the typical run
+ONBOARD_HINT = "Onboard to see your own costs."
+
+
+def typical_first(own_runs: int | None, run_usd: Any) -> bool:
+    """N3 (0.2.3): whether a run cost leads with the typical run (the median) and puts the mean on the next line.
+
+    It does while the user's store holds no runs of their own (`own_runs` 0: the store's recorded runs, so
+    shipped prior runs never count; None when the caller cannot tell), or when the 80% range of one run's cost
+    is wider than 10x (`hi > 10 lo`; a range from 0 or below that reaches above 0 counts as wider). Otherwise the
+    mean leads, as before 0.2.3. Budgets, totals and cost per accepted result keep the mean either way. `run_usd` is
+    an `Interval` or its dict."""
+    if own_runs is not None and own_runs <= 0:
+        return True
+    lo, hi = (float(run_usd["lo"]), float(run_usd["hi"])) if isinstance(run_usd, dict) else (float(run_usd.lo),
+                                                                                              float(run_usd.hi))
+    return hi > WIDE_RANGE * lo if lo > 0 else hi > 0
+
+
+def leads_typical(own_runs: int | None, m: Any) -> bool:
+    """`typical_first` for a run's `Money`, when the prediction has the median to lead with."""
+    return getattr(m.usd, "median", None) is not None and typical_first(own_runs, m.usd)
+
+
+def typical_cost(m: Any) -> str:
+    """"$15.28 (5,120,000 tokens; 80% of runs $2.64 to $108.35)": the typical run, the median of one run's cost
+    and tokens, with the 80% range of its cost."""
+    tok = m.tokens.median if getattr(m.tokens, "median", None) is not None else m.tokens.mean
+    return f"{usd(m.usd.median)} ({tokens(tok)} tokens; 80% of runs {usd(m.usd.lo)} to {usd(m.usd.hi)})"
+
+
+def mean_sentence(m: Any, own_runs: int | None) -> str:
+    """The line under a typical run: the mean run cost, why it is higher, and the onboarding hint while the
+    user has no runs of their own."""
+    why = ", higher because a few runs cost far more" if m.usd.mean > m.usd.median else ""
+    hint = f" {ONBOARD_HINT}" if own_runs is not None and own_runs <= 0 else ""
+    return f"The mean run costs {usd(m.usd.mean)} ({tokens(m.tokens.mean)} tokens){why}.{hint}"
+
+
 def usd(x: float) -> str:
     if 0 < x < 0.01:
         return "under $0.01"
@@ -282,18 +321,25 @@ def goal_sentence(goal_level: int | None, goal_label: str, goal_pred: Prediction
 def compose(*, usual: Configuration, usual_pred: Prediction, goal: Configuration, goal_pred: Prediction,
             goal_level: int | None, goal_note: str | None, exploration: Exploration, rule: AcceptanceRule | None,
             label: Callable[[Configuration], str] | None = None, reference: str = "usual",
-            strategy_text: str | None = None, rescue: "Rescue | None" = None, rescue_label: str | None = None) -> str:
+            strategy_text: str | None = None, rescue: "Rescue | None" = None, rescue_label: str | None = None,
+            own_runs: int | None = None) -> str:
     """The one-paragraph message for the user; `label` names configurations (the shown labels).
     `reference` is the baseline's kind: `usual`, `best_recorded` or `default`. `strategy_text` is
     `goal.strategy.text` when the strategy sentence applies. With a `retry` rescue the rescue sentence
-    follows the goal's."""
+    follows the goal's. `own_runs` is the user's recorded runs: the first sentence leads with the typical
+    run when `typical_first` says so (N3, 0.2.3), and the mean follows."""
     label_of = label or Configuration.label
     chance = noted(f"{a_pct(usual_pred.p_success.mean)} {chance_phrase(rule)}", usual_pred.p_success)
+    typical = leads_typical(own_runs, usual_pred.cost)
+    if typical:
+        at = f"; a typical run costs about {typical_cost(usual_pred.cost)}. {mean_sentence(usual_pred.cost, own_runs)}"
+    else:
+        at = f" at about {run_cost(usual_pred.cost)}."
     if reference == "usual":
-        first = f"Your usual workflow ({label_of(usual)}) has {chance} at about {run_cost(usual_pred.cost)}."
+        first = f"Your usual workflow ({label_of(usual)}) has {chance}{at}"
     else:
         first = (f"You have no usual workflow for this task; the reference is {REFERENCE_NAMES[reference]} "
-                 f"({label_of(usual)}), with {chance} at about {run_cost(usual_pred.cost)}.")
+                 f"({label_of(usual)}), with {chance}{at}")
     parts = [first,
              goal_sentence(goal_level, label_of(goal), goal_pred, usual_id=usual.id, goal_id=goal.id,
                            note=goal_note, rule=rule, reference=reference, strategy_text=strategy_text)]

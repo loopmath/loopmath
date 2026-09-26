@@ -166,6 +166,15 @@
   const rng = (x, f) => x && num(x.lo) && num(x.hi) ? `${f(x.lo)} to ${f(x.hi)}` : '';
   const tail = (...xs) => xs.some(pulledUp) ? ` <span class="v-tail">${esc(TAIL_NOTE)}</span>` : '';
   const median = r => r && r.run && num(r.run.median) ? `median ${usd(r.run.median)}${r.run.median_basis && r.run.median_basis !== 'draws' ? ' (approx.)' : ''}` : '';
+  // N3 (0.2.3): recommend decides (`run_cost_usd.typical_first`) whether a run cost leads with the typical run, the
+  // median, while the user has no runs of their own or the range is wider than 10x; the mean goes on the next line.
+  const typicalFirst = r => !!(r && r.run && r.run.typical_first && num(r.run.median));
+  const NO_RUNS = D.own_runs === 0;
+  const runTile = r => typicalFirst(r)
+    ? `<div id="run"><div class="n">${usd(r.run.median)}</div><div class="l">a typical run ${info('run')}</div><div class="r">80% of runs ${rng(r.run, usd)}</div>` +
+      `<div class="r" id="runmean">mean ${usd(r.run.mean)}${r.run.mean > r.run.median ? ': a few runs cost far more' : ''}${tail(r.run)}</div>` +
+      (NO_RUNS ? `<div class="r v-onboard" id="onboard">Onboard to see your own costs: <code>loopmath onboard</code></div>` : '') + `</div>`
+    : `<div id="run"><div class="n">${r && r.run ? usd(r.run.mean) : 'n/a'}</div><div class="l">a run ${info('run')}</div><div class="r">${median(r)}${tail(r && r.run)}</div></div>`;
   const supportText = n => !num(n) ? 'n/a' : n === 0 ? 'none' : fmt.int(n);
   // D96/D102: the look-ahead value in dollars, as lane 6's recommend message words it.
   const savingText = gp => !gp || !num(gp.usd) ? 'n/a' : `expected to save about ${gp.usd > 0 && gp.usd < 0.01 ? 'under $0.01' : '$' + gp.usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} per future similar run`;
@@ -261,7 +270,7 @@
       `<div class="lead"><div class="n">${usd(pick.ell.mean)}</div><div class="l">per accepted result ${info('ell')}</div><div class="r">${rng(pick.ell, usd)}${tail(pick.ell)}</div></div>` +
       `<div><div class="n">${pick.g && num(pick.g.mean) ? pct(pick.g.mean) : 'n/a'}</div><div class="l">${esc(gShort)}${pick.paw ? ' in one run' : ''}</div><div class="r">${rng(pick.g, pct)}</div>` +
       (pick.paw ? `<div class="r" id="paw">${pct(pick.paw.mean)} within ${esc(K)} attempts${num(pick.paw.lo) ? ` (${rng(pick.paw, pct)})` : ''}</div>` : '') + `</div>` +
-      `<div><div class="n">${pick.run ? usd(pick.run.mean) : 'n/a'}</div><div class="l">a run ${info('run')}</div><div class="r">${median(pick)}${tail(pick.run)}</div></div></div>`;
+      runTile(pick) + `</div>`;
     if (num(pick.support) && pick.support < 3) {
       s += `<div class="v-warn" id="thin"><i>!</i><span><b>${pick.support === 0 ? 'No runs of this workflow yet.' : `Only ${V.runs(pick.support)} of this workflow.`}</b> The estimate comes mostly from the fitted model, not from runs of this workflow${pick.g && num(pick.g.lo) ? `, so the ${esc(gWords)} ranges from ${pct(pick.g.lo)} to ${pct(pick.g.hi)}` : ''}.</span></div>`;
     }

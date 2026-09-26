@@ -11,7 +11,8 @@ from loopmath.belief.design import parse_run, structure
 from loopmath.logmatch.tariff import price_table, table_id
 from loopmath.priors import ocpdoc
 from loopmath.priors.show import run_summary
-from loopmath.priors.sweep import convert_sweep_run, iter_sweep
+from loopmath.priors.build import BundleError, run_sweep
+from loopmath.priors.sweep import batch_of, convert_sweep_run, iter_sweep
 from loopmath.priors.validate import validate_bundle_doc
 
 SEP = "·"
@@ -339,3 +340,86 @@ def test_iter_sweep_reads_a_results_folder(tmp_path):
     assert [p.name.split("--")[0] for p, _, _ in out] == ["t3-bugfix", "t7-sql"]
     assert all(w == [] for _, _, w in out)
     assert out[1][1]["run"]["ext"]["dev.loopmath.prior"]["infra_error"] is True
+
+
+# ---------------------------------------------------------------- batches (23B)
+STEM = "t3-bugfix--claude-fable-5--high@rev-gpt-5.6-sol-xhigh"
+
+
+def second_batch_run():
+    """accepted_run as a later batch (sweep0925) writes it: its own run id prefix, the same task."""
+    src = accepted_run()
+    src["run"]["id"] = src["run"]["id"].replace("run-sweep0830-", "run-sweep0925-")
+    src["ext"]["experiment"]["sweep"] = "sweep0925"
+    return src
+
+
+def results_folder(tmp_path, name, runs):
+    """A results folder: `dagr/<stem>.run.json` and attempts.jsonl rows that name each run by its stem."""
+    d = tmp_path / name
+    (d / "dagr").mkdir(parents=True)
+    lines = []
+    for stem, src in runs:
+        (d / "dagr" / f"{stem}.run.json").write_text(json.dumps(src))
+        lines += [json.dumps({**r, "run_id": stem}) for r in rows_for(src)]
+    (d / "attempts.jsonl").write_text("\n".join(lines) + "\n")
+    return d
+
+
+def test_a_second_batch_has_its_own_run_id_and_the_same_task():
+    first, _ = convert_sweep_run(accepted_run(), rows_for(accepted_run()), stem=STEM)
+    src = second_batch_run()
+    doc, warnings = convert_sweep_run(src, rows_for(src), stem=STEM)
+    run = doc["run"]
+    assert warnings == []
+    assert (first["run"]["id"], run["id"]) == (f"sweep0830/{STEM}", f"sweep0925/{STEM}")
+    assert run["task"]["id"] == first["run"]["task"]["id"] == "sweep0830/t3-bugfix"  # one task node, both batches
+    assert run["task"]["source"] == {"kind": "sweep", "ref": "sweep0925"}
+    assert {s["source"]["ref"] for s in run["signals"]} == {"sweep0925 harness"}
+    assert json.loads(json.dumps(doc).replace("sweep0925", "sweep0830")) == first  # nothing else depends on it
+
+
+def test_the_batch_comes_from_the_run_id_when_the_experiment_does_not_name_it():
+    src = second_batch_run()
+    del src["ext"]["experiment"]["sweep"]
+    assert batch_of(src) == "sweep0925"
+    src["run"]["id"] = "t3-bugfix"
+    with pytest.raises(ValueError, match="no sweep batch"):
+        convert_sweep_run(src, [], stem="x")
+
+
+def test_iter_sweep_matches_a_second_batchs_rows(tmp_path):
+    """The rows name a run by its stem; the batch's own `run-<batch>-` prefix is stripped to find them.
+
+    Only the rows say these rounds crashed and how much they thought, so both prove the match."""
+    stem = "t7-sql--claude-sonnet-5--max@plan-gpt-5.6-luna-low@rev-claude-opus-5-xhigh"
+    src = crashed_run()
+    src["run"]["id"] = f"run-sweep0925-{stem}"
+    src["ext"]["experiment"]["sweep"] = "sweep0925"
+    for att in [t for t in src["tasks"] if t["id"] == "DEV"][0]["attempts"]:
+        att["outcome"]["reason"] = "rc=1"
+    d = tmp_path / "results"
+    (d / "dagr").mkdir(parents=True)
+    (d / "dagr" / f"{stem}.run.json").write_text(json.dumps(src))
+    (d / "attempts.jsonl").write_text("\n".join(json.dumps({**r, "run_id": stem}) for r in rows_for(src, cli_ok=False)))
+    [(_, doc, warnings)] = list(iter_sweep(d))
+    assert warnings == [] and doc["run"]["id"] == f"sweep0925/{stem}"
+    assert doc["run"]["ext"]["dev.loopmath.prior"]["infra_error"] is True
+    impl = [a for a in doc["attempts"] if a["node"] == "implement"]
+    assert len(impl) == 3 and all(a["ext"]["dev.loopmath.infra_error"] for a in impl)
+    assert {a["cost"]["reasoning_tokens"] for a in impl} == {123}
+
+
+def test_run_sweep_reads_one_folder_per_batch(tmp_path):
+    a = results_folder(tmp_path, "a", [(STEM, accepted_run())])
+    b = results_folder(tmp_path, "b", [(STEM, second_batch_run())])
+    res = run_sweep([a, b])
+    assert sorted(d["run"]["id"] for d in res.docs) == [f"sweep0830/{STEM}", f"sweep0925/{STEM}"]
+    one = {"fable-5": {"runs": 1, "accepted": 1, "not_accepted": 0, "no_verdict": 0, "infra_error_runs": 0,
+                       "cost_incomplete_runs": 0}}
+    assert res.counts["batches"] == {"sweep0830": one, "sweep0925": one}
+    assert sorted(res.inputs["batches"]) == ["sweep0830", "sweep0925"] and res.inputs["files"] == 4
+    assert any(n.startswith("sweep0925:") for n in res.notes)
+    assert run_sweep(a).counts["batches"] == {"sweep0830": one}  # one folder, as before
+    with pytest.raises(BundleError, match="one batch"):
+        run_sweep([a, results_folder(tmp_path, "c", [(STEM, accepted_run())])])  # sweep0830 twice

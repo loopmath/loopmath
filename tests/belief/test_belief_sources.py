@@ -117,7 +117,7 @@ def test_fit_says_the_overlap_once_with_the_count(tmp_path, docs, monkeypatch, c
     assert cli.main(["fit", "--home", str(home), "--without", "rq1"]) == 0
     out = capsys.readouterr().out
     assert f"runs: 0 prior, {N_STORE} yours (user {N_STORE}; yours labelled rq1 {N_STORE})" in out
-    note = f"{N_SHARED_IDS} of your runs are also in the shipped rq1 prior (same run ids): fits use your copies"
+    note = f"{N_SHARED_IDS} of your runs are also in the shipped rq1 prior (same runs): fits use your copies"
     assert out.count(note) == 1
     assert f"without rq1 ({N_SHARED_IDS + N_BUNDLE_ONLY}: left out by --without)" in out
     assert "recommend and posterior now read it" in out.splitlines()[0]

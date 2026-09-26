@@ -28,7 +28,7 @@
     return { i, key: w.config, name: w.label || w.config, group: w.group || '', graph: w.graph || {}, runs: w.runs || 0,
       origin: w.origin, reach: r.reach || null, perf: r.score || sp.value || null, cost: r.cost_usd || (p.cost || {}).usd || null,
       ell: r.cost_per_accepted_usd || null, rescue: r.expected_rescue_usd, success: p.p_success || null,
-      accept: r.p_accepted || null, reachFrom: r.reach_from || null };
+      accept: r.p_accepted || null, reachFrom: r.reach_from || null, typical: !!w.typical_first };
   });
   // With too few scores of this name for the task type, the fit prices a miss with the success head's chance of an
   // accepted result, not the score head's chance to reach (recommend's score_backed). The page then ranks and prices
@@ -75,13 +75,20 @@
   <nav class="v-rail" aria-label="questions"><a href="#q1"><b>1</b>Which workflow</a><a href="#q2"><b>2</b>Which model and effort</a><a href="#q3"><b>3</b>Is more spend worth it</a><a href="#q4"><b>4</b>How sure</a><a href="#q5"><b>5</b>What was fitted</a></nav>`;
 
   // ------------------------------------------------------------ 1. which workflow
+  // N3 (0.2.3): the server's rule (`typical_first`) leads a run cost with the typical run, the median, while the user
+  // has no runs of their own or the range is wider than 10x; the mean follows, and the onboarding hint with no runs.
+  const typicalRun = w => w && w.typical && w.cost && num(w.cost.median);
+  const runCost = w => typicalRun(w) ? `<b>${usd(w.cost.median)}</b> for a typical run (80% of runs ${rng(w.cost, usd)})`
+    : `<b>${usd(mean(w.cost))}</b> a run${tail(w.cost)}`;
+  const meanNote = w => !typicalRun(w) ? '' : ` <span id="runmean">The mean run costs ${usd(w.cost.mean)}${w.cost.mean > w.cost.median ? ', higher because a few runs cost far more' : ''}.` +
+    (D.own_runs === 0 ? ' Onboard to see your own costs: <code>loopmath onboard</code>.' : '') + '</span>';
   function answer1() {
     if (!W.length) return `No workflow recorded for ${esc(task.type || '')} tasks in ${esc(task.repo || '')} yet. Record runs, or draw one configuration with <code>${esc(taskCmd)} --workflow CFG --html</code>.`;
     const bc = chanceOf(best);
     let s = '';
-    if (T && bc) s = `<b>${esc(best.name)}</b> has the best ${esc(chanceWords)}: <b>${pct(bc.mean)}</b>${rng(bc, pct) ? ` (${rng(bc, pct)})` : ''} at <b>${usd(mean(best.cost))}</b> a run${tail(best.cost)}.`;
+    if (T && bc) s = `<b>${esc(best.name)}</b> has the best ${esc(chanceWords)}: <b>${pct(bc.mean)}</b>${rng(bc, pct) ? ` (${rng(bc, pct)})` : ''} at ${runCost(best)}.${meanNote(best)}`;
     else if (T) s = `No workflow has a predicted ${esc(chanceWords)}.`;
-    else if (bc) s = `With no score target the list is ranked by the chance of an accepted result: <b>${esc(best.name)}</b> is first at <b>${pct(bc.mean)}</b>${rng(bc, pct) ? ` (${rng(bc, pct)})` : ''}, <b>${usd(mean(best.cost))}</b> a run${tail(best.cost)}.`;
+    else if (bc) s = `With no score target the list is ranked by the chance of an accepted result: <b>${esc(best.name)}</b> is first at <b>${pct(bc.mean)}</b>${rng(bc, pct) ? ` (${rng(bc, pct)})` : ''}, ${runCost(best)}.${meanNote(best)}`;
     if (T && RES) {
       const c = W.filter(w => w.ell && num(w.ell.mean)).sort((a, b) => a.ell.mean - b.ell.mean)[0];
       if (c) s += ` The cheapest per accepted result is <b>${esc(c.name)}</b>: <b>${usd(c.ell.mean)}</b> (${rng(c.ell, usd)}${tailWord(c.ell)}), with a ${pct(mean(chanceOf(c)))} ${FB ? 'chance of an accepted result' : 'chance to reach'} and ${usd(mean(c.cost))} a run.`;
@@ -210,6 +217,8 @@
   h += `<details class="v-more" id="d-data"><summary><span class="st">Data behind the fit</span><span class="sa">Rows per source and head, dropped rows, the scale of each level, and the sensitivity to the benchmark prior.</span></summary><div class="v-body est" id="est-data"></div></details></section>`;
   h += `<p class="v-foot">loopmath posterior, fit ${esc(fit.id || 'n/a')}${D.generated_at ? ', page written ' + esc(fmt.dt(D.generated_at)) : ''}. Ranges are 80%; each estimate is drawn as a dot for its mean on lines for its 80%, 90% and 95% ranges. The same numbers are in <code>loopmath posterior --json</code>.</p></div>`;
   app.innerHTML = h;
+  // What the answers start from (lane 23P): the starting prior's line, once, under the lede.
+  if (D.prior && D.prior.line) document.getElementById('lede').insertAdjacentHTML('afterend', `<p class="v-note" id="prior">${esc(D.prior.line)}</p>`);
 
   // ------------------------------------------------------------ figures
   // P7: a click on a column header sorts the whole list (not only the rows shown), a second click reverses.

@@ -18,7 +18,12 @@ this module only:
   `cost.reasoning_tokens`;
 - keeps the arm, topology and horizon in `run.ext["dev.loopmath.prior"]`; the
   share reduction drops lane 10's own ext (the submission curve);
-- writes the bundle as the producer, keeping lane 10's `source_contract`.
+- writes the bundle as the producer, keeping lane 10's `source_contract`;
+- ships no real date or clock time (23B): the run id and signal ids lose lane
+  10's start stamp (`rq1-<problem>-<arm>-YYYYMMDD-HHMMSS-phase1` becomes
+  `rq1-<problem>-<arm>-phase1`; ids stay unique and in the same order), and the run
+  goes on the synthetic clock (`ocpdoc.synthetic_clock`), which also drops the
+  local offset.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ import json
 from pathlib import Path
 from typing import Iterator
 
-from . import ocpdoc
+from . import ocpdoc, stable_run_id
 from .registry import RQ1
 
 CONVERTER_VERSION = "rq1/1"
@@ -69,6 +74,11 @@ def normalize(doc: dict, *, prices=None, producer_version: str = "") -> dict:
         "capabilities": {**(lane10.get("capabilities") or {}), "cost_usd": True, "cost_tokens": True},
         "source_contract": lane10.get("source_contract")}.items() if v is not None}
     run = out["run"]
+    lane10_run_id = str(run.get("id") or "")
+    run["id"] = stable_run_id(lane10_run_id)
+    for sig in run.get("signals") or []:
+        if isinstance(sig.get("id"), str):
+            sig["id"] = sig["id"].replace(lane10_run_id, run["id"])
     cfg = run["configuration"]
     lane10_id = cfg.get("id")
     cfg["id"] = ocpdoc.config_id(cfg["workflow"], cfg.get("settings") or {})
@@ -101,7 +111,7 @@ def normalize(doc: dict, *, prices=None, producer_version: str = "") -> dict:
         "wall_s": info.get("wall_s"), "submissions": info.get("n_submissions"),
         "rate_limited": info.get("any_rate_limit"),
     }
-    return out
+    return ocpdoc.synthetic_clock(out)
 
 
 def iter_rq1(ocp_dir: Path, *, prices=None, producer_version: str = "") -> Iterator[tuple[Path, dict]]:

@@ -22,7 +22,7 @@ from . import search as search_mod
 from .curve import (RETRY_DECAY, RETRY_MAX_ATTEMPTS, RETRY_MIN_CHANCE, Rescue, accepted_within, default_pick,
                     ell_key, goal_row, parse_goal, rescue_cost, retry_rescue)
 from .gain import Exploration, explore
-from .message import compose, pick_payback, rescue_basis, rescue_text, strategy as strategy_of
+from .message import compose, pick_payback, rescue_basis, rescue_text, strategy as strategy_of, typical_first
 
 TOP_N = 200
 N_ALTERNATIVES = 5
@@ -130,6 +130,7 @@ class Recommendation:
     bands: dict[str, dict[str, dict[str, list[float]]]] = field(default_factory=dict)  # by id (`band_set`)
     most_likely: Candidate | None = None  # with a score target, the highest mean chance (I19)
     retired: dict[str, list[str]] = field(default_factory=dict)  # by id: models not offered (0.2.2); never a pick
+    own_runs: int | None = None  # the user's recorded runs (N3, 0.2.3); None when the caller did not say
 
     def label(self, cfg: Configuration) -> str:
         return self.labels.get(cfg.id) or wide_label(cfg)
@@ -154,7 +155,8 @@ class Recommendation:
         """Run cost with its median, expected rescue, cost per accepted result and, for a score rule the fit
         predicts, the chance to reach the target with its 80% range (I13, I15, P3a). The expected rescue is
         `(1 - g) x C_rescue`, so run cost plus expected rescue is the cost per accepted result."""
-        med, basis = self.medians.get(pred.config) or interval_median(pred.cost.usd)
+        med, basis = (self.medians.get(pred.config) or draws_median(pred.cost.usd)
+                      or interval_median(pred.cost.usd))
         reach = None
         if self.rule.score is not None:
             if pred.success_from == "score_head":  # g holds the score head's draws of reaching the target
@@ -165,7 +167,7 @@ class Recommendation:
                     reach = {"mean": r6(s.p_reach), "lo": None, "hi": None}
         ell, cost = pred.ell.usd, pred.cost.usd
         return {"run_cost_usd": {"mean": r6(cost.mean), "median": r6(med), "lo": r6(cost.lo), "hi": r6(cost.hi),
-                                 "median_basis": basis},
+                                 "median_basis": basis, "typical_first": typical_first(self.own_runs, cost)},
                 "expected_rescue_usd": r6(max(0.0, ell.mean - cost.mean)),
                 "cost_per_accepted_usd": {"mean": r6(ell.mean), "lo": r6(ell.lo), "hi": r6(ell.hi)},
                 "p_reach": reach,
@@ -356,6 +358,12 @@ def interval_bands(pred: Prediction) -> dict[str, dict[str, list[float]]]:
                              ("cost_per_accepted_usd", pred.ell.usd))}
 
 
+def draws_median(iv: Any) -> tuple[float, str] | None:
+    """The run cost's median the prediction carries (0.2.3: from its simulated runs), basis "draws", or None."""
+    med = getattr(iv, "median", None)
+    return (float(med), "draws") if med is not None else None
+
+
 def interval_median(iv: Any) -> tuple[float, str]:
     """A run cost's median read from its 80% interval as log-normal (the geometric middle), when the belief
     hands over no draws; basis "interval". A range that is not positive gives the mean back."""
@@ -537,8 +545,8 @@ def draw_share(belief: Any, task: Task, rule: AcceptanceRule, preds: Sequence[Pr
 
 def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configuration, usual_from: str,
               configs: Sequence[tuple[Configuration, str]], settings: Settings | None = None,
-              diff: DiffFn | None = None, keep: Sequence[str] = (), offered: Sequence[str] | None = None
-              ) -> Recommendation:
+              diff: DiffFn | None = None, keep: Sequence[str] = (), offered: Sequence[str] | None = None,
+              own_runs: int | None = None) -> Recommendation:
     """Rank the candidates and build every part of the recommendation.
 
     `configs` holds (configuration, origin) pairs from the candidate generator; the
@@ -548,7 +556,8 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     (`flag`, `history`, `config`) or a reference (`recorded`, `default`). With `offered` (model ids, 0.2.2),
     a configuration using any other model is retired: predicted and kept as the reference, labelled
     "(retired model)", but never the goal, the default, a curve row, an alternative, the exploration or
-    rescue workflow, the most likely or a choice.
+    rescue workflow, the most likely or a choice. `own_runs` (0.2.3) is the user's recorded runs, for
+    `message.typical_first`: the message and each run cost's `typical_first`.
     """
     st = settings or Settings()
     diff_fn = safe_diff(diff)
@@ -662,7 +671,8 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     message = compose(usual=usual, usual_pred=usual_c.prediction, goal=goal_c.config, goal_pred=goal_c.prediction,
                       goal_level=goal_level, goal_note=goal_note, exploration=exploration,
                       rule=rule if backed else None, label=label_of, reference=kind,
-                      strategy_text=strategy["text"] if strategy else None, rescue=rescue, rescue_label=rescue_label)
+                      strategy_text=strategy["text"] if strategy else None, rescue=rescue, rescue_label=rescue_label,
+                      own_runs=own_runs)
     notes = []
     if not backed:
         notes.append(UNBACKED.format(score=rule.score.name, rule=rule.definition))
@@ -680,7 +690,7 @@ def recommend(belief: Any, task: Task, rule: AcceptanceRule, *, usual: Configura
     return Recommendation(task, rule, usual_c, usual_from, top, rows, default_c, goal_c, goal_level, choice,
                           goal_note, alternatives, exploration, rescue, message, explore_kind, notes, labels,
                           kind, medians, search_json, wins, on_front, strategy, rescue_cfg, bands, likely_c,
-                          {k: v for k, v in retired.items() if k in {c.config.id for c in top}})
+                          {k: v for k, v in retired.items() if k in {c.config.id for c in top}}, own_runs)
 
 
 def most_likely_of(cands: Sequence[Candidate]) -> Candidate | None:

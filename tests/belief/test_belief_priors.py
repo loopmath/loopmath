@@ -103,18 +103,21 @@ def test_tokens_factors_reach_the_tokens_head_only(tmp_path):
 
 
 def test_fresh_store_config_weight_is_the_weight_the_fit_records(capsys, tmp_path):
-    """22X: `config get benchmark_prior_weight` on a fresh store printed 1.0 while the fit used 5.0."""
+    """22X: `config get benchmark_prior_weight` on a fresh store printed 1.0 while the fit used 5.0.
+    0.2.3 (23K): unset by default, and then the fit records no override and each benchmark's own weight."""
     from loopmath.belief.priors import BENCHMARK_PRIOR_WEIGHT
     from loopmath.cli import main
 
     home = tmp_path / "lm"
     capsys.readouterr()
     assert main(["config", "get", "benchmark_prior_weight", "--home", str(home), "--json"]) == 0
-    shown = json.loads(capsys.readouterr().out)["value"]
+    shown = json.loads(capsys.readouterr().out)
     path = tmp_path / "benchmarks.toml"
     path.write_text(TOML, encoding="utf-8")
     docs, _ = simdata.simulate(80, seed=71, source="live")
     fitted = F.fit(home, docs=docs, benchmarks=path, now=datetime.fromisoformat("2026-09-23T12:00:00-07:00"),
                    bundle_dir=tmp_path / "none")
     meta = json.loads((fitted / "meta.json").read_text())
-    assert shown == meta["options"]["benchmark_prior_weight"] == BENCHMARK_PRIOR_WEIGHT == 5.0
+    assert shown["value"] is None and shown["set"] is False
+    assert meta["options"]["benchmark_prior_weight"] is None
+    assert meta["options"]["benchmark_weights"] == {"tb4": BENCHMARK_PRIOR_WEIGHT, "tb4-tokens": BENCHMARK_PRIOR_WEIGHT}

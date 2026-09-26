@@ -7,6 +7,7 @@ configuration id is lane 1's `loopmath.ocp.canonical.config_id`; the bundle mani
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..ingest.base import canonical_effort, canonical_model
@@ -182,6 +183,50 @@ def workflow_solo() -> dict:
         "edges": [["issue", "implement"], ["repo", "implement"], ["implement", "diff"]],
         "control": _control([], {}, budget=1, rescue={"kind": "configuration", "ref": "usual"}),
     }
+
+
+# ---------------------------------------------------------------- synthetic clock
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+EPOCH_TEXT = "1970-01-01T00:00:00Z"
+CLOCK = "synthetic, starts at the epoch"
+
+
+def parse_time(value) -> datetime | None:
+    """An ISO time as an aware datetime (UTC when it has no offset); None for no value."""
+    if value is None or value == "":
+        return None
+    t = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _time_slots(doc: dict) -> list[tuple[dict, str]]:
+    run = doc.get("run") or {}
+    slots = [(run, "started_at"), (run, "ended_at"), (doc.get("producer") or {}, "emitted_at")]
+    slots += [(att, key) for att in doc.get("attempts") or [] for key in ("started_at", "ended_at")]
+    slots += [(sig, "observed_at") for sig in run.get("signals") or []]
+    return [(obj, key) for obj, key in slots if obj.get(key) not in (None, "")]
+
+
+def synthetic_clock(doc: dict) -> dict:
+    """Put one converted run on the synthetic clock, in place, and return it (lane 22L's rule, 23B for all sources).
+
+    The run's earliest time becomes `1970-01-01T00:00:00Z` and every run, attempt,
+    signal and producer time is that epoch plus the real elapsed seconds, in UTC
+    with no offset. Durations and order within the run survive (rounding to whole
+    seconds can only make two times equal, never swap them); dates, work hours and
+    the local offset do not. Converters derive any order from the real times first
+    and call this last. `run.ext["dev.loopmath.prior"].clock` marks the run.
+    """
+    slots = _time_slots(doc)
+    real = [parse_time(obj[key]) for obj, key in slots]
+    if real:
+        base = min(real)
+        for (obj, key), t in zip(slots, real):
+            obj[key] = (EPOCH + timedelta(seconds=round((t - base).total_seconds()))).strftime("%Y-%m-%dT%H:%M:%SZ")
+    info = ((doc.get("run") or {}).get("ext") or {}).get("dev.loopmath.prior")
+    if isinstance(info, dict):
+        info["clock"] = CLOCK
+    return doc
 
 
 def run_doc(*, run: dict, nodes: list, attempts: list, edges: list | None = None,

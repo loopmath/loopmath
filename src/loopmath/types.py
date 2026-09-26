@@ -94,12 +94,20 @@ def _frozen(cls):
 
 @_frozen
 class Interval(Record):
-    """A range; 80 percent unless `level` says otherwise."""
+    """A range; 80 percent unless `level` says otherwise. `median` (0.2.3) is the typical value, set only where
+    the prediction has the draws (a run's cost and tokens); an interval without one writes no `median` key."""
 
     mean: float
     lo: float
     hi: float
     level: float = 0.8
+    median: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out = Record.to_dict(self)
+        if out.get("median") is None:
+            out.pop("median", None)
+        return out
 
 
 @_frozen

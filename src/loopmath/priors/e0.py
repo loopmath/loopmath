@@ -24,6 +24,9 @@ the bundle.
 - Tokens: Codex `input_tokens` include the cached tokens, so the uncached input
   is `input - cache_read` (as `ingest.codex` does); Claude Code streams are
   already separate.
+- No real date or clock time ships (23B): each run is on the synthetic clock
+  (`ocpdoc.synthetic_clock`), set after the subagents are ordered by their real
+  start, and the source ref has no corpus date.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ from . import ocpdoc
 from .registry import E0
 
 CONVERTER_VERSION = "e0/1"
+SOURCE_REF = "e0-corpus"  # 0.2.2 and before: the corpus build date, now left out
 _EFFORT_RE = re.compile(r".*effort=(\w+)\((\d+)\)")
 _TMP = re.compile(r"^/(private/)?var/|^/tmp/")
 _WORKSPACE = re.compile(r"/Workspace/([^/]+)")
@@ -150,7 +154,7 @@ def convert_session(s: dict, children: list[dict], *, prices=None, producer_vers
         "started_at": s.get("started_at"),
         "ended_at": s.get("ended_at"),
         "task": {"id": f"e0/{key}", "repo": repo_of(s.get("project")), "org": ocpdoc.ORG,
-                 "source": {"kind": E0, "ref": "e0-2026-08-28"}},
+                 "source": {"kind": E0, "ref": SOURCE_REF}},
         "configuration": ocpdoc.configuration(workflow, settings, source="habit"),
         "provenance": {"kind": "logged", "chooser": "habit"},
         "ext": {"dev.loopmath.prior": {
@@ -163,8 +167,9 @@ def convert_session(s: dict, children: list[dict], *, prices=None, producer_vers
     }
     run = {k: v for k, v in run.items() if v is not None}
     nodes = [{"id": "implement", "kind": "impl", "vertex": "implement", "state": "settled_unverified"}]
-    return ocpdoc.run_doc(run=run, nodes=nodes, attempts=attempts, producer_version=producer_version,
-                          emitted_at=str(s.get("ended_at") or ""), source_contract="e0-corpus/parser-spec-v1")
+    doc = ocpdoc.run_doc(run=run, nodes=nodes, attempts=attempts, producer_version=producer_version,
+                         emitted_at=str(s.get("ended_at") or ""), source_contract="e0-corpus/parser-spec-v1")
+    return ocpdoc.synthetic_clock(doc)  # after the children were ordered by their real start
 
 
 def iter_e0(corpus_dir: Path, *, prices=None, producer_version: str = "", counts: dict | None = None

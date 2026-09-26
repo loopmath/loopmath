@@ -19,6 +19,14 @@ lane names, titles, objectives, paths or review text reach this module.
   `allocated`, which the fit weights as heuristic); without them the review has
   no cost (`dev.loopmath.tokens_unknown`). The run's `referee` verdict is the
   last review's, and the acceptance rule is `referee`.
+- The rounds are capped at the catalog budget (`control.budget`, 3; 22L
+  review note N1, 23B). The lanes ran until a merge with no round limit, so a
+  lane merged at round 4 or 5 was not accepted within the catalog's 3 rounds:
+  its run keeps rounds 1 to 3 as they happened and ends on round 3's
+  rejection, which is what the catalog configuration would have done. The
+  real round count and the rounds and tokens past the budget stay in
+  `dev.loopmath.prior`. (A budget equal to the rounds would make every lane
+  accepted by construction, since the lanes stop only at a merge.)
 - An implementer lane with no review record (research, prototypes, side tasks)
   is the catalog `solo` shape with its session tokens and no verdict
   (`settled_unverified`), like E0: it feeds the cost and tokens heads only.
@@ -166,6 +174,10 @@ def convert_lane(row: dict, *, prices=None, producer_version: str = "") -> dict:
         workflow = _catalog_workflow("implement_review")
         settings = {"implement": ocpdoc.setting(harness, model, eff),
                     "review": ocpdoc.setting(rv_harness, rv.get("model"), rv.get("effort"))}
+        budget = int(workflow["control"]["budget"])
+        recorded, rounds, over = rounds, rounds[:budget], rounds[budget:]
+        if over:
+            run["ended_at"] = at(rounds[-1].get("at"))  # the run a budget of 3 would have ended here
         attempts, prev = [], at(row.get("started_at"))
         for i, rnd in enumerate(rounds, start=1):
             result, verdict = _VERDICTS.get(rnd.get("verdict"), ("settled_unverified", "error"))
@@ -197,7 +209,9 @@ def convert_lane(row: dict, *, prices=None, producer_version: str = "") -> dict:
         after = row.get("after_accept") or {}
         info = _info(row, rounds=len(rounds), merged=row.get("merged"),
                      after_accept_tokens=sum(int(v or 0) for v in (after.get("tokens") or {}).values()),
-                     after_accept_reviews=int(after.get("reviews") or 0))
+                     after_accept_reviews=int(after.get("reviews") or 0), rounds_recorded=len(recorded),
+                     over_budget_rounds=len(over),
+                     over_budget_tokens=sum(int(v or 0) for r in over for v in (r.get("tokens") or {}).values()))
         run["acceptance_rule"] = dict(ACCEPTANCE)
         run["signals"] = signals
     else:

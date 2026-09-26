@@ -274,7 +274,11 @@ def _add_recording(sub) -> None:
     q.add_argument("key", nargs="?", default=None, metavar="KEY")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.store.commands:config_get"))
-    q = cs.add_parser("set", help="set one key")
+    q = cs.add_parser("set", help="set one key",
+                      description="Sets one key in config.toml. benchmark_prior_weight is unset by default: each "
+                                  "benchmark in the shipped benchmarks.toml has its own weight, in runs, shared by "
+                                  "a model's results on it; a number here is one weight for every benchmark, and 0 "
+                                  "turns benchmark priors off.")
     q.add_argument("key", metavar="KEY")
     q.add_argument("value", metavar="VALUE")
     _common(q)
@@ -335,7 +339,7 @@ def _add_learning(sub) -> None:
     ps = p.add_subparsers(dest="prior_command", required=True)
     q = ps.add_parser("build", help="rebuild the packaged prior bundle from the sweep, E0 and RQ1 inputs")
     q.add_argument("--out", default=None, metavar="DIR", help="where to write the bundle (default: the packaged bundle folder, which it replaces)")
-    q.add_argument("--sweep-dir", default=None, metavar="PATH", help="sweep results (default: LOOPMATH_SWEEP_DIR)")
+    q.add_argument("--sweep-dir", action="append", default=None, metavar="PATH", help="sweep results, one folder per batch; repeatable (default: LOOPMATH_SWEEP_DIR, one folder)")
     q.add_argument("--e0-corpus", default=None, metavar="PATH", help="E0 corpus (default: LOOPMATH_E0_CORPUS)")
     q.add_argument("--rq1-dir", default=None, metavar="PATH", help="RQ1 OCP documents (default: LOOPMATH_PRIOR_RQ1)")
     q.add_argument("--lanes-dir", default=None, metavar="PATH", help="build lane rows (default: LOOPMATH_PRIOR_LANES)")

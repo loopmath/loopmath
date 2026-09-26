@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,8 @@ from loopmath.priors.reduce import reduce_for_bundle, repo_hash
 from loopmath.priors.sweep import convert_sweep_run
 from loopmath.priors.validate import validate_bundle_doc
 
-from test_priors_sweep import accepted_run, crashed_run, rows_for  # noqa: E402  (same folder)
+from test_priors_sweep import (  # noqa: E402  (same folder)
+    STEM, accepted_run, crashed_run, results_folder, rows_for, second_batch_run)
 
 
 def _sweep_docs():
@@ -90,7 +92,7 @@ def test_build_writes_sources_and_provenance(tmp_path):
     assert entry["inputs"]["sha256"] == "ab" and entry["converter"] == "sweep/1"
     assert entry["summary"]["types"] == {"bug_fix": 1, "feature": 1}
     assert m["reduction"]["repo_salt"] == "given"
-    assert m["built_at"][-6] in "+-"  # local offset
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d", m["built_at"])  # the UTC date, no clock time (23B)
     assert m["size_bytes"] == sum(e["bytes"] for e in m["sources"].values()) < 5_000_000
     on_disk = json.loads((tmp_path / "manifest.json").read_text())
     assert on_disk["sources"]["sweep"]["sha256"] == entry["sha256"]
@@ -254,6 +256,23 @@ def test_prior_build_from_a_fixture_folder(capsys, monkeypatch, tmp_path):
     assert code == 0
     again = json.loads(out)["manifest"]["sources"]["sweep"]
     assert again["inputs"] == data["manifest"]["sources"]["sweep"]["inputs"] and again["runs"] == 1
+
+
+
+def test_prior_build_takes_one_sweep_folder_per_batch(capsys, monkeypatch, tmp_path):
+    a = results_folder(tmp_path, "a", [(STEM, accepted_run())])
+    b = results_folder(tmp_path, "b", [(STEM, second_batch_run())])
+    monkeypatch.setenv("LOOPMATH_SWEEP_DIR", str(tmp_path / "nope"))  # the flag wins
+    monkeypatch.setenv("LOOPMATH_PRIOR_SOURCES", "sweep")
+    monkeypatch.setenv("LOOPMATH_PRIOR_SALT", "fixed")
+    code, out, err = _cli(["prior", "build", "--out", str(tmp_path / "bundle"), "--json",
+                           "--sweep-dir", str(a), "--sweep-dir", str(b / "dagr")], capsys)
+    assert code == 0, err
+    sweep = json.loads(out)["manifest"]["sources"]["sweep"]
+    assert sweep["runs"] == 2 and sorted(sweep["inputs"]["batches"]) == ["sweep0830", "sweep0925"]
+    assert sorted(sweep["counts"]["batches"]) == ["sweep0830", "sweep0925"]
+    ids = sorted(d["run"]["id"] for d in bundle_docs(directory=tmp_path / "bundle"))
+    assert ids == [f"sweep0830/{STEM}", f"sweep0925/{STEM}"]
 
 
 def test_prior_build_missing_input_is_an_error(capsys, monkeypatch, tmp_path):

@@ -71,6 +71,18 @@ wheels in a temporary folder, and pip resolves the wheel against that folder
 alone (`--no-index`). The versions installed are then those copies, not the
 newest on the index.
 
+The installed package must carry the prior we fit with. Every file of the
+installed `loopmath/priors/bundle/` and `loopmath/priors/benchmarks.toml` must
+have the same SHA-256 as the checkout the script runs in
+(`src/loopmath/priors/...`), with no file on one side only; the installed
+manifest's runs per source must equal the checkout's, and each installed source
+file must be the one its manifest names (SHA-256) with that many runs. The
+check prints one line per file group with the runs per source, for example
+`prior bundle equals the checkout PASS (sweep 660, e0 809, rq1 44, lanes 49; 6 files)`
+and `benchmarks.toml equals the checkout PASS (4 benchmark entries)`.
+`scripts/release-check.sh --prior-only DIR` runs this comparison alone on an
+installed `loopmath` folder.
+
 Right after an upload, `scripts/release-check.sh --online testpypi` (then
 `--online pypi`) installs the published `loopmath==VERSION` into a fresh
 virtual environment with pip, the network and no cache, as a user would, and
@@ -78,7 +90,9 @@ runs the same checks on it, so the real published dependency closure is what
 is tested. It builds nothing. `--version X` picks the version (default: this
 tree's), and `--online URL` takes any simple index. For TestPyPI the
 dependencies come from PyPI. The report lists every distribution pip installed
-and the hosts it came from.
+and the hosts it came from. The prior comparison runs here too, so run the
+online check from the commit that was released: from a later checkout with
+another bundle it fails.
 
 The artifacts must be built from the exact commit tagged `vMAJOR.MINOR.PATCH`,
 and the tag, artifact filenames, and embedded metadata must agree. Any failed

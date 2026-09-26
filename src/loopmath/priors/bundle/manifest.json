@@ -1,7 +1,7 @@
 {
  "schema": "loopmath.prior.manifest/1",
- "built_at": "2026-09-23T19:43:45-07:00",
- "loopmath_version": "0.1.0",
+ "built_at": "2026-09-26",
+ "loopmath_version": "0.2.3",
  "ocp": "0.3",
  "config_id_impl": "loopmath.ocp.canonical.config_id",
  "tariff": {
@@ -17,14 +17,24 @@
  "sources": {
   "sweep": {
    "file": "sweep.jsonl.gz",
-   "bytes": 128122,
-   "sha256": "ff4428c4cdd71e7d20491d2426387b028a5204260013dabc158ab4431c192fb4",
-   "runs": 660,
+   "bytes": 135748,
+   "sha256": "d1fea4c6cf83756b79d4551e738cde624e440210fb3908d9e60a503c8386e178",
+   "runs": 700,
    "converter": "sweep/1",
    "inputs": {
-    "description": "loopmath internal sweep (sweep0830): the experiment repository's results, contract v3 run files and attempts.jsonl",
-    "files": 661,
-    "sha256": "f9158f5ce1b5bf9d702a0a6ada5d2fd5f3d41128a43680c49568436f2d7bfe65"
+    "description": "loopmath internal sweep batches (sweep0830, sweep0925): the experiment repository's results, contract v3 run files and attempts.jsonl, one folder per batch",
+    "files": 702,
+    "sha256": "9615aad80710b75c3beb55d6aa0cd7609ca5c058542f8e306be073386cad0751",
+    "batches": {
+     "sweep0830": {
+      "files": 661,
+      "sha256": "f9158f5ce1b5bf9d702a0a6ada5d2fd5f3d41128a43680c49568436f2d7bfe65"
+     },
+     "sweep0925": {
+      "files": 41,
+      "sha256": "d3bb48300c935b2165d172de5e6cb9ea8588339f406952082e13cfe137f972fb"
+     }
+    }
    },
    "validation": {
     "checker": "loopmath.ocp.conformance (v0.3)",
@@ -32,30 +42,32 @@
     "warnings": 0
    },
    "summary": {
-    "runs": 660,
+    "runs": 700,
     "outcomes": {
-     "accepted": 616,
-     "not accepted": 21,
+     "accepted": 654,
+     "not accepted": 23,
      "unknown": 23
     },
     "types": {
-     "bug_fix": 90,
-     "feature": 480,
-     "refactor": 90
+     "bug_fix": 94,
+     "feature": 512,
+     "refactor": 94
     },
     "shapes": {
-     "plan_implement_review": 660
+     "plan_implement_review": 700
     },
     "attempts_by_model": {
      "fable-5": 160,
-     "gpt-5.6-luna": 295,
-     "gpt-5.6-sol": 454,
+     "gpt-5.6-luna": 311,
+     "gpt-5.6-sol": 466,
      "gpt-5.6-terra": 130,
-     "opus-5": 1003,
+     "gpt-6-luna": 33,
+     "gpt-6-sol": 23,
+     "opus-5": 1071,
      "sonnet-5": 145
     },
-    "tokens": 471045151,
-    "usd": 1097.46,
+    "tokens": 500933472,
+    "usd": 1166.43,
     "unpriced_attempts": 0,
     "cost_unknown_attempts": 30
    },
@@ -64,9 +76,82 @@
     "runs_with_infra_rounds": 30,
     "cost_incomplete_runs": 21,
     "superseded_rows": 719,
-    "later_rows": 5
+    "later_rows": 5,
+    "batches": {
+     "sweep0830": {
+      "fable-5": {
+       "runs": 110,
+       "accepted": 88,
+       "not_accepted": 2,
+       "no_verdict": 20,
+       "infra_error_runs": 19,
+       "cost_incomplete_runs": 3
+      },
+      "gpt-5.6-luna": {
+       "runs": 110,
+       "accepted": 103,
+       "not_accepted": 6,
+       "no_verdict": 1,
+       "infra_error_runs": 0,
+       "cost_incomplete_runs": 2
+      },
+      "gpt-5.6-sol": {
+       "runs": 110,
+       "accepted": 109,
+       "not_accepted": 1,
+       "no_verdict": 0,
+       "infra_error_runs": 0,
+       "cost_incomplete_runs": 3
+      },
+      "gpt-5.6-terra": {
+       "runs": 110,
+       "accepted": 107,
+       "not_accepted": 2,
+       "no_verdict": 1,
+       "infra_error_runs": 0,
+       "cost_incomplete_runs": 1
+      },
+      "opus-5": {
+       "runs": 110,
+       "accepted": 110,
+       "not_accepted": 0,
+       "no_verdict": 0,
+       "infra_error_runs": 0,
+       "cost_incomplete_runs": 2
+      },
+      "sonnet-5": {
+       "runs": 110,
+       "accepted": 99,
+       "not_accepted": 10,
+       "no_verdict": 1,
+       "infra_error_runs": 1,
+       "cost_incomplete_runs": 10
+      }
+     },
+     "sweep0925": {
+      "gpt-6-luna": {
+       "runs": 20,
+       "accepted": 18,
+       "not_accepted": 2,
+       "no_verdict": 0,
+       "infra_error_runs": 0,
+       "cost_incomplete_runs": 0
+      },
+      "gpt-6-sol": {
+       "runs": 20,
+       "accepted": 20,
+       "not_accepted": 0,
+       "no_verdict": 0,
+       "infra_error_runs": 0,
+       "cost_incomplete_runs": 0
+      }
+     }
+    }
    },
    "notes": [
+    "one results folder per batch; the batch id is the run id prefix and the source ref, and every batch uses the sweep0830 task ids: the batches ran the same tasks and hidden gates, so they share a task node",
+    "sweep0925: gpt-6-sol xhigh and gpt-6-luna low developers, reviewer claude-opus-5 xhigh, the sweep0830 plans reused (its plan attempts are those shared plans)",
+    "no real date or clock time: each run starts at 1970-01-01T00:00:00Z and keeps its real elapsed seconds",
     "run files are authoritative; attempts.jsonl rows are matched by developer start time",
     "superseded_rows: earlier executions the harness re-ran after a crash; later_rows: executions after the run file was written; neither is in the bundle",
     "a developer or reviewer round whose CLI crashed without a timeout is flagged dev.loopmath.infra_error; when every developer round crashed the tests verdict is error",
@@ -79,12 +164,12 @@
   },
   "e0": {
    "file": "e0.jsonl.gz",
-   "bytes": 89185,
-   "sha256": "042659f3617666e04aa1f22cf01a27fde7060e0559fbf64bb3c9060174cb90f6",
+   "bytes": 72991,
+   "sha256": "03e62e09429dfbadd7351437c29314948957b3f5b59b59a5c691e7fc2e4ed6b8",
    "runs": 809,
    "converter": "e0/1",
    "inputs": {
-    "description": "E0 corpus copy (parser-spec v1, built 2026-08-28): sessions.jsonl and session-dag-join.jsonl",
+    "description": "E0 corpus copy (parser-spec v1): sessions.jsonl and session-dag-join.jsonl",
     "files": 2,
     "sha256": "9532381e5ced0eebe639f137cb8a9683f73b4ed8f12c214ef9163f5ed6e3206e"
    },
@@ -138,18 +223,19 @@
     "subagent transcripts are extra attempts on their parent's run (dev.loopmath.subagent)",
     "left out: fleet stubs (no model, an API error), sessions with no model or tokens, temporary folders",
     "Codex input tokens exclude the cached tokens (input minus cached, as ingest.codex does)",
-    "dollars priced with the packaged prices.toml"
+    "dollars priced with the packaged prices.toml",
+    "no real date or clock time: each run starts at 1970-01-01T00:00:00Z and keeps its real elapsed seconds"
    ],
    "warnings": []
   },
   "rq1": {
    "file": "rq1.jsonl.gz",
-   "bytes": 14230,
-   "sha256": "a2d003eb758842077af4e81fb9d33e7a244f90f02cae430a26fa215189a1866f",
+   "bytes": 12504,
+   "sha256": "12393a70a69bf5a158a634fd91d6de938e93de6fe5ce30946ed2465213725795",
    "runs": 44,
    "converter": "rq1/1",
    "inputs": {
-    "description": "loopmath internal RQ1 phase 1: lane 10's OCP v0.3 conversion (D15)",
+    "description": "loopmath internal RQ1 phase 1: agent runs on ALE-Bench heuristic problems, as the experiment wrote them in OCP v0.3 (D15)",
     "files": 45,
     "sha256": "b9c345add9711eaa9bf7047cd53cb8583310f7efb3117b48db2f5fd45b955893"
    },
@@ -189,21 +275,22 @@
    },
    "notes": [
     "D15 labels checked on every run: type feature, repo ale-bench, subtype ahc/<problem>, source rq1, rule heldout_perf>=2400",
-    "configuration ids recomputed with the bundle's canonical form; lane 10's id kept as lane10_config_id",
+    "configuration ids recomputed with the bundle's canonical form; the experiment's id kept as lane10_config_id",
     "attempt roles written as their piece's role (D32)",
-    "dollars repriced from tokens with the packaged prices.toml; lane 10's list-price total is recorded_usd",
-    "lane 10's submission curve (dev.loopmath.rq1) is dropped by the share reduction"
+    "dollars repriced from tokens with the packaged prices.toml; the experiment's list-price total is recorded_usd",
+    "the experiment's submission curve (dev.loopmath.rq1) is dropped by the share reduction",
+    "no real date or clock time: run ids without the experiment's start stamp; each run starts at 1970-01-01T00:00:00Z and keeps its real elapsed seconds (the local offset is gone)"
    ],
    "warnings": []
   },
   "lanes": {
    "file": "lanes.jsonl.gz",
-   "bytes": 9998,
-   "sha256": "fae23a8b8b6172179998febe26422e602519e591b45a7bcca0a2e3f8371bc749",
+   "bytes": 9534,
+   "sha256": "f4ac0adeb1362174678bc2038cd7d4854d60bf9b3fcfc59dd6f0e3595783d323",
    "runs": 49,
    "converter": "lanes/1",
    "inputs": {
-    "description": "our own agent build lanes (lane 22L): metadata-only rows from the lane records, reviews and session logs",
+    "description": "our own agent build lanes, the agent sessions that built loopmath and others on the same models: metadata-only rows from the lane records, reviews and session logs",
     "files": 1,
     "sha256": "a2ccdc078bec93c1b777d31c57912890374e3471f33241d118957fb7e0317760"
    },
@@ -215,7 +302,8 @@
    "summary": {
     "runs": 49,
     "outcomes": {
-     "accepted": 29,
+     "accepted": 22,
+     "not accepted": 7,
      "unknown": 20
     },
     "types": {
@@ -232,12 +320,12 @@
     },
     "attempts_by_model": {
      "claude-fable-5-1": 1,
-     "claude-opus-5-5": 81,
-     "gpt-6-astra": 81,
+     "claude-opus-5-5": 72,
+     "gpt-6-astra": 72,
      "gpt-6-sol": 1
     },
-    "tokens": 1665361968,
-    "usd": 901.74,
+    "tokens": 1600761009,
+    "usd": 864.73,
     "unpriced_attempts": 0,
     "cost_unknown_attempts": 7
    },
@@ -249,18 +337,21 @@
      "gpt-6-sol:implementer": 1
     },
     "runs": 49,
-    "reviewer_rows": 4
+    "reviewer_rows": 4,
+    "over_budget_runs": 7
    },
    "notes": [
     "implementer lanes with reviews: catalog implement_review, one round per review up to the first merge, tokens measured per round from the implementer's log; follow-up work after the first merge not bundled",
     "review attempts carry the verdict and the reviewer lane's session tokens divided by the reviews it gave (cost basis allocated); reviewer lanes are not runs of their own",
     "implementer lanes with no review record: catalog solo, settled_unverified, cost and tokens heads only",
     "integration lanes, lanes still running and lanes with no matching log are left out (counted by the extractor, not here)",
-    "tokens from loopmath's own Claude Code and Codex parsers; dollars priced with the packaged prices.toml"
+    "tokens from loopmath's own Claude Code and Codex parsers; dollars priced with the packaged prices.toml",
+    "rounds capped at the catalog budget (3): a lane merged after round 3 ends on round 3's rejection, as the catalog configuration would have; its real round count and the rounds and tokens past the budget are in dev.loopmath.prior (over_budget_runs counts these lanes)",
+    "no real date or clock time: each run starts at 1970-01-01T00:00:00Z and keeps its real elapsed seconds"
    ],
    "warnings": []
   }
  },
- "size_bytes": 241535,
+ "size_bytes": 230777,
  "problems": []
 }

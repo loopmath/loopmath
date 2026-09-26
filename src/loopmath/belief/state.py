@@ -792,10 +792,13 @@ class FitState:
                                    gate_pass=res[hg] if hg is not None else None, rounds=res[hr],
                                    cost_per_round=Money(usd=res[hpr[0]], tokens=res[hpr[1]]) if hpr else None)
             for piece, (hu, ht, hg, hr, hpr) in handles.items()}
+        # The typical run (0.2.3): the median of the same simulated runs, one per draw, the 80% range is read from
+        run_usd = dataclasses.replace(res[h_run[1]], median=float(np.median(rd.sim_usd)))
+        run_tokens = dataclasses.replace(res[h_run[2]], median=float(np.median(rd.sim_tokens)))
         pred = Prediction(
             config=cfg.id,
             p_success=res[h_run[0]],
-            cost=Money(usd=res[h_run[1]], tokens=res[h_run[2]]),
+            cost=Money(usd=run_usd, tokens=run_tokens),
             ell=Money(usd=res[h_run[3]], tokens=res[h_run[4]]),
             rounds=res[h_run[5]],
             per_piece=per_piece,

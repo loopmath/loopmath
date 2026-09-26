@@ -1,4 +1,13 @@
-"""The 2026-08-30 sweep (`sweep0830`) as OCP v0.3 runs (lane 11).
+"""The internal sweep batches (`sweep0830`, `sweep0925`) as OCP v0.3 runs (lane 11, 23B).
+
+Each results folder is one batch of the same harness on the same task set,
+named by its sweep id (`ext.experiment.sweep` in every run file, else the
+`run-<id>-` prefix of the run id): `sweep0830` (the original sweep) and
+`sweep0925` (gpt-6-sol and gpt-6-luna developers, reusing sweep0830's cached
+plans). The batch id prefixes the run id and is the source ref; the task id is
+the task set's (`sweep0830/<task>`) in every batch, because every batch ran the
+same tasks and hidden gates, so the fit reads them as one task node. All
+batches are source `sweep`.
 
 Inputs, read only: `results/dagr/*.run.json` (contract v3, one per run, the
 final execution of each run) and `results/attempts.jsonl` (one row per
@@ -17,6 +26,9 @@ judges nothing (the harness wrote a crashed review as a rejection). When every
 developer round crashed, the run's `tests` verdict is `error`, and an
 unparseable reviewer verdict makes the `referee` verdict `error`. The outcome
 function decides what `error` means; the data only says what happened.
+
+No real date or clock time ships: once the attempts are interleaved by their
+real start, the run goes on the synthetic clock (`ocpdoc.synthetic_clock`).
 """
 
 from __future__ import annotations
@@ -32,6 +44,8 @@ from .registry import SWEEP, SWEEP_TASKS
 
 CONVERTER_VERSION = "sweep/1"
 SWEEP_REPO = "loopmath-sweep"
+TASK_SET = "sweep0830"  # the task ids of every batch: same tasks, same hidden gates, one task node
+_BATCH = re.compile(r"^run-(sweep\d{4})-")
 GATE_COMMAND = "gate/run_gate.sh"
 
 # Short model labels in the run files ("opus5·xhigh") to canonical ids.
@@ -81,6 +95,18 @@ def _final_rows(rows: list[dict], dev_atts: list[dict]) -> tuple[dict[int, dict]
         else:
             earlier += 1
     return out, earlier, later
+
+
+def batch_of(doc: dict) -> str:
+    """The sweep batch a run file belongs to: `ext.experiment.sweep`, else its run id's `run-<sweep>-` prefix."""
+    exp = (doc.get("ext") or {}).get("experiment") or {}
+    batch = str(exp.get("sweep") or "")
+    if not batch:
+        m = _BATCH.match(str((doc.get("run") or {}).get("id") or ""))
+        batch = m.group(1) if m else ""
+    if not re.fullmatch(r"sweep\d{4}", batch):
+        raise ValueError(f"run {(doc.get('run') or {}).get('id')!r} names no sweep batch (ext.experiment.sweep)")
+    return batch
 
 
 def _label_model(label: str | None) -> tuple[str | None, str | None]:
@@ -167,6 +193,7 @@ def convert_sweep_run(doc: dict, rows: list[dict] | None = None, *, stem: str = 
                       prices: str | Path | None = None, producer_version: str = "") -> tuple[dict, list[str]]:
     """One contract v3 sweep run to an OCP v0.3 document. Returns (doc, warnings)."""
     warnings: list[str] = []
+    batch = batch_of(doc)
     exp = (doc.get("ext") or {}).get("experiment") or {}
     task_name = str(exp.get("task") or stem.split("--")[0])
     label = SWEEP_TASKS.get(task_name)
@@ -297,7 +324,7 @@ def convert_sweep_run(doc: dict, rows: list[dict] | None = None, *, stem: str = 
     # ---- run-level verdicts: the final gate and the final review
     signals: list[dict] = []
     all_infra = bool(dev_atts) and infra_rounds == len(dev_atts)
-    source = {"kind": "orchestrator", "ref": "sweep0830 harness"}
+    source = {"kind": "orchestrator", "ref": f"{batch} harness"}
     if gate_atts:
         last = gate_atts[-1]
         receipt = str((last.get("outcome") or {}).get("receipt") or "")
@@ -329,12 +356,12 @@ def convert_sweep_run(doc: dict, rows: list[dict] | None = None, *, stem: str = 
     starts = [a["started_at"] for a in attempts if a.get("started_at")]
     ends = [a["ended_at"] for a in attempts if a.get("ended_at")]
     run = {
-        "id": f"sweep0830/{stem or task_name}",
+        "id": f"{batch}/{stem or task_name}",
         "started_at": min(starts) if starts else (doc.get("run") or {}).get("started_at"),
         "ended_at": max(ends) if ends else None,
         "task": {
-            "id": f"sweep0830/{task_name}", "type": label["type"], "repo": SWEEP_REPO, "org": ocpdoc.ORG,
-            "features": feats, "source": {"kind": SWEEP, "ref": "sweep0830"},
+            "id": f"{TASK_SET}/{task_name}", "type": label["type"], "repo": SWEEP_REPO, "org": ocpdoc.ORG,
+            "features": feats, "source": {"kind": SWEEP, "ref": batch},
             "labeled_by": {"how": "user", "tier": "reported"},
         },
         "configuration": configuration,
@@ -365,7 +392,7 @@ def convert_sweep_run(doc: dict, rows: list[dict] | None = None, *, stem: str = 
     out = ocpdoc.run_doc(run=run, nodes=nodes, attempts=attempts, edges=edges, producer_version=producer_version,
                          emitted_at=str(doc.get("generated_at") or run.get("ended_at") or ""),
                          source_contract=f"dagr/{doc.get('dagr', 3)}")
-    return out, warnings
+    return ocpdoc.synthetic_clock(out), warnings
 
 
 def sweep_layout(path: Path) -> tuple[Path, Path]:
@@ -387,7 +414,7 @@ def iter_sweep(results_dir: Path, *, prices: str | Path | None = None,
     for path in sorted(runs_dir.glob("*.run.json")):
         src = json.loads(path.read_text(encoding="utf-8"))
         stem = path.name[: -len(".run.json")]
-        rid = str((src.get("run") or {}).get("id") or "").removeprefix("run-sweep0830-") or stem
+        rid = str((src.get("run") or {}).get("id") or "").removeprefix(f"run-{batch_of(src)}-") or stem
         run_rows = rows.get(rid) or rows.get(rid.split("@")[0]) or []
         doc, warnings = convert_sweep_run(src, run_rows, stem=stem, prices=prices, producer_version=producer_version)
         yield path, doc, warnings

@@ -429,3 +429,29 @@ def test_every_option_workflow_is_in_the_context_whatever_the_cutoff(home, monke
         assert (ch.get("explore_config") or ch["config"]) in have
     by_id = {c["config"]["id"]: c for c in ctx["candidates"]}
     assert by_id[pair["explore_config"]]["numbers"] == P.numbers_of(s.rec, s.rec.by_id(pair["explore_config"]).prediction)
+
+
+def test_the_rescue_workflow_is_a_candidate_even_when_no_search_offered_it(home):
+    """22W N1 (0.2.3): the context holds the rescue workflow. On the synthetic fit, as on the RQ1 store, the search
+    does not offer it, so it is predicted as a candidate is and added with origin `rescue`; the numbers are the ones
+    `/api/predict` gives for it. When it is a candidate it is listed once, with its own origin."""
+    import dataclasses
+
+    s = session_for()
+    rec = s.rec
+    fix = rec.rescue_config
+    assert fix is not None and rec.by_id(fix.id) is None
+    ctx = context_payload(s)
+    entry = [c for c in ctx["candidates"] if c["config"]["id"] == fix.id]
+    assert len(entry) == 1 and entry[0]["origin"] == "rescue"
+    assert entry[0]["config"] == fix.to_dict() and entry[0]["label"] == rec.label(fix)
+    one = P.predict(session_for(), {"config": fix.to_dict()})
+    assert one["ok"] is True and one["config_id"] == fix.id and one["known"] is False
+    assert {k: one["numbers"][k] for k in entry[0]["numbers"]} == entry[0]["numbers"]
+    assert entry[0]["numbers"]["run_cost_usd"]["median_basis"] == "draws"
+    # a rescue the search did offer keeps its own entry and origin, once
+    other = rec.candidates[3]
+    s.rec, s.context = dataclasses.replace(rec, rescue_config=other.config), None
+    ids = [c["config"]["id"] for c in context_payload(s)["candidates"]]
+    assert ids.count(other.config.id) == 1 and fix.id not in ids
+    assert next(c for c in context_payload(s)["candidates"] if c["config"]["id"] == other.config.id)["origin"] == other.origin

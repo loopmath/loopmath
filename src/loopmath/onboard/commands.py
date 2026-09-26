@@ -31,6 +31,7 @@ from typing import Any, Callable
 from .. import output
 from ..output import EXIT_NOT_FOUND, EXIT_OK, EXIT_USER, emit_json, fail
 from .. import taskmodel
+from ..priors.show import starting_prior
 from ..store.ids import since_days as since_window
 from ..taskmodel import LABEL_VERSION
 from . import history as H
@@ -124,6 +125,9 @@ def onboard(args: argparse.Namespace) -> int:
     # The one line printed even when stderr is captured: the wait that follows can be long.
     print(f"onboard: reading Claude Code and Codex history, {_window_words(since)}; "
           "a large history can take several minutes", file=sys.stderr, flush=True)
+    # Then, also when captured, what the answers start from, once (the skill shows this line to the user).
+    prior = starting_prior()
+    print(prior["line"], file=sys.stderr, flush=True)
     hist = deps.load_history(since_days, logs=deps.logs, progress=_progress, stage=_stage)
     now = deps.now()
     groups, before_window = H.in_window(H.group_sessions(hist.graph, hist.by_id), since_days, now=now)
@@ -160,6 +164,7 @@ def onboard(args: argparse.Namespace) -> int:
 
     payload: dict[str, Any] = {
         "dry_run": dry_run,
+        "prior": prior,
         "since": since,
         "since_days": round(since_days, 3),
         "window": _window(groups),

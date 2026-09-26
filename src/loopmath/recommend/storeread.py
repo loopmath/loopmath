@@ -125,6 +125,14 @@ def run_rows(home: Path) -> list[dict[str, Any]]:
     return [row for _, row in sorted(last.values(), key=lambda x: x[0])]
 
 
+def own_runs(home: Path | None) -> int:
+    """The user's recorded runs (N3, 0.2.3): runs in the store whose last index row is finished, the ones a fit
+    learns costs from. Shipped prior runs live in the bundle, not the store, so they never count."""
+    if home is None:
+        return 0
+    return sum(1 for row in run_rows(Path(home)) if row.get("run") and row.get("state") == "finished")
+
+
 def usual_from_history(home: Path, task_type: str, repo: str, *, now: _dt.datetime | None = None,
                        days: int = HISTORY_DAYS) -> tuple[str | None, str | None]:
     """(config id, level) seen in the most runs for (type, repo) in the last `days`, else for the type.

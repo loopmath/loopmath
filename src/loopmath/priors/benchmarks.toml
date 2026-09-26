@@ -3,8 +3,9 @@
 # design/0.1/data/benchmarks/artificialanalysis-2026-09-23.json (Terminal-Bench 4.0) and
 # artificialanalysis-2026-09-25.json (Terminal-Bench 2.1). Values are copied as published;
 # a missing cell stays missing. Lane 5's belief.priors.benchmark_factors reads this file: success
-# results become logit gaps to the reference model with variance 1 / (w p (1 - p)), w =
-# benchmark_prior_weight (default 5). The first result for the reference model is the reference.
+# results become logit gaps to the reference model with variance 1 / (w p (1 - p)), w = the
+# benchmark's weight over the model's k results on it (config benchmark_prior_weight, when set,
+# replaces every weight). The first result for the reference model is the reference.
 
 [[benchmark]]
 id = "aa-terminal-bench-4.0"
@@ -13,6 +14,7 @@ metric = "pass@1 averaged over three repeats of 66 tasks, as a fraction"
 kind = "success"
 reference = "claude-opus-5"
 reference_effort = "max"
+weight = 5.0
 harness = "mini-swe-agent (Artificial Analysis)"
 url = "https://artificialanalysis.ai/evaluations/terminalbench-4-0"
 note = "One harness for every model, so the gaps compare models rather than scaffolds. Variants without reasoning are left out (loopmath does not run them). Haiku 4.5 is the reasoning variant, which names no effort. Values are k of 198 task runs."
@@ -24,6 +26,7 @@ metric = "total tokens for the whole evaluation (66 tasks x 3 repeats): input (w
 kind = "tokens"
 reference = "claude-opus-5"
 reference_effort = "max"
+weight = 5.0
 harness = "mini-swe-agent (Artificial Analysis)"
 url = "https://artificialanalysis.ai/evaluations/terminalbench-4-0"
 note = "D54: a log-ratio factor on the tokens head only, never converted to dollars. The same three streams for every model, so the ratio is like for like."
@@ -35,6 +38,7 @@ metric = "pass@1 averaged over three repeats of 89 tasks, as a fraction"
 kind = "success"
 reference = "claude-opus-5"
 reference_effort = "max"
+weight = 5.0
 harness = "Terminus 2 (Artificial Analysis)"
 url = "https://artificialanalysis.ai/evaluations/terminalbench-2-1"
 note = "One harness for every model (Terminus 2, as the page says), so the gaps compare models rather than scaffolds. Variants without reasoning are left out. Haiku 4.5 is the reasoning variant, which names no effort. Values are k of 267 task runs. Artificial Analysis publishes no Terminal-Bench 2.1 result for claude-opus-5-5, gpt-6-sol or gpt-6-luna, and only the max effort for claude-sonnet-5 and claude-fable-5; those cells stay missing. The official Terminal-Bench 2.1 board mixes six harnesses and is left out (lane 22K)."
@@ -46,6 +50,7 @@ metric = "total tokens for the whole evaluation (89 tasks x 3 repeats): input (w
 kind = "tokens"
 reference = "claude-opus-5"
 reference_effort = "max"
+weight = 5.0
 harness = "Terminus 2 (Artificial Analysis)"
 url = "https://artificialanalysis.ai/evaluations/terminalbench-2-1"
 note = "D54: a log-ratio factor on the tokens head only, never converted to dollars. The same three streams for every model, so the ratio is like for like. Only the variants the evaluation pages show carry token counts."

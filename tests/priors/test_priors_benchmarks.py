@@ -94,6 +94,8 @@ def test_tokens_values_are_the_three_published_streams():
     (lambda d: d["benchmark"][0].update(kind="speed"), "kind 'speed'"),
     (lambda d: d["benchmark"][0].pop("harness"), "no harness"),
     (lambda d: d["result"][1].update(benchmark="other"), "unknown benchmark"),
+    (lambda d: d["benchmark"][0].update(weight=-1), "weight is not a number of 0 or more"),
+    (lambda d: d["benchmark"][0].update(weight="five"), "weight is not a number of 0 or more"),
 ])
 def test_checker_refuses(edit, problem):
     data = copy.deepcopy(_small())
@@ -126,12 +128,15 @@ def test_lane5_factors_follow_spec_04_section_5():
     p = astra["value"]
     gap = math.log(p / (1 - p)) - math.log(p_ref / (1 - p_ref))
     match = [f for f in success if "gpt-6-astra" in f.note and f"{p}" in f.note]
-    assert match and math.isclose(match[0].mean, gap) and math.isclose(match[0].var, 1 / (5 * p * (1 - p)))
+    k = sum(r["model"] == "gpt-6-astra" for r in rows)  # 0.2.3 B1: astra's 5 efforts share the weight 5
+    assert k == 5
+    assert match and math.isclose(match[0].mean, gap) and math.isclose(match[0].var, k / (5 * p * (1 - p)))
     # Terminal-Bench 2.1 (lane 22K): its own reference, claude-opus-5 at max on that benchmark
     rows = [r for r in data["result"] if r["benchmark"] == "aa-terminal-bench-2.1"]
     p_ref = next(r["value"] for r in rows if r["model"] == "claude-opus-5")
     p = next(r["value"] for r in rows if r["model"] == "gpt-6-astra" and r["effort"] == "max")
     gap = math.log(p / (1 - p)) - math.log(p_ref / (1 - p_ref))
     match = [f for f in success if f.note.startswith(f"aa-terminal-bench-2.1: gpt-6-astra {p} ")]
-    assert len(match) == 1 and math.isclose(match[0].mean, gap) and math.isclose(match[0].var, 1 / (5 * p * (1 - p)))
+    k = sum(r["model"] == "gpt-6-astra" for r in rows)
+    assert len(match) == 1 and math.isclose(match[0].mean, gap) and math.isclose(match[0].var, k / (5 * p * (1 - p)))
     assert len([f for f in factors if f.head == "tokens" and f.note.startswith("aa-terminal-bench-2.1-tokens:")]) == 10

@@ -105,8 +105,9 @@ def test_context_has_the_api_shape(home, capsys):
     s = session_for()
     ctx = json.loads(json.dumps(context_payload(s)))
     assert list(ctx) == ["schema", "task", "rule", "fit", "rec", "goal_config_id", "rescue", "reference", "choices",
-                         "candidates", "catalog", "start"]
+                         "candidates", "catalog", "start", "own_runs"]
     assert ctx["goal_config_id"] == obj["goal"]["config"]
+    assert ctx["own_runs"] == obj["own_runs"] == 3  # 0.2.3: the store's three finished runs
     assert ctx["schema"] == "loopmath.builder.context/1" and ctx["start"] is None and ctx["rec"] is None
     assert ctx["fit"]["id"] == obj["fit"]["id"] and ctx["fit"]["runs"] > 0
     assert ctx["rule"] == obj["rule"] and ctx["rescue"] == obj["rescue"]

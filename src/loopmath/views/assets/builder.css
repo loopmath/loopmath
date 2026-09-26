@@ -89,6 +89,8 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
 .c-optn { font-size: 10.5px; font-weight: 700; fill: var(--ink); }
 .c-optn.on { fill: var(--start); }
 .c-opt.old { stroke: var(--muted); stroke-dasharray: 2.5 2; fill: #f3ede2; }
+.c-lead { stroke: var(--ink2); stroke-width: 1; }
+.c-leadpt { fill: var(--ink2); }
 .c-old { font-size: 10.5px; font-style: italic; }
 .c-trail { fill: none; stroke: var(--accent); stroke-opacity: 0.35; stroke-width: 1.2; stroke-dasharray: 2 3; }
 .c-prev { fill: var(--accent); }
@@ -249,6 +251,8 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
 .metric .md { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; padding-bottom: 3px; }
 .metric .md small { display: block; font-size: 10.5px; color: var(--muted); font-weight: 400; }
 .metric .rng { font-size: 11px; line-height: 1.25; color: var(--muted); font-variant-numeric: tabular-nums; padding-bottom: 3px; white-space: nowrap; }
+.metric .rmean { font-size: 12px; line-height: 1.35; color: var(--muted); margin-top: 2px; }
+.metric .rmean code { font-size: 11px; }
 .info { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--rule); color: var(--muted); font: italic 600 12px/1 var(--serif); align-items: center; justify-content: center; background: var(--surface); padding: 0; cursor: pointer; flex: none; }
 .info[aria-expanded=true] { background: var(--ink); color: #fff; border-color: var(--ink); }
 .explain { font-size: 12.5px; color: var(--ink2); background: var(--band); border-radius: 8px; padding: 8px 10px; margin-top: 7px; line-height: 1.45; }

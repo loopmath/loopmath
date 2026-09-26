@@ -12,7 +12,12 @@
 # venv with pip and the network (no cache), so the real published closure is what the same
 # checks run on. Nothing is built.
 #
+# In both modes the installed prior (priors/bundle/ and priors/benchmarks.toml) must be this
+# checkout's, byte for byte, with the same runs per source: the package carries the prior we fit
+# with. --prior-only DIR runs that comparison alone on an installed `loopmath` folder.
+#
 # Usage: scripts/release-check.sh [--python PY] [--keep] [--online pypi|testpypi|URL [--version X]]
+#        scripts/release-check.sh [--python PY] --prior-only DIR
 #   PY builds and supplies the dependencies: $LOOPMATH_PY, then python3. It needs `build`,
 #   `twine` and the core dependencies installed (online: only a Python with venv and pip).
 #   --online pypi or testpypi (dependencies from PyPI), or a simple index URL.
@@ -25,12 +30,14 @@ py="${LOOPMATH_PY:-python3}"
 keep=0
 online=""
 version=""
+prior_only=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --python) py="$2"; shift 2 ;;
     --keep) keep=1; shift ;;
     --online) online="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
+    --prior-only) prior_only="$2"; shift 2 ;;
     -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "release-check.sh: unknown argument $1" >&2; exit 2 ;;
   esac
@@ -46,6 +53,9 @@ if [ -n "$online" ]; then
   [ -n "$version" ] || version="$("$py" -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "$root/pyproject.toml")"
 elif [ -n "$version" ]; then
   echo "release-check.sh: --version goes with --online" >&2; exit 2
+fi
+if [ -n "$prior_only" ] && [ -n "$online" ]; then
+  echo "release-check.sh: --prior-only checks an installed folder; it does not go with --online" >&2; exit 2
 fi
 
 work="$(cd "$(mktemp -d /tmp/loopmath-release-check.XXXXXX)" && pwd -P)"
@@ -76,12 +86,106 @@ check() {
   fi
 }
 
+# prior_parity PKG: the prior the installed `loopmath` folder PKG carries is this checkout's. Every
+# file of priors/bundle/ and priors/benchmarks.toml has the checkout's sha256 and none is on one
+# side only; the installed manifest's runs per source are the checkout's, and each installed source
+# file is the one its manifest names (sha256) with that many runs. One line per file group.
+prior_parity() {
+  local rows verdict title detail
+  if ! rows="$("$py" - "$root/src/loopmath/priors" "$1/priors" 2>&1 <<'PY'
+import gzip, hashlib, json, sys
+from pathlib import Path
+
+tree, inst = Path(sys.argv[1]), Path(sys.argv[2])
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def listing(folder):
+    if not folder.is_dir():
+        return {}
+    return {p.name: sha(p) for p in folder.iterdir() if p.is_file() and p.name != ".DS_Store"}
+
+
+def diff(mine, theirs):
+    """How the installed files differ from the checkout's, as phrases."""
+    out = []
+    for words, names in (("differ", [n for n in sorted(set(mine) & set(theirs)) if mine[n] != theirs[n]]),
+                         ("missing from the install", sorted(set(mine) - set(theirs))),
+                         ("only in the install", sorted(set(theirs) - set(mine)))):
+        if names:
+            out.append(f"{words}: {', '.join(names)}")
+    return out
+
+
+def sources(folder):
+    try:
+        return json.loads((folder / "manifest.json").read_text(encoding="utf-8")).get("sources") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def line(problems, title, ok):
+    print("\t".join(("FAIL" if problems else "PASS", title, "; ".join(problems) if problems else ok)))
+
+
+mine, theirs = listing(tree / "bundle"), listing(inst / "bundle")
+problems = [] if theirs else [f"no bundle files in {inst / 'bundle'}"]
+problems += diff(mine, theirs)
+want = {name: e.get("runs") for name, e in sources(tree / "bundle").items()}
+got = {name: e.get("runs") for name, e in sources(inst / "bundle").items()}
+if got != want:
+    problems.append("runs per source: installed " + (", ".join(f"{k} {v}" for k, v in got.items()) or "none")
+                    + "; checkout " + (", ".join(f"{k} {v}" for k, v in want.items()) or "none"))
+for name, e in sources(inst / "bundle").items():
+    path = inst / "bundle" / str(e.get("file"))
+    try:
+        if sha(path) != e.get("sha256"):
+            problems.append(f"{name}: {path.name} is not the file its manifest names")
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            n = sum(1 for text in fh if text.strip())
+        if n != e.get("runs"):
+            problems.append(f"{name}: {n} runs in {path.name}, {e.get('runs')} in its manifest")
+    except Exception as exc:  # a missing or damaged file is a finding, not a crash
+        problems.append(f"{name}: {path.name} does not read ({type(exc).__name__})")
+line(problems, "prior bundle equals the checkout",
+     ", ".join(f"{k} {v}" for k, v in want.items()) + f"; {len(mine)} files")
+
+toml = "benchmarks.toml"
+mine = {toml: sha(tree / toml)} if (tree / toml).is_file() else {}
+theirs = {toml: sha(inst / toml)} if (inst / toml).is_file() else {}
+problems = diff(mine, theirs) if mine or theirs else [f"no {toml} in the checkout or the install"]
+line(problems, f"{toml} equals the checkout",
+     f"{(tree / toml).read_text(encoding='utf-8').count('[[benchmark]]') if mine else 0} benchmark entries")
+PY
+)"; then
+    step "prior equals the checkout"; fail "the comparison stopped"
+    printf '%s\n' "$rows" | tail -5 | sed 's/^/    /'
+    return
+  fi
+  while IFS=$'\t' read -r verdict title detail; do
+    step "$title"
+    if [ "$verdict" = PASS ]; then pass "$detail"; else fail "$detail"; fi
+  done <<< "$rows"
+}
+
 echo "loopmath release check"
 echo "tree: $root ($(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown))"
 echo "python: $("$py" -c 'import sys; print(sys.executable, sys.version.split()[0])')"
 echo "temp: $work"
 [ -z "$online" ] || echo "online: loopmath==$version from ${index[*]}"
+[ -z "$prior_only" ] || echo "installed: $prior_only"
 echo
+
+if [ -n "$prior_only" ]; then
+  prior_parity "$prior_only"
+  echo
+  if [ "$failed" -eq 0 ]; then echo "release check: the installed prior equals the checkout"; else echo "release check: $failed failed"; fi
+  [ "$failed" -eq 0 ]
+  exit
+fi
 
 if [ -z "$online" ]; then
 # The wheel is built from the sdist, in a temp folder: that proves the sdist is complete and
@@ -237,6 +341,9 @@ if [ -z "$extra_found" ]; then pass; else fail "found: $extra_found"; fi
 step "loopmath imports from the venv, not the tree"
 where="$(cd "$work" && "$venv/bin/python" -c 'import loopmath; print(loopmath.__file__)' 2>&1)"
 case "$where" in "$venv"/*) pass ;; *) fail "$where" ;; esac
+
+# The package carries the prior we fit with: this checkout's bundle and benchmark file.
+prior_parity "$(dirname "$where")"
 
 check "loopmath --version" loopmath --version
 check "loop --version (the alias)" loop --version

@@ -105,7 +105,8 @@ function iv(o, kind, given) {
   const d = bandsFrom(m, lo, hi, kind), b = {};
   let derived = false;
   for (const k of [50, 80, 90, 95]) { const g = given && given[String(k)]; if (g && fin(g[0]) && fin(g[1])) b[k] = g; else { b[k] = d[k]; if (k !== 80) derived = true; } }
-  return { mean: m, lo, hi, median: o.median, attempts: o.attempts, b, derived };
+  // N3 (0.2.3): `typical_first` (the server's rule) leads a run cost with its median, the typical run
+  return { mean: m, lo, hi, median: o.median, attempts: o.attempts, b, derived, typical: !!o.typical_first && fin(o.median) };
 }
 function norm(n) {
   if (!n) return null;
@@ -139,7 +140,8 @@ function runsOf(rb) {
   return { total: rb.total || 0, byRole: rb.by_role || {}, byEffort: rb.by_effort || {} };
 }
 function prepare(c) {
-  D = { task: c.task || {}, rule: c.rule || {}, fit: c.fit || {}, rescue: c.rescue || {}, catalog: c.catalog || {} };
+  D = { task: c.task || {}, rule: c.rule || {}, fit: c.fit || {}, rescue: c.rescue || {}, catalog: c.catalog || {},
+    ownRuns: typeof c.own_runs === 'number' ? c.own_runs : null };
   const cat = D.catalog;
   // the models the builder offers; a workflow on any other model is a retired one: shown, never a start point or a next step
   const offered = Array.isArray(cat.offered) ? new Set(cat.offered.map(m => m.id || m)) : null;
@@ -318,11 +320,13 @@ function shapeOf(st) {
   const w = st.wf || knownWorkflow(st);
   return w ? { id: w.id, title: shapeTitle(w) } : null;
 }
+const TITLE_MAX = 32;
 function shapeTitle(w) {
   const s = D.shapes.find(x => x.id === w.id);
   if (s) return s.title;
-  const t = w.title || w.id;
-  return /^RQ1/.test(t) ? String(w.id).replace(/_/g, ' ') : t;
+  // a long title (a study's own name, say) reads worse on the chips than the workflow's id, when that is shorter
+  const t = String(w.title || w.id), id = String(w.id || '').replace(/_/g, ' ');
+  return t.length > TITLE_MAX && id && id.length < t.length ? id : t;
 }
 function labelOf(st) {
   const ids = topo(st), byId = Object.fromEntries(st.nodes.map(n => [n.id, n])), sh = shapeOf(st);
@@ -551,6 +555,29 @@ function paletteDrag(btn, role) {
 let XM = 'run', TAPPED = null, PREVIEW = null, PINNED = null;  // PINNED: the row tapped or clicked; hover previews others
 const CH = { m: { l: 46, r: 18, t: 18, b: 38 } };
 const rings = () => D.ref ? [...D.options, D.ref] : D.options;  // the options, and a reference that is not one
+// 22P note 2 (0.2.3): a ring within two radii of one already placed moves outward, away from it, until it is clear,
+// with a thin line back to its point, so two options on about the same spot keep readable numbers
+const RING_R = 9.5;
+function ringSpots(sc) {
+  const out = [];
+  for (const o of rings()) {
+    const x0 = sc.sx(o.num[XM].mean), y0 = sc.sy(o.num.chance.mean);
+    let x = x0, y = y0;
+    for (let i = 0; i < 8; i++) {
+      const near = out.find(p => Math.hypot(p.x - x, p.y - y) < 2 * RING_R - 0.01);
+      if (!near) break;
+      let dx = x - near.x, dy = y - near.y;
+      if (Math.hypot(dx, dy) < 0.5) { dx = 0.7; dy = -0.7; }
+      const k = 2 * RING_R / Math.hypot(dx, dy);
+      x = near.x + dx * k; y = near.y + dy * k;
+    }
+    out.push({ o, x, y, x0, y0 });
+  }
+  return out;
+}
+// 23R2 note 2 (0.2.3): while the run cost metric leads with the typical run, the chart, which places builds by their
+// mean, says so on its run cost value and axis, so the two numbers do not read as one contradicting the other
+const meanOnChart = () => XM === 'run' && !!(NUM && NUM.run && NUM.run.typical);
 function xDomain() {
   const vals = [...D.cands.map(e => e.num[XM].mean), ...rings().map(o => o.num[XM].mean)].filter(v => v > 0);
   if (!vals.length) return [0.1, 100];
@@ -584,7 +611,7 @@ function drawChart() {
   }
   let xt = [0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].filter(v => v >= sc.x0 && v <= sc.x1);
   xt.forEach(v => { const x = sc.sx(v); s += `<line x1="${x}" x2="${x}" y1="${t}" y2="${sc.H - b}" class="c-grid"/><text x="${x}" y="${sc.H - b + 15}" text-anchor="middle" class="c-tick">$${v}</text>`; });
-  s += `<text x="${sc.w - r}" y="${sc.H - 5}" text-anchor="end" class="c-axt">${XM === 'run' ? 'Cost per run' : 'Cost per accepted result'}, log scale →</text>`;
+  s += `<text x="${sc.w - r}" y="${sc.H - 5}" text-anchor="end" class="c-axt">${XM === 'run' ? (meanOnChart() ? 'Mean cost per run' : 'Cost per run') : 'Cost per accepted result'}, log scale →</text>`;
   s += `<text x="${l + 6}" y="${t + 11}" class="c-axt c-lbl" style="fill:var(--ink2)">↑ ${esc(D.rule.score ? 'Chance to reach ' + (D.rule.definition || 'the target') : 'Chance of an accepted result')} in one run</text>`;
   // the best trade-offs among the candidates
   const front = [...D.cands].sort((a, c) => a.num[XM].mean - c.num[XM].mean); let best = -1; const fr = [];
@@ -605,8 +632,10 @@ function drawChart() {
   const pts = TRAIL.map(tr => tr.num).concat(NUM ? [NUM] : []);
   if (pts.length > 1) s += `<polyline points="${pts.map(n => sc.sx(n[XM].mean).toFixed(1) + ',' + sc.sy(n.chance.mean).toFixed(1)).join(' ')}" class="c-trail"/>`;
   TRAIL.forEach((tr, i) => { s += `<circle cx="${sc.sx(tr.num[XM].mean).toFixed(1)}" cy="${sc.sy(tr.num.chance.mean).toFixed(1)}" r="4.2" class="c-prev" fill-opacity="${(0.14 + 0.26 * (i + 1) / TRAIL.length).toFixed(2)}"/>`; });
-  for (const o of rings()) {
-    const x = sc.sx(o.num[XM].mean), y = sc.sy(o.num.chance.mean), on = START && START.id === o.id && START.no === o.no ? ' on' : '';
+  const spots = ringSpots(sc);
+  for (const { x, y, x0, y0 } of spots) if (x !== x0 || y !== y0) s += `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" class="c-lead"/><circle cx="${x0.toFixed(1)}" cy="${y0.toFixed(1)}" r="2" class="c-leadpt"/>`;
+  for (const { o, x, y } of spots) {
+    const on = START && START.id === o.id && START.no === o.no ? ' on' : '';
     s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="9.5" class="c-opt${on}${o.retired ? ' old' : ''}"/><text x="${x.toFixed(1)}" y="${(y + 3.8).toFixed(1)}" text-anchor="middle" class="c-optn${on}">${esc(o.no)}</text>`;
     if (o.retired) s += `<text x="${x.toFixed(1)}" y="${(y + 22).toFixed(1)}" text-anchor="middle" class="c-lbl c-old">${esc(o.name.toLowerCase())}, retired model</text>`;
   }
@@ -614,7 +643,7 @@ function drawChart() {
   s += '<g id="pv"></g><g id="bl"></g>';
   let hits = '';
   for (const e of D.cands) hits += `<circle data-c="${esc(e.id)}" cx="${sc.sx(e.num[XM].mean).toFixed(1)}" cy="${sc.sy(e.num.chance.mean).toFixed(1)}" r="9" fill="transparent"/>`;
-  for (const o of rings()) hits += `<circle data-o="${esc(o.no)}" cx="${sc.sx(o.num[XM].mean).toFixed(1)}" cy="${sc.sy(o.num.chance.mean).toFixed(1)}" r="13" fill="transparent"/>`;
+  for (const { o, x, y } of spots) hits += `<circle data-o="${esc(o.no)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="transparent"/>`;
   TRAIL.forEach((tr, i) => { hits += `<circle data-trail="${i}" cx="${sc.sx(tr.num[XM].mean).toFixed(1)}" cy="${sc.sy(tr.num.chance.mean).toFixed(1)}" r="11" fill="transparent"/>`; });
   s += `<g style="cursor:pointer">${hits}</g>`;
   svg.innerHTML = s;
@@ -642,7 +671,7 @@ function drawBuild() {
   const x = sc.sx(n[XM].mean), y = sc.sy(n.chance.mean);
   let s = ivLines(sc, n, 'var(--accent)', [1.8, 0.9, 0.5], 0.6);
   s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="16" class="c-halo"/><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8.5" class="c-you"/>`;
-  const txt = 'your build  ' + pct(n.chance.mean) + ', ' + usd(n[XM].mean);
+  const txt = 'your build  ' + pct(n.chance.mean) + ', ' + (meanOnChart() ? 'mean ' : '') + usd(n[XM].mean);
   const right = x < sc.w - 180, tx = right ? x + 17 : x - 17, ty = y - 15 < 40 ? y + 27 : y - 15;
   s += `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" text-anchor="${right ? 'start' : 'end'}" class="c-you-t">${txt}</text>`;
   g.innerHTML = s;
@@ -663,7 +692,7 @@ function paintTap() {
   if (!e) { box.className = 'tapcard empty'; box.textContent = 'Tap any point to see what it is and start from it. Tap a faint blue point to go back to an earlier build.'; return; }
   box.className = 'tapcard';
   const rank = 1 + D.cands.filter(x => x.num.cpa.mean < e.num.cpa.mean - 1e-9).length;
-  box.innerHTML = `<div style="min-width:0;flex:1"><div class="t">${esc(e.name ? e.name + ': ' : '')}${esc(e.label)}</div><div class="nums">${pct(e.num.chance.mean)} chance, ${usd(e.num.run.mean)} a run, ${usd(e.num.cpa.mean)} per accepted result, #${rank} of ${D.cands.length}${e.origin === 'recorded' ? ', recorded' : ''}</div>` +
+  box.innerHTML = `<div style="min-width:0;flex:1"><div class="t">${esc(e.name ? e.name + ': ' : '')}${esc(e.label)}</div><div class="nums">${pct(e.num.chance.mean)} chance, ${e.num.run.typical ? 'mean ' : ''}${usd(e.num.run.mean)} a run, ${usd(e.num.cpa.mean)} per accepted result, #${rank} of ${D.cands.length}${e.origin === 'recorded' ? ', recorded' : ''}</div>` +
     (e.retired ? '<div class="nums" style="color:var(--start)">Retired model: shown for comparison, not offered as a start point.</div>' : '') +
     `</div><div style="display:flex;gap:8px"><button class="btn" id="tapclose">Close</button>${e.retired ? '' : '<button class="btn primary" id="tapstart">Start from this</button>'}</div>`;
   $('tapclose').onclick = () => { TAPPED = null; paintTap(); drawChart(); };
@@ -1166,12 +1195,18 @@ function paintSide() {
   if (show && rr && !isRec && !(PRED && PRED.failed)) s += `<div class="headline">${headline(show, rr)}</div>`;
   s += lastEditLine();
   if (show) {
-    const R = D.rescue.usd, att = show.within && show.within.attempts;
+    const R = D.rescue.usd, att = show.within && show.within.attempts, typ = show.run.typical;
+    // N3 (0.2.3): while the user has no runs of their own (or the range is wider than 10x) the run cost leads with the
+    // typical run, the median, and its difference from the recommended one; the mean follows on the next line
+    const meanLine = !typ ? '' : `<div class="rmean" id="runmean">Mean ${usd(show.run.mean)} a run${show.run.mean > show.run.median ? ': a few runs cost far more' : ''}.` +
+      (D.ownRuns === 0 ? ` Onboard to see your own costs: <code>loopmath onboard</code>` : '') + `</div>`;
     const mets = [
       { k: 'chance', t: chanceName(), v: show.chance, rec: rr && rr.chance.mean, f: pct, up: true, pts: true,
         x: `The chance that one run of this build reaches ${esc(D.rule.definition || 'the target')}. The dot is the mean; the lines are the 50%, 80%, 90% and 95% ranges, thinner as they widen. Wide ranges mean few runs sit behind these settings.` },
-      { k: 'run', t: 'Run cost', v: show.run, rec: rr && rr.run.mean, f: usd, up: false,
-        x: `What the agents cost for one run of this build, at list prices (not billed spend)${fin(show.run.median) ? '; the median run costs ' + usd(show.run.median) : ''}.` },
+      { k: 'run', t: typ ? 'Typical run cost' : 'Run cost', v: show.run, big: typ ? show.run.median : show.run.mean,
+        rec: rr && (typ && fin(rr.run.median) ? rr.run.median : rr.run.mean), f: usd, up: false, after: meanLine,
+        x: typ ? `What the agents cost for a typical run of this build (the median), at list prices (not billed spend). The mean, ${usd(show.run.mean)}, is what sums and the cost per accepted result use.`
+          : `What the agents cost for one run of this build, at list prices (not billed spend)${fin(show.run.median) ? '; the median run costs ' + usd(show.run.median) : ''}.` },
       { k: 'cpa', t: 'Cost per accepted result', v: show.cpa, rec: rr && rr.cpa.mean, f: usd, up: false,
         x: `The run cost plus the expected cost of fixing a miss: ${usd(show.run.mean)} + ${pct(1 - show.chance.mean)} chance of a miss × ${usd(R)} = ${usd(show.cpa.mean)}. ${esc(D.rescue.text || '')}` },
       { k: 'within', t: 'Chance within ' + (att || 3) + ' attempts', v: show.within, rec: rr && rr.within && rr.within.mean, f: pct, up: true, pts: true,
@@ -1182,12 +1217,12 @@ function paintSide() {
       if (!m.v) return;
       let dt = '';
       if (m.rec != null && !isRec) {
-        const d = m.v.mean - m.rec;
+        const d = (m.big != null ? m.big : m.v.mean) - m.rec;
         dt = `<span class="md ${tone(d, m.up, 0.005)}">${m.pts ? signed(d, 'pts') : signed(d)}<small>vs recommended</small></span>`;
       }
       s += `<div class="metric"><span class="t1"><span class="ml">${esc(m.t)}</span><button class="info" data-info="${m.k}" aria-expanded="${OPEN_INFO[m.k] ? 'true' : 'false'}" aria-label="Explain">?</button></span>` +
         `<div class="bigrow"><span class="big" data-big="${m.k}"></span><span class="rng">80%: ${m.f(m.v.b[80][0])}<br>to ${m.f(m.v.b[80][1])}</span>${dt}</div>` +
-        stripHTML(m.k, m.v, isRec ? null : m.rec) + (OPEN_INFO[m.k] ? `<div class="explain">${m.x}</div>` : '') + '</div>';
+        (m.after || '') + stripHTML(m.k, m.v, isRec ? null : (m.big != null ? rr && rr[m.k].mean : m.rec)) + (OPEN_INFO[m.k] ? `<div class="explain">${m.x}</div>` : '') + '</div>';
     });
     s += '</div>';
     s += `<div class="slegend"><span><svg width="58" height="12"><line x1="2" y1="6" x2="56" y2="6" stroke="#2a52be" stroke-opacity=".35" stroke-width="1"/><line x1="9" y1="6" x2="49" y2="6" stroke="#2a52be" stroke-opacity=".45" stroke-width="2"/><line x1="16" y1="6" x2="42" y2="6" stroke="#2a52be" stroke-opacity=".6" stroke-width="4"/><line x1="23" y1="6" x2="35" y2="6" stroke="#2a52be" stroke-opacity=".85" stroke-width="6"/></svg>50, 80, 90, 95%</span>${isRec ? '' : '<span><svg width="4" height="14"><rect x="1" y="0" width="2" height="14" fill="#231f1a"/></svg>recommended</span>'}<span>costs on a log scale</span></div>`;
@@ -1208,7 +1243,8 @@ function paintSide() {
   const old = snapshotMarks(box);
   box.innerHTML = s;
   animateMarks(box, old);
-  box.querySelectorAll('[data-big]').forEach(b => { const k = b.dataset.big, v = show[k]; tweenText(b, k, v.mean, k === 'chance' || k === 'within' ? pct : usd); });
+  const BIG = show ? { run: show.run.typical ? show.run.median : show.run.mean } : {};
+  box.querySelectorAll('[data-big]').forEach(b => { const k = b.dataset.big, v = show[k]; tweenText(b, k, BIG[k] != null ? BIG[k] : v.mean, k === 'chance' || k === 'within' ? pct : usd); });
   box.querySelectorAll('[data-info]').forEach(b => { b.onclick = () => { OPEN_INFO[b.dataset.info] = !OPEN_INFO[b.dataset.info]; paintSide(); }; });
   box.querySelectorAll('[data-piece]').forEach(b => { b.onclick = () => { SEL = { kind: 'node', id: b.dataset.piece }; renderAll(); $('canvasCard').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }; });
   $('copybtn').onclick = copyBuild;

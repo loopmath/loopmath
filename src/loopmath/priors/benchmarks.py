@@ -1,11 +1,13 @@
 """Published benchmark results (lane 11): `priors/benchmarks.toml`.
 
 The file has `[[benchmark]]` tables (`id`, `title`, `metric`, `kind` success,
-cost or tokens, `reference` model, `reference_effort`, `harness`, `url`, `note`) and
+cost or tokens, `reference` model, `reference_effort`, `weight`, `harness`, `url`, `note`) and
 `[[result]]` tables (`benchmark`, `model`, `effort`, `value`, `harness`, `date`,
 `url`, `note`). Lane 5's `belief.priors.benchmark_factors` turns them into prior
 factors on version nodes (spec 04 section 5); it reads the first result of the
 reference model as the reference, so that row is the one at `reference_effort`.
+`weight` is the benchmark's weight in runs (5 when absent), shared by each model's
+results on it (0.2.3, lane 23K; spec 04 section 5).
 
 This module loads the file and checks it: every value is a published number
 with its own source line, success values are fractions, the reference
@@ -49,6 +51,9 @@ def check_benchmarks(data: dict) -> list[str]:
         problems += [f"{where}: no {k}" for k in _BENCH_KEYS if not b.get(k)]
         if b.get("kind") and b["kind"] not in KINDS:
             problems.append(f"{where}: kind {b['kind']!r} is not one of {', '.join(KINDS)}")
+        if "weight" in b and (isinstance(b["weight"], bool) or not isinstance(b["weight"], (int, float))
+                              or b["weight"] < 0):
+            problems.append(f"{where}: weight is not a number of 0 or more")
         if b.get("id") in benches:
             problems.append(f"{where}: duplicate id")
         benches[str(b.get("id"))] = b

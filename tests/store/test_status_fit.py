@@ -36,7 +36,7 @@ def test_status_names_the_options_and_counts(tmp_path, capsys):
     code, out = _status(capsys, tmp_path)
     assert code == 0
     assert "fit: fit_20260924170000, 0 min old, --without rq1, runs 1469 prior + 44 yours\n" in out
-    assert out.count("44 of your runs are also in the shipped rq1 prior (same run ids): fits use your copies") == 1
+    assert out.count("44 of your runs are also in the shipped rq1 prior (same runs): fits use your copies") == 1
     code, out = _status(capsys, tmp_path, "--json")
     fit = json.loads(out)["fit"]
     assert fit["options"] == {"no_prior": False, "without": ["rq1"], "full": False}

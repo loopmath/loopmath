@@ -1,9 +1,11 @@
 """Handlers for `loopmath prior build|show` (lane 11; hidden from `--help`).
 
-`prior build [--out DIR] [--sweep-dir P] [--e0-corpus P] [--rq1-dir P] [--lanes-dir P]`
+`prior build [--out DIR] [--sweep-dir P ...] [--e0-corpus P] [--rq1-dir P] [--lanes-dir P]`
 rebuilds the shipped bundle from our sources. The inputs are read only; each
-is its flag, else `LOOPMATH_SWEEP_DIR`, `LOOPMATH_E0_CORPUS` or
-`LOOPMATH_PRIOR_RQ1`, and there is no default folder.
+is its flag, else `LOOPMATH_SWEEP_DIR`, `LOOPMATH_E0_CORPUS`,
+`LOOPMATH_PRIOR_RQ1` or `LOOPMATH_PRIOR_LANES`, and there is no default folder.
+`--sweep-dir` is repeatable, one results folder per sweep batch (23B);
+`LOOPMATH_SWEEP_DIR` stays one folder, since `research fit` reads it too.
 `LOOPMATH_PRIOR_SOURCES` (comma list) limits the sources, and
 `LOOPMATH_PRIOR_SALT` fixes the repo-hash salt for a reproducible build. A
 missing input is an error, never a silently smaller bundle.
@@ -46,15 +48,17 @@ def build(args: argparse.Namespace) -> int:
     results = []
     try:
         for name in names:
+            given = flags.get(name)
             try:
-                path = input_path(name, flags.get(name))
+                paths = [input_path(name, g) for g in (given if isinstance(given, list) else [given])]
             except MissingInput as exc:
                 return fail(f"{exc}, or leave {name} out of LOOPMATH_PRIOR_SOURCES")
-            if not path.exists():
-                return fail(f"input for {name} not found at {path}; pass {INPUT_FLAGS[name]} PATH or set "
-                            f"{ENV_INPUTS[name]}, or leave {name} out of LOOPMATH_PRIOR_SOURCES", EXIT_NOT_FOUND)
-            print(f"converting {name} from {path}", file=sys.stderr)
-            results.append(RUNNERS[name](path))
+            for path in paths:
+                if not path.exists():
+                    return fail(f"input for {name} not found at {path}; pass {INPUT_FLAGS[name]} PATH or set "
+                                f"{ENV_INPUTS[name]}, or leave {name} out of LOOPMATH_PRIOR_SOURCES", EXIT_NOT_FOUND)
+                print(f"converting {name} from {path}", file=sys.stderr)
+            results.append(RUNNERS[name](paths if name == SWEEP else paths[0]))
         manifest = build_bundle(out_dir, results, salt=os.environ.get("LOOPMATH_PRIOR_SALT") or None)
     except BundleError as exc:
         return fail(f"bundle not written: {exc}")
@@ -71,13 +75,15 @@ def build(args: argparse.Namespace) -> int:
 
 def show(args: argparse.Namespace) -> int:
     from . import bundle_dir, manifest
+    from .show import starting_prior
 
     data = manifest()
     if not data.get("sources"):
         return fail(f"no prior bundle at {bundle_dir()}; run `loopmath prior build`", EXIT_NOT_FOUND)
     if args.json:
-        emit_json("loopmath.prior.show/1", {"bundle": str(bundle_dir()), "manifest": data})
+        emit_json("loopmath.prior.show/1", {"bundle": str(bundle_dir()), "manifest": data, "prior": starting_prior()})
         return EXIT_OK
+    print(starting_prior()["line"])
     print(f"Prior bundle: {sum(e['runs'] for e in data['sources'].values())} runs from "
           f"{len(data['sources'])} sources, {data['size_bytes'] / 1e6:.2f} MB, built {data['built_at']}.")
     print(f"OCP {data['ocp']}; config ids by {data['config_id_impl']}; tariff {data['tariff']['id']} "

@@ -66,7 +66,7 @@ def test_the_reference_says_where_the_repo_and_base_commit_come_from():
 def test_import_says_the_overlap_line_once_in_its_summary():
     flat = _flat(IMPORT)
     line = overlap_note({"rq1": 44})
-    assert line == "44 of your runs are also in the shipped rq1 prior (same run ids): fits use your copies"
+    assert line == "44 of your runs are also in the shipped rq1 prior (same runs): fits use your copies"
     assert f'(for example "{line}")' in flat and "keep it for the summary, where it is said once, word for word" in flat
     summary = IMPORT.split("## 6. Summary", 1)[1].split("## Never", 1)[0]
     assert summary.count(line) == 1
@@ -78,8 +78,8 @@ def test_import_says_the_overlap_line_once_in_its_summary():
 def test_update_fit_builds_the_same_line_as_status(counts, n, source):
     flat = _flat(FIT)
     assert "`dropped`, `shipped_overlap`." in flat
-    many = re.search(r'"(N of your runs are also in the shipped SOURCE prior \(same run ids\): fits use your copies)"', flat)
-    one = re.search(r'"(1 of your runs is also in the shipped SOURCE prior \(same run id\): fits use your copy)"', flat)
+    many = re.search(r'"(N of your runs are also in the shipped SOURCE prior \(same runs\): fits use your copies)"', flat)
+    one = re.search(r'"(1 of your runs is also in the shipped SOURCE prior \(same run\): fits use your copy)"', flat)
     assert many and one
     template = one.group(1) if n == "1" else many.group(1)
     assert template.replace("N", n, 1).replace("SOURCE", source) == overlap_note(counts)

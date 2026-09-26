@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.2.3 (2026-09-26)
+
+### Prior
+
+- The prior adds 40 new runs on the sweep harness, 20 each with gpt-6-sol (xhigh) and gpt-6-luna (low) as the implementer, 38 accepted (gpt-6-sol 20 of 20, gpt-6-luna 18 of 20). They are a second batch of the `sweep` source and pool with its earlier runs; `fit --without sweep` leaves out both batches. The prior now has 1,602 runs (sweep 700, e0 809, rq1 44, lanes 49).
+- No real run date or clock time ships in any prior source (the price table's date and the build date stay). The `e0`, `sweep` and `rq1` runs now start at 1970-01-01 UTC and keep their real durations, as the `lanes` runs did in 0.2.2; the order of runs is as before, and on the same runs a fit's posterior is the same as with their real times. The prior's `built_at` is its build date only (`YYYY-MM-DD`, UTC).
+- The `lanes` implement_review runs stop at the workflow's review budget of 3 rounds: a run that needed a fourth or fifth round to be approved counts as not accepted. 7 of the 29 turn from accepted to not accepted, all of them features. This lowers every model's chance on a feature task with no runs of your own by 0.04 to 0.09.
+- With no runs of your own (solo at high effort, a feature task in a new repo), the chance of an accepted result and the run cost, 80% ranges (for the chance, over the prior's draws; for the run cost, of one simulated run), 0.2.2 after the semicolon: claude-opus-5-5 80% (46% to 99%; 90%), typical run $7.08, mean $33.12 ($0.87 to $77.07; $28.77); claude-fable-5-1 54% (8% to 95%; 68%), typical run $15.50, mean $52.98 ($1.15 to $127.72; $48.71); claude-sonnet-5 28% (2% to 71%; 33%), typical run $2.35, mean $9.40 ($0.26 to $23.91; $9.78); gpt-6-astra 61% (10% to 98%; 74%), typical run $3.88, mean $19.33 ($0.40 to $38.27; $19.09); gpt-6-sol 83% (52% to 99%; 86%), typical run $2.23, mean $7.08 ($0.30 to $17.07; $10.83); gpt-6-luna 32% (3% to 76%; 37%), typical run $0.06, mean $0.19 ($0.01 to $0.47; $0.29). gpt-6-sol and gpt-6-luna now have 21 and 20 runs of their own behind them (1 and 0 in 0.2.2). The chances are lower mostly because of the lanes review budget, and move toward the middle with the shared benchmark weight (below).
+- On our own runs held out from the fit (the shipped `rq1` runs left out, 22 runs on a problem the fit has not seen), the predicted mean cost is 1.05x the actual, and 1.11x when the problem is named as a new one (0.2.2: 0.99x and 1.04x); all 22 costs and scores are inside their 80% ranges, as in 0.2.2.
+
+### Benchmarks in the prior
+
+- All efforts of one model on one benchmark share one weight: each of a model's k results on a benchmark gets 1/k of that benchmark's weight, and each effort keeps its own gap. A model with many published efforts no longer pulls harder than one with a single result.
+- Each benchmark has its own weight in the shipped `benchmarks.toml`, chosen by leaving each model with runs out and predicting its runs from the benchmarks: all four stay at 5 runs (Terminal-Bench 4.0 and 2.1, pass rate and tokens); none moved. No other weight in 0, 1, 2, 10 or 20 lowered the held-out error by 5% for two thirds of the held-out models; the closest was 2.2%.
+- `benchmark_prior_weight`: unset by default, which uses each benchmark's own weight (`config get` prints `(not set)`; it printed 5.0 in 0.2.2). A number replaces every benchmark's weight and is still shared over a model's efforts, so a value set in 0.2.2 now gives a model with five efforts about a fifth of its old pull; 0 turns benchmark priors off; a negative value is refused.
+
+### The shipped prior is the one we fit with
+
+- The release check proves the package carries our prior: every file of the installed prior bundle and `benchmarks.toml` has the same sha256 as the checkout it runs in, no file is missing on either side, and the run counts per source agree, for a local build and for `--online pypi` (run it from the released commit). `scripts/release-check.sh --prior-only DIR` runs that comparison alone on any installed `loopmath` folder.
+- `loopmath onboard` says once what prior the answers start from, for example `Starting prior: loopmath 0.2.3, 1,602 runs (sweep 700, e0 809, rq1 44, lanes 49), 2 benchmarks (Terminal-Bench 4.0 and 2.1), built 2026-09-26.` (`prior` in `--json`). The onboard skill shows it to you; `loopmath prior show` starts with it; the results page shows it under its opening sentence, and names the fit's own starting prior instead when that fit was made by another loopmath version or left shipped runs or the benchmarks out (`--no-prior`, `--without`).
+- The README says the prior ships inside the package, is the one we fit with, and is updated with each release.
+
+### A new user sees the typical cost first
+
+- While you have no finished runs of your own, `recommend`, the planning page, the builder page and the results page headline the typical run cost (the median) with its 80% range, show the mean on the next line ("higher because a few runs cost far more"), and say "Onboard to see your own costs". Runs in the shipped prior do not count as yours. Once you have runs, the mean comes first again, except where a workflow's 80% cost range is wider than 10x: there the typical run leads, without the onboarding line. Budgets, totals and the cost per accepted result still use the mean. The builder's chart plots the mean run cost, and while the typical run leads it says so on its axis, your build's label and a tapped point's card.
+- JSON: the mean stays where it is. A prediction's `cost.usd` and `cost.tokens` gain `median`, from the same simulated runs as the 80% range; each `numbers.run_cost_usd` gains `typical_first`, the choice the pages follow; `recommend --json`, the builder's `/api/context` and the results page data gain `own_runs`.
+- With no runs of your own, `recommend` for a feature task picks plan_implement_review gpt-6-sol/medium, gpt-6-luna/medium, gpt-6-sol/low: 90% in one run, a typical run $0.42 (mean $1.21), $2.59 per accepted result (0.2.2: plan_implement_review gpt-6-sol/medium, gpt-6-luna/xhigh, gpt-6-sol/low, 81%, $1.91 a run, $5.87 per accepted result). The reference, implement_review claude-opus-5-5/high, gpt-6-astra/xhigh, has a 66% chance, a typical run of $14.59 and a mean of $52.33 (0.2.2: 92%, mean $51.38).
+
+### Fixes
+
+- The builder's `/api/context` always lists the rescue workflow among the candidates (origin `rescue`, with its predicted numbers), as the spec says; before, it was missing when no search offered it.
+- The builder page: a long workflow title shows the workflow's id when that is shorter (no special case for some titles); option rings that land on the same spot on the chart are moved apart, with a line to their true point.
+- A share document with no source or org is the source `shared` (it was `shared:shared`).
+
 ## 0.2.2 (2026-09-25)
 
 ### Workflow builder

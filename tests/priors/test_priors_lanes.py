@@ -93,6 +93,30 @@ def test_rejected_last_verdict_and_zero_token_round():
     assert parse_run(doc).evidence.z == 0.0
 
 
+
+def test_rounds_past_the_catalog_budget_are_cut_and_the_run_is_rejected():
+    """22L N1: a lane merged at round 4 was not accepted within the catalog's 3 rounds."""
+    doc = convert_lane(_row("s6", verdicts=("fix_blocking",) * 3 + ("merge",)))
+    run = doc["run"]
+    assert run["configuration"]["workflow"]["control"]["budget"] == 3
+    assert [(a["node"], a["round"]) for a in doc["attempts"]] == [
+        (n, k) for k in (1, 2, 3) for n in ("implement", "review")]
+    assert run["signals"][0]["value"] == "reject" and parse_run(doc).evidence.z == 0.0
+    assert run["ended_at"] == "1970-01-01T02:30:00Z"  # round 3's review, not the lane's end
+    info = run["ext"]["dev.loopmath.prior"]
+    assert (info["rounds"], info["rounds_recorded"], info["over_budget_rounds"]) == (3, 4, 1)
+    assert info["over_budget_tokens"] == sum(TOK.values())
+
+
+def test_a_lane_within_the_budget_is_unchanged():
+    doc = convert_lane(_row("s7", verdicts=("fix_blocking", "fix_blocking", "merge")))
+    run = doc["run"]
+    assert len(doc["attempts"]) == 6 and run["signals"][0]["value"] == "accept"
+    assert run["ended_at"] == "1970-01-01T03:00:00Z" and parse_run(doc).evidence.z == 1.0
+    info = run["ext"]["dev.loopmath.prior"]
+    assert (info["rounds"], info["rounds_recorded"], info["over_budget_rounds"], info["over_budget_tokens"]) == (
+        3, 3, 0, 0)
+
 def test_unreviewed_lane_is_solo_without_verdict():
     doc = convert_lane(_row("s3", verdicts=(), ttype="research", repo="other"))
     assert doc["run"]["configuration"]["workflow"]["id"] == "solo"
@@ -168,22 +192,25 @@ def test_the_shipped_lanes_runs_carry_no_real_time():
 
 
 def test_build_and_merge_into_existing_bundle(tmp_path):
-    rows = [_row("a"), _row("b", verdicts=()), _row("c", role="reviewer", model="gpt-6-astra", harness="codex")]
+    rows = [_row("a"), _row("b", verdicts=()), _row("c", role="reviewer", model="gpt-6-astra", harness="codex"),
+            _row("d", verdicts=("fix_blocking",) * 4 + ("merge",))]
     counts: dict = {}
-    assert len(list(iter_lanes(_write(tmp_path, rows), counts=counts))) == 2
-    assert counts["runs_by_model_role"] == {"claude-opus-5-5:implementer": 2} and counts["reviewer_rows"] == 1
+    assert len(list(iter_lanes(_write(tmp_path, rows), counts=counts))) == 3
+    assert counts["runs_by_model_role"] == {"claude-opus-5-5:implementer": 3} and counts["reviewer_rows"] == 1
     shipped = tmp_path / "shipped"
     other = convert_lane(_row("z", verdicts=()))
     other["run"]["task"]["source"]["kind"] = "e0"
     build_bundle(shipped, [SourceResult("e0", [other], {"files": 0}, "e0/1")], salt="s")
     e0_bytes = (shipped / "e0.jsonl.gz").read_bytes()
     built = tmp_path / "built"
-    build_bundle(built, [run_lanes(tmp_path / "lanes-input")], salt="s")
+    res = run_lanes(tmp_path / "lanes-input")
+    assert res.counts["over_budget_runs"] == 1 and any("catalog budget" in n for n in res.notes)
+    build_bundle(built, [res], salt="s")
     m = merge_into_bundle(shipped, built)
     assert list(m["sources"]) == ["e0", "lanes"]
     assert (shipped / "e0.jsonl.gz").read_bytes() == e0_bytes
     assert manifest(shipped)["size_bytes"] == sum(e["bytes"] for e in m["sources"].values())
-    assert len(list(bundle_docs(directory=shipped))) == 3
+    assert len(list(bundle_docs(directory=shipped))) == 4
     assert len(list(bundle_docs(without=("lanes",), directory=shipped))) == 1
 
 

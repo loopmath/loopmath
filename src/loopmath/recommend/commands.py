@@ -27,7 +27,8 @@ from ..types import (
 from . import engine, storeread
 from .curve import RESCUE_KINDS, RETRY_DECAY, RETRY_MAX_ATTEMPTS, RETRY_MIN_CHANCE
 from .engine import Recommendation, Settings
-from .message import TAIL, heavy, noted, pct, tail, tokens as fmt_tokens, usd as fmt_usd
+from .message import (TAIL, heavy, leads_typical, mean_sentence, noted, pct, tail, tokens as fmt_tokens,
+                      typical_cost, usd as fmt_usd)
 from .storeread import Conf
 
 SCHEMA = "loopmath.recommend/2"
@@ -439,6 +440,8 @@ def build_payload(rec: Recommendation, belief: Any, rec_id: str, now) -> dict[st
     out["reference"] = core["reference"]  # recommend/2 keys after the /1 ones, so /1 readers keep their order
     out["choices"] = core["choices"]
     out["search"] = core["search"]  # spec 05 section 1a; null when the search did not run
+    if rec.own_runs is not None:
+        out["own_runs"] = rec.own_runs  # 0.2.3: the user's recorded runs; 0 leads each run cost with the typical run
     return out
 
 
@@ -474,8 +477,10 @@ def view_payload(payload: dict[str, Any], rec: Recommendation) -> dict[str, Any]
 
 # ---------------------------------------------------------------- terminal
 def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
-    """At most 25 plain lines."""
+    """At most 25 plain lines. When the reference's run cost leads with the typical run (N3), the mean follows on
+    its own line and one alternative fewer is listed."""
     t, fit, u = payload["task"], payload["fit"], rec.usual.prediction
+    lead = leads_typical(rec.own_runs, u.cost)
 
     def named(cfg: Configuration) -> str:
         """The shown label with its id, which `run start --config` takes."""
@@ -492,7 +497,8 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
              + ("" if rec.score_backed else f"; too few {rec.rule.score.name} scores to predict it, so each "
                                               f"chance is of an accepted result")
              + f"); fit {fit.get('id')} ({age_text})",
-             baseline_line(rec, named(rec.usual.config), line_numbers(u, first=True, rec=rec)),
+             baseline_line(rec, named(rec.usual.config), line_numbers(u, first=True, rec=rec, lead_typical=lead)),
+             *(["  " + mean_sentence(u.cost, rec.own_runs)] if lead else []),
              rescue_line(rec),
              "Curve:"]
     target = None
@@ -520,7 +526,7 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
     goal = payload["goal"]
     lines.append(f"Goal ({goal['choice']}): {named(rec.goal.config)}" + (f"; {goal['note']}" if goal.get("note") else ""))
     lines.append("Alternatives:")
-    for a in payload["alternatives"][:5]:
+    for a in payload["alternatives"][:4 if lead else 5]:
         d = a["deltas"]
         lines.append(f"  {a['label']}: {delta_words(d, 'the usual' if rec.is_usual else 'the reference')}")
     ex = rec.exploration
@@ -581,10 +587,11 @@ def typical(rec: Recommendation | None, p) -> str:
     return f"median {fmt_usd(rec.numbers(p)['run_cost_usd']['median'])}"
 
 
-def line_numbers(p, *, first: bool = False, marks: tuple[str, ...] = (), rec: Recommendation | None = None) -> str:
+def line_numbers(p, *, first: bool = False, marks: tuple[str, ...] = (), rec: Recommendation | None = None,
+                 lead_typical: bool = False) -> str:
     """Chance, run cost with its median, expected rescue and `ell`, which the first line spells out; a
     mean above its interval's upper end gets the tail note in its parentheses, after any `marks` such as
-    "uncertain"."""
+    "uncertain". With `lead_typical` (N3) the run cost is the typical run with its range; the caller prints the mean."""
     ell = fmt_usd(p.ell.usd.mean)
     note = TAIL if heavy(p.ell.usd) else ""
     per = (f"expected cost per accepted result {ell}{paren('lower is better', *marks, note)}" if first
@@ -593,7 +600,10 @@ def line_numbers(p, *, first: bool = False, marks: tuple[str, ...] = (), rec: Re
     rescue = ""
     if rec is not None and rec.rescue.kind != "none":
         rescue = f"expected rescue {fmt_usd(rec.numbers(p)['expected_rescue_usd'])}, "
-    return (f"{noted(pct(p.p_success.mean) + ' success', p.p_success)}, {fmt_usd(p.cost.usd.mean)} a run "
+    chance = noted(pct(p.p_success.mean) + ' success', p.p_success)
+    if lead_typical:
+        return f"{chance}, typical run {typical_cost(p.cost)}, {rescue}{per}"
+    return (f"{chance}, {fmt_usd(p.cost.usd.mean)} a run "
             f"({(med + '; ') if med else ''}{fmt_tokens(p.cost.tokens.mean)} tokens"
             f"{tail(p.cost.usd, p.cost.tokens)}), {rescue}{per}")
 
@@ -644,7 +654,7 @@ def recommend(args: argparse.Namespace) -> int:
         rec = engine.recommend(belief, asked, rule, usual=usual, usual_from=usual_from, configs=configs,
                                settings=settings, diff=diff_fn(), keep=[*(u.id for u in user),
                                                                         *(r.id for r in recorded)],
-                               offered=offered_models(conf, models))
+                               offered=offered_models(conf, models), own_runs=storeread.own_runs(home))
         rec.task = task
     except NotFound as exc:
         return fail(str(exc), EXIT_NOT_FOUND)

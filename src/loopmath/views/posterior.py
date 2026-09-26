@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..output import EXIT_NO_FIT, EXIT_NOT_FOUND, EXIT_OK, EXIT_USER, emit_json, fail, home as store_home
+from ..recommend.message import typical_first
+from ..recommend.storeread import own_runs
 from ..types import TASK_TYPE_IDS, Configuration, Task
 from .common import TAIL_NOTE, embed_json, extract_data, html_target, write_page  # noqa: F401 (extract_data, embed_json: the page's own)
 
@@ -821,7 +823,10 @@ def _iv3(d: Any) -> dict[str, Any] | None:
     d = _node_dict(d) if d is not None else None
     if not isinstance(d, dict) or not isinstance(d.get("mean"), (int, float)):
         return None
-    return {k: (round(float(d[k]), 6) if isinstance(d.get(k), (int, float)) else None) for k in ("mean", "lo", "hi")}
+    out = {k: (round(float(d[k]), 6) if isinstance(d.get(k), (int, float)) else None) for k in ("mean", "lo", "hi")}
+    if isinstance(d.get("median"), (int, float)):  # 0.2.3: a run's cost carries its typical run
+        out["median"] = round(float(d["median"]), 6)
+    return out
 
 
 # P6 (0.2.1): the page draws every estimate as a dot for the mean, a line for the 80% range and two thinner
@@ -1150,6 +1155,10 @@ def build_view(state: Any, *, home: Path, level: str = "all", head: str | None =
     counts = {e["config"]: int(e.get("runs") or 0) for e in entries}
     meta = _read_meta(home, state.fit_id)
     workflows = [enrich_workflow(e, nodes) for e in entries]
+    own = own_runs(home)
+    for w in workflows:  # N3 (0.2.3): whether the page leads this workflow's run cost with the typical run
+        usd = ((w.get("prediction") or {}).get("cost") or {}).get("usd")
+        w["typical_first"] = bool(isinstance(usd, dict) and usd.get("median") is not None and typical_first(own, usd))
     data = {
         "schema": SCHEMA,
         "generated_at": now or _now(),
@@ -1167,7 +1176,11 @@ def build_view(state: Any, *, home: Path, level: str = "all", head: str | None =
         "units": units_block(state, home, task, listed, counts, rule, score_name),
         "runs": run_points(home, task, score_name, rule),
         "score_name": score_name,
+        "own_runs": own,
     }
+    from ..priors.show import fit_prior  # the fit's starting prior, one line under the page's lede (lane 23P)
+
+    data["prior"] = fit_prior(meta)
     return enrich(data)
 
 
