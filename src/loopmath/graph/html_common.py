@@ -33,8 +33,14 @@ const App = (() => {
   const ROLES = [...ROLE_ORDER.filter(r => rolesFound.includes(r)), ...rolesFound.filter(r => !ROLE_ORDER.includes(r)).sort()];
   const MODELS = [...MODEL_ORDER.filter(m => modelsFound.includes(m)), ...modelsFound.filter(m => !MODEL_ORDER.includes(m)).sort()];
   const ROLE_COLOR = { lead: '#2a78d6', dev: '#eb6834', reviewer: '#1baf7a', planner: '#4a3aa7', cli: '#898781', external: '#898781', unlabeled: '#898781' };
-  const MODEL_COLOR = { 'opus-5': '#2a78d6', 'gpt-5.6-sol': '#eb6834', 'fable-5': '#1baf7a', unknown: '#898781' };
+  // One palette color per model in menu order, so any model name gets a color
+  // (a fixed name list left every model outside it grey); `unknown` stays grey.
+  const PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#4a3aa7', '#b7791f', '#c8452f', '#6a6a9c'];
   const colorFallback = '#898781';
+  const MODEL_COLOR = {};
+  MODELS.filter(model => model !== 'unknown').forEach((model, k) => { MODEL_COLOR[model] = PALETTE[k % PALETTE.length]; });
+  MODEL_COLOR.unknown = colorFallback;
+  const roleName = role => role === 'unlabeled' ? 'role not known' : role;
 
   N.forEach(n => {
     n.written = []; n.read = []; n.out = []; n.in = []; n.children = [];
@@ -43,9 +49,14 @@ const App = (() => {
     n.t0Plot = n.t0 == null ? 0 : n.t0;
     n.durPlot = n.dur == null ? 0 : n.dur;
     n.t1 = n.untimed ? n.t0Plot : n.t0Plot + n.durPlot;
-    const streams = TOKEN_STREAMS.map(key => n.tok[key]);
-    n.tokComplete = n.tok_record && streams.every(Number.isFinite);
+    // The total adds TOKEN_TOTAL_STREAMS; the cache-write retention split is a
+    // breakdown of one of them that sessions rarely record, so it does not make
+    // a measured total unavailable.
+    n.tokComplete = n.tok_record && TOKEN_TOTAL_STREAMS.every(key => Number.isFinite(n.tok[key]));
     n.tokTotal = n.tokComplete ? TOKEN_TOTAL_STREAMS.reduce((sum, key) => sum + n.tok[key], 0) : null;
+    // What was measured when a stream of the total is missing: a lower bound.
+    n.tokMissing = TOKEN_TOTAL_STREAMS.filter(key => !Number.isFinite(n.tok[key]));
+    n.tokKnown = n.tok_record && n.tokMissing.length < TOKEN_TOTAL_STREAMS.length ? TOKEN_TOTAL_STREAMS.reduce((sum, key) => sum + (Number.isFinite(n.tok[key]) ? n.tok[key] : 0), 0) : null;
     n.modelKey = n.model || 'unknown';
   });
   A.forEach(a => { a.w.forEach(i => N[i].written.push(a.i)); a.c.forEach(i => N[i].read.push(a.i)); });
@@ -61,8 +72,24 @@ const App = (() => {
   const section = key => document.querySelector(`[data-view="${key}"]`);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+  // Times are local with the zone's short name (2026-09-27 19:56 PDT); the data keeps the UTC ISO string.
+  const pad = n => String(n).padStart(2, '0');
+  const zoneOf = d => { try { return (new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(d).find(p => p.type === 'timeZoneName') || {}).value || ''; } catch (e) { return ''; } };
+  const hhmm = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const clockDate = sec => new Date(Date.parse(RUN.clock_base) + sec * 1000);
   const fmt = {
-    usd: v => v == null ? 'n/a' : (v < 0.1 ? '$' + v.toFixed(3) : '$' + v.toFixed(2)),
+    usd: v => {  // an exact zero is $0; above zero and under a cent, one significant digit ($0.0004, never $0.000)
+      if (v == null || !Number.isFinite(v)) return 'n/a';
+      if (v === 0) return '$0';
+      if (v < 0.01) {
+        let digits = Math.max(2, -Math.floor(Math.log10(v)));
+        const small = Number(v.toFixed(digits));
+        if (small >= 10 ** (1 - digits)) digits -= 1;  // 0.00096 rounds up to $0.001, still one digit
+        if (small < 0.01) return '$' + small.toFixed(digits);
+        v = small;  // 0.0096 rounds up to a cent
+      }
+      return '$' + v.toFixed(v < 0.1 ? 3 : 2);
+    },
     dur: s => {
       if (s == null) return 'n/a'; s = Math.round(s);
       if (s < 60) return s + 's';
@@ -72,13 +99,17 @@ const App = (() => {
     },
     tok: v => v == null ? 'n/a' : v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : String(v),
     int: v => v == null ? 'n/a' : Number(v).toLocaleString('en-US'),
-    clock: sec => RUN.start ? new Date(Date.parse(RUN.clock_base) + sec * 1000).toISOString().slice(11, 16) + 'Z' : '+' + fmt.hm(sec),
+    // Axis ticks: the zone is named on the run's start, the first tick, and in each graph's title.
+    clock: sec => { if (!RUN.start) return '+' + fmt.hm(sec); const d = clockDate(sec); return sec === 0 ? `${hhmm(d)} ${zoneOf(d)}`.trim() : hhmm(d); },
+    at: sec => { if (!RUN.start) return '+' + fmt.hm(sec); const d = clockDate(sec); return `${hhmm(d)} ${zoneOf(d)}`.trim(); },
     hm: sec => { const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60); return h + 'h' + String(m).padStart(2, '0'); },
-    ts: iso => iso ? iso.replace('T', ' ').replace(/\.\d+/, '').replace('Z', ' UTC') : 'n/a',
+    ts: iso => { const t = iso ? Date.parse(iso) : null; if (!Number.isFinite(t)) return iso || 'n/a'; const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hhmm(d)} ${zoneOf(d)}`.trim(); },
     tier: value => value || 'unknown',
     tokenLabel: key => key.replaceAll('_', ' '),
   };
-  const tokenDetail = n => `${n.tokComplete ? 'complete total' : n.tok_record ? 'total unavailable; incomplete' : 'no token record; total unavailable'}; ` + TOKEN_STREAMS.map(key => `${fmt.tokenLabel(key)} ${fmt.int(n.tok[key])}`).join(' / ');
+  const tokenGap = n => n.tokMissing.map(fmt.tokenLabel).join(', ') + ' not recorded';
+  const tokenCell = n => n.tokComplete ? fmt.tok(n.tokTotal) : n.tokKnown != null ? '≥' + fmt.tok(n.tokKnown) : 'n/a';
+  const tokenDetail = n => `${n.tokComplete ? 'complete total' : n.tokKnown != null ? `at least ${fmt.int(n.tokKnown)} measured; ${tokenGap(n)}` : n.tok_record ? 'total unavailable; incomplete' : 'no token record; total unavailable'}; ` + TOKEN_STREAMS.map(key => `${fmt.tokenLabel(key)} ${fmt.int(n.tok[key])}`).join(' / ');
   const attemptValue = (field, value, html) => `<span data-attempt-field="${field}" data-attempt-value="${esc(JSON.stringify(value))}">${html}</span>`;
   const sourceAttempt = n => ({
     id: n.id, harness: n.harness, source: n.src, session_path: n.session,
@@ -144,15 +175,15 @@ const App = (() => {
 
   function renderAccounting() {
     const entries = Object.entries(RUN.accounting || {});
-    $('accounting').innerHTML = entries.length
-      ? '<b>Viewer accounting:</b> ' + entries.map(([key, value]) => `${esc(key.replaceAll('_', ' '))}: ${fmt.int(value)}`).join('; ')
-      : '<b>Viewer accounting:</b> no unavailable, excluded, or shortened values.';
+    $('accounting').innerHTML = `<summary>What this page could not show</summary><div class="accbody">` + (entries.length
+      ? 'Values missing from the session records, left out, or shortened for display: ' + entries.map(([key, value]) => `${esc(key.replaceAll('_', ' '))}: ${fmt.int(value)}`).join('; ')
+      : 'Nothing: no value is missing, left out or shortened.') + '</div>';
   }
 
   function renderFilters() {
     const host = $('filters');
     let html = `<div class="grp"><span class="gl">role</span>` + ROLES.map(role =>
-      `<span class="chip${state.roles.has(role) ? '' : ' off'}" data-role="${esc(role)}"><i class="dot" style="background:${ROLE_COLOR[role] || colorFallback}"></i>${esc(role)} <span class="m" style="color:var(--muted)">${N.filter(n => n.role === role).length}</span></span>`).join('') + `</div>`;
+      `<span class="chip${state.roles.has(role) ? '' : ' off'}" data-role="${esc(role)}"><i class="dot" style="background:${ROLE_COLOR[role] || colorFallback}"></i>${esc(roleName(role))} <span class="m" style="color:var(--muted)">${N.filter(n => n.role === role).length}</span></span>`).join('') + `</div>`;
     html += `<div class="grp"><span class="gl">model</span><select data-model-filter><option value="all">all models</option>` + MODELS.map(model => `<option value="${esc(model)}"${state.model === model ? ' selected' : ''}>${esc(model)}</option>`).join('') + `</select></div>`;
     html += `<div class="grp"><button data-reset>reset</button></div>`;
     host.innerHTML = html;
@@ -177,12 +208,12 @@ const App = (() => {
   }
 
   const COLS = [
-    { key: 'start', label: 'attempt', cell: n => `<span class="lbl"><i class="dot" style="background:${color(n, state.views.swim.colorBy)}"></i>${esc(n.lbl)}</span><span class="sub" title="${esc(n.aid)}">${esc(n.title)}</span>`, sort: n => n.t0Plot },
-    { key: 'role', label: 'role', cell: n => `${esc(n.role)}<span class="tier">${esc(fmt.tier(n.rtd))}</span>`, sort: n => n.role },
+    { key: 'start', label: 'attempt', cell: n => `<span class="lbl" title="${esc(n.aid)}"><i class="dot" style="background:${color(n, state.views.swim.colorBy)}"></i>${esc(n.lbl)}</span><span class="sub" title="${esc(n.aid)}">${esc(n.title)}</span>`, sort: n => n.t0Plot },
+    { key: 'role', label: 'role', cell: n => n.role === 'unlabeled' ? '<span class="m">role not known</span>' : `${esc(n.role)}<span class="tier">${esc(fmt.tier(n.rtd))}</span>`, sort: n => n.role },
     { key: 'model', label: 'model', cell: n => esc(n.model || 'n/a'), sort: n => n.modelKey },
     { key: 'tier', label: 'tier', cell: n => esc(n.mt || 'n/a'), sort: n => n.mt || '' },
     { key: 'usd', label: 'cost', num: true, cell: n => fmt.usd(n.usd), sort: n => n.usd == null ? -1 : n.usd },
-    { key: 'tok', label: 'tokens', num: true, cell: n => `<span title="${esc(tokenDetail(n))}">${fmt.tok(n.tokTotal)}</span>`, sort: n => n.tokTotal == null ? -1 : n.tokTotal },
+    { key: 'tok', label: 'tokens', num: true, cell: n => `<span title="${esc(tokenDetail(n))}">${tokenCell(n)}</span>`, sort: n => n.tokTotal != null ? n.tokTotal : n.tokKnown != null ? n.tokKnown : -1 },
     { key: 'dur', label: 'duration', num: true, cell: n => fmt.dur(n.dur), sort: n => n.dur == null ? -1 : n.dur },
     { key: 'status', label: 'status', cell: n => n.status == null ? 'n/a' : esc(n.status), sort: n => n.status || '' },
     { key: 'nw', label: 'artifacts written', num: true, cell: n => n.written.length, sort: n => n.written.length },
@@ -220,14 +251,14 @@ const App = (() => {
     tip.style.left = Math.max(4, left) + 'px'; tip.style.top = Math.max(4, top) + 'px';
   }
   const hideTip = () => { tip.hidden = true; };
-  const nodeTip = n => `<b>${esc(n.lbl)}</b> <span class="m">${esc(n.title)}</span><br>${esc(n.role)} <span class="m">(${esc(fmt.tier(n.rtd))})</span> on ${esc(n.model || 'n/a')} <span class="m">(${esc(fmt.tier(n.mt))})</span><br>${fmt.usd(n.usd)} <span class="m">/</span> ${n.untimed ? 'start unavailable' : 'start ' + fmt.clock(n.t0)} <span class="m">/</span> duration ${fmt.dur(n.dur)} <span class="m">/</span> ${n.tokComplete ? fmt.tok(n.tokTotal) + ' tokens (complete)' : 'token total unavailable'}<br><span class="m">wrote ${n.written.length}, read ${n.read.length} artifacts</span>`;
+  const nodeTip = n => `<b>${esc(n.lbl)}</b> <span class="m">${esc(n.title)}</span><br>${n.role === 'unlabeled' ? 'role not known' : `${esc(n.role)} <span class="m">(${esc(fmt.tier(n.rtd))})</span>`} on ${esc(n.model || 'n/a')} <span class="m">(${esc(fmt.tier(n.mt))})</span><br>${fmt.usd(n.usd)} <span class="m">/</span> ${n.untimed ? 'start unavailable' : 'start ' + fmt.at(n.t0)} <span class="m">/</span> duration ${fmt.dur(n.dur)} <span class="m">/</span> ${n.tokComplete ? fmt.tok(n.tokTotal) + ' tokens (complete)' : n.tokKnown != null ? 'at least ' + fmt.tok(n.tokKnown) + ' tokens (' + esc(tokenGap(n)) + ')' : 'token total unavailable'}<br><span class="m">wrote ${n.written.length}, read ${n.read.length} artifacts</span>`;
   const missingRefs = items => items.map(item => `${esc(item.id || 'unavailable id')} (${esc(item.reason.replaceAll('_', ' '))})`).join(', ');
   const artTip = a => `<b>${esc(a.path)}</b><br>${esc(a.kind || 'unknown kind')} <span class="m">(${esc(fmt.tier(a.kt))})</span>${a.lang ? ' · ' + esc(a.lang) : ''}<br>written by ${a.w.map(i => esc(N[i].lbl)).join(', ') || 'nobody in scope'}${a.wm.length ? '; unresolved: ' + missingRefs(a.wm) : ''}<br>read by ${a.c.map(i => esc(N[i].lbl)).join(', ') || 'nobody'}${a.cm.length ? '; unresolved: ' + missingRefs(a.cm) : ''}<br><span class="m">${fmt.int(a.nw)} writes, ${fmt.int(a.nr)} reads${a.t != null ? ', first write ' + fmt.clock(a.t) : ', first write unavailable'}</span>`;
   const edgeTip = e => { const source = N[e[0]], target = N[e[1]]; if (e[2] === 'artifact') { const artifact = A[e[4]]; return `<b>handoff</b> ${esc(source.lbl)} → ${esc(target.lbl)} <span class="m">(${esc(e[3])})</span><br>${esc(artifact ? artifact.path : 'artifact unavailable')}<br><span class="m">${e[5] == null ? 'read lag unavailable' : 'read ' + fmt.dur(e[5]) + ' after the write'}</span>`; } return `<b>${esc(e[2])}</b> ${esc(source.lbl)} → ${esc(target.lbl)} <span class="m">(${esc(e[3])})</span>` + (e[2] === 'launch' ? `<br><span class="m">${e[5] == null ? 'launch lag unavailable' : 'session began ' + e[5] + ' s after the launch command'}</span>` : '') + (e[2] === 'spawn' && target.spawn ? `<br><span class="m">${esc(target.spawn.description || 'description unavailable')}</span>` : ''); };
   const edgeListTip = (keys, el) => {
     const node = N[+el.dataset.connectionNode], artifact = A[+el.dataset.alink], kind = el.dataset.connectionKind;
     const connection = `<b>artifact ${esc(kind)}</b> ${esc(node.lbl)} ${kind === 'write' ? '→' : '←'} ${esc(artifact.path)}`;
-    return connection + (keys.length ? '<hr>' + keys.map(key => edgeTip(E[key])).join('<hr>') : '<br><span class="m">no matching handoff edge; counted in viewer accounting</span>');
+    return connection + (keys.length ? '<hr>' + keys.map(key => edgeTip(E[key])).join('<hr>') : '<br><span class="m">no matching handoff edge; counted under what this page could not show</span>');
   };
 
   function related(focus) {
@@ -269,7 +300,7 @@ const App = (() => {
 <dt>producer</dt><dd>${Number.isInteger(a.prod) ? `<span class="link" data-node-link="${a.prod}">${esc(N[a.prod].lbl)}</span>` : a.pm ? `${esc(a.pm.id || 'unavailable id')} <span class="evid">(${esc(a.pm.reason.replaceAll('_', ' '))})</span>` : 'none recorded'}</dd>
 <dt>writers</dt><dd>${participantList(a.w, a.wm, 'none in scope')}</dd>
 <dt>consumers</dt><dd>${participantList(a.c, a.cm, 'none')}</dd>
-<dt>first write</dt><dd>${a.t != null ? fmt.clock(a.t) + ' (' + fmt.hm(a.t) + ' into the run)' : 'unavailable'}</dd>
+<dt>first write</dt><dd>${a.t != null ? fmt.at(a.t) + ' (' + fmt.hm(a.t) + ' into the run)' : 'unavailable'}</dd>
 <dt>writes / reads</dt><dd>${fmt.int(a.nw)} / ${fmt.int(a.nr)}</dd>
 <dt>language</dt><dd>${esc(a.lang || 'unknown')}</dd>
 <dt>size</dt><dd>${a.bytes != null ? fmt.int(a.bytes) + ' bytes' : 'not recorded'}${a.la != null || a.lr != null ? `, +${fmt.int(a.la)}/-${fmt.int(a.lr)} lines` : ''}</dd>
@@ -277,16 +308,16 @@ ${a.hint ? `<dt>hint</dt><dd class="mono">${esc(a.hint)}</dd>` : ''}</dl>`;
     }
     const n = N[focus.i], parent = Number.isInteger(n.parent) ? N[n.parent] : null;
     const parentText = parent ? `<span class="link" data-node-link="${parent.i}">${esc(parent.lbl)}</span> ` : n.parent_ref ? `unresolved parent ${esc(n.parent_ref)} <span class="evid">(${esc(n.parent_reason.replaceAll('_', ' '))})</span> ` : 'none in scope ';
-    return `<button class="x" data-close>×</button><h3><i class="dot" style="background:${color(n, state.views[state.cardView].colorBy)}"></i>${esc(n.lbl)} <span class="evid">${esc(n.role)}</span></h3><div class="ttl">${esc(n.title)}</div><dl>
+    return `<button class="x" data-close>×</button><h3><i class="dot" style="background:${color(n, state.views[state.cardView].colorBy)}"></i>${esc(n.lbl)} <span class="evid">${esc(roleName(n.role))}</span></h3><div class="ttl">${esc(n.title)}</div><dl>
 <dt>attempt id</dt><dd class="mono">${attemptValue('id', n.id, esc(n.aid))}</dd>
-<dt>role</dt><dd>${attemptValue('role', n.role_source, esc(n.role))} <span class="evid">${attemptValue('role_tier', n.rt, esc(fmt.tier(n.rt)))}: ${attemptValue('role_evidence', n.re, esc(n.re || 'evidence unavailable'))}</span></dd>
+<dt>role</dt><dd>${attemptValue('role', n.role_source, esc(roleName(n.role)))} <span class="evid">${attemptValue('role_tier', n.rt, esc(n.role === 'unlabeled' && n.rt == null ? 'no role was assigned' : fmt.tier(n.rt)))}: ${attemptValue('role_evidence', n.re, esc(n.re || 'evidence unavailable'))}</span></dd>
 <dt>model</dt><dd>${attemptValue('model', n.model, esc(n.model || 'n/a'))} <span class="evid">${attemptValue('model_tier', n.mt, esc(fmt.tier(n.mt)))}, effort ${attemptValue('effort', n.effort, esc(n.effort || 'n/a'))}</span></dd>
 <dt>harness</dt><dd>${attemptValue('harness', n.harness, esc(n.harness || 'n/a'))} <span class="evid">source ${attemptValue('source', n.src, esc(n.src || 'n/a'))}, workspace ${attemptValue('workspace', n.ws, esc(n.ws || 'n/a'))}</span></dd>
 <dt>phase</dt><dd>${attemptValue('phase', n.phase, esc(n.phase || 'n/a'))} <span class="evid">${attemptValue('phase_tier', n.pt, esc(fmt.tier(n.pt)))}</span></dd>
 <dt>started</dt><dd>${attemptValue('ts', n.ts, n.untimed ? 'no timestamp in the session record' : fmt.ts(n.ts) + ` <span class="evid">(${fmt.hm(n.t0)} into the run)</span>`)}</dd>
-<dt>duration</dt><dd>${attemptValue('wall_s', n.dur, n.dur == null ? 'n/a' : fmt.dur(n.dur) + (n.untimed ? ' <span class="evid">(end unavailable without a start)</span>' : ` <span class="evid">ended ${fmt.clock(n.t1)}</span>`))}</dd>
+<dt>duration</dt><dd>${attemptValue('wall_s', n.dur, n.dur == null ? 'n/a' : fmt.dur(n.dur) + (n.untimed ? ' <span class="evid">(end unavailable without a start)</span>' : ` <span class="evid">ended ${fmt.at(n.t1)}</span>`))}</dd>
 <dt>cost</dt><dd>${attemptValue('usd', n.usd, fmt.usd(n.usd) + (n.usd == null ? ' <span class="evid">(cost unavailable)</span>' : ''))}</dd>
-<dt>tokens</dt><dd>${attemptValue('tokens', n.tok_record ? n.tok : null, `${n.tokComplete ? fmt.int(n.tokTotal) + ' <span class="evid">(complete total)</span>' : n.tok_record ? 'total unavailable <span class="evid">(incomplete)</span>' : 'no token record; total unavailable'}<br><span class="evid">${TOKEN_STREAMS.map(key => `<span data-token-stream="${esc(key)}" data-token-value="${esc(JSON.stringify(n.tok[key]))}">${esc(fmt.tokenLabel(key))} ${fmt.int(n.tok[key])}</span>`).join(', ')}</span>`)}</dd>
+<dt>tokens</dt><dd>${attemptValue('tokens', n.tok_record ? n.tok : null, `${n.tokComplete ? fmt.int(n.tokTotal) + ' <span class="evid">(complete total)</span>' : n.tokKnown != null ? `at least ${fmt.int(n.tokKnown)} measured <span class="evid">(total unavailable: ${esc(tokenGap(n))})</span>` : n.tok_record ? 'total unavailable <span class="evid">(incomplete)</span>' : 'no token record; total unavailable'}<br><span class="evid">${TOKEN_STREAMS.map(key => `<span data-token-stream="${esc(key)}" data-token-value="${esc(JSON.stringify(n.tok[key]))}">${esc(fmt.tokenLabel(key))} ${fmt.int(n.tok[key])}</span>`).join(', ')}</span>`)}</dd>
 <dt>status</dt><dd>${n.status == null ? 'n/a <span class="evid">(status unavailable; the graph model carries no acceptance signal)</span>' : esc(n.status)}</dd>
 <dt>origin</dt><dd>${attemptValue('parent', n.parent_source, `<span class="evid">parent:</span> ${parentText}`)}<br>${attemptValue('spawn', n.spawn, recordDetail('spawn', n.spawn))}<br>${attemptValue('launched_by', n.launch, recordDetail('launched_by', n.launch))}</dd>
 <dt>children</dt><dd>${n.children.length ? n.children.length + ' spawned or launched' : 'none'}</dd>
@@ -357,7 +388,7 @@ ${a.hint ? `<dt>hint</dt><dd class="mono">${esc(a.hint)}</dd>` : ''}</dl>`;
   };
   function renderLegend(key, vis) {
     const view = state.views[key], layout = layouts.get(key), items = [];
-    if (view.colorBy === 'role') ROLES.filter(role => vis.some(i => N[i].role === role)).forEach(role => items.push(`<span class="it"><i class="sw" style="background:${ROLE_COLOR[role] || colorFallback}"></i>${esc(role)}</span>`));
+    if (view.colorBy === 'role') ROLES.filter(role => vis.some(i => N[i].role === role)).forEach(role => items.push(`<span class="it"><i class="sw" style="background:${ROLE_COLOR[role] || colorFallback}"></i>${esc(roleName(role))}</span>`));
     else MODELS.filter(model => vis.some(i => N[i].modelKey === model)).forEach(model => items.push(`<span class="it"><i class="sw" style="background:${MODEL_COLOR[model] || colorFallback}"></i>${esc(model)}</span>`));
     RUN.edge_kinds.forEach(kind => { const edge = EDGE_LEGEND[kind] || { dash: '', col: colorFallback, label: kind }; items.push(`<span class="it">${line(edge.dash, edge.col)} ${esc(edge.label)}</span>`); });
     if (layout.artifactMode === 'always' || view.artifacts) items.push(`<span class="it"><i class="sw sq" style="background:#f0efec;border:1px solid #898781"></i>artifact</span>`);
@@ -405,12 +436,12 @@ ${a.hint ? `<dt>hint</dt><dd class="mono">${esc(a.hint)}</dd>` : ''}</dl>`;
   function renderFoot() {
     const kinds = RUN.edges_by_kind_tier || {};
     const unpriced = N.filter(n => n.usd == null).length;
-    $('foot').innerHTML = `Data: ${esc(RUN.source)}. Workspace ${esc(RUN.workspace)}, ${fmt.ts(RUN.start)} to ${fmt.ts(RUN.end)}. ${N.length} attempts, ${E.length} of ${RUN.n_source_edges} supplied edges shown (${Object.entries(kinds).map(([key, value]) => value + ' ' + key.replace('/', ' ')).join(', ')}), ${RUN.n_artifacts} artifacts of which ${RUN.n_consumed} were read by another attempt. Known cost ${fmt.usd(N.reduce((sum, n) => sum + (n.usd == null ? 0 : n.usd), 0))} with ${unpriced} unpriced attempt. Attempt status is unavailable because the graph model carries no acceptance signal. Attempt labels (dev-07, rev-12) are display names assigned in start order; the attempt id column carries the mapped attempt id. Edge tiers: verified means both ends are present in the logs, heuristic means inferred from timing or text. Self-contained page, no external assets.`;
+    $('foot').innerHTML = `Data: ${esc(RUN.source)}. Workspace ${esc(RUN.workspace)}, ${fmt.ts(RUN.start)} to ${fmt.ts(RUN.end)}. ${N.length} attempts, ${E.length} of ${RUN.n_source_edges} supplied edges shown (${Object.entries(kinds).map(([key, value]) => value + ' ' + key.replace('/', ' ')).join(', ')}), ${RUN.n_artifacts} artifacts of which ${RUN.n_consumed} were read by another attempt. Known cost ${fmt.usd(N.reduce((sum, n) => sum + (n.usd == null ? 0 : n.usd), 0))} with ${unpriced} unpriced attempt. Attempt status is unavailable because the graph model carries no acceptance signal. Attempt names (dev-07, rev-12, claude-03) are display names assigned in start order, from the role or, for an attempt with no known role, from the tool that ran it; hover a name for the mapped attempt id. Edge tiers: verified means both ends are present in the logs, heuristic means inferred from timing or text. Self-contained page, no external assets.`;
   }
 
-  const api = { N, E, A, RUN, ROLES, MODELS, ROLE_COLOR, MODEL_COLOR, MAX_USD, fmt, esc, color, dashed, radius, svg, text, curve, vcurve, arc, timeTicks, edgeClass, nodeClass, edgeVisible, artVisible };
+  const api = { N, E, A, RUN, ROLES, MODELS, ROLE_COLOR, MODEL_COLOR, MAX_USD, fmt, esc, roleName, color, dashed, radius, svg, text, curve, vcurve, arc, timeTicks, edgeClass, nodeClass, edgeVisible, artVisible };
   function init(items) {
-    items.forEach(layout => { layouts.set(layout.key, layout); state.views[layout.key] = viewDefaults(layout); const sec = section(layout.key); sec.querySelector('[data-idea]').textContent = layout.idea; sec.querySelector('[data-graph-title]').textContent = layout.graphTitle; renderViewControls(layout.key); sec.querySelector('[data-controls]').addEventListener('change', ev => viewControlEvent(ev, layout.key)); const graph = sec.querySelector('[data-graph]'); graph.addEventListener('mousemove', ev => graphEvent(ev, layout.key)); graph.addEventListener('mouseleave', ev => graphEvent(ev, layout.key)); graph.addEventListener('click', ev => graphEvent(ev, layout.key)); });
+    items.forEach(layout => { layouts.set(layout.key, layout); state.views[layout.key] = viewDefaults(layout); const sec = section(layout.key); sec.querySelector('[data-idea]').textContent = layout.idea; sec.querySelector('[data-graph-title]').textContent = String(layout.graphTitle).replace(' (UTC)', RUN.start ? ` (local time, ${zoneOf(new Date(Date.parse(RUN.start)))})` : ''); renderViewControls(layout.key); sec.querySelector('[data-controls]').addEventListener('change', ev => viewControlEvent(ev, layout.key)); const graph = sec.querySelector('[data-graph]'); graph.addEventListener('mousemove', ev => graphEvent(ev, layout.key)); graph.addEventListener('mouseleave', ev => graphEvent(ev, layout.key)); graph.addEventListener('click', ev => graphEvent(ev, layout.key)); });
     $('filters').addEventListener('click', filterEvent); $('filters').addEventListener('change', filterEvent);
     $('table').addEventListener('click', tableEvent); $('table').addEventListener('mouseover', tableEvent); $('table').addEventListener('mouseleave', () => hover(null));
     $('card').addEventListener('click', ev => { if (ev.target.closest('[data-close]')) { select(null); return; } const node = ev.target.closest('[data-node-link]'); if (node) { select({ t: 'n', i: +node.dataset.nodeLink }, state.cardView, true); return; } const artifact = ev.target.closest('[data-art-link]'); if (artifact) { const layout = layouts.get(state.cardView), view = state.views[state.cardView]; if (layout.artifactMode !== 'always' && !view.artifacts) { view.artifacts = true; renderViewControls(state.cardView); renderView(state.cardView); } select({ t: 'a', i: +artifact.dataset.artLink }, state.cardView, true); } });

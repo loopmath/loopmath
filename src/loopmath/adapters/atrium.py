@@ -470,7 +470,7 @@ class AtriumAdapter(Adapter):
         return {
             "ocp": "0.2",
             "producer": {
-                "name": "dagr-adapter-atrium",
+                "name": "loopmath/adapter-atrium",
                 "framework": "atrium",
                 "source_contract": "atrium/timeline+task-run-segments",
                 "capabilities": {

@@ -279,7 +279,7 @@ def test_the_page_answers_the_five_questions_from_the_data(home, tmp_path, probe
     data = _view(home)
     r = _page(tmp_path, probe, data, "results-rec")
     assert r["sections"] == ["q1", "q2", "q3", "q4", "q5"] and r["rail"] == 5
-    assert r["h1"] == f"What your runs say about feature tasks in {REPO}"
+    assert r["h1"] == f"What the fit predicts for feature tasks in {REPO}"
     assert "heldout_perf >= 2400" in r["lede"] and "rec_a" in r["lede"] and "6 of your runs" in r["lede"]
     assert r["heads"][2] == "chance to reach 2,400" and r["heads"][4] == "per accepted result"
     res = data["results"]["workflows"]
@@ -299,9 +299,9 @@ def test_the_page_answers_the_five_questions_from_the_data(home, tmp_path, probe
     assert "The cheapest per accepted result is" in r["a1"] and "wide" in r["a1"]
     assert [m["model"] for m in r["mine"]] == ["gpt-5.6-luna", "gpt-5.6-sol"] and r["never"] == ["claude-opus-5-5"]
     assert all(m["efforts"][0] == "low" and m["efforts"][-1] == "max" for m in r["mine"])
-    assert r["panels"] == 2 and "cheapest mean cost per heldout perf level" in r["a3"]
+    assert r["panels"] == 2 and r["a3"].startswith("The cheapest workflow whose mean heldout perf reaches ")
     assert r["bars"][0].startswith("heldout perf (target)") and "6 yours, 0 shipped" in r["bars"][0]
-    assert "6 of your runs alone" in r["a4"] and "not computed" in r["sens"]
+    assert "heldout perf estimate rests on 6 rows from your runs alone" in r["a4"] and "not computed" in r["sens"]
     assert "fit_20260923160000" in r["fit"] and "sweep 900" in r["fit"] and "6 shipped copy of a stored run" in r["fit"]
     assert r["runDots"] == 6 and r["details"] == ["d-wf", "d-never", "d-levels", "d-data"]
     o = r["opened"]

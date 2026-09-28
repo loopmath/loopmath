@@ -267,13 +267,23 @@ def test_empty_store(tmp_path, capsys):
     assert "loopmath run import FILE.ocp.json" in lines[1] and not (tmp_path / "nothing").exists()
 
 
-def test_filters_that_match_nothing_are_named(store, capsys):
+@pytest.fixture
+def pacific(monkeypatch):
+    """Local time on the US Pacific coast, so times shown in local time with a zone read the same on any machine."""
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_filters_that_match_nothing_are_named(store, capsys, pacific):
     code = main(["runs", "--home", str(store), "--type", "nope", "--repo", "x"])
     lines = capsys.readouterr().out.splitlines()
     assert code == 0 and lines == ["No runs match --type nope, --repo x.",
                                    "Run `loopmath runs` without filters to see every recorded run."]
     data = runs.build_view(store, {"since": "1d"}, now=datetime.fromisoformat("2030-01-01T12:00:00-07:00"))
-    assert runs.summary_lines(data)[0] == "No runs match --since 1d (since 2029-12-31 12:00)."
+    assert runs.summary_lines(data)[0] == "No runs match --since 1d (since 2029-12-31 11:00 PST)."
 
 
 def test_the_table_shows_whole_run_ids_that_run_accepts(tmp_path, v03, capsys):

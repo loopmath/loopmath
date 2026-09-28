@@ -22,7 +22,9 @@ html, body { margin: 0; padding: 0; background: var(--plane); color: var(--ink);
 .stat span { font-size: 12px; color: var(--muted); }
 .filters, .viewcontrols { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 10px; background: var(--surface); }
 .filters { border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; }
-.accounting { margin: -2px 0 10px; padding: 7px 10px; border: 1px solid #d7c693; border-radius: 7px; background: #fff9e8; color: var(--ink2); font-size: 12px; }
+.accounting { margin: -2px 0 10px; color: var(--muted); font-size: 12px; }
+.accounting > summary { cursor: pointer; width: max-content; }
+.accounting .accbody { margin-top: 4px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--ink2); }
 .viewcontrols { border-bottom: 1px solid var(--border); }
 .filters .grp, .viewcontrols .grp { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .filters .grp > .gl, .viewcontrols .grp > .gl { font-size: 12px; color: var(--muted); margin-right: 2px; }
@@ -40,7 +42,7 @@ label.cb input { width: 16px; height: 16px; }
 .tablescroll { max-height: 38vh; overflow: auto; }
 table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
 th, td { padding: 5px 10px; text-align: left; border-bottom: 1px solid var(--grid); white-space: nowrap; }
-th { position: sticky; top: 0; background: var(--surface); font-size: 12px; font-weight: 600; color: var(--ink2); cursor: pointer; z-index: 1; }
+th { position: sticky; top: 0; background: var(--surface); font-size: 12px; font-weight: 600; color: var(--ink2); cursor: pointer; z-index: 1; white-space: normal; }
 th.num, td.num { text-align: right; }
 th .arrow { color: var(--muted); font-size: 10px; margin-left: 3px; }
 tr[data-i] { cursor: pointer; }
@@ -51,6 +53,7 @@ tr.dim td { opacity: 0.45; }
 td .lbl { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
 td .lbl .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
 td .sub { display: block; font-size: 11.5px; color: var(--muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-weight: 400; }
+@media (max-width: 1100px) { td .sub { max-width: 220px; } th, td { padding: 5px 7px; } }
 td .tier { color: var(--muted); font-size: 11px; margin-left: 4px; }
 .viewsec { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
 .viewsec > summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px; font-weight: 600; list-style-position: inside; }

@@ -30,12 +30,15 @@ def test_most_common_wins_and_type_level_counts_every_repo():
     assert order[0] == ("bug_fix", TYPE_LEVEL)
 
 
-def test_tie_goes_to_most_recent():
+def test_a_tie_keeps_the_first_to_reach_the_count():
+    """0.2.4 (P2-12, P3-28): one run of another workflow never switches the usual."""
     rows = [
         _row("docs", "r", "cfg_old", "2026-09-01T10:00:00-07:00"),
         _row("docs", "r", "cfg_new", "2026-09-09T10:00:00-07:00"),
     ]
-    assert {p.repo: p.config for p in usual_picks(rows)} == {"r": "cfg_new", TYPE_LEVEL: "cfg_new"}
+    assert {p.repo: p.config for p in usual_picks(rows)} == {"r": "cfg_old", TYPE_LEVEL: "cfg_old"}
+    rows += [_row("docs", "r", "cfg_new", "2026-09-10T10:00:00-07:00"), _row("docs", "r", "cfg_old", "2026-09-11T10:00:00-07:00")]
+    assert {p.repo: p.config for p in usual_picks(rows)} == {"r": "cfg_new", TYPE_LEVEL: "cfg_new"}  # cfg_new reached 2 first
 
 
 class FakeConfig:

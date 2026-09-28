@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from store_helpers import EXPLORE_CFG, REC_ID, USUAL_CFG, cli, fake_settle, finished_doc, install_rec, task, usual_config
 
+from loopmath.output import fmt_time
 from loopmath.store import Store
 from loopmath.store import finish as finish_mod
 from loopmath.store import fit_state, fitjob
@@ -186,11 +187,11 @@ def test_an_end_before_the_start_exits_2(capsys, home):
                          "--ended-at", "2026-09-23T19:00:00-07:00", "--json")
     assert code == 2 and out["ok"] is False
     assert "--ended-at 2026-09-23T19:00:00-07:00 is before attempt " + att["attempt"] in err
-    assert "started (2026-09-23T19:00:25-07:00)" in err
+    assert f"started ({fmt_time('2026-09-23T19:00:25-07:00', seconds=True)})" in err  # local time, with its zone
     assert Store(home).run_doc(run)["attempts"][0]["status"] != "done"  # nothing written
     code, out, err = cli(capsys, home, "run", "attempt", "--run", run, "--end", att["attempt"], "--status", "done",
                          "--ended-at", "2026-09-23T19:00:25-07:00", "--json")
-    assert code == 0 and out["ended_at"] == "2026-09-23T19:00:25-07:00", err
+    assert code == 0 and out["ended_at"] == "2026-09-24T02:00:25Z", err  # stored in UTC (0.2.4)
 
 
 def test_full_flow_finish_costs_receipt_and_refit(capsys, home, spawned):
@@ -381,8 +382,8 @@ def test_run_end_covers_events_after_the_last_attempt():
     doc["events"] = [{"at": "2026-09-23T10:00:00-07:00", "type": "attempt_settled"},
                      {"at": "2026-09-23T10:05:00-07:00", "type": "artifact_written"}]
     finish_mod._close(doc, "2026-09-23T11:00:00-07:00")
-    assert doc["run"]["ended_at"] == "2026-09-23T10:05:00-07:00"
-    assert doc["events"][-1] == {"at": "2026-09-23T10:05:00-07:00", "type": "run_finished"}
+    assert doc["run"]["ended_at"] == "2026-09-23T17:05:00Z"  # stored in UTC (0.2.4)
+    assert doc["events"][-1] == {"at": "2026-09-23T17:05:00Z", "type": "run_finished"}
 
 
 def test_a_verdict_recorded_before_finish_is_not_late(capsys, home):
@@ -401,7 +402,7 @@ def test_a_verdict_recorded_before_finish_is_not_late(capsys, home):
     code, _, err = cli(capsys, home, "run", "finish", "--run", run, "--no-fit")
     assert code == 0, err
     doc = Store(home).run_doc(run)
-    assert doc["run"]["ended_at"] == "2099-01-01T10:30:00-08:00"
+    assert doc["run"]["ended_at"] == "2099-01-01T18:30:00Z"  # stored in UTC (0.2.4)
     finished = next(e for e in doc["events"] if e["type"] == "run_finished")
     assert parse_ts(finished["at"]) == parse_ts(doc["run"]["ended_at"])
     shown = detail_from_doc(doc, doc["run"]["signals"], {"run": run})["signals"]
@@ -495,7 +496,7 @@ def test_token_only_attempt_is_unknown_dollars_not_zero(capsys, home, monkeypatc
     assert rep["exploration"]["runs"][0]["usd"] is None and rep["exploration"]["runs_not_costed"] == 1
     code, _, err = cli(capsys, home, "report", "--html", str(home / "r.html"))
     assert code == 0, err
-    assert "unknown ($0.00 known)" in (home / "r.html").read_text()
+    assert "unknown ($0 known)" in (home / "r.html").read_text()  # an exact zero is $0 (0.2.4)
 
 
 def test_known_and_unknown_dollars_mixed(capsys, home, monkeypatch):

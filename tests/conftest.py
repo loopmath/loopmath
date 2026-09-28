@@ -5,9 +5,11 @@ keeps the suite out of the user's store.
 Shapes mirror parser-spec.md. No real corpus data appears here.
 """
 
+import atexit
 import json
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -50,7 +52,15 @@ NEEDS_PRIVATE_PATH = {
 # test. The guard test (tests/test_home_guard.py) runs last and fails if any
 # path under ~/.loopmath appeared, changed or went away during the run; it
 # compares listings with mtimes and sizes, and never writes or deletes there.
+#
+# pytensor compiles in the session's cache folder, as `fit --full` does in a
+# store's cache (fit_bayes.use_store_compiledir sets PYTENSOR_FLAGS before
+# pytensor is imported), so the PyMC tests never build in ~/.pytensor. Its exit
+# hook writes a lock file in that folder after the session ends, so the folder
+# is removed at interpreter exit too, after that hook: atexit runs the hooks
+# registered last first, and pytensor registers its hook when it is imported.
 ISOLATED_VARS = ("LOOPMATH_HOME", "LOOPMATH_CACHE_DIR")
+SAVED_VARS = ISOLATED_VARS + ("PYTENSOR_FLAGS",)
 USER_STORE = Path.home() / ".loopmath"
 HOME_GUARD_TEST = "tests/test_home_guard.py::"
 _USER_STORE_BEFORE = pytest.StashKey[dict]()
@@ -81,10 +91,14 @@ def user_store_listing(root: Path = USER_STORE) -> dict[str, tuple[int, int]]:
 def pytest_configure(config):
     config.stash[_USER_STORE_BEFORE] = user_store_listing()
     folder = tempfile.mkdtemp(prefix="loopmath-tests-")
-    saved = {name: os.environ.get(name) for name in ISOLATED_VARS}
+    saved = {name: os.environ.get(name) for name in SAVED_VARS}
     config.stash[_ISOLATION] = (folder, saved)
     os.environ["LOOPMATH_HOME"] = os.path.join(folder, "home")
     os.environ["LOOPMATH_CACHE_DIR"] = os.path.join(folder, "cache")
+    atexit.register(shutil.rmtree, folder, True)
+    from loopmath.fit_bayes import use_store_compiledir
+
+    use_store_compiledir(os.environ["LOOPMATH_CACHE_DIR"])
 
 
 def pytest_unconfigure(config):
@@ -94,7 +108,7 @@ def pytest_unconfigure(config):
             os.environ.pop(name, None)
         else:
             os.environ[name] = value
-    if folder:
+    if folder and "pytensor" not in sys.modules:  # else at exit, after pytensor's own hook
         shutil.rmtree(folder, ignore_errors=True)
 
 

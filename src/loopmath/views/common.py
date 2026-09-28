@@ -205,13 +205,27 @@ def num(value: Any) -> float | None:
     return float(value) if math.isfinite(value) else None
 
 
+def small_usd(v: float) -> str:
+    """A cost above zero and under $0.01 with one significant digit: `$0.002`, `$0.00004` (0.2.4 small-cost rule)."""
+    a = abs(v)
+    d = -math.floor(math.log10(a))
+    r = round(a, d)
+    return ("-" if v < 0 else "") + ("$0.01" if r >= 0.01 else f"${r:.{d}f}")
+
+
 def fmt_usd(value: Any) -> str:
+    """Dollars for people: an exact zero is `$0`, a cost under $0.01 has one significant digit (`$0.002`), never
+    `$0.00` for a cost that is not zero; from $0.01 up, three decimals under $0.10 and two above, as before."""
     v = num(value)
     if v is None:
         return "n/a"
+    if v == 0:
+        return "$0"
+    if abs(v) < 0.01:
+        return small_usd(v)
     if abs(v) >= 1000:
         return f"${v:,.0f}"
-    return f"${v:.3f}" if 0 < abs(v) < 0.1 else f"${v:.2f}"
+    return f"${v:.3f}" if abs(v) < 0.1 else f"${v:.2f}"
 
 
 def fmt_tokens(value: Any) -> str:
@@ -401,6 +415,16 @@ def parse_ts(value: Any) -> datetime | None:
     except ValueError:
         return None
     return ts if ts.tzinfo else ts.astimezone()
+
+
+def fmt_time(value: Any) -> str:
+    """A stored timestamp as local time with its zone, `2026-09-27 19:56 PDT`; the stored string when it does not
+    parse, "n/a" when absent. Store and JSON keep the UTC ISO string (0.2.4)."""
+    ts = parse_ts(value)
+    if ts is None:
+        return str(value) if value else "n/a"
+    local = ts.astimezone()
+    return f"{local:%Y-%m-%d %H:%M} {local.tzname() or local.strftime('%z')}"
 
 
 def ts_key(value: Any) -> tuple:

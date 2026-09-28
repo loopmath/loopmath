@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.2.4 (2026-09-28)
+
+Fixes from a new-user test of 0.2.3. The prior and the belief model are 0.2.3's: the same runs and task give the same cost, chance and score. The results page now predicts for the same task as `recommend`, so its ranges match.
+
+### Adapter output imports
+
+- `run import` accepts the run ids loopmath's own adapters and `graph --format run` write (`pi-adapt:...`, `omp:...`, `loopmath-graph:WORKSPACE`), so `adapt`, `ocp migrate` and `run import --finish` work end to end, and importing a run again replaces it instead of adding a copy. The run document keeps its id; the store names the file with each character outside `A-Z`, `a-z`, `0-9`, `.`, `_` and `-` written as `%XX` (`a:b` is stored as `a%3Ab.ocp.json`). Every id that was valid before keeps its file name. `run import --finish` also takes documents whose producer declares no events or outcome evidence, and records those declarations in the run's `dev.loopmath.import` ext.
+- `run import FOLDER` says how many runs were new and how many were already in the store (`--json` adds `new` and `already_in_store`). Importing finished runs into a store that has runs and no fit starts a fit; when no fit starts, it says why.
+- `adapt NAME` that finds no sessions ends with an error and writes nothing (`adapt omp` wrote an empty document), and a store an adapter cannot read gives one error line instead of a traceback. The opencode adapter's producer is `loopmath/adapter-opencode`.
+
+### Run times
+
+- Commands show times in your local time with the zone, for example `2026-01-15 09:30 PST`; the store and `--json` keep UTC (`...Z`). `--since` and `--until` without an offset are local time. Times already in a store are read as written and sorted by instant.
+- The `runs` table, `runs RUN` and every time on the pages (run details, signals, the run page timeline, the results page's fit and page times, footers) show the same local time with the zone.
+
+### Spend in status
+
+- `status` shows the month's spend, then its parts on one line (your runs, and what onboard's labelling calls cost), then the runs onboard brought in from your logs on their own line, not counted. Labelling spend counts toward the budget cap.
+- A run you record with `--source habit` is your run: it counts in spend and in `report`. Only runs `onboard` brought in are history.
+
+### `run record`: commits and session windows
+
+- `run record` looks for the run's commits after its base commit in the folder it runs from, the run's repo, and each session's folder and the repo's folder inside it. When it finds none, it names the folders it searched and says to pass `--commit SHA` (or `--no-commits`).
+- With `--run`, a Claude Code session that started before the run counts from the run's start; a Codex session cannot be cut and counts whole, with a note. `--since` and the new `--until` set the window, and `--since` before `run start` moves the run's start back. An attempt no longer starts before its run (OCP `W150`).
+- Outside a Claude Code tool shell, `--session self` uses the one Claude Code session in the current folder that was active in the last 10 minutes. The new `loopmath run sessions` lists the recent Claude Code and Codex sessions in a folder with their ids, for `--session ID`.
+- `run record` prints every note (it printed only the first), including when a session's log ran another model or effort than the configuration, and when another run of the same slate counts the same session over an overlapping window. `runs --slate SLT` says which run the referee preferred (or that none is recorded yet), as do its rows and `runs RUN` for a slate member.
+
+### Shares
+
+- `prior import-shared` refuses a file this store shared itself: its runs are already yours. The new `prior remove-shared ORG` takes an imported organization out again (then run `loopmath fit`).
+- Background refits (after `run finish` or a late `outcome`) keep the sources the last `fit --without` or `fit --no-prior` left out, and `status` names them.
+- `share --out FILE.json` writes plain JSON; any other name writes gzip, and `prior import-shared` reads both. `prior build` needs `--out DIR` and never writes into the installed package.
+
+### The graph and page layout
+
+- `graph --out` and `adapt --out` write to any path you name, inside or outside a git repository, and create missing folders; a directory is refused. `graph` prints a short summary and says how many more counts `--verbose` shows.
+- The graph page: each model has its own color (the page knew three older model names, so every other model was grey); boxes and time labels stay inside the plot; the tokens cell adds input, cache read, cache write and output, and shows a lower bound (`≥6k`) when one of them is missing; an attempt with no role is named after the tool that ran it and shown as "role not known"; what the page could not show sits behind a collapsed line.
+- The results page (`posterior --html`) is titled "What the fit predicts for T tasks in R", and each section says what its estimate rests on: how many rows from your runs, or the shipped prior. The headline labels the median and the mean run, the spend section reads as sentences, each level is labelled once at its own point, and the panels' axes fit the data.
+- The recommend page counts its options from the data and names what the pair runs, and its workflow strip fits its box. The run page draws a one-attempt run as a labelled bar in its piece's lane, and the end tick keeps its label. The builder's cost axis reaches builds under a cent, a review gate shows its round limit ("reviewed once ... 1 round, so no repair") instead of a warning, and the model cards fill their rows.
+
+### Small costs
+
+- A cost of exactly zero prints `$0`. A cost above zero and under one cent prints with one significant digit (`$0.002`, and `$0.001` for 0.00096), never `$0.00`. Larger costs keep the precision they had. This holds in `status`, `budget`, `report`, `run record` and `run finish`. JSON keeps the numbers.
+- The same rule holds in the `recommend` text and on every page; a change in cost prints `±$0` only when it is exactly zero, and nothing prints `under $0.01`.
+
+### Recommend text
+
+- Your usual workflow comes only from your habit runs (onboarded, or started with `--source habit`): a run of a recommended workflow never becomes the usual, and a tie keeps the workflow that reached the count first. A line under the reference says where it comes from and how to name another.
+- Each alternative gives its own chance, run cost and cost per accepted result, then what it changes from the pick, and the exploration lines give the same payback as the summary. A long answer keeps its summary and the rec id, and says how many more alternatives `recommend --json` has.
+- `posterior --workflow CFG` without `--type` and `--repo` uses the task type and repo CFG ran on most, and names the others. `recommend` records the task it asked the fit about, and the results page predicts for that task.
+
+### CLI and README
+
+- `verify-receipts` with no argument checks the receipts in your store (`--home`); give a file to check a research receipt ledger, as before. `run artifact` and `outcome` print a one-line summary after the id.
+- `fit --full` compiles pytensor's C code in the store's cache instead of `~/.pytensor` (a compile folder set in `PYTENSOR_FLAGS` is kept), works around a macOS clang that reads pytensor's `-ld64` as a library name, and when the compiler still fails ends with one error line and writes no fit.
+- `analyze` gives no band for a spread it cannot compute, and says why no configuration qualified and what to try. `analyze --json` prints one object (schema `loopmath.analyze/1`), and `analyze --home PATH` keeps its parse cache in that store. The research verbs move under `loopmath research --help`, and end with one error line on a missing or empty sweep folder.
+- `skill install --dry-run` lists every file it would write and writes nothing, and `skill uninstall` says what it removed. `config get` lists every key loopmath reads, set or not, and `config set` refuses a key loopmath does not read. `prices` shows each source without build notes and marks the rates that are not confirmed. The onboard dry run and `doctor` say they keep the log parse cache, and `onboard` records what its labelling calls cost. Sessions in a folder outside git count under `(no repo)`. `workflows list` names the composed workflows onboard may use, and `workflows show` takes them.
+- The README says `builder` serves its page on 127.0.0.1 only and no other command opens a network connection, and its commands match `--help`.
+
 ## 0.2.3 (2026-09-26)
 
 ### Prior

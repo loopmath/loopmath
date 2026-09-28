@@ -110,9 +110,12 @@ def test_designed_runs_are_candidates_and_the_best_recorded_one_is_the_reference
     _, text = run(capsys, ARGV)
     lines = text.splitlines()
     assert lines[2].startswith("No usual workflow; reference: your best recorded workflow (")
-    assert lines[3].startswith("Rescue when a run fails: $0.73 (reference workflow repeated until accepted); ")
+    # P3-28 (0.2.4): where the reference comes from and how to name a usual, under the reference line
+    assert lines[3] == ("  No habit runs of feature tasks in acme/app (onboarded, or started with --source habit); "
+                        "name a usual workflow with --usual CFG.")
+    assert lines[4].startswith("Rescue when a run fails: $0.73 (reference workflow repeated until accepted); ")
     assert sum(x.startswith("Rescue") for x in lines) == 1 and len(lines) <= 25
-    assert "than the reference" in text and "than the usual" not in text and "your usual" not in text.lower()
+    assert "than the usual" not in text and "your usual" not in text.lower()
 
 
 def test_a_habit_stays_the_usual_and_designed_runs_are_still_candidates(env, capsys):
@@ -126,6 +129,8 @@ def test_a_habit_stays_the_usual_and_designed_runs_are_still_candidates(env, cap
     assert obj["rescue"]["basis"] == "usual workflow repeated until accepted"
     _, text = run(capsys, ARGV)
     assert text.splitlines()[2].startswith("Usual (history): ")
+    assert text.splitlines()[3] == ("  The usual is the workflow of most of your habit runs of feature tasks in acme/app; "
+                                    "--usual CFG names another.")
 
 
 def test_recorded_configurations_fall_back_to_the_type_and_survive_the_top_cut(env, capsys, monkeypatch):

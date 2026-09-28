@@ -5,6 +5,7 @@ chains=1 so the whole file runs in well under a minute.
 
 from __future__ import annotations
 
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -25,6 +26,8 @@ from loopmath.fit import (
 )
 from loopmath.price import load_prices
 from loopmath.research_paths import ResearchPathError
+from tests.pytensor_compile import skip_unless_pytensor_compiles
+
 
 SEED = 20260901
 
@@ -344,6 +347,7 @@ def test_e1b_reveal_moves_claude_t7_rows_to_observed_but_not_t1():
 # ---------------------------------------------------------------------------
 
 def test_build_model_and_sample_completes_with_both_likelihood_groups():
+    skip_unless_pytensor_compiles()
     df = _synthetic_frame()
     idata, ctx = sample(df, draws=15, tune=15, chains=1, seed=SEED, progressbar=False)
 
@@ -365,6 +369,7 @@ def test_build_model_fits_usd_run_total_not_dev_only_usd():
     `_synthetic_frame` deliberately sets `usd_run_total != usd` for every
     row, so fitting the wrong column would fail this exactly, not by luck.
     """
+    skip_unless_pytensor_compiles()
     df = _synthetic_frame()
     assert (df["usd_run_total"] != df["usd"]).all()
 
@@ -432,6 +437,7 @@ def test_no_forbidden_vocabulary_in_user_facing_strings():
 def test_transfer_test_end_to_end_with_real_scoring():
     """loopmath.scoring exists in this checkout; exercise the real call path."""
     pytest.importorskip("loopmath.scoring")
+    skip_unless_pytensor_compiles()
     from loopmath.fit import transfer_test
 
     df = _synthetic_frame()
@@ -476,6 +482,7 @@ def test_transfer_test_scores_usd_run_total_in_one_consistent_space():
     to the developer-only `usd` column, fails this test.
     """
     pytest.importorskip("loopmath.scoring")
+    skip_unless_pytensor_compiles()
     from loopmath import scoring
     from loopmath.fit import transfer_test
 
@@ -515,6 +522,7 @@ def test_transfer_test_decision_regret_uses_workflow_configurations():
     choice is made, not treated as separate choices.
     """
     pytest.importorskip("loopmath.scoring")
+    skip_unless_pytensor_compiles()
     from loopmath.fit import transfer_test
 
     df = _synthetic_frame()

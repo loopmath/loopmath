@@ -316,10 +316,10 @@ def test_write_jsonl_is_deterministic(tmp_path, built):
     assert rows[1]["gold"]["fine_role"]["tier"] == "hand"
 
 
-def test_cli_refuses_an_out_path_outside_the_worktree(capsys):
-    rc = main(["--workspace", WS, "--labels", str(FIX / "labels"), "--out", "/nonexistent-root/dataset.jsonl"])
+def test_cli_refuses_an_out_path_that_is_a_directory(capsys, tmp_path):
+    rc = main(["--workspace", WS, "--labels", str(FIX / "labels"), "--out", str(tmp_path)])
     assert rc == 2
-    assert "outside the worktree" in capsys.readouterr().err
+    assert f"is a directory; name a file, for example {tmp_path / 'out.jsonl'}" in capsys.readouterr().err
 
 
 # ---- a launched codex node (the skeleton fixture's rollout, read only) --------------------

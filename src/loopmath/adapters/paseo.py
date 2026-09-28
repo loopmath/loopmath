@@ -418,7 +418,7 @@ class PaseoAdapter(Adapter):
         return {
             "ocp": "0.2",
             "producer": {
-                "name": "dagr-adapter-paseo",
+                "name": "loopmath/adapter-paseo",
                 "framework": "paseo",
                 "source_contract": "paseo/agent-json",
                 "capabilities": {

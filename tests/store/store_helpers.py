@@ -53,14 +53,20 @@ def install_rec(home: Path) -> str:
 
 
 def finished_doc(run: str, *, source: str = "usual", usd: float | None = None, started: str = "2026-09-20T10:00:00-07:00",
-                 open_: bool = False) -> dict[str, Any]:
-    """A small OCP v0.3 run that passes the strict checker (a stand-in for onboard or an orchestrator)."""
+                 open_: bool = False, history: bool | None = None) -> dict[str, Any]:
+    """A small OCP v0.3 run that passes the strict checker (a stand-in for onboard or an orchestrator).
+
+    Source `habit` stands in for onboard's runs, so it carries onboard's task source `history` unless
+    `history=False` (a loop run recorded with `--source habit`, 0.2.4)."""
     attempt: dict[str, Any] = {"id": f"att_{run}", "node": "n", "n": 1, "status": "done", "started_at": started,
                                "ended_at": started, "outcome": {"result": "done", "evidence": "reported"}}
     if usd is not None:
         attempt["cost"] = {"usd": usd, "input_tokens": 100, "output_tokens": 10, "basis": "measured"}
+    task = {"id": f"tsk_{run}", "type": "docs", "repo": "r"}
+    if history if history is not None else source == "habit":
+        task["source"] = {"kind": "history"}
     return {"ocp": "0.3", "producer": {"name": "loopmath", "version": "0.1.0"}, "privacy": {"profile": "metadata_only"},
-            "run": {"id": run, "started_at": started, "task": {"id": f"tsk_{run}", "type": "docs", "repo": "r"},
+            "run": {"id": run, "started_at": started, "task": task,
                     "configuration": {"id": "cfg_aaaaaaaaaaaa", "source": source}},
             "nodes": [{"id": "n", "kind": "impl"}], "attempts": [] if open_ else [attempt]}
 

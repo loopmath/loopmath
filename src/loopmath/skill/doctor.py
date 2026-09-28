@@ -9,7 +9,10 @@ Six checks, each `ok`, `warn` or `fail`:
   skill    where the skill set is installed (and which Codex form), and whether it is whole and current
 
 Nothing here opens a network connection. Log files are read through the
-parse cache, read only; Codex auth files are never opened.
+parse cache, which doctor keeps up to date in the store's cache folder (the
+report's `cache` says where and how large); it writes nothing else there, and
+creates the store folder only when it is missing. Codex auth files are never
+opened.
 """
 
 from __future__ import annotations
@@ -227,4 +230,8 @@ def run_checks(home: Path, *, env: Mapping[str, str] | None = None, cwd: Path | 
         check_prices(models, parse),
         check_skill(cwd, env),
     ]
-    return {"ok": not any(c["status"] == "fail" for c in checks), "home": str(home), "checks": checks}
+    from ..onboard.history import cache_size
+
+    where, size = cache_size()
+    return {"ok": not any(c["status"] == "fail" for c in checks), "home": str(home), "checks": checks,
+            "cache": {"path": str(where), "bytes": size}}

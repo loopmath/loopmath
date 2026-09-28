@@ -136,6 +136,12 @@ def clean(obj: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return {**obj, "id": None, "settings": settings}, notes
 
 
+# P3-21 (0.2.4): a review gate that names a repairer at a round limit of 1 is one of loopmath's own shapes (reviewed
+# once; the search builds it and may recommend it). The workflow file check warns about it; the builder page instead
+# says on the gate what 1 round means, so that warning is not shown here.
+REVIEW_ONCE = "budget_rounds is 1"
+
+
 def parse_config(obj: Any, models: dict[str, int]
                  ) -> tuple[Configuration | None, list[dict[str, Any]], list[dict[str, Any]]]:
     """(configuration, errors, warnings); the configuration is None when it does not read at all."""
@@ -158,7 +164,8 @@ def parse_config(obj: Any, models: dict[str, int]
             errors.append(err(p.id, f"piece {p.id!r}: model {s.model!r} is a retired or unknown model; "
                                     f"pick one of {known}"))
     if not errors:
-        warnings += notes_of(workflow_warnings(cfg.workflow) + settings_warnings(cfg.settings), cfg)
+        shown = [w for w in workflow_warnings(cfg.workflow) if REVIEW_ONCE not in w]
+        warnings += notes_of(shown + settings_warnings(cfg.settings), cfg)
     return cfg, errors, warnings
 
 

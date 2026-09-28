@@ -458,7 +458,7 @@ class OrcaAdapter(Adapter):
         return {
             "ocp": "0.2",
             "producer": {
-                "name": "dagr-adapter-orca",
+                "name": "loopmath/adapter-orca",
                 "framework": "orca",
                 "source_contract": "orca/orchestration.db",
                 "capabilities": {

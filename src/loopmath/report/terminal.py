@@ -135,6 +135,28 @@ PRIVACY_LINE = "Local only. Nothing uploaded."
 
 
 
+def _no_configuration_lines(surface: dict) -> list[str]:
+    """Why the table is empty, from the surface's own exclusion counts, and what to try."""
+    min_n = surface.get("min_n")
+    counts = {e.get("reason"): int(e.get("n") or 0) for e in surface.get("exclusions") or []}
+    n_rows = surface.get("n_rows")
+    head = (f"  no workflow configuration has {min_n} runs with a known outcome (the minimum, --min-n)"
+            if min_n else "  no configurations met the minimum run count")
+    lines = [head]
+    parts = []
+    for reason, words in (("unknown acceptance", "had no acceptance evidence in the logs"),
+                          ("configuration below min_n", "are in configurations with fewer runs than that"),
+                          ("no usable cost value", "had no usable cost"),
+                          ("no model label", "had no model name")):
+        if counts.get(reason):
+            parts.append(f"{_fmt_int(counts[reason])} {words}")
+    if parts and n_rows:
+        lines.append(f"  of {_fmt_int(n_rows)} runs read, " + ", ".join(parts))
+    lines.append("  to get a table: read more history (--all, or a larger --since), lower the minimum "
+                 "(--min-n 3), or see which evidence counted as acceptance (--grading)")
+    return lines
+
+
 def beat2_configurations(
     surface: dict,
     walkdown_line: str,
@@ -169,7 +191,7 @@ def beat2_configurations(
     band_label, band_header = _ci_presentation(surface.get("ci", 0.80))
 
     if not has_rows:
-        lines.append("  no configurations met the minimum run count")
+        lines.extend(_no_configuration_lines(surface))
     else:
         lines.append(f"  {cost_subtitle} ({band_label})")
         lines.append("")
@@ -279,7 +301,9 @@ def beat2_configurations(
     if band_note:
         lines.append(f"  {band_note}")
 
-    band_support_note = surface.get("band_support_note")
+    from ..surface_presentation import shown_band_support_note  # without the spread sentence when no band shows
+
+    band_support_note = shown_band_support_note(surface)
     if band_support_note:
         lines.append(f"  {band_support_note}")
 
@@ -303,7 +327,8 @@ def beat2_configurations(
     ratio_pair = surface.get("ratio_pair")
     unavailable_reason = ratio_pair.get("unavailable") if ratio_pair else None
     if unavailable_reason:
-        lines.append(f"  {unavailable_reason}")
+        if has_rows:  # with no table, the lines above already said why there is nothing to compare
+            lines.append(f"  {unavailable_reason}")
     elif ratio_pair:
         token_ratio = ratio_pair.get("token_ratio")
         dollar_ratio = ratio_pair.get("dollar_ratio")

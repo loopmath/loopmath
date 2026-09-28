@@ -180,6 +180,21 @@ def catalog_shapes() -> dict[str, Workflow]:
     return {k: out[k] for k in CATALOG_IDS}
 
 
+def composed_shapes() -> dict[str, ShapeParams]:
+    """The shapes the builder composes outside the catalog (`team`, `team_review`, `plan_team`,
+    `best_of_n_review`, ...), by name, at the default width and rounds. Onboard names runs
+    with them; `workflows show` shows them; recommend offers catalog shapes only."""
+    out: dict[str, ShapeParams] = {}
+    for plan in (False, True):
+        for middle in MIDDLES:
+            for review in (False, True):
+                p = normalize(ShapeParams(plan=plan, middle=middle, review=review,
+                                          budget_rounds=DEFAULT_REVIEW_ROUNDS if review else 1))
+                if shape_name(p) not in CATALOG_IDS:
+                    out[shape_name(p)] = p
+    return out
+
+
 def nearest_catalog(p: ShapeParams) -> str:
     """The catalog shape closest to a composed one.
 

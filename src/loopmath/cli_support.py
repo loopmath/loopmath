@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
 
@@ -232,6 +233,60 @@ def _extremes_ratio(df, result, price_mod) -> dict:
     return pair
 
 
+def _jsonable(value):
+    """Plain JSON values from the surface: frames as row lists, numpy scalars as numbers, NaN as null."""
+    import math
+
+    if hasattr(value, "to_dict") and hasattr(value, "columns"):
+        return [_jsonable(row) for row in value.to_dict(orient="records")]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(v) for v in value]
+    if hasattr(value, "item") and callable(value.item) and not isinstance(value, (str, bytes)):
+        try:
+            value = value.item()
+        except (TypeError, ValueError):
+            return str(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def analyze_payload(surface: dict, *, diag: dict, coverage: dict, price_lines: list[str],
+                    grading: list[str] | None, walkdown: list[dict]) -> dict:
+    """`analyze --json`: the numbers the text report prints, as one object."""
+    steps = {s["step"]: s for s in walkdown}
+    spread = {"naive": surface.get("S_naive"), "matched": surface.get("S_matched"),
+              "pooled": surface.get("S_honest")}
+    band = None  # a band belongs to a pooled spread: none when that spread is n/a
+    if all(isinstance(surface.get(k), (int, float)) and surface.get(k) == surface.get(k)
+           for k in ("S_honest", "S_lo", "S_hi")):
+        band = {"ci": surface.get("ci"), "lo": surface.get("S_lo"), "hi": surface.get("S_hi")}
+    payload = {
+        "cost": surface.get("cost_col"),
+        "min_n": surface.get("min_n"),
+        "read": {k: diag.get(k) for k in ("logs", "since_days", "files_seen", "files_outside_window", "skipped",
+                                          "skip_reasons", "cache_hits", "parse_seconds", "ocp_documents",
+                                          "ocp_attempts") if k in diag},
+        "coverage": coverage,
+        "runs": surface.get("n_rows"),
+        "runs_used": surface.get("n_rows_used"),
+        "configurations": surface.get("table"),
+        "spread": {**spread, "band": band, "notes": {k: v.get("note") for k, v in steps.items()}},
+        "task_mix_matched": not surface.get("overlap_caveat"),
+        "cheapest_vs_dearest": surface.get("ratio_pair"),
+        "excluded": [{k: e.get(k) for k in ("reason", "n", "detail", "n_censored")}
+                     for e in surface.get("exclusions") or []],
+        "price_warnings": list(price_lines),
+    }
+    if grading is not None:
+        payload["grading"] = grading
+    return _jsonable(payload)
+
+
 def prices_verb(args: argparse.Namespace) -> int:
     """Print the active price table: models, stream rates, as-of date, provenance."""
     from . import price as price_mod
@@ -250,24 +305,79 @@ def prices_verb(args: argparse.Namespace) -> int:
     print()
     for model in sorted(table.rates):
         rates = table.rates[model]
-        flag = " [TODO: placeholder rate]" if model in table.todo else ""
+        flag = " (rate not confirmed: a best public-price guess)" if model in table.todo else ""
         print(
             f"  {model}{flag}\n"
             f"    input={rates['input']:.4f}  cache_read={rates['cache_read']:.4f}  "
             f"cache_write={rates['cache_write']:.4f}  output={rates['output']:.4f}  ($/Mtok)"
         )
-        src = table.source.get(model)
+        src = _public_source(table.source.get(model) or "")
         if src:
             print(f"    source: {src}")
+    if table.todo:
+        print()
+        print(f"{len(table.todo)} of {len(table.rates)} rates are not confirmed; every dollar figure priced "
+              "with one says so")
     return 0
+
+
+# Build notes in the packaged table's `source` text that mean nothing to a user. The file itself stays as it
+# is: its bytes are the tariff id the prior bundle and every priced attempt name.
+_NOTE_PARENS = re.compile(r"\s*\((?:needed for [^)]*|[^)]*\bAnalyst\b[^)]*)\)")
+_NOTE_ADDED = re.compile(r",?\s*added \d{4}-\d{2}-\d{2}")
+_NOTE_WORDS = re.compile(r"\bAnalyst\b|\b[DE]\d+\b")
+
+
+def _public_source(text: str) -> str:
+    """A price row's `source` as `loopmath prices` shows it: the provenance, without build notes (who added
+    a row and for which experiment); a sentence that still names one is left out."""
+    text = _NOTE_ADDED.sub("", _NOTE_PARENS.sub("", text)).strip()
+    kept = [s for s in re.split(r"(?<=\.)\s+", text) if s and not _NOTE_WORDS.search(s)]
+    return " ".join(kept).strip()
+
+
+def _sweep_error(sweep_dir, args: argparse.Namespace | None = None) -> str | None:
+    """Why the sweep folder cannot be fitted (no folder named, not a folder, no usable run
+    records) or, given the verb's `args`, why its mask cannot (malformed, or no run to observe);
+    checked before any sampling and before run_fit prints its data notes."""
+    from . import research_paths
+    from .fit_assembly import assemble_table
+
+    try:
+        root = research_paths.sweep_dir(sweep_dir)
+    except research_paths.ResearchPathError as exc:
+        return str(exc)
+    if not root.is_dir():
+        return f"the sweep folder {root} does not exist"
+    df = assemble_table(sweep_dir=root)
+    if df.empty:
+        seen = df.attrs.get("assembly", {}).get("files_seen", 0)
+        return (f"no sweep run records in {root} ({seen} file(s) read, none usable): the research verbs "
+                "read the result folders of a model sweep, which are not part of the package")
+    if args is not None:
+        from .fit_masks import apply_mask, parse_mask
+
+        try:  # the mask is the flags' to get right, so its ValueError is the user's to fix
+            observed, _ = apply_mask(df, parse_mask(args.observe, holdout=args.holdout, reveal=args.reveal))
+        except ValueError as exc:
+            return str(exc)
+        if observed.empty:
+            flags = ", ".join(f"--{name} {value!r}" for name in ("observe", "holdout", "reveal")
+                              if (value := getattr(args, name)) is not None)
+            return (f"the mask selected 0 of {len(df)} runs to observe ({flags}); check it against the models "
+                    "and efforts in this sweep")
+    return None
 
 
 def fit_verb(args: argparse.Namespace) -> int:
     from . import fit as fit_mod
-
     from .research_paths import ResearchPathError
 
     fit_mod.require_bayes()
+    why = _sweep_error(args.sweep_dir, args)
+    if why:
+        print(f"error: {why}", file=sys.stderr)
+        return 1
     try:
         result = fit_mod.run_fit(
             sweep_dir=args.sweep_dir,
@@ -299,10 +409,13 @@ def fit_verb(args: argparse.Namespace) -> int:
 def transfer_test_verb(args: argparse.Namespace) -> int:
     from . import fit as fit_mod
     from . import scoring
-
     from .research_paths import ResearchPathError
 
     fit_mod.require_bayes()
+    why = _sweep_error(args.sweep_dir, args)
+    if why:
+        print(f"error: {why}", file=sys.stderr)
+        return 1
     try:
         result = fit_mod.run_fit(
             sweep_dir=args.sweep_dir,

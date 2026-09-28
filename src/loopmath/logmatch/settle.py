@@ -12,8 +12,9 @@ with the reason. `settle_run` does every attempt, the ones that name their
 session first, so a heuristic match never takes a session another attempt
 named, and returns the counts `run finish --json` reports.
 
-A `--session self` attempt is clipped to its own window (see
-`clip`). One with no `ended_at` is clipped at run finish: `finished_at`, else
+A `--session self` attempt, and a named session `run record` bounded to the
+run's window, is clipped to its own window (see `clip`). One with no
+`ended_at` is clipped at run finish: `finished_at`, else
 the run's `ended_at`, else the clock; that time becomes its `ended_at` and
 the clip record says `to_finish`, which a later settle keeps.
 
@@ -32,12 +33,12 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .artifacts import artifacts_for
-from .clip import clip_match, is_self
+from .clip import clip_match, is_clipped
 from .costs import EXT_KEY, MODEL_TOKENS_KEY, cost_record, model_tokens_from_parts
 from .match import LogRoots, _attempt_model, _epoch, explain_match
 
@@ -89,7 +90,7 @@ def _earlier_clip(attempt: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def settle_attempt(
@@ -124,7 +125,7 @@ def settle_attempt(
 
     clip_end = None
     clip_skipped = None
-    if is_self(attempt):
+    if is_clipped(attempt):
         if match.harness != "claude-code":
             clip_skipped = "--session self names a Claude Code session (D26); a codex session is not clipped"
         else:

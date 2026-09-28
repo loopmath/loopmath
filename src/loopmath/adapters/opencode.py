@@ -386,7 +386,7 @@ def _emit_document(
     else:
         source_contract = "opencode export"
     producer: dict[str, Any] = {
-        "name": "dagr-adapter-opencode",
+        "name": "loopmath/adapter-opencode",
         "framework": "opencode",
         "source_contract": source_contract,
         "capabilities": {

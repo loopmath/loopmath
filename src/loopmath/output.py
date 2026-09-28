@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -71,6 +72,52 @@ def write_html(path: Path, page: str) -> Path:
     os.replace(tmp, path)
     print(str(path))
     return path
+
+
+def fmt_usd(value: Any) -> str:
+    """Dollars for a terminal line. An exact zero is `$0`; a cost above zero and under a cent keeps one
+    significant digit (`$0.002`, never `$0.00`); from a cent up, `$1,234.56`. None or a non-number is `n/a`."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        return "n/a"
+    sign, v = ("-", -float(value)) if value < 0 else ("", float(value))
+    if v == 0:
+        return "$0"
+    if v < 0.01:
+        digits = max(2, -math.floor(math.log10(v)))
+        small = round(v, digits)
+        if small >= 10.0 ** (1 - digits):  # 0.00096 rounds up to $0.001, still one digit
+            digits -= 1
+        if small < 0.01:
+            return f"{sign}${small:.{digits}f}"
+        v = small  # 0.0096 rounds up to a cent
+    return f"{sign}${v:,.2f}"
+
+
+def _as_datetime(value: Any) -> _dt.datetime | None:
+    if isinstance(value, _dt.datetime):
+        dt = value
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        try:
+            dt = _dt.datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+        except ValueError:
+            return None
+    else:
+        return None
+    return dt if dt.tzinfo is not None else dt.astimezone()  # a naive time is local time
+
+
+def fmt_time(value: Any, *, seconds: bool = False) -> str:
+    """A stored time for a terminal line: local time with its zone, `2026-09-27 19:56 PDT`.
+
+    Stored and JSON times stay ISO strings; this is for people only. A value that does not read as a
+    time is returned as given; None is `n/a`."""
+    dt = _as_datetime(value)
+    if dt is None:
+        return "n/a" if value is None or value == "" else str(value)
+    local = dt.astimezone()
+    zone = local.strftime("%Z") or local.strftime("%z")
+    return local.strftime("%Y-%m-%d %H:%M:%S" if seconds else "%Y-%m-%d %H:%M") + (f" {zone}" if zone else "")
 
 
 def not_implemented(lane: int, command: str) -> int:

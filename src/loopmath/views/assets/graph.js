@@ -4,7 +4,8 @@
 //   piece's output edge, repair loops are dashed arcs underneath. Piece annotations come from
 //   node.prediction (a PiecePrediction: plans, posterior) and node.realized (a run's attempts).
 // LM.RunGraph.render(host, data, opts): today's graph/html_data object, drawn with today's Swimlanes,
-//   Force and CostCurve layouts through the `api` object they expect.
+//   Force and CostCurve layouts through the `api` object they expect. opts.workflow, the run's workflow
+//   graph, gives an attempt with no named role its piece's role.
 LM.Graph = (() => {
   const { esc, fmt, num, ivPlain, tip, TAIL_NOTE, pulledUp, tailPlain } = LM;
   const NS = 'ht' + 'tp:' + '/' + '/www.w3.org/2000/svg';
@@ -276,8 +277,24 @@ LM.RunGraph = (() => {
   const ROLE_COLOR = { lead: '#2a78d6', dev: '#eb6834', reviewer: '#1baf7a', planner: '#4a3aa7', cli: '#898781', external: '#898781', unlabeled: '#898781' };
   const PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#4a3aa7', '#b7791f', '#c8452f', '#6a6a9c'];
 
-  // The per-graph `api` today's layouts read (same fields as graph/html_common.py builds).
-  function prepare(D) {
+  // Which workflow piece each attempt ran as, from the run's workflow graph (views/common.py run_workflow_graph):
+  // a function from a timeline node to {piece, role, round, rounds} or undefined. A node matches by its attempt id
+  // (`aid`, or `session` for a converted OCP v0.3 document), else by its OCP node id when that names a piece; with
+  // one attempt and one piece, that attempt is the piece's.
+  function piecesOf(wf, nodes) {
+    const byAttempt = {}, byPiece = {}, pieces = ((wf && wf.nodes) || []).filter(p => p.kind === 'piece');
+    pieces.forEach(p => {
+      const atts = (p.realized && p.realized.attempts) || [], rounds = (p.realized && p.realized.rounds) || 1;
+      byPiece[p.id] = { piece: p.id, role: p.role, round: 1, rounds: 1 };
+      atts.forEach(a => { byAttempt[a.id] = { piece: p.id, role: p.role, round: a.round || 1, rounds }; });
+    });
+    const only = (nodes || []).length === 1 && pieces.length === 1 && ((pieces[0].realized && pieces[0].realized.attempts) || []).length <= 1 ? byPiece[pieces[0].id] : undefined;
+    return n => byAttempt[n.aid] || byAttempt[n.session] || byPiece[n.id] || only;
+  }
+
+  // The per-graph `api` today's layouts read (same fields as graph/html_common.py builds). `wf`, the run's
+  // workflow graph, names the role of an attempt the labeller left without one (0.2.4).
+  function prepare(D, wf) {
     const RUN = D.run, E = D.edges || [], N = (D.nodes || []).map(n => Object.assign({}, n)), A = (D.artifacts || []).map(a => Object.assign({}, a));
     const TS = RUN.token_streams || [], TT = RUN.token_total_streams || [];
     N.forEach(n => {
@@ -289,6 +306,14 @@ LM.RunGraph = (() => {
       n.tokTotal = n.tokComplete ? TT.reduce((s, k) => s + tok[k], 0) : null;
       n.modelKey = n.model || 'unknown';
     });
+    // An attempt with no named role ("unlabeled", or "external" to the sessions in scope) that the run's workflow
+    // places on a piece takes that piece's role for its lane and label: the implementer, not "outside" and "top".
+    const placed = piecesOf(wf, N);
+    N.forEach(n => {
+      const p = placed(n);
+      if (!p || !p.role || (n.role && n.role !== 'unlabeled' && n.role !== 'external')) return;
+      n.role = p.role; n.lbl = p.role + (p.rounds > 1 ? ' r' + p.round : '');
+    });
     A.forEach(a => { (a.w || []).forEach(i => N[i] && N[i].written.push(a.i)); (a.c || []).forEach(i => N[i] && N[i].read.push(a.i)); });
     E.forEach((e, k) => { if (N[e[0]]) N[e[0]].out.push(k); if (N[e[1]]) N[e[1]].in.push(k); });
     N.forEach(n => { if (Number.isInteger(n.parent) && N[n.parent]) N[n.parent].children.push(n.i); });
@@ -298,13 +323,15 @@ LM.RunGraph = (() => {
     const MODEL_COLOR = {}; MODELS.forEach((m, i) => { MODEL_COLOR[m] = m === 'unknown' ? '#898781' : PALETTE[i % PALETTE.length]; });
     const MAX_USD = Math.max(1, ...N.map(n => n.usd == null ? 0 : n.usd));
     const fmt = {
-      usd: v => v == null ? 'n/a' : (v < 0.1 ? '$' + v.toFixed(3) : '$' + v.toFixed(2)),
+      usd: v => v == null ? 'n/a' : LM.fmt.usd(v),
       dur: s => { if (s == null) return 'n/a'; s = Math.round(s); if (s < 60) return s + 's'; const m = Math.floor(s / 60), h = Math.floor(m / 60); return h ? h + 'h ' + String(m % 60).padStart(2, '0') + 'm' : m + 'm ' + String(s % 60).padStart(2, '0') + 's'; },
       tok: v => v == null ? 'n/a' : v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : String(v),
       int: v => v == null ? 'n/a' : Number(v).toLocaleString('en-US'),
       hm: sec => { const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60); return h + 'h' + String(m).padStart(2, '0'); },
-      clock: sec => RUN.start ? new Date(Date.parse(RUN.clock_base) + sec * 1000).toISOString().slice(11, 16) + 'Z' : '+' + fmt.hm(sec),
-      ts: iso => iso ? iso.replace('T', ' ').replace(/\.\d+/, '').replace('Z', ' UTC') : 'n/a',
+      // Local clock times (0.2.4); the zone is named on the run's start, the first tick, and in the caption.
+      clock: sec => { if (!RUN.start) return '+' + fmt.hm(sec); const d = new Date(Date.parse(RUN.clock_base) + sec * 1000), t = LM.fmt.time(d.toISOString()); return sec === 0 ? t : t.replace(/ \S+$/, ''); },
+      at: sec => RUN.start ? LM.fmt.time(new Date(Date.parse(RUN.clock_base) + sec * 1000).toISOString()) : '+' + fmt.hm(sec),
+      ts: iso => iso ? LM.fmt.dt(iso) : 'n/a',
       tier: v => v || 'unknown',
       tokenLabel: key => key.replaceAll('_', ' '),
     };
@@ -328,7 +355,7 @@ LM.RunGraph = (() => {
   function nodeTip(api, n) {
     const { fmt, RUN } = api, tok = n.tok || {};
     const streams = (RUN.token_total_streams || []).map(k => `${esc(fmt.tokenLabel(String(k)))} ${fmt.int(tok[k])}`).join(', ');
-    return `<b>${esc(n.lbl)}</b> <span class="m">${esc(n.title)}</span><br>${esc(n.role)} on ${esc(n.model || 'n/a')} <span class="m">(${esc(fmt.tier(n.mt))})</span>${n.effort ? ', effort ' + esc(n.effort) : ''}<br>${fmt.usd(n.usd)}, ${n.tokComplete ? fmt.tok(n.tokTotal) + ' tokens' : 'token total unavailable'}<br><span class="m">${streams}</span><br><span class="m">${n.untimed ? 'start unavailable' : 'start ' + fmt.clock(n.t0)}, duration ${fmt.dur(n.dur)}; wrote ${n.written.length}, read ${n.read.length} artifacts</span>`;
+    return `<b>${esc(n.lbl)}</b> <span class="m">${esc(n.title)}</span><br>${esc(n.role)} on ${esc(n.model || 'n/a')} <span class="m">(${esc(fmt.tier(n.mt))})</span>${n.effort ? ', effort ' + esc(n.effort) : ''}<br>${fmt.usd(n.usd)}, ${n.tokComplete ? fmt.tok(n.tokTotal) + ' tokens' : 'token total unavailable'}<br><span class="m">${streams}</span><br><span class="m">${n.untimed ? 'start unavailable' : 'start ' + fmt.at(n.t0)}, duration ${fmt.dur(n.dur)}; wrote ${n.written.length}, read ${n.read.length} artifacts</span>`;
   }
   function artTip(api, a) {
     const { N } = api;
@@ -339,11 +366,42 @@ LM.RunGraph = (() => {
     return `<b>${esc(e[2] === 'artifact' ? 'handoff' : e[2])}</b> ${esc(s.lbl)} to ${esc(t.lbl)} <span class="m">(${esc(e[3])})</span>` + (e[2] === 'artifact' && A[e[4]] ? `<br>${esc(A[e[4]].path)}` : '');
   }
 
+  // One attempt alone is one readable bar (0.2.4): box height stands for dollars against other attempts, so with
+  // nothing to compare the bar takes the row's height, at least 40 px wide, with its label inside when it fits.
+  function oneBar(inner, n) {
+    const box = inner.querySelector('rect.node[data-node]'), svgEl = inner.querySelector('svg');
+    if (!box || !svgEl) return;
+    const W = +svgEl.getAttribute('width'), cy = +box.getAttribute('y') + +box.getAttribute('height') / 2, H = 22;
+    let x0 = +box.getAttribute('x'), w = Math.max(+box.getAttribute('width'), 40);
+    if (x0 + w > W - 4) x0 = Math.max(0, W - 4 - w);
+    Object.entries({ x: x0, y: cy - H / 2, width: w, height: H }).forEach(([k, v]) => box.setAttribute(k, v));
+    const hit = box.parentNode.querySelector('rect.hit'); if (hit) hit.remove();
+    const lbl = box.parentNode.querySelector('text.nlbl') || box.parentNode.appendChild(document.createElementNS(NS, 'text'));
+    lbl.setAttribute('class', 'nlbl'); lbl.textContent = n.lbl || n.role || '';
+    lbl.setAttribute('x', x0 + 6); lbl.setAttribute('y', cy + 4); lbl.style.fill = '#fff';  // a style: the stylesheet's fill wins over the attribute
+    if (lbl.getComputedTextLength() + 12 > w) { lbl.setAttribute('x', x0 + w + 6); lbl.style.fill = ''; }
+  }
+  // Axis labels that would run past the drawing's right edge end at their tick instead of being cut off; one that then
+  // comes within 8 px of another label on its row is left out.
+  function keepLabelsIn(inner) {
+    const svgEl = inner.querySelector('svg'); if (!svgEl) return;
+    const W = +svgEl.getAttribute('width'), texts = [...svgEl.querySelectorAll(':scope > text')];
+    texts.forEach(t => {
+      const anchor = t.getAttribute('text-anchor') || 'start', x = +t.getAttribute('x'), b = t.getBBox(), over = b.x + b.width - (W - 2);
+      if (over <= 0 || anchor === 'end') return;
+      if (anchor === 'start') { t.setAttribute('x', x - 6); t.setAttribute('text-anchor', 'end'); } else t.setAttribute('x', x - over);
+      const m = t.getBBox();
+      const near = texts.some(o => o !== t && o.isConnected && o.getAttribute('y') === t.getAttribute('y') &&
+        (bb => bb.x < m.x + m.width + 8 && m.x < bb.x + bb.width + 8)(o.getBBox()));
+      if (near) t.remove();
+    });
+  }
+
   function render(host, D, opts = {}) {
     host.innerHTML = '';
     if (!D || !D.run || !Array.isArray(D.nodes)) { host.innerHTML = '<p class="empty">No attempt graph for this run.</p>'; return; }
     if (!D.nodes.length) { host.innerHTML = '<p class="empty">This run has no attempts yet.</p>'; return; }
-    const api = prepare(D), items = layouts(), views = {};
+    const api = prepare(D, opts.workflow), items = layouts(), views = {};
     if (!items.length) { host.innerHTML = '<p class="empty">The attempt layouts are not included in this page.</p>'; return; }
     items.forEach(l => { const extra = {}; (l.controls || []).forEach(c => { extra[c.id] = c.value; }); views[l.key] = { colorBy: l.colorBy || 'role', artifacts: false, extra }; });
     let current = opts.layout && views[opts.layout] ? opts.layout : items[0].key;
@@ -360,7 +418,10 @@ LM.RunGraph = (() => {
       wrap.innerHTML = '';
       const inner = document.createElement('div'); inner.className = 'graph'; wrap.appendChild(inner);
       layout.render(inner, api.N.map(n => n.i), view, api);
-      note.textContent = `${layout.graphTitle}. ${layout.sizeNote ? layout.sizeNote + '.' : ''}`;
+      if (layout.key === 'swim' && api.N.length === 1) oneBar(inner, api.N[0]);
+      keepLabelsIn(inner);
+      const zone = api.RUN.start ? LM.fmt.zone(api.RUN.start) : '';
+      note.textContent = `${String(layout.graphTitle).replace(' (UTC)', zone ? ` (local time, ${zone})` : '')}. ${layout.sizeNote ? layout.sizeNote + '.' : ''}`;
     }
     bar.addEventListener('click', ev => { const b = ev.target.closest('[data-layout]'); if (b) { current = b.dataset.layout; draw(); } });
     bar.addEventListener('change', ev => { const v = views[current]; if (ev.target.matches('[data-color]')) v.colorBy = ev.target.value; else if (ev.target.matches('[data-arts]')) v.artifacts = ev.target.checked; draw(); });
@@ -376,7 +437,7 @@ LM.RunGraph = (() => {
     wrap.addEventListener('mouseleave', () => { tip(null); focus.clear(); });
     draw();
   }
-  return { render, prepare };
+  return { render, prepare, piecesOf };
 })();
 
 // Which drawing a graph object needs: today's html_data (run, indexed nodes) or a workflow graph.

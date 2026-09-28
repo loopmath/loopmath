@@ -91,12 +91,28 @@ def default_roots(env: Mapping[str, str] | None = None) -> LogRoots:
     )
 
 
-def resolve_session(value: str, harness: str | None = None, env: Mapping[str, str] | None = None) -> str:
+ACTIVE_S = 600  # a session file written this recently is "active" for `--session self` outside Claude Code
+SESSIONS_HINT = "`loopmath run sessions` lists the recent sessions in this folder with their ids"
+
+
+def resolve_session(
+    value: str,
+    harness: str | None = None,
+    env: Mapping[str, str] | None = None,
+    *,
+    cwd: str | None = None,
+    roots: LogRoots | None = None,
+    notes: list[str] | None = None,
+) -> str:
     """The session id `value` names; `self` is the calling Claude Code session.
 
     `self` is exact under Claude Code, which exports `CLAUDE_CODE_SESSION_ID`
     to its tools. Codex exports no documented equivalent, so `self` there is
-    an error asking for the id, never a guessed session.
+    an error asking for the id, never a guessed session. Outside Claude Code,
+    when the caller passes `cwd` and `roots`, `self` is the one Claude Code
+    session in `cwd` written in the last `ACTIVE_S` seconds, if exactly one
+    was, and a line saying so goes to `notes`; otherwise the error names
+    `loopmath run sessions`.
     """
     env = os.environ if env is None else env
     text = str(value or "").strip()
@@ -105,18 +121,89 @@ def resolve_session(value: str, harness: str | None = None, env: Mapping[str, st
             raise SessionError(
                 "--session self works under Claude Code only; under Codex pass the thread id "
                 "(the thread_id in the first event of `codex exec --json`, or the id that ends "
-                "the rollout file name)"
+                "the rollout file name); " + SESSIONS_HINT
             )
         sid = (env.get("CLAUDE_CODE_SESSION_ID") or "").strip()
         if not sid:
-            raise SessionError(
-                "--session self needs CLAUDE_CODE_SESSION_ID, which Claude Code sets for its "
-                "tools; outside Claude Code pass the session id"
-            )
+            sid = _active_self(cwd, roots, notes)
         text = sid
     if not _ID_RE.match(text):
         raise SessionError(f"not a session id: {value!r}")
     return text
+
+
+def _active_self(cwd: str | None, roots: LogRoots | None, notes: list[str] | None) -> str:
+    """The one Claude Code session in `cwd` active in the last `ACTIVE_S` seconds, else SessionError."""
+    base = ("--session self needs CLAUDE_CODE_SESSION_ID, which Claude Code sets for its tools; "
+            "outside Claude Code pass the session id (" + SESSIONS_HINT + ")")
+    if not cwd or roots is None:
+        raise SessionError(base)
+    active = [s for s in recent_sessions(cwd, roots, harnesses=("claude-code",))
+              if s["active_s"] is not None and s["active_s"] <= ACTIVE_S]
+    if len(active) == 1:
+        if notes is not None:
+            notes.append(f"--session self: not inside Claude Code, so used {active[0]['session']}, the one "
+                         f"Claude Code session in this folder active in the last {ACTIVE_S // 60} minutes")
+        return active[0]["session"]
+    if len(active) > 1:
+        ids = ", ".join(s["session"] for s in active)
+        raise SessionError(f"--session self: not inside Claude Code, and {len(active)} Claude Code sessions in "
+                           f"this folder were active in the last {ACTIVE_S // 60} minutes ({ids}); pass one "
+                           f"with --session ID")
+    raise SessionError(base)
+
+
+def recent_sessions(
+    cwd: str,
+    roots: LogRoots,
+    *,
+    harnesses: Iterable[str] = HARNESSES,
+    days: int = 7,
+    now: float | None = None,
+) -> list[dict[str, Any]]:
+    """Top-level sessions whose working folder is `cwd`, last written first, from the last `days` days.
+
+    Each is `{harness, session, started_at, last_at, active_s}` (UTC times; `active_s` is the seconds
+    since the file was last written). Only file names, times and folders are read. Sub-agent sessions
+    are left out.
+    """
+    now = datetime.now(timezone.utc).timestamp() if now is None else now
+    lo = now - days * 86400
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for h in harnesses:
+        if h == "claude-code":
+            slugs = {_claude_slug(cwd), re.sub(r"[^A-Za-z0-9]", "-", cwd)}
+            files = [(p.stem, p) for root in roots.claude for slug in slugs if (root / slug).is_dir()
+                     for p in (root / slug).glob("*.jsonl")]
+        else:
+            files = []
+            for p in _codex_files(roots, _days(lo, now)):
+                meta = _codex_meta(p)
+                if meta and meta.get("id") and not _is_codex_child(meta) and _same_folder(meta.get("cwd"), cwd):
+                    files.append((str(meta["id"]), p))
+        for sid, path in files:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime < lo:
+                continue
+            if h == "claude-code":
+                if not _same_folder(_first_value(path, "cwd"), cwd):
+                    continue
+                start = _epoch(_first_value(path, "timestamp"))
+            else:
+                start = _epoch((_codex_meta(path) or {}).get("timestamp"))
+            row = out.setdefault((h, sid), {"harness": h, "session": sid, "_start": None, "_mtime": mtime})
+            row["_mtime"] = max(row["_mtime"], mtime)  # a resumed codex thread: its first start, latest write
+            if start is not None and (row["_start"] is None or start < row["_start"]):
+                row["_start"] = start
+    rows = sorted(out.values(), key=lambda r: -r["_mtime"])
+    for r in rows:
+        start, mtime = r.pop("_start"), r.pop("_mtime")
+        r.update(started_at=_utc(start) if start is not None else None, last_at=_utc(mtime),
+                 active_s=max(0, int(now - mtime)))
+    return rows
 
 
 # --- reading attempts -------------------------------------------------------

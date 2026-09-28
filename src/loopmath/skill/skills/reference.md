@@ -100,9 +100,10 @@ One `--set` per piece. The JSON is one run, flat: `run`, `label`, `pieces`, `pie
 loopmath run record --run RUN --session [PIECE=]ID --verified NAME=VALUE --reported NAME=VALUE --json
 ```
 Records a finished run in one call: finds each session in the logs and adds one attempt per session (a Claude Code session counts its sub-agents), the commits made since the base commit, the verdicts and scores, then finishes (cost from the logs, receipt, background refit). Every check happens before the first write: an error writes nothing.
-- `--session ID` (repeatable): a Claude Code session id (the UUID given to `claude --session-id`), a Codex thread id (`thread_id` from `codex exec --json`), or `self` (the Claude Code session running the command). `PIECE=ID` names the piece; else loopmath maps each session to a piece by model, then harness, then order, and says how in `attempts[].how`.
+- `--session ID` (repeatable): a Claude Code session id (the UUID given to `claude --session-id`), a Codex thread id (`thread_id` from `codex exec --json`), or `self` (the Claude Code session running the command; outside a Claude Code tool shell, see Run sessions). `PIECE=ID` names the piece; else loopmath maps each session to a piece by model, then harness, then order, and says how in `attempts[].how`.
 - `--cwd PIECE=PATH` (repeatable): a piece run by an agent with no session id (interactive Codex, for example), matched by folder and time when the run finishes.
 - `--since TS`: when the work began (an ISO time, or `2h`), for a run opened here. With `self` and no `--since`, the whole session counts. `--cwd` without `--run` needs it.
+- `--until TS`: when the work ended (default now). With `--run`, a session that started before the run is counted from the run's start; give `--since TS` (and `--until TS`) when the task's work began or ended at another time. A Codex session cannot be cut to a window and counts whole.
 - `--verified NAME=VALUE`: a verdict you observed yourself (a test command's exit code, CI read from its API, a merged PR). `--reported NAME=VALUE`: what an agent or the user told you. Verdict values: `pass`, `fail`, `accept`, `reject`, `error`. Usual names: `tests`, `review`, `build`.
 - `--score NAME=VALUE`: a measured score (`runtime_s=182`); its direction and target come from the run's rule. `NAME=` (empty) declares a score you could not measure.
 - `--commit SHA` (repeatable) adds commits by hand; `--no-commits` skips the automatic ones.
@@ -111,6 +112,14 @@ Records a finished run in one call: finds each session in the logs and adds one 
 - Without `--run` it opens the run: `--rec REC --choice KEY` (not `pair`: start a pair with `run start`), or the task and workflow flags as in `run start` with `--source` (`habit` for a run loopmath did not plan).
 - Read `run`, `attempts[]` (`piece`, `session`, `model`, `how`), `unmatched[]` (`attempt`, `reason`), `commits[]` (`sha`), `signals[]`, `cost.usd`, `outcome`, `receipt.line` (predicted against actual cost, one line), `fit.started`, `notes[]`. The `outcome` is `accepted`, `rejected` or `unknown`.
 - Exit 2: a session, run or recommendation is not found; check the id you noted. Never guess an id.
+
+### Run sessions
+```sh
+loopmath run sessions --json
+```
+Lists the recent Claude Code and Codex sessions in this folder (`--cwd PATH` for another), last written first, with their ids, for `--session ID`. Read `sessions[]` (`harness`, `session`, `started_at`, `last_at`, `active_s`, the seconds since it was last written) and `more` (how many were left out).
+
+Outside a Claude Code tool shell, `--session self` uses the one Claude Code session in this folder active in the last 10 minutes; otherwise run `loopmath run sessions` and pass the id.
 
 ### Pairs
 - `loopmath config get referee.model --json`. Read `value`: the model family the referee should come from (null: any family other than both runs' implementers).

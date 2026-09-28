@@ -18,9 +18,66 @@ BAYES_HINT = (
 
 from .research_defaults import SEED  # noqa: F401  (re-exported)
 
+# An empty static library: newer Apple clang reads pytensor's `-ld64` (meant to pick the
+# classic linker) as `-l d64`, and the link fails with "library 'd64' not found".
+_EMPTY_ARCHIVE = b"!<arch>\n"
+
+
+def _pytensor_flags(text: str) -> dict[str, str]:
+    """PYTENSOR_FLAGS as pytensor reads it: comma-separated key=value, shell quoting."""
+    import shlex
+
+    split = shlex.shlex(text, posix=True)
+    split.whitespace, split.whitespace_split = ",", True
+    return dict(kv.strip().split("=", 1) for kv in split if "=" in kv)
+
+
+def _quoted(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def use_store_compiledir(cache=None):
+    """Point pytensor's compile folder at `<cache>/pytensor` (the store's cache, as
+    `ingest.base.cache_dir`) instead of `~/.pytensor`, through PYTENSOR_FLAGS; call it
+    before pytensor is imported. A compile folder the user set in PYTENSOR_FLAGS is kept.
+
+    On macOS it also puts an empty `libd64.a` on the link path: pytensor passes `-ld64`
+    there, which a clang that no longer knows the flag reads as `-l d64`. Returns the
+    folder, or None when pytensor was already imported (too late to move it)."""
+    import importlib.util
+    import os
+    import sys
+    from pathlib import Path
+
+    if "pytensor" in sys.modules or importlib.util.find_spec("pytensor") is None:
+        return None
+    if cache is None:
+        from .ingest.base import cache_dir
+
+        cache = cache_dir()
+    folder = Path(cache).expanduser() / "pytensor"
+    flags = os.environ.get("PYTENSOR_FLAGS", "")
+    try:
+        given = _pytensor_flags(flags)
+    except ValueError:  # unbalanced quotes: pytensor will say so; leave the flags alone
+        return None
+    extra = []
+    if "base_compiledir" not in given and "compiledir" not in given:
+        extra.append(f"base_compiledir={_quoted(str(folder))}")
+    if sys.platform == "darwin" and not any(ch.isspace() for ch in str(folder)):
+        stub = folder / "link-stub"  # pytensor splits gcc__cxxflags on spaces
+        stub.mkdir(parents=True, exist_ok=True)
+        if not (stub / "libd64.a").is_file():
+            (stub / "libd64.a").write_bytes(_EMPTY_ARCHIVE)
+        cxx = " ".join(x for x in (given.get("gcc__cxxflags", ""), f"-L{stub}") if x)
+        extra.append(f"gcc__cxxflags={_quoted(cxx)}")
+    os.environ["PYTENSOR_FLAGS"] = ",".join(x for x in (flags, *extra) if x)
+    return folder
+
 
 def require_bayes() -> None:
     """Import pymc; raise SystemExit(BAYES_HINT) with a clear message when absent."""
+    use_store_compiledir()
     try:
         import pymc  # noqa: F401
     except ImportError as exc:

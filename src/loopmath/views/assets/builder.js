@@ -26,12 +26,14 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const logit = p => { p = clamp(p, 1e-4, 1 - 1e-4); return Math.log(p / (1 - p)); };
 const sig = x => 1 / (1 + Math.exp(-x));
 const fin = x => x != null && isFinite(x);
-const usd = x => !fin(x) ? 'n/a' : Math.abs(x) >= 100 ? '$' + Math.round(x) : Math.abs(x) >= 10 ? '$' + x.toFixed(1) : '$' + x.toFixed(2);
+// 0.2.4 small-cost rule: $0 for an exact zero, one significant digit under $0.01 ($0.002), never $0.00 for a cost.
+const smallUsd = x => { const a = Math.abs(x), d = -Math.floor(Math.log10(a)), r = Number(a.toFixed(d)); return (x < 0 ? '-' : '') + '$' + (r >= 0.01 ? '0.01' : r.toFixed(d)); };
+const usd = x => !fin(x) ? 'n/a' : x === 0 ? '$0' : Math.abs(x) < 0.01 ? smallUsd(x) : Math.abs(x) >= 100 ? '$' + Math.round(x) : Math.abs(x) >= 10 ? '$' + x.toFixed(1) : '$' + x.toFixed(2);
 const pct = p => !fin(p) ? 'n/a' : p < 0.005 ? '<1%' : p > 0.995 ? '>99%' : Math.round(p * 100) + '%';
 function signed(v, kind) {
   if (!fin(v)) return '';
   if (kind === 'pts') { const r = Math.round(v * 100); return (r > 0 ? '+' : r < 0 ? '−' : '±') + Math.abs(r) + ' pts'; }
-  const a = Math.abs(v); return (a < 0.005 ? '±' : v > 0 ? '+' : '−') + usd(a);
+  const a = Math.abs(v); return (v === 0 ? '±' : v > 0 ? '+' : '−') + usd(a);  // never ±$0.00 for a change (0.2.4)
 }
 const tone = (v, higherIsBetter, eps) => !fin(v) || Math.abs(v) < eps ? 'flat' : (v > 0) === higherIsBetter ? 'good' : 'bad';
 const errText = e => typeof e === 'string' ? e : (e && e.message) || String(e);
@@ -581,7 +583,7 @@ const meanOnChart = () => XM === 'run' && !!(NUM && NUM.run && NUM.run.typical);
 function xDomain() {
   const vals = [...D.cands.map(e => e.num[XM].mean), ...rings().map(o => o.num[XM].mean)].filter(v => v > 0);
   if (!vals.length) return [0.1, 100];
-  return [Math.max(0.01, Math.min(...vals) / 1.8), Math.max(...vals) * 1.6];
+  return [Math.max(1e-5, Math.min(...vals) / 1.8), Math.max(...vals) * 1.6];  // H5 (0.2.4): no $0.01 floor
 }
 function scales() {
   const svg = $('chart'), w = Math.max(320, svg.parentNode.clientWidth - 16), H = Math.round(clamp(w * 0.37, 270, 360));
@@ -609,7 +611,11 @@ function drawChart() {
     s += `<line x1="${l}" x2="${sc.w - r}" y1="${y}" y2="${y}" class="${p === 0 ? 'c-axis' : 'c-grid'}"/>`;
     s += `<text x="${l - 7}" y="${y + 4}" text-anchor="end" class="c-tick">${pct(p)}</text>`;
   }
-  let xt = [0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].filter(v => v >= sc.x0 && v <= sc.x1);
+  let xt = [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].filter(v => v >= sc.x0 && v <= sc.x1);
+  // a wide range keeps the 1s and 5s, then the powers of ten, so tick labels stay about 48 px apart
+  const room = (sc.w - l - r) / 48, lead = v => Number(v.toExponential().slice(0, 1));
+  if (xt.length > room) xt = xt.filter(v => lead(v) !== 2);
+  if (xt.length > room) xt = xt.filter(v => lead(v) === 1);
   xt.forEach(v => { const x = sc.sx(v); s += `<line x1="${x}" x2="${x}" y1="${t}" y2="${sc.H - b}" class="c-grid"/><text x="${x}" y="${sc.H - b + 15}" text-anchor="middle" class="c-tick">$${v}</text>`; });
   s += `<text x="${sc.w - r}" y="${sc.H - 5}" text-anchor="end" class="c-axt">${XM === 'run' ? (meanOnChart() ? 'Mean cost per run' : 'Cost per run') : 'Cost per accepted result'}, log scale →</text>`;
   s += `<text x="${l + 6}" y="${t + 11}" class="c-axt c-lbl" style="fill:var(--ink2)">↑ ${esc(D.rule.score ? 'Chance to reach ' + (D.rule.definition || 'the target') : 'Chance of an accepted result')} in one run</text>`;
@@ -792,7 +798,9 @@ function paintCanvas() {
     el('path', { d, class: 'loop' + (selG ? ' sel' : ''), 'marker-end': 'url(#arrL)' }, gL);
     const hit = el('path', { d, class: 'edge-hit' }, gL); hit.dataset.gate = g.after;
     const gp = passOf(pieceOf(g.after));
-    const t = 'if rejected: back to ' + g.on_fail + (gp ? ', passes ' + pct(gp.mean) : '') + (S.rounds > 1 ? ', up to ' + S.rounds + ' rounds' : '');
+    // P3-21 (0.2.4): at a round limit of 1 the gate is checked once and a rejection is not repaired
+    const t = S.rounds > 1 ? 'if rejected: back to ' + g.on_fail + (gp ? ', passes ' + pct(gp.mean) : '') + ', up to ' + S.rounds + ' rounds'
+      : 'reviewed once' + (gp ? ', passes ' + pct(gp.mean) : '') + '; 1 round, so no repair';
     const tw = t.length * 5.9 + 16, mx = (x1 + x2) / 2, my = yb - 11;
     const pg = el('g', { style: 'cursor:pointer' }, gL); pg.dataset.gate = g.after;
     el('rect', { x: mx - tw / 2, y: my - 10, width: tw, height: 20, rx: 10, class: 'g-pill' }, pg);
@@ -1007,7 +1015,8 @@ function paintPop() {
   } else if (SEL.kind === 'gate') {
     const g = S.gates.find(x => x.after === SEL.id); if (!g) { host.innerHTML = ''; return; }
     head('Review gate');
-    pop.appendChild(h('p', { class: 'help' }, `When <b style="color:var(--ink)">${esc(g.after)}</b> rejects the work, <b style="color:var(--ink)">${esc(g.on_fail)}</b> redoes it, up to the round limit.`));
+    pop.appendChild(h('p', { class: 'help' }, `When <b style="color:var(--ink)">${esc(g.after)}</b> rejects the work, <b style="color:var(--ink)">${esc(g.on_fail)}</b> redoes it, up to the round limit.` +
+      (S.rounds === 1 ? ' With 1 round the work is reviewed once and a rejection is not repaired; pick 2 or more rounds for repairs.' : '')));
     const rk = h('div'); rk.appendChild(h('div', { class: 'k' }, 'Rounds')); rk.appendChild(seg([1, 2, 3, 4, 5, 6].map(r => ({ v: r, t: String(r) })), S.rounds, setRounds)); pop.appendChild(rk);
     const rm = h('button', { class: 'danger' }, 'Remove this gate'); rm.onclick = () => { setGate(g.after, null); SEL = null; renderAll(); };
     pop.appendChild(rm);
@@ -1143,6 +1152,19 @@ const DOM = {
   run: { kind: 'log', lo: 0.05, hi: 200, ticks: [0.1, 1, 10, 100], fmt: x => '$' + x },
   cpa: { kind: 'log', lo: 0.1, hi: 200, ticks: [0.1, 1, 10, 100], fmt: x => '$' + x }
 };
+// H5 (0.2.4): a cost strip starts below the cheapest mark it can show (this build's mean and middle half, the options'
+// means), so a build under $0.05 a run is not pinned to the left edge; its ticks are the powers of ten inside, every
+// other one when they would sit closer than 44 px on a 300 px strip.
+function fitStrips(show) {
+  ['run', 'cpa'].forEach(k => {
+    const own = show && show[k] ? [show[k].mean, show[k].median, show[k].b && show[k].b[50] && show[k].b[50][0]] : [];
+    const vals = [...own, ...D.options.map(o => o.num && o.num[k] && o.num[k].mean)].filter(v => fin(v) && v > 0);
+    const base = k === 'run' ? 0.05 : 0.1, lo = Math.min(base, (vals.length ? Math.min(...vals) : base) / 1.5);
+    let ticks = [0.0001, 0.001, 0.01, 0.1, 1, 10, 100].filter(t => t >= lo * 1.5 && t <= DOM[k].hi);
+    if (300 / Math.log10(DOM[k].hi / lo) < 44) ticks = ticks.filter((t, i) => (ticks.length - 1 - i) % 2 === 0);
+    DOM[k].lo = lo; DOM[k].ticks = ticks;
+  });
+}
 function pos(k, x) { const d = DOM[k]; const t = d.kind === 'log' ? (Math.log(clamp(x, d.lo, d.hi)) - Math.log(d.lo)) / (Math.log(d.hi) - Math.log(d.lo)) : (clamp(x, d.lo, d.hi) - d.lo) / (d.hi - d.lo); return clamp(t, 0, 1) * 100; }
 function stripHTML(k, m, recMean) {
   const ln = lv => { const b = m.b[lv]; if (!b) return ''; const a = pos(k, b[0]), z = pos(k, b[1]); return `<span class="ln l${lv}" data-a="${k}-${lv}" style="left:${a}%;width:${Math.max(z - a, 0.5)}%"></span>`; };
@@ -1186,6 +1208,7 @@ function paintSide() {
   const box = $('side'); if (!box || !D) return;
   const ok = PRED && PRED.ok, show = NUM, rr = D.recNum;
   const isRec = ok && PRED.config_id === D.goalId;
+  fitStrips(show);
   let s = `<div class="bhd"><h2>Your build</h2>${badgeOf()}</div>`;
   s += `<p class="blabel">${esc(ok ? PRED.label : labelOf(S))}${ok && PRED.config_id ? ` <span style="color:var(--muted)">${esc(PRED.config_id)}</span>` : ''}</p>`;
   if (PRED && !PRED.ok) {

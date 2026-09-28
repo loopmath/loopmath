@@ -42,7 +42,7 @@ def test_a_directory_with_finish_refits_once_at_the_end(capsys, home, tmp_path, 
     code, out, err = cli(capsys, home, "run", "import", str(folder), "--finish")
     assert code == 0, err
     lines = out.splitlines()
-    assert lines[-2:] == ["3 runs imported, 0 failed; 3 finished", "refit: started in the background (pid 0)"]
+    assert lines[-2:] == ["3 runs imported (3 new), 0 failed; 3 finished", "refit: started in the background (pid 0)"]
     assert {line.split()[0] for line in lines[:-2]} == {"run-a", "run-b", "run-c"}
     assert spawned == [str(home)]  # one refit for the whole call, not one per run
     rows = Store(home).index_rows()
@@ -67,7 +67,8 @@ def test_one_file_with_no_fit_keeps_the_single_file_output(capsys, home, tmp_pat
     assert code == 0, err
     assert spawned == []
     assert set(out) == {"schema", "run", "path", "migrated_from", "state", "finished",  # as in 0.1.0,
-                        "shipped_overlap"}  # plus the shipped-source overlap count
+                        "shipped_overlap",  # plus the shipped-source overlap count
+                        "already_in_store"}  # and whether the run was in the store before (0.2.4)
     assert out["finished"]["fit"] == {"started": False, "reason": "--no-fit"}
     code, out, err = cli(capsys, home, "run", "import", str(path), "--finish")
     assert code == 0, err
@@ -85,7 +86,7 @@ def test_a_bad_file_is_reported_and_the_rest_still_import(capsys, home, tmp_path
     lines = out.splitlines()
     assert lines[0].startswith(f"FAIL  {bad}: ") and "not JSON" in lines[0]
     assert lines[1].startswith(f"FAIL  {future}: ") and "0.3" in lines[1]
-    assert lines[-2] == "2 runs imported, 2 failed; 2 finished"
+    assert lines[-2] == "2 runs imported (2 new), 2 failed; 2 finished"
     assert spawned == [str(home)]
     assert set(Store(home).index_rows()) == {"run-a", "run-b"}
 
@@ -108,7 +109,7 @@ def test_one_run_reads_in_the_singular(capsys, home, tmp_path, spawned):
     _write(folder, "run-a")
     code, out, err = cli(capsys, home, "run", "import", str(folder))
     assert code == 0, err
-    assert "1 run imported, 0 failed" in out.splitlines()
+    assert "1 run imported (1 new), 0 failed" in out.splitlines()
 
 
 def test_many_files_keep_the_summary_within_25_lines(capsys, home, tmp_path, spawned):
@@ -116,7 +117,7 @@ def test_many_files_keep_the_summary_within_25_lines(capsys, home, tmp_path, spa
     _write(folder, *[f"run-{i:02d}" for i in range(30)])
     code, out, err = cli(capsys, home, "run", "import", str(folder), "--finish", "--no-fit")
     assert code == 0, err
-    assert out.splitlines() == ["30 runs imported, 0 failed; 30 finished", "refit: not started (--no-fit)"]
+    assert out.splitlines() == ["30 runs imported (30 new), 0 failed; 30 finished", "refit: not started (--no-fit)"]
 
 
 BRIEF_KEYS = {"schema", "imported", "failed", "finished", "already_finished", "failures", "more_failures",

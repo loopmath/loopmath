@@ -108,7 +108,7 @@ def test_config_cli_get_set(capsys, tmp_path):
     code, _, err = cli(capsys, home, "config", "set", "onboard.labeler", "gpt")
     assert code == 1 and "labeler" in err
     code, _, err = cli(capsys, home, "config", "set", "mystery.key", "1")
-    assert code == 0 and "warning" in err
+    assert code == 2 and "not a key loopmath reads" in err and "nothing was written" in err
     code, out, _ = cli(capsys, home, "config", "get", "research.e0_corpus", "--json")
     assert out == {"schema": "loopmath.config/1", "key": "research.e0_corpus", "value": "/data/e0", "set": True}
     code, out, _ = cli(capsys, home, "config", "get", "--json")
@@ -169,7 +169,7 @@ def test_budget_names_the_period_and_runs_of_onboard_history(tmp_path, capsys):
     code, out, err = cli(capsys, store.home, "budget")
     assert code == 0, err
     since = period_start("month").date().isoformat()
-    assert f"history from onboard since {since}, not counted: $51.50 over 2 run(s)" in out
+    assert f"history from onboard since {since}, not counted: $51.50 over 2 runs" in out
 
 
 def test_configuration_round_trip_keeps_id(tmp_path):

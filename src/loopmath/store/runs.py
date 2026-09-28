@@ -26,6 +26,7 @@ RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 HEX_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 INDEX_FIELDS = ("run", "task_type", "repo", "config", "source", "slate", "started_at", "finished_at", "state")
+EXT_ONBOARD = "dev.loopmath.onboard"  # doc.ext on the runs `onboard` writes
 
 # configuration.source -> run.provenance (spec 01 sections 2.2 and 2.8)
 PROVENANCE = {
@@ -195,6 +196,18 @@ def add_event(doc: dict[str, Any], type_: str, **fields: Any) -> None:
     doc.setdefault("events", []).append(ev)
 
 
+def is_history(doc: dict[str, Any]) -> bool:
+    """A run `onboard` wrote from the logs: its task came from history (OCP task source `history`) or the
+    document carries onboard's ext. Not every run with configuration source `habit`: a loop run recorded
+    with `--source habit` is the user's run, counted in spend."""
+    task = (doc.get("run") or {}).get("task") or {}
+    source = task.get("source") if isinstance(task, dict) else None
+    if isinstance(source, dict) and source.get("kind") == "history":
+        return True
+    ext = doc.get("ext")
+    return isinstance(ext, dict) and isinstance(ext.get(EXT_ONBOARD), dict)
+
+
 def index_row(doc: dict[str, Any]) -> dict[str, Any]:
     run = doc.get("run") or {}
     task = run.get("task") or {}
@@ -211,6 +224,7 @@ def index_row(doc: dict[str, Any]) -> dict[str, Any]:
         "started_at": run.get("started_at"),
         "finished_at": run.get("ended_at") if finished else None,
         "state": FINISHED if finished else OPEN,
+        "history": is_history(doc),  # additive (0.2.4): onboard's runs, apart from spend
     }
     if finished:  # additive fields: budget and views read spend without opening every run file
         cost = run_cost(doc)

@@ -6,8 +6,17 @@ const LM = (() => {
   const data = () => JSON.parse(document.getElementById('data').textContent);
   const $ = id => document.getElementById(id);
 
+  // 0.2.4 small-cost rule: an exact zero is $0, a cost under $0.01 has one significant digit ($0.002), never $0.00
+  // for a cost that is not zero; from $0.01 up, three decimals under $0.10 and two above (views/common.py fmt_usd).
+  const smallUsd = v => { const a = Math.abs(v), d = -Math.floor(Math.log10(a)), r = Number(a.toFixed(d)); return (v < 0 ? '-' : '') + '$' + (r >= 0.01 ? '0.01' : r.toFixed(d)); };
+  // Times are local with the zone's short name (2026-09-27 19:56 PDT); the data keeps the UTC ISO string (0.2.4).
+  const pad = n => String(n).padStart(2, '0');
+  const local = iso => { const t = iso == null || iso === '' ? NaN : Date.parse(iso); return Number.isFinite(t) ? new Date(t) : null; };
+  const zone = d => { try { return (new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(d).find(p => p.type === 'timeZoneName') || {}).value || ''; } catch (e) { return ''; } };
+  const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const hm = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const fmt = {
-    usd: v => !num(v) ? 'n/a' : Math.abs(v) >= 1000 ? '$' + Math.round(v).toLocaleString('en-US') : (v !== 0 && Math.abs(v) < 0.1 ? '$' + v.toFixed(3) : '$' + v.toFixed(2)),
+    usd: v => !num(v) ? 'n/a' : v === 0 ? '$0' : Math.abs(v) < 0.01 ? smallUsd(v) : Math.abs(v) >= 1000 ? '$' + Math.round(v).toLocaleString('en-US') : Math.abs(v) < 0.1 ? '$' + v.toFixed(3) : '$' + v.toFixed(2),
     tok: v => !num(v) ? 'n/a' : Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : String(Math.round(v)),
     int: v => !num(v) ? 'n/a' : Math.round(v).toLocaleString('en-US'),
     pct: (p, d = 0) => !num(p) ? 'n/a' : (p * 100).toFixed(d) + '%',
@@ -15,9 +24,10 @@ const LM = (() => {
     signed: (v, f) => !num(v) ? 'n/a' : (v > 0 ? '+' : v < 0 ? '-' : '') + f(Math.abs(v)),
     x: v => !num(v) ? 'n/a' : Number(v.toPrecision(3)).toString(),
     rounds: v => !num(v) ? 'n/a' : v.toFixed(1),
-    date: iso => iso ? String(iso).slice(0, 10) : 'n/a',
-    time: iso => iso && String(iso).length >= 16 ? String(iso).slice(11, 16) : '',
-    dt: iso => iso ? String(iso).slice(0, 16).replace('T', ' ') : 'n/a',
+    date: iso => { const d = local(iso); return d ? ymd(d) : iso ? String(iso).slice(0, 10) : 'n/a'; },
+    time: iso => { const d = local(iso); return d ? `${hm(d)} ${zone(d)}`.trim() : ''; },
+    dt: iso => { const d = local(iso); return d ? `${ymd(d)} ${hm(d)} ${zone(d)}`.trim() : iso ? String(iso) : 'n/a'; },
+    zone: iso => { const d = local(iso) || new Date(); return zone(d); },
     age: s => !num(s) ? 'n/a' : s < 90 ? Math.round(s) + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? (s / 3600).toFixed(1) + ' h' : (s / 86400).toFixed(1) + ' days',
     score: (v, unit) => !num(v) ? 'n/a' : (Math.abs(v) >= 100 ? Math.round(v).toLocaleString('en-US') : Number(v.toPrecision(3)).toString()) + (unit ? ' ' + unit : ''),
   };

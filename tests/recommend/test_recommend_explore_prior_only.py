@@ -6,16 +6,19 @@ every related candidate's expected chance after the simulated run by about 6 poi
 trying anything, so G clipped to 0 and no pair was offered on about one fit in six. The fits below were four that
 lost it when a fit's draws were seeded by its id; since 0.2.1 they are seeded by the fit's `seed_key`, a hash of
 its input rows, so each id gets its own pinned clock (and its own onboard and store): four clocks, four sets of
-rows, four seeds. The success update is now exact over the draws.
+rows, four seeds. The success update is now exact over the draws. The seeds leave out the shipped prior's repo
+salt (`salt_free_key`), so a rebuild of the prior with a new salt does not reseed them.
 """
 
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import datetime as dt
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -44,10 +47,11 @@ CLOCK = dt.datetime(2026, 9, 20, 12, tzinfo=dt.timezone.utc)
 CLOCKS = {fit_id: CLOCK + dt.timedelta(minutes=i) for i, fit_id in enumerate(LOST)}
 MANY_DRAWS = 8000
 # How many times the floor (1% of the goal's cost per accepted result) the pair's gain must clear. This depends on
-# the shipped prior and its repo salt, which reseeds the draws. On the 0.2.2 prior the four fits cleared it 18.5 to
+# the shipped prior, not on its repo salt (`salt_free_key`). On the 0.2.2 prior the four fits cleared it 18.5 to
 # 19.6 times. On 0.2.3's the goal is a claude-sonnet-5 and gpt-6-luna workflow at about $0.036 per accepted result,
-# so the floor fell about 6x (0.0022 to about 0.00036) and the gain more: the four fits clear it 4.3 to 7.3 times
-# and 8000 draws 4.4, so 5, the bar before, sat inside that spread.
+# so the floor fell about 6x (0.0022 to about 0.00036) and the gain more: the four fits clear it 3.6 to 8.5 times
+# and 8000 draws 4.2, the same with the bundle's repos hashed under another salt (4.3 to 7.3 and 4.4 while the
+# salt still reseeded them), so 5, the bar before, sat inside that spread.
 PAIR_MARGIN = 3
 LABELER = """\
 import json, sys
@@ -58,6 +62,32 @@ print(json.dumps({"labels": [{"id": it["id"], "type": "bug_fix", "subtype": None
 """
 RECOMMEND = ("recommend", "--type", "bug_fix", "--repo", "acme/app", "--title", "Fix the crash on empty input",
              "--feature", "size=s", "--feature", "lang=python", "--json")
+# The prior build hashes each non-public repo with a salt drawn per build (`priors/reduce.py`, `repo_hash`), and a
+# fit's `seed_key` hashes every row, the shipped rows included, so each rebuild of the prior reseeded these fits
+# and moved the margin above even with the same runs.
+SALTED_REPO = re.compile(r"repo_[0-9a-f]{12}")
+INPUT_KEY = F.input_key
+
+
+def salt_free_key(heads_rows: dict, specs: list, settings: dict) -> str:
+    """The fit's `seed_key` over its rows with every salted repo hash blanked: the same key for any salt. It fails
+    when it blanks nothing, so a new `repo_hash` format cannot quietly bring the salt back into the seeds."""
+    blanked = 0
+
+    def blank(term: tuple) -> tuple:
+        nonlocal blanked
+        out = []
+        for x in term:
+            if isinstance(x, str):
+                x, n = SALTED_REPO.subn("repo_salted", x)
+                blanked += n
+            out.append(x)
+        return tuple(out)
+
+    rows = {name: dataclasses.replace(hr, rows=[type(row)(blank(t) for t in row) for row in hr.rows])
+            for name, hr in heads_rows.items()}
+    assert blanked, f"no {SALTED_REPO.pattern} in the fit's rows: has the prior's repo_hash format changed?"
+    return INPUT_KEY(rows, specs, settings)
 
 
 def recommend_on(env: dict, fit_id: str, draws: int | None = None) -> dict:
@@ -69,6 +99,7 @@ def recommend_on(env: dict, fit_id: str, draws: int | None = None) -> dict:
         store = Path(env["LOOPMATH_HOME"])
         if not (store / "fits" / fit_id).is_dir():
             mp.setattr(F, "new_fit_id", lambda fits, now: fit_id)
+            mp.setattr(F, "input_key", salt_free_key)  # this fit only: no other fit runs in recommend_on
             F.fit(store)
         if draws is not None:
             mp.setattr(S, "N_DRAWS", draws)

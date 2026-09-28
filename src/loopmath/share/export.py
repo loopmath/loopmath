@@ -503,15 +503,24 @@ def dumps(obj: dict, *, indent: int | None = None) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=indent, separators=None if indent else (",", ":"))
 
 
+def is_plain(path: Path) -> bool:
+    """A share file named `*.json` is plain JSON; `*.gz` and every other name are gzip JSON."""
+    return Path(path).suffix.lower() == ".json"
+
+
 def write_share(obj: dict, path: Path) -> Path:
-    """Gzip JSON, written atomically (temp file in the same folder, fsync, rename)."""
+    """Plain JSON for `*.json`, gzip JSON otherwise, written atomically (temp file in the same folder,
+    fsync, rename). `read_share` reads both."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "wb") as f:
-            with gzip.GzipFile(fileobj=f, mode="wb", mtime=0) as gz:
-                gz.write(dumps(obj).encode("utf-8"))
+            if is_plain(path):
+                f.write(dumps(obj).encode("utf-8"))
+            else:
+                with gzip.GzipFile(fileobj=f, mode="wb", mtime=0) as gz:
+                    gz.write(dumps(obj).encode("utf-8"))
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)

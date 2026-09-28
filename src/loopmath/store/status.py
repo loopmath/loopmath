@@ -12,12 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from ..belief.design import other_design
+from ..output import fmt_time, fmt_usd
+from . import run_names
 from . import runs as R
-from .budget import budget_state
+from .budget import budget_state, history_line, spend_parts
 from .config import ConfigError
-from .fitjob import fit_state
+from .fitjob import exclusions, fit_state
 from .home import Store
-from .ids import parse_ts
+from .ids import parse_ts, utc_iso
 from .lock import is_locked, read_jsonl
 
 STALE_OPEN_H = 24
@@ -67,12 +69,30 @@ def fit_summary(home: Path, fit_id: str | None) -> dict[str, Any]:
             "problem": other_design(meta)}
 
 
+def exclusions_text(ex: dict[str, Any]) -> str:
+    """`sources left out of fits: shared (from fit_...: fit --without shared); background refits keep this ...`,
+    or empty when the latest fit left nothing out."""
+    names = list(ex.get("without") or [])
+    if ex.get("no_prior"):
+        names.insert(0, "the shipped prior")
+    if not names:
+        return ""
+    how = fit_options_text({"no_prior": ex.get("no_prior"), "without": ex.get("without")})
+    return (f"sources left out of fits: {', '.join(names)} (from {ex.get('fit') or 'the last fit'}: fit {how}); "
+            "background refits keep this until you run fit without them")
+
+
 def fit_options_text(options: dict[str, Any]) -> str:
     """`--no-prior --without rq1`, as the fit was run; empty for a plain fit."""
     parts = ["--no-prior"] if options.get("no_prior") else []
     parts += [f"--without {w}" for w in options.get("without") or []]
     parts += ["--full"] if options.get("full") else []
     return " ".join(parts)
+
+
+def _instant(value: str | None) -> float:
+    at = parse_ts(value)
+    return at.timestamp() if at is not None else float("-inf")
 
 
 def _count(folder: Path, pattern: str) -> int:
@@ -88,7 +108,7 @@ def status_payload(store: Store, now: datetime | None = None) -> dict[str, Any]:
         health.append({"level": "warn", "code": code, "message": message})
 
     rows = store.index_rows()
-    files = {p.name[: -len(".ocp.json")] for p in store.runs_dir.glob("*.ocp.json")} if store.runs_dir.is_dir() else set()
+    files = {run_names.run_id(p.name[: -len(".ocp.json")]) for p in store.runs_dir.glob("*.ocp.json")} if store.runs_dir.is_dir() else set()
     raw_rows = len(read_jsonl(store.index_path))
     missing_row = sorted(files - set(rows))
     missing_file = sorted(set(rows) - files)
@@ -103,9 +123,10 @@ def status_payload(store: Store, now: datetime | None = None) -> dict[str, Any]:
             continue
         started = parse_ts(row.get("started_at"))
         age_h = round((now - started).total_seconds() / 3600, 1) if started else None
-        open_runs.append({"run": run, "started_at": row.get("started_at"), "age_h": age_h, "type": row.get("task_type"),
-                          "repo": row.get("repo"), "config": row.get("config"), "slate": row.get("slate")})
-    open_runs.sort(key=lambda r: str(r.get("started_at") or ""))
+        open_runs.append({"run": run, "started_at": utc_iso(row.get("started_at")), "age_h": age_h,
+                          "type": row.get("task_type"), "repo": row.get("repo"), "config": row.get("config"),
+                          "slate": row.get("slate")})
+    open_runs.sort(key=lambda r: _instant(r.get("started_at")))
     stale = [r for r in open_runs if r["age_h"] is not None and r["age_h"] > STALE_OPEN_H]
     if stale:
         warn("open_runs_stale", f"{len(stale)} run(s) open for more than {STALE_OPEN_H} h; finish them or they never reach the fit")
@@ -142,6 +163,10 @@ def status_payload(store: Store, now: datetime | None = None) -> dict[str, Any]:
 
     fit = fit_state(home)
     fit.update(fit_summary(home, fit.get("latest")))
+    fit["background_exclusions"] = exclusions(home)
+    job = fit.get("job")
+    if isinstance(job, dict):  # UTC in JSON, whatever the job wrote
+        fit["job"] = {**job, **{k: utc_iso(job[k]) for k in ("started_at", "finished_at") if isinstance(job.get(k), str)}}
     fit.setdefault("problem", None)
     fit["usable"] = bool(fit["latest"]) and fit["problem"] is None
     if fit["problem"]:
@@ -213,10 +238,13 @@ def status_lines(p: dict[str, Any]) -> list[str]:
             lines.append(f"  {note}")
     else:
         lines.append("fit: none yet")
+    excluded = exclusions_text(fit.get("background_exclusions") or {})
+    if excluded:
+        lines.append(f"  {excluded}")
     if fit["running"]:
         lines.append("background fit: running" + (", another queued" if fit["pending"] else ""))
     elif job.get("status"):
-        lines.append(f"background fit: last {job['status']} at {job.get('finished_at') or job.get('started_at')}")
+        lines.append(f"background fit: last {job['status']} at {fmt_time(job.get('finished_at') or job.get('started_at'))}")
     c = p["counts"]
     lines.append(f"runs: {c['runs']} ({c['finished']} finished, {c['open']} open); receipts {c['receipts']}; recs {c['recs']}")
     for r in p["open_runs"][:5]:
@@ -227,13 +255,17 @@ def status_lines(p: dict[str, Any]) -> list[str]:
     b = p.get("budget")
     if b:
         spent = b["spent"]
+        when = "in all" if b["period"] == "none" else f"this {b['period']}"
         if b["cap_usd"] is None:
-            lines.append(f"spend this {b['period']}: ${spent['usd']:,.2f} ({spent['tokens']:,} tokens); no cap")
+            lines.append(f"spend {when}: {fmt_usd(spent['usd'])} ({spent['tokens']:,} tokens); no cap")
         else:
-            lines.append(f"spend this {b['period']}: ${spent['usd']:,.2f} of ${b['cap_usd']:,.2f} ({spent['tokens']:,} tokens)"
+            lines.append(f"spend {when}: {fmt_usd(spent['usd'])} of {fmt_usd(b['cap_usd'])} ({spent['tokens']:,} tokens)"
                          + ("; cap reached" if b["reached"] else ""))
+        lines.append(f"  {spend_parts(spent)}")
         if spent.get("attempts_not_costed"):
             lines.append(f"  known dollars only: {spent['attempts_not_costed']} attempt(s) have no dollars")
+        if spent.get("history_runs"):
+            lines.append(f"  {history_line(spent)}")
     lines.append(f"size: {_bytes(p['size']['bytes'])} in {p['size']['files']} files"
                  + (f", of which fits {_bytes(p['size']['fits_bytes'])} in {c['fits']} fit folder(s)" if c["fits"] else "")
                  + ("; store lock held right now" if p["locked"] else ""))

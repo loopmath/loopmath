@@ -27,8 +27,8 @@ from ..types import (
 from . import engine, storeread
 from .curve import RESCUE_KINDS, RETRY_DECAY, RETRY_MAX_ATTEMPTS, RETRY_MIN_CHANCE
 from .engine import Recommendation, Settings
-from .message import (TAIL, heavy, leads_typical, mean_sentence, noted, pct, tail, tokens as fmt_tokens,
-                      typical_cost, usd as fmt_usd)
+from .message import (TAIL, heavy, leads_typical, mean_sentence, noted, pct, pick_payback, runs_text, tail,
+                      tokens as fmt_tokens, typical_cost, usd as fmt_usd)
 from .storeread import Conf
 
 SCHEMA = "loopmath.recommend/2"
@@ -477,8 +477,9 @@ def view_payload(payload: dict[str, Any], rec: Recommendation) -> dict[str, Any]
 
 # ---------------------------------------------------------------- terminal
 def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
-    """At most 25 plain lines. When the reference's run cost leads with the typical run (N3), the mean follows on
-    its own line and one alternative fewer is listed."""
+    """At most 25 plain lines, always with the summary and the rec id: when they run over, fewer alternatives are
+    listed and one line counts the rest. When the reference's run cost leads with the typical run (N3), the mean
+    follows on its own line and one alternative fewer is listed."""
     t, fit, u = payload["task"], payload["fit"], rec.usual.prediction
     lead = leads_typical(rec.own_runs, u.cost)
 
@@ -499,6 +500,7 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
              + f"); fit {fit.get('id')} ({age_text})",
              baseline_line(rec, named(rec.usual.config), line_numbers(u, first=True, rec=rec, lead_typical=lead)),
              *(["  " + mean_sentence(u.cost, rec.own_runs)] if lead else []),
+             *([f"  {n}"] if (n := usual_note(rec, t)) else []),
              rescue_line(rec),
              "Curve:"]
     target = None
@@ -526,27 +528,36 @@ def summary(payload: dict[str, Any], rec: Recommendation) -> list[str]:
     goal = payload["goal"]
     lines.append(f"Goal ({goal['choice']}): {named(rec.goal.config)}" + (f"; {goal['note']}" if goal.get("note") else ""))
     lines.append("Alternatives:")
-    for a in payload["alternatives"][:4 if lead else 5]:
-        d = a["deltas"]
-        lines.append(f"  {a['label']}: {delta_words(d, 'the usual' if rec.is_usual else 'the reference')}")
+    alternatives = payload["alternatives"]
+    shown = alternatives[:4 if lead else 5]
     ex = rec.exploration
-    lines.append(f"Exploration ({ex.method}):")
+    rest = [f"Exploration ({ex.method}):"]
     for name, slot in (("best value", ex.best_value), ("biggest gain", ex.max_gain)):
         if slot.state == "same_as":
-            lines.append(f"  {name}: same as best value")
+            rest.append(f"  {name}: same as best value")
         elif slot.state == "none":
-            lines.append(f"  {name}: none (no candidate has positive gain)")
+            rest.append(f"  {name}: none (no candidate has positive gain)")
         else:
             p = slot.pick
-            pay = "n/a" if p.payback_runs is None else f"{p.payback_runs:.1f}"
+            # P3-12 (0.2.4): the payback the message and the pair choice give, one number with one rounding
+            k = pick_payback(p)
+            pay = "payback n/a" if k is None else f"pays back after {runs_text(k)}"
             paused = " [paused: budget cap reached]" if slot.state == "paused" else ""
             price = noted(fmt_usd(p.price.usd.mean), p.price.usd)
-            lines.append(f"  {name}: {named(p.candidate.config)}: gain {fmt_usd(p.gain_per_run.get('usd') or 0)}"
-                         f"/run, {pct(p.p_beats_goal)} to beat the recommended pick, price {price}, "
-                         f"payback {pay} runs{paused}")
-    lines.append(rec.message)
-    lines.append(f"rec: {payload['rec']}")
-    return lines[:25]
+            rest.append(f"  {name}: {named(p.candidate.config)}: gain {fmt_usd(p.gain_per_run.get('usd') or 0)}"
+                        f"/run, {pct(p.p_beats_goal)} to beat the recommended pick, price {price}, "
+                        f"{pay}{paused}")
+    rest.append(rec.message)
+    # 0.2.4 (review v024-24V-509e6ff9): the summary and the rec id always print; when the 25 lines run over, the
+    # alternatives give way, and one line counts the rest
+    room = 24 - len(lines) - len(rest)
+    if len(shown) > room:
+        shown = shown[:max(room - 1, 0)]
+        more = [f"  and {len(alternatives) - len(shown)} more (recommend --json)"]
+    else:
+        more = []
+    lines += [f"  {a['label']}: {alternative_words(a, rec)}" for a in shown] + more + rest
+    return lines[:24] + [f"rec: {payload['rec']}"]  # the rec id stays when the lines run over
 
 
 def paren(*parts: str) -> str:
@@ -608,6 +619,40 @@ def line_numbers(p, *, first: bool = False, marks: tuple[str, ...] = (), rec: Re
             f"{tail(p.cost.usd, p.cost.tokens)}), {rescue}{per}")
 
 
+def usual_note(rec: Recommendation, task: dict[str, Any]) -> str:
+    """Where the usual or the reference comes from and how to name another (P2-12, P3-28, 0.2.4): the usual is
+    the workflow of the user's habit runs (onboarded, or `run start --source habit`); runs of recommended
+    workflows are recorded runs and never make it the usual."""
+    where = f"{task.get('type')} tasks in {task.get('repo')}"
+    if rec.is_usual and rec.usual_from == "history":
+        return f"The usual is the workflow of most of your habit runs of {where}; --usual CFG names another."
+    if rec.is_usual and rec.usual_from == "config":
+        return f"The usual comes from config usual.{task.get('type')}; --usual CFG names another."
+    if rec.is_usual:
+        return ""
+    return (f"No habit runs of {where} (onboarded, or started with --source habit); "
+            f"name a usual workflow with --usual CFG.")
+
+
+def alternative_words(a: dict[str, Any], rec: Recommendation) -> str:
+    """An alternative in its own numbers, then what it changes from the recommended pick (P3-12, 0.2.4: the
+    differences from a far reference read the same for every alternative)."""
+    pred, nums = a.get("prediction") or {}, a.get("numbers") or {}
+    chance = ((pred.get("p_success") or {}).get("mean"))
+    run = (nums.get("run_cost_usd") or {}).get("mean")
+    ell = (nums.get("cost_per_accepted_usd") or {}).get("mean")
+    parts = [f"{pct(chance)} success" if chance is not None else "",
+             f"{fmt_usd(run)} a run" if run is not None else "",
+             f"{fmt_usd(ell)} per accepted result" if ell is not None else ""]
+    text = ", ".join(x for x in parts if x)
+    cfg = next((c.config for c in rec.alternatives if c.config.id == ((a.get("config") or {}).get("id"))), None)
+    if cfg is not None and cfg.id != rec.goal.config.id:
+        changes = diff_fn()(rec.goal.config, cfg)
+        if changes:
+            text += f"; from the recommended pick: {'; '.join(changes[:3])}" + (" and more" if len(changes) > 3 else "")
+    return text
+
+
 def delta_words(d: dict[str, Any], baseline: str = "the usual") -> str:
     """An alternative's differences from the usual in words."""
     pp = round(d["success_pp"])
@@ -662,7 +707,9 @@ def recommend(args: argparse.Namespace) -> int:
         return fail(str(exc))
     rec_id = "rec_" + storeread.ulid()
     payload = build_payload(rec, belief, rec_id, now)
-    stored = {"schema": SCHEMA, **payload, "candidates": [rec.candidate_dict(c) for c in rec.candidates]}
+    # `asked_task`: the task id the belief was asked with, so `posterior` can predict under the same task (0.2.4)
+    stored = {"schema": SCHEMA, **payload, "asked_task": asked.id,
+              "candidates": [rec.candidate_dict(c) for c in rec.candidates]}
     storeread.save_rec(home, rec_id, stored)
     target = html_path("recommend", getattr(args, "html", None), getattr(args, "home", None))
     if target is not None:

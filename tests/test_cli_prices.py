@@ -54,8 +54,9 @@ def test_prices_verb_marks_todo_entries_and_leaves_confirmed_ones_unmarked(tmp_p
 
     todo_line = next(line for line in lines if "gpt-5.6-luna" in line)
     confirmed_line = next(line for line in lines if "claude-opus-5" in line)
-    assert "TODO" in todo_line
-    assert "TODO" not in confirmed_line
+    assert "rate not confirmed" in todo_line and "TODO" not in out
+    assert "not confirmed" not in confirmed_line
+    assert "1 of 3 rates are not confirmed" in out
 
 
 def test_prices_verb_shows_source_path(tmp_path, capsys):
@@ -86,3 +87,26 @@ def test_prices_verb_default_table_loads_packaged_prices(capsys):
     assert rc == 0
     assert "claude-opus-5" in out
     assert "2026-08-31" in out
+
+
+def test_prices_verb_leaves_build_notes_out(capsys):
+    """New-user test P3-17: `prices` printed who added a row and for which experiment. The packaged file
+    keeps its bytes (they are its tariff id); only what `prices` shows changes."""
+    rc = main(["prices"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    for word in ("Analyst", "E1", "E3", "D34", "added 2026", "TODO"):
+        assert word not in out, word
+    assert "source: published legacy pricing\n" in out
+    assert "source: official list: same 10/50 tier as fable-5" in out
+    assert "the planned $3/$15 will not occur.\n" in out
+
+
+def test_public_source_keeps_provenance():
+    from loopmath.cli_support import _public_source
+
+    assert _public_source("derived from billing (exact)") == "derived from billing (exact)"
+    assert _public_source("published legacy pricing (needed for E1)") == "published legacy pricing"
+    assert _public_source("official list, checked 2026-09-23: $2 input. Replaced a row, Analyst D34") == \
+        "official list, checked 2026-09-23: $2 input."
+    assert _public_source("guess: assumed at gpt-5.4 legacy rates") == "guess: assumed at gpt-5.4 legacy rates"

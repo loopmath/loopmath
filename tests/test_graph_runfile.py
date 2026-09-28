@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -29,8 +30,9 @@ from tests.test_graph_extract import ALPHA, skeleton_records
 LIFTED_TERMS = ("knowledge gradient", "posterior", "prior", "experimental design", "value of information", "bandit", "arms")
 
 # The herdr dagr checker, a separate program (not this package): the loopmath rename must not
-# touch its name, or these strict checks skip for good.
-DAGR_BIN = Path(os.environ.get("DAGR_BIN") or Path.home() / ".local" / "bin" / "dagr")
+# touch its name, or these strict checks skip for good. `DAGR_BIN` names it, else the `dagr` on PATH
+# (so a run under a temp HOME finds it too), else ~/.local/bin.
+DAGR_BIN = Path(os.environ.get("DAGR_BIN") or shutil.which("dagr") or Path.home() / ".local" / "bin" / "dagr")
 
 # Grading signals as `ingest.parse_all` attaches them under `_signals`: the lead's
 # last turn ended normally (a turn-level fact, not a session-level one), dev's
@@ -481,7 +483,8 @@ def test_cli_format_run_writes_a_strict_clean_file_and_prints_exporter_counters(
     monkeypatch.setattr(ingest, "parse_all", parse_all_with_clean_audit)
     tree = _git_tree(tmp_path / "tree")
     monkeypatch.chdir(tree)
-    rc = main(["graph", "--workspace", ALPHA, "--all", "--format", "run", "--out", "out/alpha.run.json", "--quiet"])
+    rc = main(["graph", "--workspace", ALPHA, "--all", "--format", "run", "--out", "out/alpha.run.json", "--quiet",
+               "--verbose"])
     assert rc == 0
     captured = capsys.readouterr()
     assert captured.out == ""

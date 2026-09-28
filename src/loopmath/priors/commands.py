@@ -1,6 +1,6 @@
 """Handlers for `loopmath prior build|show` (lane 11; hidden from `--help`).
 
-`prior build [--out DIR] [--sweep-dir P ...] [--e0-corpus P] [--rq1-dir P] [--lanes-dir P]`
+`prior build --out DIR [--sweep-dir P ...] [--e0-corpus P] [--rq1-dir P] [--lanes-dir P]`
 rebuilds the shipped bundle from our sources. The inputs are read only; each
 is its flag, else `LOOPMATH_SWEEP_DIR`, `LOOPMATH_E0_CORPUS`,
 `LOOPMATH_PRIOR_RQ1` or `LOOPMATH_PRIOR_LANES`, and there is no default folder.
@@ -35,14 +35,16 @@ def _selected() -> list[str]:
 
 
 def build(args: argparse.Namespace) -> int:
-    from .build import BUNDLE_DIR, RUNNERS, BundleError, build_bundle
+    from .build import RUNNERS, BundleError, build_bundle
     from .registry import ENV_INPUTS, INPUT_FLAGS, LANES, SWEEP, E0, RQ1, MissingInput, input_path
 
     try:
         names = _selected()
     except ValueError as exc:
         return fail(str(exc))
-    out_dir = Path(args.out).expanduser() if args.out else BUNDLE_DIR
+    if not args.out:  # never the installed package's bundle folder by default
+        return fail("prior build needs --out DIR, the folder to write the new bundle to")
+    out_dir = Path(args.out).expanduser()
     flags = {SWEEP: getattr(args, "sweep_dir", None), E0: getattr(args, "e0_corpus", None),
              RQ1: getattr(args, "rq1_dir", None), LANES: getattr(args, "lanes_dir", None)}
     results = []

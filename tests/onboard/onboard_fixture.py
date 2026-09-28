@@ -195,6 +195,7 @@ class FakeStore:
         self.runs: dict[str, dict] = {}
         self.imports = 0
         self.reject = set(reject or ())
+        self.spends: list[dict] = []
 
     def config(self):
         return self.cfg
@@ -206,3 +207,7 @@ class FakeStore:
             raise ValueError("E120 run.task.type rejected by the fake store")
         self.runs[doc["run"]["id"]] = json.loads(json.dumps(doc))
         return doc["run"]["id"]
+
+    def add_spend(self, kind, **kw):
+        self.spends.append({"kind": kind, **kw})
+        return f"spd_{len(self.spends)}"

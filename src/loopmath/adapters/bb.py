@@ -408,7 +408,7 @@ class BbAdapter(Adapter):
         )
         ignored_snapshots = sum(thread["ignored_token_snapshots"] for thread in selected)
         producer: dict[str, Any] = {
-            "name": "dagr-adapter-bb",
+            "name": "loopmath/adapter-bb",
             "framework": "bb",
             "source_contract": "bb/sqlite",
             "capabilities": {

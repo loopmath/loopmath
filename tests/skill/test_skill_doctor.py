@@ -149,3 +149,16 @@ def test_skill_check_names_a_missing_skill_a_stale_copy_and_the_old_single_skill
     install.install("codex", "user")
     assert doctor.check_skill(None, None)["summary"] == (
         "6 skills: claude-code user (skills), codex user (AGENTS.md block)")
+
+
+def test_doctor_says_what_it_wrote(machine, capsys, monkeypatch):
+    """New-user test P3-3: doctor wrote a parse cache without saying so."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    shutil.copy(FIXTURES / "claude_code_sidechain.jsonl", machine["home"] / ".claude" / "projects" / "-repo" / "s1.jsonl")
+    assert cli.main(["doctor", "--home", str(machine["store"]), "--json"]) == 0
+    cache = json.loads(capsys.readouterr().out)["cache"]
+    assert cache["path"] == str(machine["tmp"] / "cache") and cache["bytes"] > 0
+    assert cli.main(["doctor", "--home", str(machine["store"])]) == 0
+    last = capsys.readouterr().out.splitlines()[-1]
+    assert last.startswith("doctor kept the log parse cache (") and f"in {machine['tmp'] / 'cache'})" in last
+    assert last.endswith("it changed nothing else in the store")

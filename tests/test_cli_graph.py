@@ -122,11 +122,11 @@ def _copy_sidechain_fixture(directory: Path) -> Path:
 def test_ocp_to_file_passes_conformance_and_prints_counters(stubbed_pipeline, tmp_path, monkeypatch, capsys):
     tree = _git_tree(tmp_path / "tree")
     monkeypatch.chdir(tree)
-    rc = main(["graph", "--workspace", ALPHA, "--all", "--format", "ocp", "--out", "out/alpha.ocp.json"])
+    rc = main(["graph", "--workspace", ALPHA, "--all", "--format", "ocp", "--out", "out/alpha.ocp.json", "--verbose"])
     assert rc == 0
     captured = capsys.readouterr()
     assert captured.out == ""
-    out = tree / "out" / "alpha.ocp.json"  # parent directory created inside the worktree
+    out = tree / "out" / "alpha.ocp.json"  # parent directory created
     doc = json.loads(out.read_text())
     assert doc["ocp"] == "0.3" and doc["producer"]["name"] == "loopmath"
     assert [f for f in conf.validate_doc(doc) if f.level == "error"] == []
@@ -159,6 +159,24 @@ def test_ocp_to_file_passes_conformance_and_prints_counters(stubbed_pipeline, tm
     assert "wrote " + str(out) in err
 
 
+def test_counters_print_only_with_verbose(stubbed_pipeline, tmp_path, monkeypatch, capsys):
+    """P3-18: by default the headline and the three summary lines print, and one line
+    says how many counters `--verbose` would add; none of the counters themselves."""
+    monkeypatch.chdir(tmp_path)
+    assert main(["graph", "--workspace", ALPHA, "--all", "--format", "ocp", "--out", "a.json"]) == 0
+    err = capsys.readouterr().err
+    assert f"graph of {ALPHA}: 10 nodes, 8 edges, 3 artifacts" in err
+    assert "  priced: 2 records unpriced, 1 priced from placeholder rates" in err
+    assert "emitter." not in err and "unlinked_subagents" not in err and "records_skipped_no_id_or_path" not in err
+    hint = re.search(r"(?m)^  (\d+) more counts of what was skipped or could not be placed: add --verbose$", err)
+    assert hint is not None, err
+    assert main(["graph", "--workspace", ALPHA, "--all", "--format", "ocp", "--out", "a.json", "--verbose"]) == 0
+    verbose = capsys.readouterr().err
+    added = [ln for ln in verbose.splitlines() if ln not in err.splitlines() and not ln.startswith("wrote ")]
+    assert len(added) == int(hint.group(1)) and "add --verbose" not in verbose
+    assert "  emitter.attempts_unpriced: 2" in added and "  unlinked_subagents: 1" in added
+
+
 def test_html_to_file_is_self_contained(stubbed_pipeline, tmp_path, monkeypatch, capsys):
     tree = _git_tree(tmp_path / "tree")
     monkeypatch.chdir(tree)
@@ -176,51 +194,46 @@ def test_html_to_file_is_self_contained(stubbed_pipeline, tmp_path, monkeypatch,
     assert f"wrote {out} (html)" in captured.err
 
 
-def test_out_outside_the_worktree_is_refused(stubbed_pipeline, tmp_path, monkeypatch, capsys):
-    """Item 2: `--out` resolves against the worktree root, the git top level of the
-    current directory, not the current directory itself; anything outside it is an
-    error before any parsing, and nothing is written."""
-    inside = _git_tree(tmp_path / "tree")
-    sub = inside / "sub"
-    sub.mkdir()
-    monkeypatch.chdir(sub)
-    outside = tmp_path / "elsewhere.json"
-    rc = main(["graph", "--workspace", ALPHA, "--all", "--out", str(outside)])
-    assert rc == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert f"error: --out {outside} resolves to {outside.resolve()}, outside the worktree {inside.resolve()}" in captured.err
-    assert not outside.exists()
-    assert stubbed_pipeline == {}  # refused before parsing anything
-    rc = main(["graph", "--workspace", ALPHA, "--all", "--out", "../../escape.json"])
-    assert rc == 2 and not (tmp_path / "escape.json").exists()
-    # A path above the current directory but inside the worktree is fine, as is `..` that stays inside.
-    rc = main(["graph", "--workspace", ALPHA, "--all", "--out", "../above.json"])
-    assert rc == 0 and (inside / "above.json").exists()
-    rc = main(["graph", "--workspace", ALPHA, "--all", "--out", str(sub / "deep" / ".." / "ok.json")])
-    assert rc == 0 and (sub / "ok.json").exists()
-
-
-def test_out_is_refused_outside_any_git_worktree(stubbed_pipeline, tmp_path, monkeypatch, capsys):
-    """Item 2: with no git worktree around the current directory there is nothing to
-    write into; `--out` is refused with a message, nothing is written, and stdout
-    output without `--out` still works."""
+def test_out_writes_any_path_the_user_names(stubbed_pipeline, tmp_path, monkeypatch, capsys):
+    """P2-17: `--out` writes wherever the user points it, inside a git worktree or not,
+    relative to the current directory, creating missing folders."""
     plain = tmp_path / "plain"
     plain.mkdir()
     monkeypatch.chdir(plain)
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))  # tmp_path may sit under some repo
-    rc = main(["graph", "--workspace", ALPHA, "--all", "--out", "here.json"])
+    rc = main(["graph", "--workspace", ALPHA, "--all", "--out", "here.json", "--quiet"])
+    assert rc == 0 and json.loads((plain / "here.json").read_text())["ocp"] == "0.3"
+    rc = main(["graph", "--workspace", ALPHA, "--all", "--format", "html", "--out", "../elsewhere/page.html", "--quiet"])
+    assert rc == 0 and (tmp_path / "elsewhere" / "page.html").read_text().startswith("<!doctype html>")
+    rc = main(["graph", "--workspace", ALPHA, "--all", "--out", "here.json", "--quiet"])  # an existing file is replaced
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_out_refuses_a_directory_or_a_path_under_a_file(stubbed_pipeline, tmp_path, monkeypatch, capsys):
+    """P2-17: the only refusals left are about what would be overwritten: a directory, or a
+    path whose parent is a file. Nothing is parsed or written."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "dir").mkdir()
+    (tmp_path / "file.txt").write_text("keep")
+    rc = main(["graph", "--workspace", ALPHA, "--all", "--out", "dir"])
     assert rc == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert f"error: --out here.json refused: {plain} is not inside a git worktree" in captured.err
-    assert not (plain / "here.json").exists() and stubbed_pipeline == {}
-    rc = main(["graph", "--workspace", ALPHA, "--all", "--format", "json", "--quiet"])
-    assert rc == 0 and json.loads(capsys.readouterr().out)["dagr_graph"] == 1
+    assert "error: --out dir is a directory; name a file, for example dir/out.ocp.json" in captured.err
+    for fmt, name in (("html", "out.html"), ("dot", "out.dot"), ("run", "out.run.json"), ("json", "out.json")):
+        rc = main(["graph", "--workspace", ALPHA, "--all", "--format", fmt, "--out", "dir"])
+        assert rc == 2 and f"for example dir/{name}\n" in capsys.readouterr().err  # the format's extension
+    rc = main(["graph", "--workspace", ALPHA, "--all", "--out", "file.txt/x.json"])
+    assert rc == 2 and "is a file, not a folder" in capsys.readouterr().err
+    assert (tmp_path / "file.txt").read_text() == "keep" and stubbed_pipeline == {}
+    rc = main(["adapt", "pi", "--out", "dir"])
+    assert rc == 2 and "error: --out dir is a directory; name a file, for example dir/out.ocp.json" in capsys.readouterr().err
+    assert "worktree" not in cli._resolve_out.__doc__
 
 
 def test_json_to_stdout_is_the_internal_form(stubbed_pipeline, capsys):
-    rc = main(["graph", "--workspace", ALPHA, "--format", "json", "--since", "3", "--limit", "12"])
+    rc = main(["graph", "--workspace", ALPHA, "--format", "json", "--since", "3", "--limit", "12", "--verbose"])
     assert rc == 0
     captured = capsys.readouterr()
     doc = json.loads(captured.out)
@@ -332,9 +345,9 @@ def test_analyze_snapshot_changes_when_a_discovered_file_is_added_or_removed(
     assert removed == first
 
 
-def test_dot_and_quiet_still_prints_the_counters(stubbed_pipeline, capsys, monkeypatch):
-    """Item 2: `--quiet` silences progress only; every exclusion counter still prints."""
-    rc = main(["graph", "--workspace", ALPHA, "--workspace", "/ws/other", "--format", "dot", "--quiet"])
+def test_dot_and_quiet_still_prints_the_counters_with_verbose(stubbed_pipeline, capsys, monkeypatch):
+    """Item 2: `--quiet` silences progress only; with `--verbose` every exclusion counter still prints."""
+    rc = main(["graph", "--workspace", ALPHA, "--workspace", "/ws/other", "--format", "dot", "--quiet", "--verbose"])
     assert rc == 0
     captured = capsys.readouterr()
     assert captured.out.startswith("digraph")
@@ -587,7 +600,7 @@ def test_stage_that_reported_nothing_yields_none_with_a_reason_never_zero(monkey
     monkeypatch.setattr(ingest, "discover", lambda *a, **k: {})
     monkeypatch.setattr(grade, "grade_all", lambda records: (records, {"n_total": 0}))
     monkeypatch.setattr(price, "price_all", lambda records, table: (records, {"n_unpriced_runs": "many", "unpriced_reasons": {"odd": 3}}))
-    rc = main(["graph", "--workspace", ALPHA, "--all", "--format", "json", "--quiet"])
+    rc = main(["graph", "--workspace", ALPHA, "--all", "--format", "json", "--quiet", "--verbose"])
     assert rc == 0
     captured = capsys.readouterr()
     meta = json.loads(captured.out)["meta"]

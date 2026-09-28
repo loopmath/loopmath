@@ -61,7 +61,8 @@ def index(home: Path) -> list[dict]:
 
 
 def iso(t: dt.datetime) -> str:
-    return t.astimezone().replace(microsecond=0).isoformat()
+    """Stored times are UTC with a Z (0.2.4)."""
+    return t.astimezone(dt.timezone.utc).replace(microsecond=0, tzinfo=None).isoformat() + "Z"
 
 
 def test_two_sessions_become_two_verified_attempts_on_their_pieces(fx, capsys):
@@ -178,8 +179,10 @@ def test_record_into_an_open_run(fx, capsys):
                  "--verified", "tests=pass")
     assert obj["run"] == start["run"] and obj["opened"] is False and obj["outcome"] == "accepted"
     assert obj["signals"][0]["name"] == "tests" and obj["signals"][0]["tier"] == "verified"
-    started = json.loads(Path(start["path"]).read_text())["run"]["started_at"]
-    assert obj["window"]["from"] == started and "started before the run" in obj["notes"][0]
+    # both sessions ended before run start: they count whole and the run's start moves back to the first
+    assert obj["window"]["from"] == iso(fx.t0) and "ended before run start" in obj["notes"][0]
+    assert json.loads(Path(start["path"]).read_text())["run"]["started_at"] == iso(fx.t0)
+    assert obj["validation"]["warnings"] == []
     code, _, err = run(capsys, "record", "--run", start["run"], "--session", "lead-1", "--no-fit")
     assert code == 1 and "already finished" in err
     code, _, err = run(capsys, "record", "--run", start["run"], *IR, "--session", "lead-1", "--no-fit")

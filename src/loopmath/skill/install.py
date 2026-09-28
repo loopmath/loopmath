@@ -344,7 +344,7 @@ def _agents_file(agents_md: Path) -> Path:
     return agents_md.resolve() if agents_md.is_symlink() else agents_md
 
 
-def _put_block(agents_md: Path, block: str) -> str:
+def _put_block(agents_md: Path, block: str, dry_run: bool = False) -> str:
     agents_md = _agents_file(agents_md)
     current = agents_md.read_text(encoding="utf-8") if agents_md.is_file() else ""
     before, old, after = _split_block(current)
@@ -352,9 +352,11 @@ def _put_block(agents_md: Path, block: str) -> str:
         return "unchanged"
     if old is None:
         sep = "" if not current or current.endswith("\n\n") else ("\n" if current.endswith("\n") else "\n\n")
-        _write_atomic(agents_md, current + sep + block)
+        if not dry_run:
+            _write_atomic(agents_md, current + sep + block)
         return "created" if not current else "appended"
-    _write_atomic(agents_md, before + block + after)
+    if not dry_run:
+        _write_atomic(agents_md, before + block + after)
     return "updated"
 
 
@@ -363,22 +365,23 @@ def _rmdir_empty(folder: Path) -> None:
         folder.rmdir()
 
 
-def _retire_legacy(path: Path, notes: list[str]) -> str | None:
+def _retire_legacy(path: Path, notes: list[str], dry_run: bool = False) -> str | None:
     """The 0.1 Codex file beside the block: removed when it is as 0.1 wrote it, else kept with a note."""
     cur = _state(path)
     if cur is None:
         return None
     if cur in LEGACY_SHA256:
-        path.unlink()
+        if not dry_run:
+            path.unlink()
         return "removed"
     notes.append(f"kept {path}: not the SKILL.md loopmath 0.1 wrote")
     return "kept"
 
 
-def _remove_owned(where: Placement, notes: list[str]) -> list[tuple[str, Path, str]]:
+def _remove_owned(where: Placement, notes: list[str], dry_run: bool = False) -> list[tuple[str, Path, str]]:
     """Remove each file of the set in `where` that is loopmath's (as `_plan` decides) and keep the rest,
     with a note. Returns (path under root, path, action) per file of the set; the manifest keeps only
-    the files that stay."""
+    the files that stay. A dry run changes nothing and returns the same."""
     manifest = _load_manifest(where.root)
     listed = manifest["files"]
     want = _want(where.target)
@@ -393,13 +396,16 @@ def _remove_owned(where: Placement, notes: list[str]) -> list[tuple[str, Path, s
                       or (rel == LEGACY and cur in LEGACY_SHA256)):
             if rel not in listed and cur not in LEGACY_SHA256:
                 notes.append(_ADOPTED.format(path=path, verb="removed", tense="held"))
-            path.unlink()
+            if not dry_run:
+                path.unlink()
             action = "removed"
             listed.pop(rel, None)
         else:
             action = "kept"
             notes.append(_kept(path, rel in listed))
         out.append((rel, path, action))
+    if dry_run:
+        return out
     for skill in SKILLS:
         _rmdir_empty(where.root / skill)
     _save_manifest(where.root, manifest)
@@ -420,10 +426,11 @@ def _result(where: Placement) -> dict:
 
 
 def install(target: str = "auto", scope: str = "user", *, cwd: Path | None = None,
-            env: Mapping[str, str] | None = None) -> list[dict]:
+            env: Mapping[str, str] | None = None, dry_run: bool = False) -> list[dict]:
     """Install the set for one target, `both` or `auto`. Returns one result per target. Every target is
     checked before the first write: a file in the way, a broken manifest or an unclosed block stops it
-    all, so the set is never half installed."""
+    all, so the set is never half installed. A dry run writes nothing and returns what install would do,
+    with `dry_run` true in each result."""
     env = os.environ if env is None else env
     plans, blocked = [], []
     for name in expand_targets(target, env):
@@ -437,8 +444,10 @@ def install(target: str = "auto", scope: str = "user", *, cwd: Path | None = Non
     results = []
     for name, where, manifest, steps in plans:
         result = _result(where)
+        if dry_run:
+            result["dry_run"] = True
         for step in steps:
-            if step["action"] in ("created", "updated", "replaced"):
+            if step["action"] in ("created", "updated", "replaced") and not dry_run:
                 _write_atomic(step["path"], step["text"])
             if step["action"] == "kept":
                 result["notes"].append(f"{_kept(step['path'], True)}; move it aside and install again "
@@ -446,26 +455,31 @@ def install(target: str = "auto", scope: str = "user", *, cwd: Path | None = Non
             else:
                 manifest["files"][step["rel"]] = step["sha"]
             if step["adopted"]:
-                result["notes"].append(_ADOPTED.format(path=step["path"], verb="took", tense="holds"))
+                result["notes"].append(_ADOPTED.format(path=step["path"], verb="would take" if dry_run else "took",
+                                                       tense="holds"))
             _entry(result, step["rel"], step["path"], step["action"])
-        _save_manifest(where.root, manifest)
+        if not dry_run:
+            _save_manifest(where.root, manifest)
         if where.method == "agents_block":
-            if _retire_legacy(where.root / "SKILL.md", result["notes"]) == "removed":
+            if _retire_legacy(where.root / "SKILL.md", result["notes"], dry_run) == "removed":
                 result["removed"].append({"path": str(where.root / "SKILL.md"), "action": "removed"})
-            result["block"] = _put_block(where.agents_md, pointer_block(where, cwd))
+            result["block"] = _put_block(where.agents_md, pointer_block(where, cwd), dry_run)
         elif name == "codex":  # Codex gained skills since the block form was installed: that form goes
             other = _forms(name, scope, Path(cwd or Path.cwd()), env)["agents_block"]
-            gone = [(p, a) for _, p, a in _remove_owned(other, result["notes"])]
-            gone.append((other.root / "SKILL.md", _retire_legacy(other.root / "SKILL.md", result["notes"])))
+            gone = [(p, a) for _, p, a in _remove_owned(other, result["notes"], dry_run)]
+            gone.append((other.root / "SKILL.md", _retire_legacy(other.root / "SKILL.md", result["notes"], dry_run)))
             result["removed"] += [{"path": str(p), "action": a} for p, a in gone if a == "removed"]
-            _rmdir_empty(other.root)
-            block = _remove_block(other.agents_md)
+            if not dry_run:
+                _rmdir_empty(other.root)
+            block = _remove_block(other.agents_md, dry_run)
             result["block"] = block if block == "removed" else None
+            if block == "removed":
+                result["block_file"] = str(other.agents_md)
         results.append(result)
     return results
 
 
-def _remove_block(agents_md: Path) -> str:
+def _remove_block(agents_md: Path, dry_run: bool = False) -> str:
     if not agents_md.is_file():
         return "absent"
     linked, agents_md = agents_md.is_symlink(), _agents_file(agents_md)
@@ -473,7 +487,9 @@ def _remove_block(agents_md: Path) -> str:
     if old is None:
         return "absent"
     rest = before.rstrip("\n") + ("\n" if before.strip() else "") + after
-    if rest.strip() or linked:  # a linked file is someone's even when only the block was in it
+    if dry_run:
+        pass
+    elif rest.strip() or linked:  # a linked file is someone's even when only the block was in it
         _write_atomic(agents_md, rest)
     else:
         agents_md.unlink()  # nothing but the block was in it
@@ -505,6 +521,7 @@ def uninstall(target: str = "auto", scope: str = "user", *, cwd: Path | None = N
                     result["removed"].append({"path": str(form.root / "SKILL.md"), "action": "removed"})
                 _rmdir_empty(form.root)
                 result["block"] = _remove_block(form.agents_md)
+                result["block_file"] = str(form.agents_md)
         results.append(result)
     return results
 

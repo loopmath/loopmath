@@ -173,6 +173,10 @@ LM.Viz = (() => {
     const loops = (w.gates || []).filter(gt => gt && boxes[gt.after] && boxes[gt.on_fail]);
     const W = Math.max(x - GX + 4, 20), H = maxH + 8 + (loops.length ? (mini ? 6 : 14) : 0);
     const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'v-graph' + (mini ? ' mini' : ''), role: 'img', 'aria-label': (g && g.label) || 'workflow graph' }, host);
+    // 0.2.4 H1: `fit` scales a graph wider than its box down to the box (not below 70%, so text stays readable;
+    // a phone still scrolls it) rather than cutting it off at the right edge
+    const avail = opts.fit ? host.clientWidth : 0;
+    if (avail > 0 && W > avail) { const k = Math.max(0.7, avail / W); svg.setAttribute('width', Math.floor(W * k)); svg.setAttribute('height', Math.round(H * k)); }
     const pairs = [];
     if (mini) {
       const into = {}; edges.forEach(([a, b]) => (into[b] = into[b] || []).push(a));
@@ -300,15 +304,27 @@ LM.Viz = (() => {
       niceTicks(o.yDomain[0], o.yDomain[1], 4).forEach(v => { el('line', { x1: L, x2: W - R, y1: sy(v), y2: sy(v), class: 'v-grid' }, svg); el('text', { x: L - 5, y: sy(v) + 4, 'text-anchor': 'end', class: 'v-tick' }, svg, score(v)); });
       logTicks(sx.d[0], sx.d[1]).forEach(t => el('text', { x: sx(t), y: H - B + 14, 'text-anchor': 'middle', class: 'v-tick' }, svg, usd0(t)));
       if (num(o.target)) el('line', { x1: L, x2: W - R, y1: sy(o.target), y2: sy(o.target), class: 'v-target' }, svg);
-      let nl = 0;
+      // 0.2.4 H2: a point's levels read as one label ("2,400 to 2,700"), placed where it overlaps no other label
+      const placed = [];
+      const put = (x, y, text) => {
+        const t = el('text', { x, y, class: 'v-lbl' }, svg, text);
+        const tw = (t.getComputedTextLength && t.getComputedTextLength()) || text.length * 6.5;
+        const tries = [[9, -7, 'start'], [9, 15, 'start'], [-9, -7, 'end'], [-9, 15, 'end'], [0, -12, 'middle'], [0, 22, 'middle']];
+        const box = ([dx, dy, a]) => { const x0 = a === 'end' ? x + dx - tw : a === 'middle' ? x + dx - tw / 2 : x + dx; return [x0, y + dy - 10, x0 + tw, y + dy + 3]; };
+        const ok = b => b[0] >= L && b[2] <= W - 2 && b[1] >= 0 && b[3] <= H - B && !placed.some(p => b[0] < p[2] && b[2] > p[0] && b[1] < p[3] && b[3] > p[1]);
+        const pick = tries.find(tr => ok(box(tr))) || tries[x > W * 0.62 ? 2 : 0];
+        t.setAttribute('x', x + pick[0]); t.setAttribute('y', y + pick[1]); t.setAttribute('text-anchor', pick[2]);
+        placed.push(box(pick));
+      };
+      const levelText = ls => ls.length > 1 ? `${score(ls[0])} to ${score(ls[ls.length - 1])}` : score(ls[0]);
       groups[k].slice().sort((a, b) => a.cost.mean - b.cost.mean).forEach(w => {
         if (!w.perf || !num(w.perf.mean) || !w.cost || !num(w.cost.mean)) return;
         if (num(w.perf.lo) && num(w.perf.hi)) el('line', { x1: sx(w.cost.mean), x2: sx(w.cost.mean), y1: sy(w.perf.lo), y2: sy(w.perf.hi), class: 'v-xr' }, svg);
         (w.dots || []).forEach(d => { if (num(d.usd) && num(d.score)) el('circle', { cx: sx(d.usd), cy: sy(d.score), r: 2.6, class: 'v-dot small' + (d.cls ? ' ' + d.cls : '') }, svg); });
         const best = cheapest[w.key];
         const c = el('circle', { cx: sx(w.cost.mean), cy: sy(w.perf.mean), r: best ? 6 : 4.5, class: 'v-pt' + (best ? ' best' : ''), 'data-key': w.key }, svg);
-        if (best) { const left = sx(w.cost.mean) > W * 0.62; el('text', { x: sx(w.cost.mean) + (left ? -9 : 9), y: sy(w.perf.mean) + (nl++ % 2 ? 15 : -7), 'text-anchor': left ? 'end' : 'start', class: 'v-lbl' }, svg, best.map(score).join(', ')); }
-        hover(c, `<b>${esc(w.name)}</b><br>score ${esc(score(w.perf.mean))} (${esc(score(w.perf.lo))} to ${esc(score(w.perf.hi))})<br>cost per run ${esc(usd(w.cost.mean))} (${esc(usd(w.cost.lo))} to ${esc(usd(w.cost.hi))})` + (best ? `<br>cheapest mean cost to reach ${esc(best.map(score).join(', '))}` : ''));
+        if (best) put(sx(w.cost.mean), sy(w.perf.mean), levelText(best));
+        hover(c, `<b>${esc(w.name)}</b><br>score ${esc(score(w.perf.mean))} (${esc(score(w.perf.lo))} to ${esc(score(w.perf.hi))})<br>cost per run ${esc(usd(w.cost.mean))} (${esc(usd(w.cost.lo))} to ${esc(usd(w.cost.hi))})` + (best ? `<br>the cheapest workflow whose mean reaches ${esc(levelText(best))}` : ''));
       });
     });
     return { cheapest };

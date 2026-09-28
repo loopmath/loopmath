@@ -28,10 +28,12 @@
     return t === '-0' ? '0' : t;
   }
   function signed(x, d) { var t = num(x, d); return (t.charAt(0) === '-' || t === '0' || t === 'n/a') ? t : '+' + t; }
-  function usd(x) {
+  function usd(x) {  // 0.2.4 small-cost rule: $0 for zero, one significant digit under $0.01
     if (!fin(x)) return 'n/a';
-    return Math.abs(x) >= 0.01 || x === 0 ? '$' + x.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})
-      : '$' + num(x, 4);
+    if (x === 0) return '$0';
+    if (Math.abs(x) >= 0.01) return '$' + x.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    var a = Math.abs(x), dd = -Math.floor(Math.log10(a)), r = Number(a.toFixed(dd));
+    return (x < 0 ? '-' : '') + (r >= 0.01 ? '$0.01' : '$' + r.toFixed(dd));
   }
   function tokn(x) {
     if (!fin(x)) return 'n/a';
@@ -720,16 +722,19 @@
     });
     return t + '</tbody></table>';
   }
+  // a stored time as local time with its zone, as the rest of the page (P2-6, 0.2.4)
+  function when(iso) { return typeof LM !== 'undefined' && LM.fmt && LM.fmt.dt ? LM.fmt.dt(iso) : (iso || 'n/a'); }
+
   function dataHtml() {
     var d = D.data || {}, fit = D.fit || {}, n = fit.n_runs, runs;
     if (n && typeof n === 'object') runs = Object.keys(n).map(function (k) { return k + ' ' + n[k]; }).join(', ');
     else runs = n == null ? 'not recorded' : String(n);
     var s = '<h2>The fit</h2><table class="kv"><tbody>' +
-      '<tr><td>Fit</td><td><code>' + esc(fit.id) + '</code></td></tr><tr><td>Fitted at</td><td>' + esc(fit.at) + '</td></tr>' +
+      '<tr><td>Fit</td><td><code>' + esc(fit.id) + '</code></td></tr><tr><td>Fitted at</td><td>' + esc(when(fit.at)) + '</td></tr>' +
       '<tr><td>Runs</td><td>' + esc(runs) + '</td></tr>' +
       '<tr><td>Time to fit</td><td>' + esc(fin(d.fit_time_s) ? num(d.fit_time_s, 1) + ' s' : 'not recorded') + '</td></tr>' +
       (d.code_version ? '<tr><td>Code version</td><td>' + esc(d.code_version) + '</td></tr>' : '') +
-      '<tr><td>Page generated</td><td>' + esc(D.generated_at) + '</td></tr></tbody></table>';
+      '<tr><td>Page generated</td><td>' + esc(when(D.generated_at)) + '</td></tr></tbody></table>';
     s += '<h2>Rows per source and head</h2><p class="note">How many rows each data source gave each head. The prior is data too: ' +
       'our sweep, E0, RQ1 and benchmark rows enter as their own sources.</p>' + matrix(bySource(d.rows), 'head', headLabel);
     var rbs = d.runs_by_source || {};

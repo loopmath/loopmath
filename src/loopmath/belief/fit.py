@@ -72,7 +72,7 @@ REASON_NOTES = {
     "attempt without usable cost": "crashed or no usage reported",
     "attempt outside the workflow": "a model attempt at no piece of the run's workflow",
     "duplicate run id": "the same run found twice",
-    SHIPPED_COPY: "your store has the same run id; your copy is used",
+    SHIPPED_COPY: "this run ships with loopmath and is also in your store, so it counts once, as yours",
     "no configuration": "the run records no workflow and settings",
     "workflow ref not resolved": "a workflow this version does not know",
     "workflow has no pieces": "an empty workflow",

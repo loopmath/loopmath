@@ -44,6 +44,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Callable
 
+from ..output import fmt_usd
 from ..types import AcceptanceRule, Configuration, Prediction
 from .gain import Exploration, Slot
 
@@ -114,9 +115,9 @@ def mean_sentence(m: Any, own_runs: int | None) -> str:
 
 
 def usd(x: float) -> str:
-    if 0 < x < 0.01:
-        return "under $0.01"
-    return f"${x:,.2f}"
+    """The 0.2.4 small-cost rule, as every terminal line (`output.fmt_usd`): an exact zero is `$0`, a cost under
+    $0.01 has one significant digit (`$0.002`), never `$0.00` or "under $0.01"; from $0.01 up, two decimals."""
+    return fmt_usd(x)
 
 
 def tokens(x: float) -> str:

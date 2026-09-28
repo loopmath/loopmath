@@ -83,7 +83,7 @@ def test_late_signal_says_the_outcome_and_an_event_the_rule_ignores_gets_a_note(
     assert "note: event 'reverted' does not change the outcome under rule tests (events that do: revert, incident)" in err
     code, out, err = cli(capsys, home, "outcome", "--commit", "abcdef1", "--signal", "revert=PR-9", "--kind", "event")
     assert code == 0, err
-    assert f"on {run} (late, via artifact); outcome now not accepted" in out and "note" not in err
+    assert f"on run {run} (late: the run was already finished), found via artifact; outcome now not accepted" in out and "note" not in err
     code, out, err = cli(capsys, home, "outcome", "--run", run, "--signal", "revert=PR-9", "--kind", "event", "--json")
     assert code == 0 and out["late"]["z"] == 0.0 and "note" not in err
 

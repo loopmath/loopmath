@@ -31,7 +31,7 @@ def _doc(selection: Selection) -> dict:
                 }
             },
         },
-        "nodes": [],
+        "nodes": [{"id": "n1"}],  # `adapt` refuses a document with no sessions
     }
 
 
@@ -157,6 +157,38 @@ def test_adapt_cli_stdout_and_unknown_name(capsys):
     assert captured.out == ""
     assert "unknown adapter 'missing-adapter'" in captured.err
     assert "contract-test" in captured.err
+
+
+def test_adapt_cli_refuses_a_document_with_no_sessions(monkeypatch, capsys):
+    """P3-27: an adapter that finds nothing (omp used to emit run id `omp:empty`) is an error, exit 1."""
+    monkeypatch.setattr(ContractTestAdapter, "emit", lambda self, selection: {**_doc(selection), "nodes": []})
+    assert main(["adapt", "contract-test", "--store", "/nowhere"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error: adapt contract-test found no sessions in /nowhere; nothing written" in captured.err
+
+
+def test_adapt_cli_turns_an_unreadable_store_into_one_line(monkeypatch, capsys):
+    def boom(self, selection):
+        raise FileNotFoundError("contract store does not exist: /nowhere")
+
+    monkeypatch.setattr(ContractTestAdapter, "emit", boom)
+    assert main(["adapt", "contract-test"]) == 1
+    assert capsys.readouterr().err == "error: adapt contract-test: contract store does not exist: /nowhere\n"
+
+
+@pytest.mark.parametrize("name", ["omp", "opencode", "pi", "paseo"])
+def test_real_adapters_on_an_empty_store_exit_1(name, tmp_path, capsys):
+    assert main(["adapt", name, "--store", str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and f"error: adapt {name} found no sessions in {tmp_path}" in captured.err
+
+
+def test_opencode_names_itself_like_the_other_loopmath_adapters(capsys):
+    fixture = Path(__file__).resolve().parent / "fixtures" / "adapters" / "opencode"
+    assert main(["adapt", "opencode", "--store", str(fixture)]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["producer"]["name"] == "loopmath/adapter-opencode" and doc["run"]["id"].startswith("opencode:")
 
 
 def test_adapt_cli_requires_a_positive_limit(capsys):

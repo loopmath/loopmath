@@ -24,12 +24,28 @@ _TOKEN_TOTAL_STREAMS = tuple(key for key, _ in _COST_FIELDS)
 _MAX_NUMBER = 9_007_199_254_740_991
 
 
-def _role_prefix(role: str | None) -> str:
-    if not role:
-        return "top"
+_HARNESS_SHORT = {"claude-code": "claude"}
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,11}")
+_ALWAYS_NUMBERED = {"dev", "reviewer"}
+
+
+def _role_prefix(role: str) -> str:
     if len(role) <= 4:
         return role
     return role[:4] if role.endswith("ner") else role[:3]
+
+
+def _label_prefix(node: GraphNode) -> str:
+    """The readable part of an attempt's display name: its role, or, when the
+    labeller gave it none, what ran it (`claude`, `codex`, `subagent`), so
+    attempts without a role are told apart instead of all reading `top`."""
+    if node.role:
+        return _role_prefix(node.role)
+    if node.source in {"subagent", "external"}:
+        return node.source
+    harness = str(node.harness or "")
+    harness = _HARNESS_SHORT.get(harness, harness)
+    return harness if _PLAIN_NAME.fullmatch(harness) else "session"
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -92,9 +108,13 @@ def _title(node: GraphNode, by_id: dict[str, GraphNode]) -> str:
         return "lead session"
     if node.source == "external":
         return "external launcher session (not in the workspace)"
-    if command.startswith("codex"):
+    if command.startswith("codex") or (not node.role and node.source == "codex"):
         return "codex session"
-    return node.role or node.source or "session"
+    if node.role:
+        return node.role
+    harness = f" ({node.harness})" if node.harness else ""
+    kind = {"top": "top-level session", "subagent": "subagent"}.get(node.source or "", "session")
+    return kind + harness
 
 
 def _lag(edge: GraphEdge) -> float | None:
@@ -211,17 +231,20 @@ def build_html_data(graph: Graph) -> dict:
     for rank, pos in enumerate(order):
         positions[nodes[pos].id].append(rank)
     issues["duplicate_node_ids"] = sum(len(items) - 1 for items in positions.values())
-    role_totals = Counter(node.role for node in nodes)
-    role_seen: Counter = Counter()
+    # Display names in start order: `dev-07`, `rev-12`, `claude-03`. A name
+    # shared by two or more attempts is numbered; dev and reviewer always are.
+    prefixes = [_label_prefix(node) for node in nodes]
+    prefix_totals = Counter(prefixes)
+    prefix_seen: Counter = Counter()
     out_nodes = []
     for rank, pos in enumerate(order):
         node = nodes[pos]
         role = node.role
-        prefix = _role_prefix(role)
-        if role in {"dev", "reviewer"}:
-            role_seen[role] += 1
-            width = len(str(role_totals[role]))
-            label = f"{prefix}-{role_seen[role]:0{width}d}"
+        prefix = prefixes[pos]
+        if role in _ALWAYS_NUMBERED or prefix_totals[prefix] > 1:
+            prefix_seen[prefix] += 1
+            width = len(str(prefix_totals[prefix]))
+            label = f"{prefix}-{prefix_seen[prefix]:0{width}d}"
         else:
             label = prefix
         stamp = parsed[pos]

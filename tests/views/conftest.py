@@ -134,10 +134,10 @@ def probe(tmp_path):
     if not node or not CHROME.exists():
         pytest.skip("node or Google Chrome not found; the in-page check did not run")
 
-    def run(page: Path, script: str | None = None, timeout: float = 60) -> dict:
-        args = [node, str(PROBE), str(page)]
+    def run(page: Path | str, script: str | None = None, timeout: float = 60) -> dict:
+        args = [node, str(PROBE), str(page)]  # a page file, or a page served on http://127.0.0.1:PORT/
         if script is not None:
-            script_path = tmp_path / f"probe-{page.stem}.js"
+            script_path = tmp_path / f"probe-{page.stem if isinstance(page, Path) else 'served'}.js"
             script_path.write_text(script, encoding="utf-8")
             args.append(str(script_path))
         # Own process group, so a timeout kills Chrome with node rather than orphaning it.

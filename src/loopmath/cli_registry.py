@@ -146,7 +146,7 @@ TIER_CHOICES = ["verified", "reported", "heuristic", "asserted"]
 
 
 def _add_recording(sub) -> None:
-    p = sub.add_parser("run", help="record a run: start, record, import, attempt, artifact, finish")
+    p = sub.add_parser("run", help="record a run: start, record, import, attempt, artifact, finish, sessions")
     rs = p.add_subparsers(dest="run_command", required=True)
 
     q = rs.add_parser("start", help="open a run (OCP v0.3 skeleton in the store)")
@@ -178,7 +178,7 @@ def _add_recording(sub) -> None:
     q.add_argument("--model", default=None, metavar="M", help="model name")
     q.add_argument("--effort", default=None, metavar="E", help="reasoning effort")
     q.add_argument("--cwd", default=None, metavar="PATH", help="the folder the agent works in; with no --session its log is matched by this folder, a session that started in the attempt's window, and the model")
-    q.add_argument("--session", default=None, metavar="ID", help="session id, or self for the orchestrator's own Claude Code session, counted only inside this attempt's started-at to ended-at window")
+    q.add_argument("--session", default=None, metavar="ID", help="session id, or self for the orchestrator's own Claude Code session, counted only inside this attempt's started-at to ended-at window (outside Claude Code: the one Claude Code session in this folder active in the last 10 minutes; run sessions lists the ids)")
     q.add_argument("--round", type=int, default=1, metavar="K", help="round of this piece, 1 for the first try")
     q.add_argument("--cause", default="initial", choices=["initial", "sent_back", "gate_failed", "followup", "other"],
                    help="why this attempt was started")
@@ -225,10 +225,13 @@ def _add_recording(sub) -> None:
                    "it replaces the rule the recommendation was made for")
     q.add_argument("--session", action="append", default=[], metavar="[PIECE=]ID", help="a session that worked on the run: a "
                    "Claude Code session id, a Codex thread id, or self for this Claude Code session (repeatable); "
-                   "PIECE= names its piece")
+                   "PIECE= names its piece; run sessions lists the ids. Only the part of a session inside the window "
+                   "counts (a Codex session counts whole)")
     q.add_argument("--cwd", action="append", default=[], metavar="[PIECE=]PATH", help="a folder an agent with no session id "
                    "worked in; its log is matched at finish by folder and time (repeatable)")
-    q.add_argument("--since", default=None, metavar="TS", help="when the work began, without --run (e.g. 2h or an ISO time)")
+    q.add_argument("--since", default=None, metavar="TS", help="when the work began (e.g. 2h or a local ISO time); with "
+                   "--run the default is the run's start")
+    q.add_argument("--until", default=None, metavar="TS", help="when the work ended (e.g. 1h or a local ISO time; default now)")
     q.add_argument("--verified", action="append", default=[], metavar="NAME=VALUE", help="a verdict you observed yourself "
                    "(pass, fail, accept, reject, error)")
     q.add_argument("--reported", action="append", default=[], metavar="NAME=VALUE", help="a verdict someone reported")
@@ -239,6 +242,13 @@ def _add_recording(sub) -> None:
     q.add_argument("--no-fit", action="store_true", help="do not start a background refit")
     _common(q)
     q.set_defaults(slate=None, new_slate=False, func=_lazy("loopmath.store.record:run_record"))
+
+    q = rs.add_parser("sessions", help="list the recent Claude Code and Codex sessions in this folder, with their ids")
+    q.add_argument("--cwd", default=None, metavar="PATH", help="the folder the sessions ran in (default: this one)")
+    q.add_argument("--days", type=float, default=7, metavar="N", help="how far back to look (default 7)")
+    q.add_argument("--limit", type=int, default=10, metavar="N", help="at most this many, newest first (default 10)")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:run_sessions"))
 
     p = sub.add_parser("outcome", help="record a verdict, score, late event or pair preference")
     target = p.add_mutually_exclusive_group(required=True)
@@ -329,16 +339,16 @@ def _add_learning(sub) -> None:
     p = sub.add_parser("share", help="write the shareable part of your store to a file",
                        description="Keeps task types, features, workflows, settings, tokens, dollars and outcomes; "
                                    "repos, tasks and runs only as salted hashes; no titles, paths, commands, session ids or commits.")
-    p.add_argument("--out", default=None, metavar="FILE", help="the share file to write (gzip JSON; check it first with --preview)")
+    p.add_argument("--out", default=None, metavar="FILE", help="the share file to write: plain JSON for FILE.json, gzip JSON for FILE.json.gz or any other name (check it first with --preview)")
     p.add_argument("--since", default=None, metavar="D", help="only runs since then: 90d, 4w, 12h or a date")
     p.add_argument("--preview", action="store_true", help="print exactly what would leave; writes no share file")
     _common(p)
     p.set_defaults(func=_lazy("loopmath.share.commands:share"))
 
-    p = sub.add_parser("prior", help="the shipped prior bundle: show, build, import-shared")
+    p = sub.add_parser("prior", help="the shipped prior bundle: show, build, import-shared, remove-shared")
     ps = p.add_subparsers(dest="prior_command", required=True)
     q = ps.add_parser("build", help="rebuild the packaged prior bundle from the sweep, E0 and RQ1 inputs")
-    q.add_argument("--out", default=None, metavar="DIR", help="where to write the bundle (default: the packaged bundle folder, which it replaces)")
+    q.add_argument("--out", default=None, metavar="DIR", help="where to write the bundle (required)")
     q.add_argument("--sweep-dir", action="append", default=None, metavar="PATH", help="sweep results, one folder per batch; repeatable (default: LOOPMATH_SWEEP_DIR, one folder)")
     q.add_argument("--e0-corpus", default=None, metavar="PATH", help="E0 corpus (default: LOOPMATH_E0_CORPUS)")
     q.add_argument("--rq1-dir", default=None, metavar="PATH", help="RQ1 OCP documents (default: LOOPMATH_PRIOR_RQ1)")
@@ -352,6 +362,10 @@ def _add_learning(sub) -> None:
     q.add_argument("file", metavar="FILE", help="a loopmath.share/1 file written by loopmath share (gzip or plain JSON)")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.share.commands:import_shared"))
+    q = ps.add_parser("remove-shared", help="take an imported organization's runs out of your priors")
+    q.add_argument("org", metavar="ORG", help="the organization import-shared named, as shared:HASH or HASH")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.share.commands:remove_shared"))
 
 
 # ---------------------------------------------------------------- viewing
@@ -408,6 +422,9 @@ def _add_viewing(sub) -> None:
                        help="for you in every folder (user), or for this repository only (project)")
         q.add_argument("--dir", default=None, metavar="PATH", help="the project folder for --scope project "
                        "(default: this folder)")
+        if verb == "install":
+            q.add_argument("--dry-run", action="store_true", help="print every file install would write or "
+                           "change, and write nothing")
         _common(q)
         q.set_defaults(func=_lazy(f"loopmath.skill.commands:{verb}"))
     q = ss.add_parser("show", help="print one skill (default loopmath, the start-here skill) or the shared reference")
@@ -429,7 +446,7 @@ def _add_viewing(sub) -> None:
     q.set_defaults(func=_lazy("loopmath.ocp.commands:migrate"))
 
 
-HIDDEN = frozenset({"plan"})  # callable, but not listed by `loopmath --help`
+HIDDEN = frozenset({"plan", "analyze-e0"})  # callable, but not listed by `loopmath --help`
 
 
 def command_metavar(sub) -> str:

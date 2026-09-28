@@ -381,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m loopmath.graph.dataset", description="write the labeling eval dataset (node and edge items) for one or more workspaces")
     p.add_argument("--workspace", action="append", default=[], help="workspace name to include (repeatable; required unless --all)")
     p.add_argument("--labels", required=True, help="directory holding swarms.json, e2-arms.json, contract-v3.json (any subset)")
-    p.add_argument("--out", default=None, help="write the items as jsonl here (inside the git worktree of the current directory)")
+    p.add_argument("--out", default=None, help="write the items as jsonl here (any path; missing folders are created)")
     p.add_argument("--logs", default=None, help="parse this path instead of the default log roots")
     p.add_argument("--since", type=float, default=DEFAULT_SINCE_DAYS, help=f"only read log files modified in the last N days (default {DEFAULT_SINCE_DAYS:g})")
     p.add_argument("--all", action="store_true", help="read every log file, ignoring --since, and include every workspace a label file names in addition to --workspace")
@@ -392,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out_path = None
     if args.out:
-        out_path, err = _resolve_out(args.out)
+        out_path, err = _resolve_out(args.out, "out.jsonl")
         if err:
             print(err, file=sys.stderr)
             return 2

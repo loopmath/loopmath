@@ -46,6 +46,7 @@ NO_LABELER = ("no labeller chosen. Choose the model that labels your history (an
               "user and never picks one), then rerun with --labeler " + " | ".join(f.split(" ", 1)[0] for f in L.FORMS)
               + ". Local models, GPT and Claude all work; the confirmed choice is saved as config onboard.labeler")
 UNCLASSIFIED_LISTED = 50
+UNTYPED_ADVICE = "a model labeller types them (--labeler claude:MODEL, codex:MODEL or command:CMD)"
 ACTIVE_MINUTES = 30  # a group with activity this recent is still running, not yet an observation
 
 
@@ -123,8 +124,9 @@ def onboard(args: argparse.Namespace) -> int:
         return fail(str(exc))
 
     # The one line printed even when stderr is captured: the wait that follows can be long.
-    print(f"onboard: reading Claude Code and Codex history, {_window_words(since)}; "
-          "a large history can take several minutes", file=sys.stderr, flush=True)
+    print(f"onboard: reading Claude Code and Codex history, {_window_words(since)}"
+          + ("" if H.parse_cache().is_file() else "; a large history can take several minutes on the first read"),
+          file=sys.stderr, flush=True)
     # Then, also when captured, what the answers start from, once (the skill shows this line to the user).
     prior = starting_prior()
     print(prior["line"], file=sys.stderr, flush=True)
@@ -195,6 +197,8 @@ def onboard(args: argparse.Namespace) -> int:
                               "unmatched": len(rejected)}
         if labeler is None:
             notes.append(NO_LABELER)
+        cache_root, cache_bytes = H.cache_size()  # a dry run writes no runs, but it keeps the parse cache
+        payload["cache"] = {"path": str(cache_root), "bytes": cache_bytes}
         return _finish(payload, groups, {}, unclassified, [], None, notes, as_json, labeler)
 
     if labeler is None:
@@ -225,6 +229,10 @@ def onboard(args: argparse.Namespace) -> int:
         labels, rejected = run.labels, run.rejected
         payload["labeler"]["actual"] = run.cost
         payload["labeler"]["calls"] = run.calls
+        if run.calls:  # what the labeller cost, counted in budget and status spend (0.2.4)
+            store.add_spend("labeling", usd=run.cost.get("usd"),
+                            tokens=int(run.cost["tokens"]) if isinstance(run.cost.get("tokens"), (int, float)) else None,
+                            detail={"labeler": labeler.spec, "calls": run.calls, "groups": len(summaries)})
         payload["labeler"]["failed_chunks"] = run.failed_chunks
         if run.problems:
             payload["labeler"]["problems"] = run.problems[:20]
@@ -339,8 +347,10 @@ def _terminal(p: dict, labeler: L.Labeler | None) -> list[str]:
         line = "  keyword preview: " + (", ".join(f"{k} {v:,}" for k, v in prev.items()) or "nothing matched")
         if preview.get("unmatched"):
             line += f"; {preview['unmatched']:,} matched no keyword"
+            if labeler is None or labeler.name == "none":
+                line += f"; {UNTYPED_ADVICE}"
         lines.append(line)
-        untyped = preview.get("unmatched") or 0
+        untyped = 0  # said once, on the preview line
     else:
         by_type = p["classified"]["by_type"]
         lines.append(f"  classified: {_n(p['classified']['total'], 'run')} written"
@@ -352,8 +362,7 @@ def _terminal(p: dict, labeler: L.Labeler | None) -> list[str]:
     if un["total"]:
         lines.append(f"  not classified: {un['total']:,} (" + ", ".join(f"{k} {v:,}" for k, v in un["by_reason"].items()) + ")")
     if untyped and (labeler is None or labeler.name == "none"):
-        lines.append(f"  {_n(untyped, 'group')} got no type from keywords; a model labeller types them "
-                     "(--labeler claude:MODEL, codex:MODEL or command:CMD)")
+        lines.append(f"  {_n(untyped, 'group')} got no type from keywords; {UNTYPED_ADVICE}")
     if p["usual"]:
         lines.append("  usual workflow per task type and repo (runs with it, of all runs):")
         rows = sorted(p["usual"], key=lambda u: (-u["total"], u["type"], u["repo"]))[:8]
@@ -366,7 +375,11 @@ def _terminal(p: dict, labeler: L.Labeler | None) -> list[str]:
     for note in p["notes"]:
         lines.append(f"  note: {note}")
     if p["dry_run"]:
-        lines.append("  dry run: no labelling call, nothing written. Run without --dry-run (and with --yes) to label and record.")
+        cache = p.get("cache") or {}
+        kept = (f"; it kept the log parse cache ({H.size_text(cache['bytes'])} in {cache['path']}) so the next read is fast"
+                if cache.get("bytes") else "")
+        lines.append(f"  dry run: no labelling call, no runs or fit written{kept}. "
+                     "Run without --dry-run (and with --yes) to label and record.")
     elif labeler is None:
         lines.append("  nothing labelled or written: no labeller chosen")
     return lines[:25]

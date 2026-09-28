@@ -116,7 +116,9 @@ details.v-more > .v-body { padding: 0 0 1.4rem; }
   .v-wl .r.h { display: none; }
   .v-wl .g { grid-area: g; } .v-wl .nm { grid-area: n; } .v-wl .ch { grid-area: c; } .v-wl .dist { grid-area: d; } .v-wl .cs { grid-area: s; text-align: left; }
 }
-.v-models { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 12px 18px; }
+/* 0.2.4 H6: cards wrap and the last row's cards grow to fill it, so no card sits alone beside an empty track */
+.v-models { display: flex; flex-wrap: wrap; gap: 12px 18px; }
+.v-models > .v-mb { flex: 1 1 300px; min-width: 0; }
 .v-mb { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 0.7rem 0.9rem; }
 .v-mb h3 { margin: 0 0 0.2rem; font: 600 1rem var(--sans); overflow-wrap: anywhere; }
 .v-mb .prov { font-size: 12px; color: var(--muted); }

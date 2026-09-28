@@ -13,7 +13,7 @@ Use exactly the commands below, and read their JSON as printed. Flags and fields
 ## 1. Gather what the command needs (no question)
 
 - **The run.** The run id from `loopmath run start` earlier in this conversation. If you do not have it, run `loopmath status --json` and read `open_runs[]` (`run`, `type`, `repo`, `started_at`). Take the entry whose type and repo match the task, the latest first. With no open run, record with the second form in step 2.
-- **The sessions**, one `--session [PIECE=]ID` each. The ID is a session id the user gives you (as given), the UUID you gave `claude --session-id`, the `thread_id` from `codex exec --json`, or the word `self` only for work you did yourself in this Claude Code session (in Codex, give your own piece with `--cwd PIECE=PATH`). `PIECE=` is optional: a piece of the run (`plan`, `implement`, `review`), never `self`. So a session the user ran is `--session UUID`, or `--session implement=UUID` when you know it implemented. For a piece run by an agent with no session id (interactive Codex, for example), give `--cwd PIECE=PATH`, the folder it worked in.
+- **The sessions**, one `--session [PIECE=]ID` each. The ID is a session id the user gives you (as given), the UUID you gave `claude --session-id`, the `thread_id` from `codex exec --json`, or the word `self` only for work you did yourself in this Claude Code session (in Codex, give your own piece with `--cwd PIECE=PATH`). `PIECE=` is optional: a piece of the run (`plan`, `implement`, `review`), never `self`. So a session the user ran is `--session UUID`, or `--session implement=UUID` when you know it implemented. For a piece run by an agent with no session id (interactive Codex, for example), give `--cwd PIECE=PATH`, the folder it worked in. Outside a Claude Code tool shell, `--session self` uses the one Claude Code session in this folder active in the last 10 minutes; otherwise run `loopmath run sessions` and pass the id.
 - **The verdicts.** If the task has tests, you can run them, and nobody has run them since the last change, run them now. Your own observations are `--verified` (a test command's exit code, CI status read from its API, a merged PR). What an agent or the user told you is `--reported`: the user saying the tests passed is `--reported tests=pass`. Values: `pass`, `fail`, `accept`, `reject`, `error`.
 - **Scores**, when the user's goal names one (`--score runtime_s=182`). A score you could not measure: `--score NAME=`.
 
@@ -33,7 +33,7 @@ loopmath run record --type TYPE --repo REPO --title "TITLE" --workflow SHAPE \
   --set PIECE=HARNESS:MODEL:EFFORT --source habit --session self --since TS --verified tests=pass --json
 ```
 
-`--since TS` (an ISO time, or `2h`) is when the work on this task began. Give it when this session did other work before the task (else the whole session counts), and whenever you use `--cwd` without `--run`.
+`--since TS` (an ISO time, or `2h`) is when the work on this task began. Give it when this session did other work before the task (else the whole session counts), and whenever you use `--cwd` without `--run`. With `--run`, a session that started before the run is counted from the run's start; give `--since TS` (and `--until TS`) when the task's work began or ended at another time. A Codex session cannot be cut to a window and counts whole.
 
 Read `run`, `attempts[]` (`piece`, `session`, `model`, `how`), `unmatched[]` (`attempt`, `reason`), `commits[]` (`sha`), `signals[]`, `cost.usd`, `outcome`, `receipt.line`, `fit.started`, `notes[]`.
 

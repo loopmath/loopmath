@@ -177,7 +177,7 @@
     : `<div id="run"><div class="n">${r && r.run ? usd(r.run.mean) : 'n/a'}</div><div class="l">a run ${info('run')}</div><div class="r">${median(r)}${tail(r && r.run)}</div></div>`;
   const supportText = n => !num(n) ? 'n/a' : n === 0 ? 'none' : fmt.int(n);
   // D96/D102: the look-ahead value in dollars, as lane 6's recommend message words it.
-  const savingText = gp => !gp || !num(gp.usd) ? 'n/a' : `expected to save about ${gp.usd > 0 && gp.usd < 0.01 ? 'under $0.01' : '$' + gp.usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} per future similar run`;
+  const savingText = gp => !gp || !num(gp.usd) ? 'n/a' : `expected to save about ${Math.abs(gp.usd) < 0.01 ? fmt.usd(gp.usd) : '$' + gp.usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} per future similar run`;
   // I20 (0.2.1, lane 21A): one payback number everywhere: ceil(price now / gain), at least 1, as message.py words it.
   const paybackText = n => { if (!num(n)) return 'n/a'; const k = Math.max(1, Math.ceil(n - 1e-9)); return `about ${k} similar run${k === 1 ? '' : 's'}`; };
   // D119 Z2: lane 2A's sentence, shown verbatim; the page checks only that it is set.
@@ -251,11 +251,22 @@
     });
     return out;
   }
+  // P3-13 (0.2.4): the count is every numbered option in the data; the pair is not a point of its own, and its second
+  // workflow is named, since it is often not a numbered option
+  function optionsText(points) {
+    const n = OPTS.length, optOf = cfg => OPTS.find(o => o.key !== 'pair' && o.config === cfg);
+    let s = `${n} numbered option${n === 1 ? '' : 's'}` + (points < n ? `, ${points} of them drawn as ${points === 1 ? 'a point' : 'points'}` : '');
+    if (pairOpt) {
+      const [a, b] = pairOpt.c.members, oa = optOf(a), ob = optOf(b);
+      s += `; option ${pairOpt.n} runs ${oa ? `option ${oa.n}` : esc(labelOf(a))} and ${ob ? `option ${ob.n}` : `a workflow worth trying, ${esc(labelOf(b))},`} side by side`;
+    }
+    return s + '.';
+  }
   function chartBlock() {
     const n = chartOpts().length;
     if (!n) return '';
     return `<section class="v-block v-cc" id="cc"><p class="v-kicker">Your options</p><h2>${esc(isScore && !FB ? `Chance to reach ${fmt.x(target.target)}` : 'Chance of an accepted result')} against cost</h2>` +
-      `<p class="v-sub">${n} numbered option${n === 1 ? '' : 's'}${pairOpt ? `; option ${pairOpt.n} runs two of them side by side` : ''}. Up and to the left is better. The faint dots are the other priced workflows.</p>` +
+      `<p class="v-sub" id="ccsub">${optionsText(n)} Up and to the left is better. The faint dots are the other priced workflows.</p>` +
       `<div class="v-seg" role="group" aria-label="cost axis"><button type="button" data-x="ell" aria-pressed="true">cost per accepted result</button><button type="button" data-x="run" aria-pressed="false">run cost</button></div>` +
       `<div id="ccplot"></div><div class="v-legend" id="cclegend">${bandKey([['50', 2.4], ['80', 1.2], ['90', 0.6]])}<span><span class="dt" style="background:var(--accent)"></span>recommended</span><span><span class="dt" style="background:var(--dot);opacity:.6;width:6px;height:6px"></span>other workflows</span></div></section>`;
   }
@@ -407,7 +418,7 @@
         `<td class="num"><b>${usd(r.ell.mean)}</b><span class="sub">${rng(r.ell, usd)}</span>${tail(r.ell)}</td>` +
         `<td class="num">${supportText(r.support)}</td></tr>` + (openRow === r.id ? detailRow(r) : '');
     }).join('');
-    body.querySelectorAll('.v-opt-graph').forEach(el => { if (D.graphs && D.graphs[el.dataset.cfg]) V.graph(el, D.graphs[el.dataset.cfg]); });
+    body.querySelectorAll('.v-opt-graph').forEach(el => { if (D.graphs && D.graphs[el.dataset.cfg]) V.graph(el, D.graphs[el.dataset.cfg], { fit: true }); });
   }
   function detailRow(r) {
     const diff = ((r.c && r.c.diff_vs_usual) || []).filter(Boolean);
@@ -456,7 +467,7 @@
     const pg = document.getElementById('pg'); pg.innerHTML = '';
     const graph = D.graphs && D.graphs[goalId];
     if (graph) {
-      V.graph(pg, graph);
+      V.graph(pg, graph, { fit: true });
       const nodes = graph.nodes || [], wide = nodes.some(n => n.kind === 'piece' && (n.width || 1) > 1), loops = (graph.gates || []).some(gt => gt && gt.on_fail);
       document.getElementById('pgcap').textContent = 'Each box is an agent with its model and effort and its share of the predicted cost per run.' +
         (wide ? ' A piece of width n is drawn as n workers.' : '') + (loops ? ' The dashed loop sends failed work back.' : '');

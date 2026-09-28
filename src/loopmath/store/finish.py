@@ -30,7 +30,7 @@ from ..types import AcceptanceRule, Configuration, Evidence, Receipt, Task
 from ..workflows.ocp import configuration_from_ocp
 from . import runs as R
 from .home import Conflict, NotFound, Store, StoreError, ValidationFailed
-from .ids import now_iso, parse_ts
+from .ids import now_iso, parse_ts, utc_iso
 from .lock import read_json
 
 Settle = Callable[[dict[str, Any]], tuple[dict[str, Any], Any]]
@@ -315,7 +315,7 @@ def _close(doc: dict[str, Any], now: str) -> None:
         # and the signals folded in at finish: recorded before it, they are not late (views mark late after ended_at)
         ends += [parse_ts(s.get("observed_at")) for s in run.get("signals") or [] if isinstance(s, dict)]
         ends = [e for e in ends if e is not None]
-        run["ended_at"] = max(ends).isoformat() if ends else now
+        run["ended_at"] = utc_iso(max(ends)) if ends else now
     if not any(isinstance(e, dict) and e.get("type") == "run_finished" for e in doc.get("events") or []):
         R.add_event(doc, "run_finished", at=run["ended_at"])
     R.set_store_ext(doc, state=R.FINISHED)

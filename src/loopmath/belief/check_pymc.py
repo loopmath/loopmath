@@ -21,9 +21,13 @@ from __future__ import annotations
 import time
 
 import numpy as np
-import pymc as pm
-import pytensor
-import pytensor.tensor as pt
+
+from ..fit_bayes import use_store_compiledir
+
+use_store_compiledir()  # before pytensor is imported: its compile folder goes in the store's cache
+import pymc as pm  # noqa: E402
+import pytensor  # noqa: E402
+import pytensor.tensor as pt  # noqa: E402
 
 from .gaussian import HYPER_SD, SIGMA_PRIOR_SD, GaussianHead
 

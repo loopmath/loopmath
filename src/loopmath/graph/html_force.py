@@ -40,7 +40,15 @@ const Force = {
       items.forEach(point => { if (point.t === 'n' && N[point.i].role === 'lead') { point.y = cy; point.vy = 0; return; } point.y += point.vy; point.vy *= 0.45; point.y = Math.max(MT + point.r, Math.min(H - MB - point.r, point.y)); });
     }
     const root = svg('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` }, host);
-    timeTicks(span).forEach(at => { const tx = x(at); svg('line', { x1: tx, y1: MT - 4, x2: tx, y2: H - MB, class: 'grid' }, root); text(root, tx + 3, MT - 9, fmt.clock(at) + '  +' + fmt.hm(at), 'axlbl'); });
+    // A tick label near the right end is drawn to the left of its line, so it stays on the page,
+    // and a label that would overlap the one before it is left out (the line stays).
+    let labelEnd = -1e9;
+    timeTicks(span).forEach(at => {
+      const tx = x(at), wide = 96, end = tx + wide > W, left = end ? tx - 3 - wide : tx + 3;
+      svg('line', { x1: tx, y1: MT - 4, x2: tx, y2: H - MB, class: 'grid' }, root);
+      if (left < labelEnd + 6) return;
+      text(root, end ? tx - 3 : tx + 3, MT - 9, fmt.clock(at) + '  +' + fmt.hm(at), 'axlbl', end ? { 'text-anchor': 'end' } : null); labelEnd = left + wide;
+    });
     svg('line', { x1: ML, y1: MT, x2: W - MR, y2: MT, class: 'axis' }, root);
     const durationGroup = svg('g', {}, root), edgeGroup = svg('g', {}, root), nodeGroup = svg('g', {}, root);
     items.forEach(point => { if (point.t !== 'n') return; const n = N[point.i]; if (n.untimed || n.dur == null || n.dur < 1) return; svg('line', { x1: point.x, y1: point.y, x2: Math.max(x(n.t1), point.x + 1), y2: point.y, stroke: color(n, state.colorBy), 'stroke-width': 4, opacity: 0.22, 'stroke-linecap': 'round' }, durationGroup); });

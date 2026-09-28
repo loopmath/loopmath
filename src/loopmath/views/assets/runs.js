@@ -201,7 +201,7 @@
     h += `<details class="raw" id="d-raw"><summary>Raw OCP document</summary><pre></pre></details>`;
     host.innerHTML = h;
     try { LM.Graph.render(document.getElementById('d-wf'), wf, {}); } catch (e) { document.getElementById('d-wf').innerHTML = `<p class="warn">The workflow graph could not be drawn: ${esc(e.message)}</p>`; }
-    if (rg) { try { LM.RunGraph.render(document.getElementById('d-rg'), rg, {}); } catch (e) { document.getElementById('d-rg').innerHTML = `<p class="warn">The attempt layouts could not be drawn: ${esc(e.message)}</p>`; } }
+    if (rg) { try { LM.RunGraph.render(document.getElementById('d-rg'), rg, { workflow: wf }); } catch (e) { document.getElementById('d-rg').innerHTML = `<p class="warn">The attempt layouts could not be drawn: ${esc(e.message)}</p>`; } }
     const raw = document.getElementById('d-raw');
     raw.addEventListener('toggle', () => { const pre = raw.querySelector('pre'); if (raw.open && !pre.textContent) pre.textContent = JSON.stringify(det.doc, null, 2); });
   }

@@ -2,7 +2,7 @@
 // Headless check of one view page (lane 12): load it in headless Chrome with name resolution
 // disabled, run an optional script in the page, and print one JSON object:
 // {load_ms, exceptions, console_errors, network, result}.
-// usage: node tests/views/view_probe.mjs PAGE.html [SCRIPT.js]
+// usage: node tests/views/view_probe.mjs PAGE.html|http://127.0.0.1:PORT/ [SCRIPT.js]
 // The script is an expression whose value (awaited) becomes `result`.
 
 import { spawn } from 'node:child_process';
@@ -16,13 +16,14 @@ const WIDTH = Number(process.env.LOOPMATH_PROBE_WIDTH) || 1366;  // 820 or 1180 
 const [input, scriptFile] = process.argv.slice(2);
 if (!input) { process.stderr.write('usage: node view_probe.mjs PAGE.html [SCRIPT.js]\n'); process.exit(2); }
 const script = scriptFile ? await readFile(scriptFile, 'utf8') : null;
+const served = /^http:\/\/127\.0\.0\.1:\d+\//.test(input);  // a page a test serves on 127.0.0.1 (the builder, 0.2.4)
 const profile = await mkdtemp(join(tmpdir(), 'lm-view-probe-'));
 const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--disable-background-networking', '--disable-component-update',
   '--disable-default-apps', '--disable-sync', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0',
   // A mock keychain: a fresh profile must not ask macOS for a keychain (a sandboxed caller has none,
   // and each probe then raises a system dialog).
   '--use-mock-keychain', '--password-store=basic',
-  '--host-resolver-rules=MAP * ~NOTFOUND', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'ignore'] });
+  `--host-resolver-rules=MAP * ~NOTFOUND${served ? ', EXCLUDE 127.0.0.1' : ''}`, `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'ignore'] });
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const exited = new Promise(done => chrome.once('exit', done));
 // Stop Chrome and wait until it has gone: SIGTERM, then SIGKILL after 3 s.
@@ -69,7 +70,7 @@ try {
   await call('Emulation.setDeviceMetricsOverride', { width: WIDTH, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId);
   const loaded = new Promise(ok => on('Page.loadEventFired', m => { if (m.sessionId === sessionId) ok(); }));
   const t0 = Date.now();
-  await call('Page.navigate', { url: pathToFileURL(resolve(input)).href }, sessionId);
+  await call('Page.navigate', { url: served ? input : pathToFileURL(resolve(input)).href }, sessionId);
   await loaded;
   const load_ms = Date.now() - t0;
   await delay(100);

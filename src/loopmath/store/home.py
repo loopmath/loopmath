@@ -10,6 +10,7 @@ $LOOPMATH_HOME/            default ~/.loopmath
   recs/<rec>.json
   fits/<fit>/ and fits/latest
   workflows/*.toml, priors/, views/, share/
+  spend.jsonl              money loopmath spent outside a run (onboard's labeller), one line per record
   lock
 ```
 
@@ -28,11 +29,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from ..output import fmt_time
 from ..output import home as default_home
 from ..types import AcceptanceRule, Configuration, Signal, Task
+from . import run_names
 from . import runs as R
 from .config import Config
-from .ids import new_id, now_iso, parse_ts
+from .ids import instant, new_id, now_iso, parse_ts, utc_iso
 from .lock import (append_line, atomic_write_json, read_json, read_jsonl, store_lock)
 
 SUBDIRS = ("runs", "signals", "receipts", "recs", "fits", "workflows", "priors", "views")
@@ -79,13 +82,23 @@ class Store:
     def config_path(self) -> Path:
         return self.home / "config.toml"
 
+    @property
+    def spend_path(self) -> Path:
+        return self.home / "spend.jsonl"
+
     def run_path(self, run: str) -> Path:
-        self._check_id(run)
-        return self.runs_dir / f"{run}.ocp.json"
+        return self.runs_dir / f"{self._run_stem(run)}.ocp.json"
 
     def signals_path(self, run: str) -> Path:
-        self._check_id(run)
-        return self.home / "signals" / f"{run}.jsonl"
+        return self.home / "signals" / f"{self._run_stem(run)}.jsonl"
+
+    @staticmethod
+    def _run_stem(run: str) -> str:
+        """The file name for a run id; ids from adapters (`pi-adapt:...`) are escaped (run_names.py)."""
+        stem = run_names.file_stem(run)
+        if stem is None:
+            raise StoreError(f"not a valid run id: {run!r}")
+        return stem
 
     def receipt_path(self, rct: str) -> Path:
         self._check_id(rct)
@@ -140,7 +153,7 @@ class Store:
         """Index rows, oldest first. Filters: any index field by equality, plus `since` (ISO time or datetime)."""
         since = filters.pop("since", None)
         since_dt = parse_ts(since) if isinstance(since, str) else since
-        rows = sorted(self.index_rows().values(), key=lambda r: str(r.get("started_at") or ""))
+        rows = sorted(self.index_rows().values(), key=lambda r: instant(r.get("started_at")))  # by instant, not string
         for row in rows:
             if any(v is not None and row.get(k) != v for k, v in filters.items()):
                 continue
@@ -178,6 +191,32 @@ class Store:
         from .budget import spend
 
         return spend(self, period)["usd"]
+
+    def spend_records(self) -> list[dict[str, Any]]:
+        """Every `add_spend` record, oldest first; a torn line is skipped."""
+        return read_jsonl(self.spend_path)
+
+    def add_spend(self, kind: str, *, usd: float | None, tokens: int | None = None, at: str | None = None,
+                  detail: dict[str, Any] | None = None) -> str:
+        """Record money loopmath itself spent outside any run, for `budget` and `status`: `kind="labeling"`
+        is onboard's labeller calls. `usd` None is a cost the labeller did not report (counted as unknown,
+        never zero). One line in spend.jsonl; returns its `spd_` id."""
+        if not isinstance(kind, str) or not kind.strip():
+            raise StoreError("a spend record needs a kind, for example labeling")
+        if usd is not None and (isinstance(usd, bool) or not isinstance(usd, (int, float)) or not usd >= 0):
+            raise StoreError(f"a spend record's usd is a number at least 0, or None; got {usd!r}")
+        if tokens is not None and (isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0):
+            raise StoreError(f"a spend record's tokens is a whole number at least 0, or None; got {tokens!r}")
+        if at is not None and parse_ts(at) is None:
+            raise StoreError(f"not an ISO 8601 timestamp: {at!r}")
+        rid = new_id("spd")
+        row: dict[str, Any] = {"id": rid, "kind": kind.strip(), "at": at or now_iso(),
+                               "usd": None if usd is None else round(float(usd), 6), "tokens": tokens}
+        if detail:
+            row["detail"] = dict(detail)
+        with self.lock():
+            append_line(self.spend_path, row)
+        return rid
 
     # ------------------------------------------------------------ writing: helpers
     def _write(self, doc: dict[str, Any]) -> None:
@@ -258,7 +297,7 @@ class Store:
                 raise StoreError(f"run {run} has no piece {piece!r} (pieces: {pieces})")
             if R.attempt(doc, att) is not None:
                 raise StoreError(f"attempt {att} already exists")
-            started = attempt.get("started_at") or now_iso()
+            started = utc_iso(attempt.get("started_at")) or now_iso()  # stored in UTC (0.2.4)
             rec = R.attempt_record(doc, att_id=att, piece=piece, harness=attempt["harness"], model=attempt["model"],
                                    effort=attempt.get("effort"), cwd=attempt.get("cwd"), session=attempt.get("session"),
                                    round_=attempt.get("round") or 1, cause=attempt.get("cause") or "initial",
@@ -270,6 +309,23 @@ class Store:
 
         return self._update(run, apply)
 
+    def move_start(self, run: str, started_at: str) -> str:
+        """Move an open run's start back to `started_at` (`run record --run --since` before `run start`):
+        `run.started_at` and its `run started` note, so the events stay in time order; the index row too."""
+
+        def apply(doc: dict[str, Any]) -> str:
+            self._require_open(doc)
+            doc.setdefault("run", {})["started_at"] = started_at
+            for ev in doc.get("events") or []:
+                if isinstance(ev, dict) and ev.get("type") == "note" and ev.get("detail") == "run started":
+                    ev["at"] = started_at
+            return started_at
+
+        with self.lock():
+            out = self._update(run, apply)
+            self._index(self._read(run))
+        return out
+
     def end_attempt(self, run: str, att: str, status: str, ended_at: str | None) -> str:
         """Settle attempt `att`; returns the recorded end time (now when `ended_at` is None)."""
 
@@ -280,9 +336,10 @@ class Store:
                 raise NotFound(f"run {run} has no attempt {att}")
             started, end = parse_ts(rec.get("started_at")), parse_ts(ended_at)
             if started is not None and end is not None and end < started:
-                raise EndBeforeStart(f"--ended-at {ended_at} is before attempt {att} started ({rec['started_at']}); "
+                raise EndBeforeStart(f"--ended-at {ended_at} is before attempt {att} started "
+                                     f"({fmt_time(rec['started_at'], seconds=True)}); "
                                      "give its end, at or after the start")
-            ended = ended_at or now_iso()
+            ended = utc_iso(ended_at) or now_iso()  # stored in UTC (0.2.4)
             rec["status"] = status
             rec["ended_at"] = ended
             rec["outcome"] = {"result": status, "evidence": "reported"}
@@ -400,8 +457,8 @@ class Store:
         from .finish import validate
 
         run = (doc.get("run") or {}).get("id")
-        if not isinstance(run, str) or not R.valid_run_id(run):
-            raise StoreError(f"run.id {run!r} is not usable as a file name ([A-Za-z0-9._-], at most 200)")
+        if run_names.file_stem(run) is None:
+            raise StoreError(f"run.id {run!r} cannot be stored: a run id {run_names.RULE}")
         if check:
             result = validate(doc)
             if result["errors"]:

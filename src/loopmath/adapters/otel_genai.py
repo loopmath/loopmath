@@ -383,7 +383,7 @@ class OtelGenAIAdapter(Adapter):
         return {
             "ocp": "0.2",
             "producer": {
-                "name": "dagr-adapter-otel-genai",
+                "name": "loopmath/adapter-otel-genai",
                 "framework": "+".join(harnesses) if harnesses else "unknown",
                 "source_contract": "OTLP/JSON file exporter",
                 "capabilities": {

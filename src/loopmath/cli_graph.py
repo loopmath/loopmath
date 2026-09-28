@@ -10,6 +10,8 @@ from .cli_support import _pipeline_counters, _scan_snapshot_id
 
 
 GRAPH_FORMATS = ("ocp", "json", "dot", "run", "html")
+# The file name a refused directory `--out` suggests, by format.
+_OUT_EXAMPLES = {"ocp": "out.ocp.json", "json": "out.json", "dot": "out.dot", "run": "out.run.json", "html": "out.html"}
 # Graph.meta keys that are totals, not exclusions: printed in the headline, not the list.
 _GRAPH_META_TOTALS = (
     "n_nodes",
@@ -47,21 +49,21 @@ def _worktree_root():
     return Path(r.stdout.strip()).resolve()
 
 
-def _resolve_out(out: str):
-    """`--out` resolved against the worktree root (the git top level of the
-    current directory); anything outside it is refused, and so is any `--out`
-    when the current directory is not inside a git worktree. Returns (path, None)
-    or (None, error message); nothing is written on refusal."""
+def _resolve_out(out: str, example: str = "out.json"):
+    """`--out` as the user named it: any path, relative to the current directory,
+    with `~` expanded. A path that is an existing directory is refused (writing
+    would replace it), and so is one under an existing file, which cannot be a
+    folder. Returns (path, None) or (None, error message); nothing is written on
+    refusal. Missing parent folders are created when the file is written.
+    `example` is the file name the directory refusal suggests."""
     from pathlib import Path
 
-    root = _worktree_root()
     target = Path(out).expanduser().resolve()
-    if root is None:
-        return None, f"error: --out {out} refused: {Path.cwd()} is not inside a git worktree (git rev-parse --show-toplevel failed), so there is no worktree to write into; run from inside one or drop --out"
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return None, f"error: --out {out} resolves to {target}, outside the worktree {root}; the extractor writes only inside it"
+    if target.is_dir():
+        return None, f"error: --out {out} is a directory; name a file, for example {Path(out) / example}"
+    blocker = next((p for p in target.parents if p.exists()), None)
+    if blocker is not None and not blocker.is_dir():
+        return None, f"error: --out {out} cannot be written: {blocker} is a file, not a folder"
     return target, None
 
 
@@ -106,9 +108,9 @@ def graph_verb(args: argparse.Namespace) -> int:
     self-contained interactive visualizer. Everything the
     pipeline excluded (files skipped, cut by `--limit` or the time window,
     records ungraded or unpriced) and everything the extractor could not place
-    is counted in the graph's meta, which every format carries, and printed on
-    stderr. `--quiet` silences progress
-    only; the counters always print.
+    is counted in the graph's meta, which every format carries; `--verbose`
+    prints every counter on stderr, and by default only a summary prints.
+    `--quiet` silences progress only.
     """
     import json
 
@@ -125,7 +127,7 @@ def graph_verb(args: argparse.Namespace) -> int:
 
     out_path = None
     if args.out:
-        out_path, err = _resolve_out(args.out)
+        out_path, err = _resolve_out(args.out, _OUT_EXAMPLES.get(args.format, "out.json"))
         if err:
             print(err, file=sys.stderr)
             return 2
@@ -317,24 +319,31 @@ def graph_verb(args: argparse.Namespace) -> int:
             f"  imported {len(args.ocp)} OCP document(s); "
             "costs and evidence tiers kept as supplied"
         )
+    counters: list[str] = []
     for key in sorted(m):
         value = m[key]
         if key.endswith("_reason"):
             continue
         if value is None and f"{key}_reason" in m:
-            say(f"  {key}: unknown ({m[f'{key}_reason']})")
+            counters.append(f"  {key}: unknown ({m[f'{key}_reason']})")
         elif (
             isinstance(value, (int, float))
             and not isinstance(value, bool)
             and value
             and key not in _GRAPH_META_TOTALS
         ):
-            say(f"  {key}: {value}")
+            counters.append(f"  {key}: {value}")
     for key in sorted(emitter):
         # The run exporter is a full honesty ledger: print every one of its
         # counters, including zero, so a collision class is never silent.
         if emitter[key] or (args.format == "run" and key.startswith("run.")):
-            say(f"  emitter.{key}: {emitter[key]}")
+            counters.append(f"  emitter.{key}: {emitter[key]}")
+    # The counters are for whoever debugs the extractor; every format carries them in its meta.
+    if getattr(args, "verbose", False):
+        for line in counters:
+            say(line)
+    elif counters:
+        say(f"  {len(counters)} more counts of what was skipped or could not be placed: add --verbose")
     if out_path is not None:
         say(f"wrote {out_path} ({args.format}) in {time.time() - t0:.1f} s")
     return 0

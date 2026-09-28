@@ -124,6 +124,8 @@ def test_report_calibration_cost_per_accepted_and_html(tmp_path, capsys):
         run = f"run_r{i}"
         doc = _doc(run)
         doc["run"]["configuration"]["source"] = source
+        if source == "habit":  # onboard's run: its task came from history
+            doc["run"]["task"]["source"] = {"kind": "history"}
         doc["attempts"] = finished_doc(run, usd=usd)["attempts"]
         store.import_run(doc)
         _receipt(store, run, p, z, usd, 0.5, 2.5)

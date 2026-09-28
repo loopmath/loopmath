@@ -466,8 +466,16 @@ def test_the_text_says_what_ell_is_once_and_alternatives_differ_in_words(env, ca
     assert usual.endswith(f"80% success, $2.00 a run (median ${med:,.2f}; 360,000 tokens), expected rescue $0.50, "
                           f"expected cost per accepted result ${ell:,.2f} (lower is better)")
     assert text.count("expected cost per accepted result") == 1 and " ell " not in text and " pp" not in text
-    for a in obj["alternatives"]:
-        assert f"  {a['label']}: {delta_words(a['deltas'], 'the reference')}" in text.splitlines()
+    # P3-12 (0.2.4): each alternative in its own numbers, then what it changes from the recommended pick
+    from loopmath.recommend.message import usd
+
+    alt = [x for x in text.splitlines()[text.splitlines().index("Alternatives:") + 1:] if x.startswith("  ")]
+    for a in obj["alternatives"][:len(alt)]:
+        own = (f"  {a['label']}: {round(a['prediction']['p_success']['mean'] * 100)}% success, "
+               f"{usd(a['numbers']['run_cost_usd']['mean'])} a run, {usd(a['numbers']['cost_per_accepted_usd']['mean'])} "
+               f"per accepted result")
+        assert any(x.startswith(own) for x in alt), own
+    assert len(set(alt)) == len(alt) and "than the reference" not in "".join(alt)
     assert delta_words({"success_pp": 8.4, "cost_pct": -90.2, "ell_usd": -46.021}) == (
         "success 8 points higher, run cost 90% lower, $46.02 less per accepted result than the usual")
     assert delta_words({"success_pp": -1.2, "cost_pct": 4.0, "ell_usd": 0.5}) == (

@@ -16,13 +16,15 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from ..output import EXIT_LOCKED, EXIT_NOT_FOUND, EXIT_OK, EXIT_USER, emit_json, html_path, write_html
+from ..output import (EXIT_LOCKED, EXIT_NOT_FOUND, EXIT_OK, EXIT_USER, emit_json, fmt_time, fmt_usd, html_path,
+                      write_html)
 from ..taskmodel import BUILTIN_FEATURES, HORIZON_KEY, FeatureSet, horizon_value, parse_horizon
 from ..types import TASK_TYPE_IDS, TIERS, AcceptanceRule, Configuration, Setting, Signal, Task
+from . import run_names
 from . import runs as R
 from .config import KNOWN_ROOTS, ConfigError, coerce, split_key
 from .home import EndBeforeStart, NotFound, Store, StoreError, ValidationFailed
-from .ids import new_id, normalize_ts, now_iso, parse_since
+from .ids import new_id, normalize_ts, now_iso, parse_since, utc_iso
 from .lock import StoreLocked
 
 VERDICTS = ("accept", "reject", "pass", "fail", "error")
@@ -86,7 +88,7 @@ def _count(n: int, word: str) -> str:
 
 
 def _money(usd: float | None, tokens: float | int | None) -> str:
-    u = "unknown" if usd is None else f"${usd:,.2f}"
+    u = "unknown" if usd is None else fmt_usd(usd)
     t = "unknown tokens" if tokens is None else f"{int(tokens):,} tokens"
     return f"{u}, {t}"
 
@@ -472,15 +474,48 @@ def run_start(args: argparse.Namespace) -> int:
 
 # ================================================================ run attempt, artifact
 def _self_session(harness: str) -> str:
-    """Exact under Claude Code, an error anywhere else."""
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    """Exact under Claude Code; outside it, the one Claude Code session in this folder active in the last
+    minutes (a note on stderr says so); an error anywhere else, naming `run sessions`."""
+    from ..logmatch.match import SESSIONS_HINT, SessionError, default_roots, resolve_session
+
     if harness != "claude-code":
         raise UserError("--session self names the Claude Code session running this command; "
-                        f"for a {harness} attempt pass its session id")
-    if not sid:
-        raise UserError("--session self works inside Claude Code only (CLAUDE_CODE_SESSION_ID is not set); "
-                        "pass the session id")
+                        f"for a {harness} attempt pass its session id ({SESSIONS_HINT})")
+    notes: list[str] = []
+    try:
+        sid = resolve_session("self", "claude-code", cwd=os.getcwd(), roots=default_roots(), notes=notes)
+    except SessionError as exc:
+        raise UserError(str(exc)) from None
+    for note in notes:
+        print(f"note: {note}", file=sys.stderr)
     return sid
+
+
+@handler("run.sessions")
+def run_sessions(args: argparse.Namespace) -> int:
+    """Recent Claude Code and Codex sessions in a folder, newest first, so a session id can be passed."""
+    from ..logmatch.match import ACTIVE_S, default_roots, recent_sessions
+
+    folder = Path(args.cwd).expanduser() if args.cwd else Path.cwd()
+    if not folder.is_dir():
+        raise NotFound(f"--cwd {args.cwd}: no such folder")
+    if args.days <= 0 or args.limit < 1:
+        raise UserError("--days and --limit take a number above 0")
+    rows = recent_sessions(str(folder.resolve()), default_roots(), days=args.days)
+    shown = rows[:args.limit]
+    payload = {"cwd": str(folder.resolve()), "days": args.days, "sessions": shown, "more": len(rows) - len(shown)}
+    if not rows:
+        lines = [f"no Claude Code or Codex session ran in {folder.resolve()} in the last {args.days:g} day(s)"]
+    else:
+        lines = [f"sessions in {folder.resolve()}, last written first:"]
+        for r in shown:
+            active = " (active)" if r["active_s"] <= ACTIVE_S else ""
+            lines.append(f"  {r['harness']:<11}  {r['session']}  started {fmt_time(r['started_at'])}, "
+                         f"last written {fmt_time(r['last_at'])}{active}")
+        if payload["more"]:
+            lines.append(f"  and {payload['more']} more (--limit)")
+        lines.append("pass one to run record or run attempt with --session ID (or --session PIECE=ID)")
+    return _out(args, "run.sessions", payload, lines)
 
 
 @handler("run.attempt")
@@ -515,6 +550,13 @@ def run_attempt(args: argparse.Namespace) -> int:
     return _out(args, "run.attempt", payload, [att])
 
 
+def _artifact_line(art: str, kind: str, path: str, run: str, by: str, version: Any) -> str:
+    """`art_...: commit d0296af2c1 on run RUN, by ATT` (the id first, so a script can still take it)."""
+    shown = path[:10] if kind == "commit" and R.HEX_RE.match(path.strip().lower()) else path
+    return f"{art}: {kind} {shown} on run {run}, by {by}" + (f", version {version}" if isinstance(version, int)
+                                                             and version > 1 else "")
+
+
 @handler("run.artifact")
 def run_artifact(args: argparse.Namespace) -> int:
     store = _store(args)
@@ -522,14 +564,15 @@ def run_artifact(args: argparse.Namespace) -> int:
                                         "read_by": list(args.read_by or []), "supersedes": args.supersedes})
     doc = store.run_doc(args.run)
     version = next((a.get("version") for a in doc.get("artifacts") or [] if a.get("id") == art), None)
-    return _out(args, "run.artifact", {"run": args.run, "artifact": art, "version": version}, [art])
+    return _out(args, "run.artifact", {"run": args.run, "artifact": art, "version": version},
+                [_artifact_line(art, args.kind, args.path, args.run, args.by, version)])
 
 
 # ================================================================ run finish, import
 def _finish_lines(res: dict[str, Any]) -> list[str]:
     m = res["matched"]
     c = res["cost"]
-    known = f"; ${c['usd_known']:,.2f} known" if c["usd"] is None and c.get("usd_known") is not None else ""
+    known = f"; {fmt_usd(c['usd_known'])} known" if c["usd"] is None and c.get("usd_known") is not None else ""
     lines = [f"run {res['run']} finished",
              f"cost: {_money(c['usd'], c['tokens'])}"
              + (f" ({_count(c['attempts_not_costed'], 'attempt')} without dollars{known})" if c["attempts_not_costed"] else ""),
@@ -546,7 +589,7 @@ def _finish_lines(res: dict[str, Any]) -> list[str]:
     for w in warnings[:5]:
         lines.append(f"  warning {w.get('code', '')} {w.get('path', '')}: {w.get('message', '')}")
     if len(warnings) > 5:
-        lines.append(f"  and {len(warnings) - 5} more: loopmath ocp validate on runs/{res['run']}.ocp.json in the store")
+        lines.append(f"  and {len(warnings) - 5} more: loopmath ocp validate on runs/{run_names.file_name(res['run'])} in the store")
     ev = res.get("evidence") or {}
     lines.append(f"outcome: {_outcome_word(ev.get('z'))} (tier {ev.get('tier')}, q {ev.get('q')})")
     lines.append(f"receipt: {res['receipt']}" if res["receipt"] else "receipt: none (no stored recommendation for this configuration)")
@@ -572,7 +615,8 @@ def run_finish(args: argparse.Namespace) -> int:
 
 
 def _read_import(store: Store, path: Path, label: str) -> dict[str, Any]:
-    """Read, migrate when needed and store one document: `{run, path, migrated_from, state, finished: None}`."""
+    """Read, migrate when needed and store one document:
+    `{run, path, migrated_from, state, already_in_store, finished: None}`."""
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -589,10 +633,52 @@ def _read_import(store: Store, path: Path, label: str) -> dict[str, Any]:
         migrated = True
     elif version != "0.3":
         raise UserError(f"{label} declares OCP {version!r}; run import reads 0.3 (0.1 and 0.2 are migrated)")
+
+    _lift_store_capabilities(doc)
+    given = (doc.get("run") or {}).get("id")
+    existed = run_names.file_stem(given) is not None and store.exists(given)
     run = store.import_run(doc, finished=False)
     done = R.is_finished(store.run_doc(run))
     return {"run": run, "path": str(store.run_path(run)), "migrated_from": version if migrated else None,
-            "state": R.FINISHED if done else R.OPEN, "finished": None}
+            "state": R.FINISHED if done else R.OPEN, "already_in_store": existed, "finished": None}
+
+
+# Elements the store itself writes into a stored run: the run_finished event, the outcome of an
+# attempt it settles at finish, and signals from `outcome`.
+STORE_WRITES = ("events", "outcome_evidence", "signals")
+EXT_IMPORT = "dev.loopmath.import"
+
+
+def _lift_store_capabilities(doc: dict[str, Any]) -> None:
+    """A producer capability set to false promises that element is absent, and the store adds these
+    elements to a run it stores (adapters declare `events: false`, for example). Such a false becomes
+    true, and `run.ext["dev.loopmath.import"].capabilities_false` keeps what the producer declared."""
+    caps = (doc.get("producer") or {}).get("capabilities")
+    if not isinstance(caps, dict):
+        return
+    lifted = [name for name in STORE_WRITES if caps.get(name) is False]
+    if not lifted:
+        return
+    for name in lifted:
+        caps[name] = True
+    ext = doc.setdefault("run", {}).setdefault("ext", {})
+    if isinstance(ext, dict):
+        prev = ext.get(EXT_IMPORT) if isinstance(ext.get(EXT_IMPORT), dict) else {}
+        ext[EXT_IMPORT] = {**prev, "capabilities_false": sorted(set(prev.get("capabilities_false") or []) | set(lifted))}
+
+
+def _import_fit(store: Store, args: argparse.Namespace, changed: int, stored_finished: int) -> dict[str, Any]:
+    """One refit when this import gave the fit something new (a run finished now, or a finished run the
+    store did not have); a re-import of runs already there and finished refits only a store with no fit."""
+    if args.no_fit:
+        return {"started": False, "reason": "--no-fit"}
+    if changed or (stored_finished and store.latest_fit() is None):
+        from .fitjob import spawn_fit
+
+        return spawn_fit(store.home)
+    if stored_finished:
+        return {"started": False, "reason": "every run was already in the store and finished, and the store has a fit"}
+    return {"started": False, "reason": "no run was finished by this import" + ("" if args.finish else "; use --finish")}
 
 
 def _import_items(names: list[str]) -> list[tuple[str, Path | None]]:
@@ -617,12 +703,14 @@ def run_import(args: argparse.Namespace) -> int:
         return _import_many(args, store, _import_items(args.files))
     payload = _read_import(store, Path(args.files[0]).expanduser(), args.files[0])
     run = payload["run"]
-    lines = [run]
+    lines = [run + ("  (already in the store; replaced by this file)" if payload["already_in_store"] else "")]
     from ..priors import overlap_note, shipped_overlap  # Say once when the prior holds this run
     payload["shipped_overlap"] = shipped_overlap([run])
     lines += [n for n in [overlap_note(payload["shipped_overlap"])] if n]
     if args.finish and payload["state"] == R.FINISHED:
         print(f"note: {run} was already finished by loopmath; stored as finished, --finish skipped", file=sys.stderr)
+        payload["fit"] = _import_fit(store, args, 0 if payload["already_in_store"] else 1, 1)
+        lines.append(_fit_line(payload["fit"]))
     elif args.finish:
         res = finish_run(store, run, no_fit=args.no_fit)
         payload["finished"] = res
@@ -671,7 +759,7 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
         return {"started": False, "reason": "one refit after the import"}
 
     files: list[dict[str, Any]] = []
-    already = finished = 0
+    already = finished = changed = 0
     for label, path in items:
         entry: dict[str, Any] = {"file": label}
         try:
@@ -684,6 +772,7 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
                 entry["finished"] = finish_run(store, entry["run"], no_fit=args.no_fit, spawn=deferred)
                 entry["state"] = R.FINISHED
                 finished += 1
+            changed += int(entry["state"] == R.FINISHED and (entry["finished"] is not None or not entry["already_in_store"]))
             entry = {"file": label, "ok": True, **{k: v for k, v in entry.items() if k != "file"}}
         except StoreLocked:
             raise
@@ -700,18 +789,13 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
             entry["error"] = f"stored as {entry['run']} ({entry.get('state')}), then: {entry['error']}"
         files.append(entry)
 
-    if args.no_fit:
-        fit: dict[str, Any] = {"started": False, "reason": "--no-fit"}
-    elif finished:
-        from .fitjob import spawn_fit
-
-        fit = spawn_fit(store.home)
-    else:
-        fit = {"started": False, "reason": "no run was finished by this import" + ("" if args.finish else "; use --finish")}
     ok = [f for f in files if f["ok"]]
     failed = [f for f in files if not f["ok"]]
+    fit = _import_fit(store, args, changed, sum(1 for f in ok if f["state"] == R.FINISHED))
     imported_runs = [f["run"] for f in ok]  # every run this call stored, for notes over the whole import
-    payload = {"files": files, "runs": imported_runs, "imported": len(ok), "failed": len(failed), "finished": finished,
+    old = sum(1 for f in ok if f["already_in_store"])
+    payload = {"files": files, "runs": imported_runs, "imported": len(ok), "new": len(ok) - old,
+               "already_in_store": old, "failed": len(failed), "finished": finished,
                "already_finished": already, "fit": fit}
     from ..priors import overlap_note, shipped_overlap
 
@@ -729,7 +813,8 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
         lines.append(f"  and {len(failed) - FAILED_SHOWN} more failed (use --json for all)")
     if len(lines) + len(ok) + 2 <= 25:
         lines += [f"{f['run']}  {f['state']}" for f in ok]
-    summary = f"{_count(len(ok), 'run')} imported, {len(failed)} failed"
+    kinds = f"{len(ok) - old} new" + (f", {old} already in the store and replaced" if old else "")
+    summary = f"{_count(len(ok), 'run')} imported ({kinds}), {len(failed)} failed"
     if args.finish:
         summary += f"; {finished} finished" + (f", {already} already finished" if already else "")
     lines += [summary, _fit_line(fit)]
@@ -782,8 +867,16 @@ def _build_signal(args: argparse.Namespace, run: str, *, tier: str | None = None
                   better=args.better if args.kind == "score" else None,
                   target=args.target if args.kind == "score" else None,
                   scale=args.scale if args.kind == "score" else "linear",
-                  at_attempt=args.at_attempt, observed_at=normalize_ts(args.observed_at) or now_iso(),
+                  at_attempt=args.at_attempt, observed_at=utc_iso(normalize_ts(args.observed_at)) or now_iso(),
                   source=source, tier=tier or args.tier)
+
+
+def _signal_line(sig: Signal, state: str) -> str:
+    """`sig_...: verdict tests=pass (verified) on run RUN` (the id first, so a script can still take it)."""
+    value = "not measured yet" if sig.value is None else _fmt_value(sig.value)
+    unit = f" {sig.unit}" if sig.unit and sig.value is not None else ""
+    late = " (late: the run was already finished)" if state == "late" else ""
+    return f"{sig.id}: {sig.kind} {sig.name}={value}{unit} ({sig.tier}) on run {sig.run}{late}"
 
 
 def _weaker(a: str, b: str) -> str:
@@ -881,7 +974,7 @@ def outcome(args: argparse.Namespace) -> int:
         winner = None if args.prefer == "tie" else args.prefer
         judge = args.judge or "referee"
         pref = store.add_preference(args.slate, winner, judge, args.blinded,
-                                    observed_at=normalize_ts(args.observed_at), tier=args.tier)
+                                    observed_at=utc_iso(normalize_ts(args.observed_at)), tier=args.tier)
         members = [r["run"] for r in store.runs(slate=args.slate)]
         payload = {"slate": args.slate, "preference": pref, "winner": args.prefer, "members": members, "judge": judge,
                    "blinded": bool(args.blinded)}
@@ -895,20 +988,21 @@ def outcome(args: argparse.Namespace) -> int:
             raise NotFound(f"commit {args.commit}: {detail}")
         results = []
         notes: list[str] = []
+        lines = []
         for run in found["runs"]:
             tier = _weaker(args.tier, found["tier"]) if found["tier"] else args.tier
             sig = _build_signal(args, run, tier=tier, source_ref=f"commit:{args.commit}")
             state = store.add_signal(run, sig)
             results.append({"run": run, "signal": sig.id, "state": state,
                             **({"late": _late(store, run)} if state == "late" else {})})
+            lines.append(f"{_signal_line(sig, state)}, found via {found['via']}"
+                         + (f"; outcome now {_outcome_word(results[-1]['late']['z'])}" if state == "late" else ""))
             note = _event_note(store, run, sig)
             if note and note not in notes:
                 notes.append(note)
         for note in notes:
             print(note, file=sys.stderr)
         payload = {"commit": args.commit, "via": found["via"], "runs": results}
-        lines = [f"{r['signal']} on {r['run']} ({r['state']}, via {found['via']})"
-                 + (f"; outcome now {_outcome_word(r['late']['z'])}" if "late" in r else "") for r in results]
         return _out(args, "outcome", payload, lines)
     if not args.run:
         raise UserError("give --run RUN, --slate SLT or --commit SHA")
@@ -920,7 +1014,7 @@ def outcome(args: argparse.Namespace) -> int:
     state = store.add_signal(args.run, sig)
     payload: dict[str, Any] = {"run": args.run, "signal": sig.id, "kind": sig.kind, "name": sig.name,
                                "value": sig.value, "state": state}
-    lines = [sig.id]
+    lines = [_signal_line(sig, state)]
     if state == "late":
         late = _late(store, args.run)
         payload["late"] = late
@@ -934,7 +1028,7 @@ def outcome(args: argparse.Namespace) -> int:
 # ================================================================ budget, config
 @handler("budget")
 def budget(args: argparse.Namespace) -> int:
-    from .budget import budget_state
+    from .budget import budget_state, history_line, since_text, spend_parts
 
     store = _store(args)
     if args.usd is not None or args.period is not None:
@@ -950,24 +1044,27 @@ def budget(args: argparse.Namespace) -> int:
     state = budget_state(store)
     s = state["spent"]
     period = state["period"]
-    since = f" since {s['since'][:10]}" if s.get("since") else " in all"
+    since = since_text(s.get("since"))
     lines = []
     if state["cap_usd"] is None:
         lines.append("budget: no cap set (loopmath budget --usd X --period week|month|none)")
     else:
-        lines.append(f"budget: ${state['cap_usd']:,.2f} per {period}" if period != "none" else f"budget: ${state['cap_usd']:,.2f} in total")
-    lines.append(f"spent{since}: {_money(s['usd'], s['tokens'])} over {s['runs']} run(s); exploration ${s['exploration_usd']:,.2f}")
+        lines.append(f"budget: {fmt_usd(state['cap_usd'])} per {period}" if period != "none" else f"budget: {fmt_usd(state['cap_usd'])} in total")
+    lines.append(f"spent{since}: {_money(s['usd'], s['tokens'])}; {spend_parts(s)}; exploration {fmt_usd(s['exploration_usd'])}")
     if state["remaining_usd"] is not None:
         lines.append("cap reached: exploration picks are paused" if state["reached"]
-                     else f"remaining: ${state['remaining_usd']:,.2f}")
+                     else f"remaining: {fmt_usd(state['remaining_usd'])}")
     if s["attempts_not_costed"]:
         lines.append(f"{s['attempts_not_costed']} attempt(s) in {s['runs_not_costed']} run(s) have no dollars "
                      "(unpriced model or no requests); spend above counts known dollars only")
+    if (s.get("labeling") or {}).get("not_costed"):
+        lines.append(f"{s['labeling']['not_costed']} labelling record(s) report no dollars; spend above counts known dollars only")
     if s["open_runs"]:
         lines.append(f"{s['open_runs']} open run(s) not yet costed")
     if s.get("history_runs"):
-        lines.append(f"history from onboard{since}, not counted: ${s['history_usd']:,.2f} over {s['history_runs']} run(s)")
+        lines.append(history_line(s))
     return _out(args, "budget", state, lines)
+
 
 
 def _fmt_value(v: Any) -> str:
@@ -978,15 +1075,27 @@ def _fmt_value(v: Any) -> str:
 
 @handler("config")
 def config_get(args: argparse.Namespace) -> int:
-    from .config import dumps
+    import textwrap
+
+    from .config import dumps, unset_keys
 
     store = _store(args)
     conf = store.config()
     if args.key is None:
         merged = conf.merged()
-        return _out(args, "config", {"path": str(conf.path), "config": merged},
-                    dumps(merged).rstrip("\n").splitlines())
-    _warn_unknown_root(args.key)
+        unset = unset_keys(merged)
+        lines = dumps(merged).rstrip("\n").splitlines()
+        if unset:  # TOML comments, so the text still reads as a config file
+            lines += ["", "# not set (loopmath config set KEY VALUE sets one; <...> is a name of your choice):"]
+            lines += ["#   " + ln for ln in textwrap.wrap(", ".join(unset), 96, break_on_hyphens=False)]
+        if args.json:
+            emit_json(_schema("config"), {"path": str(conf.path), "config": merged, "unset": unset})
+        else:
+            print("\n".join(lines))  # every line: `_out` stops at 25, which cut the defaults short
+        return EXIT_OK
+    bad = _unknown_key(args.key)
+    if bad:
+        print(f"warning: {bad}", file=sys.stderr)
     value = conf.get(args.key)
     payload = {"key": args.key, "value": value, "set": conf.get(args.key, default=None) is not None and _in_file(conf, args.key)}
     if args.json:
@@ -1010,17 +1119,27 @@ def _in_file(conf, key: str) -> bool:
     return True
 
 
-def _warn_unknown_root(key: str) -> None:
-    """`get` and `set` both: a typo such as `budgt.usd` would otherwise read as merely unset."""
-    root = split_key(key)[0]
-    if root not in KNOWN_ROOTS:
-        print(f"warning: {root!r} is not a key loopmath reads (known: {', '.join(KNOWN_ROOTS)})", file=sys.stderr)
+def _unknown_key(key: str) -> str | None:
+    """Why loopmath does not read `key`, or None when it does. `get` warns with it (a typo such as `budgt.usd`
+    would otherwise read as merely unset) and `set` refuses (the value would be written and never read)."""
+    from .config import KEYS, known_key
+
+    if known_key(key):
+        return None
+    parts = split_key(key)
+    if parts[0] not in KNOWN_ROOTS:
+        return f"{parts[0]!r} is not a key loopmath reads (known: {', '.join(KNOWN_ROOTS)})"
+    under = [k for k in KEYS if k.split(".")[0] == parts[0]] or [parts[0]]
+    return f"{'.'.join(parts)!r} is not a key loopmath reads (known under {parts[0]}: {', '.join(under)})"
 
 
 @handler("config")
 def config_set(args: argparse.Namespace) -> int:
     store = _store(args)
-    _warn_unknown_root(args.key)
+    bad = _unknown_key(args.key)
+    if bad and not (args.value.strip() == "null" and _in_file(store.config(), args.key)):  # removing is fine
+        print(f"error: {bad}; nothing was written (loopmath config get lists every key)", file=sys.stderr)
+        return EXIT_NOT_FOUND
     value = coerce(args.key, args.value)
     with store.lock():
         conf = store.config()

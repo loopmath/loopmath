@@ -194,12 +194,38 @@ def walkdown_line(surface: dict) -> str:
     naive_s, matched_s, honest_s, band = steps[0], steps[1], steps[2], steps[3]
     ci_pct = f"{surface['ci'] * 100:.0f}%"
     basis = _basis_noun(surface.get("cost_col"))
+    values = [naive_s["value"], matched_s["value"], honest_s["value"]]
+    if all(_fmt_x(v) == "n/a" for v in values):
+        # No band either: a band belongs to a spread, and there is none to show.
+        table = surface.get("table")
+        few = table is not None and len(table) < 2
+        return f"{basis} spread: n/a" + (" (fewer than two configurations to compare)" if few else "")
     line = (
         f"{basis} spread: {_fmt_x(naive_s['value'])} naive, "
         f"{_fmt_x(matched_s['value'])} after matching on task mix, "
-        f"{_fmt_x(honest_s['value'])} after pooling thin configurations; "
-        f"{ci_pct} band {_fmt_x(band['lo'])} to {_fmt_x(band['hi'])}"
+        f"{_fmt_x(honest_s['value'])} after pooling thin configurations"
     )
+    if spread_band_shown(surface):
+        line += f"; {ci_pct} band {_fmt_x(band['lo'])} to {_fmt_x(band['hi'])}"
     if surface.get("overlap_caveat"):
         line += "; not adjusted for task mix (no shared task-mix cells)"
     return line
+
+
+def spread_band_shown(surface: dict) -> bool:
+    """Whether `walkdown_line` prints the spread's band: the pooled spread and both band ends are numbers."""
+    return "n/a" not in (_fmt_x(surface.get("S_honest")), _fmt_x(surface.get("S_lo")), _fmt_x(surface.get("S_hi")))
+
+
+def shown_band_support_note(surface: dict) -> str | None:
+    """`band_support_note` as the text prints it. When the spread line has no band (its pooled spread is
+    n/a), the note is rebuilt without its sentence on the spread band, so it never points at a band that
+    is not there; the draws and the estimate are the same (text only)."""
+    note = surface.get("band_support_note")
+    if not note or spread_band_shown(surface) or not isinstance(surface.get("n_boot"), (int, np.integer)):
+        return note
+    n_boot = int(surface["n_boot"])
+    thinnest = surface.get("band_n_draws_min")
+    thinnest = thinnest if thinnest is not None and thinnest < n_boot else None
+    invalid = int(surface.get("band_n_invalid_draws_total") or 0)
+    return _band_support_note(thinnest, n_boot, invalid, None) or None

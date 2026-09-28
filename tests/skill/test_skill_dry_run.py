@@ -185,8 +185,14 @@ def journey(tmp_path_factory) -> dict[str, list]:
         assert [r["config"] for r in runs] == by_key["pair"]["members"]
         assert {o["run"] for o in lm("status", "--json")["open_runs"]} == {r["run"] for r in runs}
 
+        # A session id that was not noted: the sessions that ran in the app's folder (0.2.4).
+        listed = lm("run", "sessions", "--cwd", str(tmp_path / "work" / "app"), "--json")
+        assert "cx-review-1" in [s["session"] for s in listed["sessions"]] and listed["more"] == 0
+        assert all(s["harness"] in ("claude-code", "codex") and s["session"] for s in listed["sessions"])
+
         # loopmath-record-run: each run worked in its own clone. The first run's implementer is the
-        # fixture's Claude Code session lead-1 (from before the run, so counted whole, with a note);
+        # fixture's Claude Code session lead-1 (it ended before the run, so it counts whole and the run's
+        # start moves back, with a note; its log ran another model than configured, a second note);
         # every other piece had no session id, so it is recorded by its folder and stays uncosted.
         shas = []
         for i, run in enumerate(runs):
@@ -200,7 +206,7 @@ def journey(tmp_path_factory) -> dict[str, list]:
             out = lm("run", "record", "--run", run["run"], *[w for pair in how for w in pair], "--verified",
                      "tests=pass", "--json")
             assert out["outcome"] == "accepted" and [c["sha"] for c in out["commits"]] == [shas[-1]]
-            assert (out["cost"]["attempts_costed"], len(out["notes"])) == ((1, 1) if i == 0 else (0, 0)), out
+            assert (out["cost"]["attempts_costed"], len(out["notes"])) == ((1, 2) if i == 0 else (0, 0)), out
             assert out["receipt"]["line"].startswith("predicted $")
             if out["fit"]["started"]:  # a refit already running takes this run too
                 pids.append(out["fit"]["pid"])

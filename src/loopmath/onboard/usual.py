@@ -1,7 +1,9 @@
 """Usual workflow per (type, repo).
 
 The usual workflow for a (type, repo) is the configuration its runs used most often;
-a tie goes to the one used most recently. The type level (`"*"`) counts every repo.
+a tie keeps the one that reached that count first (its last run is the earlier), so one run
+of another workflow never switches it (0.2.4, as `recommend.storeread.usual_from_history`).
+The type level (`"*"`) counts every repo.
 Config layout:
 
     [usual.bug_fix]
@@ -58,7 +60,7 @@ def usual_picks(rows: Iterable[dict]) -> list[UsualPick]:
                 last[(*key, config)] = when
     picks = []
     for (kind, repo), counter in counts.items():
-        config = max(counter, key=lambda c: (counter[c], last.get((kind, repo, c), ""), c))
+        config = min(counter, key=lambda c: (-counter[c], last.get((kind, repo, c), ""), c))
         picks.append(UsualPick(kind, repo, config, labels[config], counter[config], sum(counter.values())))
     picks.sort(key=lambda p: (p.type, p.repo != TYPE_LEVEL, -p.total, p.repo))
     return picks

@@ -12,20 +12,23 @@ const Swimlanes = {
   render(host, vis, state, api) {
     const { N, E, A, RUN, ROLES, fmt, svg, text, color, nodeClass, edgeClass, edgeVisible, artVisible, vcurve, arc, timeTicks } = api;
     const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+    // Attempts outside the workspace share one lane; attempts with no known role
+    // get their own lane, named plainly.
     const namedLanes = ROLES.filter(role => role !== 'external' && role !== 'unlabeled');
-    const laneOf = n => namedLanes.includes(n.role) ? n.role : 'outside';
-    const laneOrder = [...namedLanes, 'outside'];
+    const laneOf = n => namedLanes.includes(n.role) ? n.role : n.role === 'unlabeled' ? 'role not known' : 'outside';
+    const laneOrder = [...namedLanes, 'outside', 'role not known'];
     const lanes = new Map(laneOrder.map(lane => [lane, []]));
     vis.forEach(i => lanes.get(laneOf(N[i])).push(i));
     const W = Math.max(host.clientWidth || 1000, 900), ML = 100, MR = 24, MT = 36, MB = 16, rowH = 30, laneGap = 6;
-    const span = RUN.plot_span_s, x = at => ML + at / span * (W - ML - MR);
+    const span = RUN.plot_span_s, x = at => ML + at / span * (W - ML - MR), plotR = W - MR;
     let y = MT; const laneInfo = [];
     for (const [lane, ids] of lanes) {
       if (!ids.length) continue;
       ids.sort((a, b) => N[a].t0Plot - N[b].t0Plot || a - b);
       const rows = [];
       ids.forEach(i => {
-        const n = N[i], x0 = x(n.t0Plot), x1 = Math.max(x(n.t1), x0 + 3);
+        // Every box stays inside the plot, however long the attempt or late its start.
+        const n = N[i], x0 = clamp(x(n.t0Plot), ML, plotR - 3), x1 = clamp(x(n.t1), x0 + 3, plotR);
         let row = rows.findIndex(end => end + 2 <= x0); if (row < 0) { row = rows.length; rows.push(0); }
         rows[row] = x1; n._row = row; n._x0 = x0; n._x1 = x1;
       });
@@ -49,7 +52,26 @@ const Swimlanes = {
       text(root, ML - 8, info.y0 + 14, info.lane, 'lanelbl', { 'text-anchor': 'end' });
       text(root, ML - 8, info.y0 + 27, info.artifacts ? `${artifacts.length} consumed` : `${info.ids.length} · ${fmt.usd(usd)}`, 'axlbl', { 'text-anchor': 'end' });
     });
-    timeTicks(span).forEach(at => { const tx = x(at); svg('line', { x1: tx, y1: MT - 4, x2: tx, y2: H - MB, class: 'grid' }, root); text(root, tx + 3, MT - 9, fmt.clock(at) + '  +' + fmt.hm(at), 'axlbl'); });
+    // A tick label near the right end is drawn to the left of its line, so it stays on the page,
+    // and a label that would overlap the one before it is left out (the line stays). Each label is
+    // measured once drawn (96 px when the page is hidden), and the last tick keeps its label: the
+    // labels before it that it would overlap give way (0.2.4, review v024-24V-509e6ff9).
+    const tickLabels = [];
+    timeTicks(span).forEach(at => {
+      const tx = x(at);
+      svg('line', { x1: tx, y1: MT - 4, x2: tx, y2: H - MB, class: 'grid' }, root);
+      const label = text(root, tx + 3, MT - 9, fmt.clock(at) + '  +' + fmt.hm(at), 'axlbl');
+      const wide = label.getComputedTextLength() || 96, end = tx + 3 + wide > W;
+      if (end) { label.setAttribute('x', tx - 3); label.setAttribute('text-anchor', 'end'); }
+      tickLabels.push({ label, left: end ? tx - 3 - wide : tx + 3, right: end ? tx - 3 : tx + 3 + wide });
+    });
+    const kept = [];
+    tickLabels.forEach((t, k) => {
+      const crowds = () => kept.length && t.left < kept[kept.length - 1].right + 6;
+      if (k < tickLabels.length - 1) { if (crowds()) t.label.remove(); else kept.push(t); return; }
+      while (crowds()) kept.pop().label.remove();
+      kept.push(t);
+    });
     svg('line', { x1: ML, y1: MT, x2: W - MR, y2: MT, class: 'axis' }, root);
     const edgeGroup = svg('g', {}, root), artifactGroup = svg('g', {}, root), nodeGroup = svg('g', {}, root);
     const artifactEdges = new Map();
@@ -76,7 +98,7 @@ const Swimlanes = {
       const n = N[i]; if (n._y == null) return;
       const height = Math.max(6, Math.sqrt(Math.min(n.usd == null ? 0 : n.usd, 20) / 20) * (rowH - 4)), width = n._x1 - n._x0, group = svg('g', {}, nodeGroup);
       svg('rect', { x: n._x0, y: n._y - height / 2, width, height, rx: 2, fill: color(n, state.colorBy), class: nodeClass(n), 'data-node': i }, group);
-      if (width < 12) svg('rect', { x: n._x0 - (12 - width) / 2, y: n._y - rowH / 2, width: 12, height: rowH, class: 'hit', 'data-node': i }, group);
+      if (width < 12) svg('rect', { x: clamp(n._x0 - (12 - width) / 2, ML, plotR - 12), y: n._y - rowH / 2, width: 12, height: rowH, class: 'hit', 'data-node': i }, group);
       if (width > 46 && height >= 14) text(group, n._x0 + 5, n._y + 4, n.lbl, 'nlbl', { fill: '#fff' });
       else if (width > 46) text(group, n._x0 + 4, n._y - height / 2 - 3, n.lbl, 'nlbl');
     });

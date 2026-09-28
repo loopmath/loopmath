@@ -64,6 +64,16 @@ KNOWN_ROOTS = ("org", "acceptance_rule", "rules", "goal", "rescue", "models", "h
                "labeler", "benchmark_prior_weight", "explore", "referee", "budget", "outcome", "usual",
                "usual_meta", "research", "onboard", "plan", "efforts", "features")
 STRING_ROOTS = ("research",)  # values stored as given, never parsed as JSON
+# Every key loopmath reads; a `<...>` part is a name of your choice. `config get` lists the unset ones and
+# `config set` refuses a key that is none of these nor a table above one (such as `rescue`).
+KEYS = ("org", "acceptance_rule", "rules.<name>", "goal", "rescue.kind", "rescue.person_usd_per_hour",
+        "rescue.hours", "rescue.decay", "rescue.max_attempts", "rescue.min_chance", "models.allowed", "harnesses",
+        "subtypes", "benchmark_prior_weight", "explore.default_pick", "explore.auto_payback_runs", "referee.model",
+        "budget.usd", "budget.period", "outcome.q.<tier>", "onboard.labeler", "onboard.skip",
+        "usual.<type>.<repo>", "usual_meta.<type>.<repo>", "research.sweep_dir", "research.e0_corpus",
+        "features.min_tasks", "features.<key>.<field>", "plan.time_budget_s", "plan.exact_picks",
+        "efforts.<model>")
+UNLISTED_KEYS = ("labeler",)  # the spec 02 name of onboard.labeler: `config set` still takes it
 
 
 class ConfigError(ValueError):
@@ -99,6 +109,39 @@ def split_key(key: str) -> list[str]:
     if any(p == "" for p in parts):
         raise ConfigError(f"empty part in key {key!r}")
     return parts
+
+
+def _matches(parts: list[str], pattern: str) -> bool:
+    pat = pattern.split(".")
+    return len(parts) <= len(pat) and all(p.startswith("<") or p == q for p, q in zip(pat, parts))
+
+
+def known_key(key: str) -> bool:
+    """Whether loopmath reads `key`, or `key` is a table of keys it reads (KEYS)."""
+    parts = split_key(key)
+    return ".".join(parts) in UNLISTED_KEYS or any(_matches(parts, k) for k in KEYS)
+
+
+def unset_keys(data: dict[str, Any]) -> list[str]:
+    """The KEYS with no value in `data` (a merged config). A `<...>` key is set when its table holds a name
+    that is not one of the fixed keys beside it (`features.<key>` beside `features.min_tasks`)."""
+    out = []
+    for key in KEYS:
+        pat = key.split(".")
+        fixed = [p for p in pat if not p.startswith("<")] if "<" not in key else pat[:pat.index(next(
+            p for p in pat if p.startswith("<")))]
+        node: Any = data
+        for p in fixed:
+            node = node.get(p, _MISSING) if isinstance(node, dict) else _MISSING
+        if len(fixed) < len(pat):
+            beside = {k.split(".")[len(fixed)] for k in KEYS
+                      if k.split(".")[:len(fixed)] == fixed and len(k.split(".")) > len(fixed)} - {pat[len(fixed)]}
+            is_set = isinstance(node, dict) and any(name not in beside for name in node)
+        else:
+            is_set = node is not _MISSING and node is not None
+        if not is_set:
+            out.append(key)
+    return out
 
 
 # ---------------------------------------------------------------- rules

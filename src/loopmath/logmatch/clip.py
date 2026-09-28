@@ -3,7 +3,10 @@
 `--session self` names the Claude Code session that runs the command, and
 that session usually did other work before and after the attempt. Such an
 attempt (lane 7 marks it `ext["dev.loopmath.match"].session_from == "self"`)
-is clipped to `[started_at, ended_at]`, inclusive, by transcript entry time:
+is clipped to `[started_at, ended_at]`, inclusive, by transcript entry time.
+So is a named Claude Code session that `run record` bounded to the run's
+window because it started before the run or ran past `--until`
+(`session_from == "window"`, 0.2.4):
 
 - a request counts when its first entry falls in the window, with the ingest
   parser's own accounting (per-stream maximum over a `requestId`'s lines,
@@ -15,7 +18,7 @@ is clipped to `[started_at, ended_at]`, inclusive, by transcript entry time:
   first response); one that started before the window does not count;
 - with no `ended_at` the caller clips at run finish (see `settle`).
 
-Sessions the orchestrator named keep their whole cost. The basis stays
+Other sessions the orchestrator named keep their whole cost. The basis stays
 `measured`; `cost.ext["dev.loopmath.logmatch"].clip` records the window.
 Only timestamps, request ids, agent ids, models and usage counts are read.
 """
@@ -34,9 +37,19 @@ MATCH_EXT = "dev.loopmath.match"
 
 def is_self(attempt: Mapping[str, Any]) -> bool:
     """True when lane 7 recorded the attempt's session as `--session self`."""
+    return _session_from(attempt) == "self"
+
+
+def is_clipped(attempt: Mapping[str, Any]) -> bool:
+    """True when the attempt counts only its window of the session: `--session self`, or a named session
+    `run record` bounded to the run's window (`session_from == "window"`)."""
+    return _session_from(attempt) in ("self", "window")
+
+
+def _session_from(attempt: Mapping[str, Any]) -> Any:
     ext = attempt.get("ext")
     rec = ext.get(MATCH_EXT) if isinstance(ext, Mapping) else None
-    return isinstance(rec, Mapping) and rec.get("session_from") == "self"
+    return rec.get("session_from") if isinstance(rec, Mapping) else None
 
 
 def _inside(epoch: float | None, lo: float | None, hi: float | None) -> bool:

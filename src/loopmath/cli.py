@@ -5,27 +5,26 @@ Verbs:
   scan             explain where implicit scanning occurs
   adapt            emit OCP v0.2 from a registered ADE adapter
   validate-prices  check a price table's schema, staleness and todo flags
-  analyze-e0       the frozen E0 corpus walkdown
   prices           show the active price table
   graph            the workflow graph of one or more workspaces (ocp, json, dot, run, html: self-contained interactive HTML viewer)
-  research         E1 v2 cost model: research fit, research transfer-test (needs the [bayes] extra)
-  verify-receipts  verify an E2 spend ledger and frozen preregistration
+  research         research data folders: research fit, research transfer-test (the bayes extra), research analyze-e0 (the e0 extra)
+  verify-receipts  check that the receipts in your store are whole and scored right (or give a research ledger file)
 
 0.1.0 verbs (design/0.1/02-commands.md, registered in cli_registry.py):
-  plan:    task-types  workflows  recommend  plan
-  record:  run start|attempt|artifact|finish|import  outcome  budget  config
+  plan:    task-types  workflows  recommend  builder  plan
+  record:  run start|record|import|attempt|artifact|finish|sessions  outcome  budget  config
   learn:   fit  onboard  share
   view:    runs  posterior  status  report  doctor  skill  ocp
 
-No verb in this CLI makes a network call. Verbs write only to the store
-($LOOPMATH_HOME, default ~/.loopmath, which also holds the parse cache) and to
-paths the user names.
+No verb in this CLI connects to another machine; builder serves on 127.0.0.1 only.
+Verbs write only to the store ($LOOPMATH_HOME, default ~/.loopmath, which also
+holds the parse cache and the fit --full compile folder), to the skill folders
+skill install names, and to paths the user names.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util as _importlib_util
 import sys
 import time
 from types import ModuleType
@@ -79,6 +78,7 @@ class _CliModule(ModuleType):
 sys.modules[__name__].__class__ = _CliModule
 
 DEFAULT_SINCE_DAYS = 14.0
+_ANALYZE_SCHEMA = "loopmath.analyze/1"
 
 
 def _counted_noun(count: int, singular: str, plural: str | None = None) -> str:
@@ -185,6 +185,18 @@ def analyze(args: argparse.Namespace) -> int:
         ci=args.ci,
     )
     result["ratio_pair"] = _extremes_ratio(df, result, price_mod)
+    result["min_n"] = args.min_n
+
+    if getattr(args, "json", False):
+        from .output import emit_json
+
+        grading = list(grade_mod.grading_report(records, coverage)) if args.grading else None
+        emit_json(_ANALYZE_SCHEMA, _cli_support.analyze_payload(
+            result, diag=diag, coverage=coverage, price_lines=price_lines, grading=grading,
+            walkdown=surface_mod.walkdown(result)))
+        if not args.quiet:
+            print(f"ran in {time.time() - t0:.1f} s", file=sys.stderr)
+        return 0
 
     print(
         terminal.render(
@@ -246,7 +258,7 @@ def _add_graph(sub) -> None:
     p.add_argument("--workspace", action="append", default=[], help="native workspace name to include (repeatable; required unless --ocp is used)")
     p.add_argument("--ocp", action="append", default=[], metavar="FILE", help="read an OCP document (v0.2 or later) as a graph source (repeatable)")
     p.add_argument("--format", type=_cli_support._graph_format, choices=GRAPH_FORMATS, default="ocp", help="ocp (OCP v0.3, default), json (internal dagr_graph), dot (Graphviz), run (herdr-dagr contract v3 run file), html (self-contained interactive HTML viewer)")
-    p.add_argument("--out", default=None, help="write here instead of stdout (must be inside the git worktree of the current directory; parent directories are created)")
+    p.add_argument("--out", default=None, help="write here instead of stdout (any path; missing folders are created; an existing file is replaced)")
     p.add_argument("--privacy", choices=("metadata_only", "full"), default="metadata_only", help="OCP privacy profile (default metadata_only)")
     p.add_argument("--logs", default=None, help="parse this path instead of the default log roots")
     p.add_argument(
@@ -259,7 +271,8 @@ def _add_graph(sub) -> None:
     p.add_argument("--limit", type=int, default=None, help="stop after N files per harness")
     p.add_argument("--no-cache", action="store_true", help="reparse everything, ignoring the cache")
     p.add_argument("--prices", default=None, help="price table to use instead of the packaged one")
-    p.add_argument("--quiet", action="store_true", help="suppress progress output on stderr; exclusion counters always print")
+    p.add_argument("--quiet", action="store_true", help="suppress progress output on stderr")
+    p.add_argument("--verbose", action="store_true", help="also print every count of what was skipped, excluded or could not be placed")
     p.set_defaults(func=graph_verb)
 
 
@@ -279,7 +292,7 @@ def adapt_verb(args: argparse.Namespace) -> int:
 
     out_path = None
     if args.out:
-        out_path, err = _resolve_out(args.out)
+        out_path, err = _resolve_out(args.out, "out.ocp.json")
         if err:
             print(err, file=sys.stderr)
             return 2
@@ -302,9 +315,18 @@ def adapt_verb(args: argparse.Namespace) -> int:
 
     adapter = adapter_type()
     adapter.configure_services(default_adapter_services())
-    doc = adapter.emit(selection)
+    try:
+        doc = adapter.emit(selection)
+    except (OSError, ValueError) as exc:  # a store path it cannot read: say so, no traceback
+        print(f"error: adapt {args.name}: {exc}", file=sys.stderr)
+        return 1
     if not isinstance(doc, dict):
         raise TypeError(f"adapter {args.name!r} emit() must return a dict")
+    if not doc.get("nodes") and not doc.get("attempts"):
+        where = ", ".join(str(p) for p in selection.stores) if selection.stores else "its default location"
+        print(f"error: adapt {args.name} found no sessions in {where}; nothing written. Point --store at the "
+              f"{args.name} data, or widen --since, --until, --session and --workspace", file=sys.stderr)
+        return 1
     from .ocp import version_at_least
 
     if not version_at_least(doc, "0.2"):
@@ -323,7 +345,7 @@ def adapt_verb(args: argparse.Namespace) -> int:
 def _add_adapt(sub) -> None:
     p = sub.add_parser("adapt", help="emit OCP v0.2 from an ADE store (loopmath ocp migrate converts it to v0.3)")
     p.add_argument("name", metavar="NAME", help="registered adapter name")
-    p.add_argument("--out", default=None, help="write here instead of stdout (must be inside the git worktree of the current directory; parent directories are created)")
+    p.add_argument("--out", default=None, help="write here instead of stdout (any path; missing folders are created; an existing file is replaced)")
     p.add_argument("--store", action="append", default=[], metavar="PATH", help="use this store path instead of discovery (repeatable)")
     p.add_argument("--session", action="append", default=[], metavar="ID", help="include this session id (repeatable; default: all)")
     p.add_argument("--workspace", action="append", default=[], metavar="WORKSPACE", help="include this workspace (repeatable; default: all)")
@@ -371,6 +393,9 @@ def _add_analyze(sub) -> None:
     p.add_argument("--tokens", action="store_true", help="rank by output tokens instead of dollars")
     p.add_argument("--grading", action="store_true", help="print which rule graded what")
     p.add_argument("--quiet", action="store_true", help="suppress progress and timing on stderr")
+    p.add_argument("--home", default=None, metavar="PATH", help="store root whose cache/ holds the log parse cache "
+                   "(default: $LOOPMATH_HOME or ~/.loopmath; LOOPMATH_CACHE_DIR wins); analyze writes nothing else")
+    p.add_argument("--json", action="store_true", help="print one JSON object on stdout")
     p.set_defaults(func=analyze)
 
 
@@ -385,11 +410,18 @@ def _add_validate_prices(sub) -> None:
 def _add_fit(sub) -> None:
     from .research_defaults import E1A_OBSERVE, SEED
 
-    research = sub.add_parser("research", help="E1 research verbs: fit, transfer-test (needs the [bayes] extra)")
+    research = sub.add_parser(
+        "research",
+        help="verbs for research data folders that are not part of the package (loopmath research --help)",
+        description="Verbs for research data folders that are not part of the package: sweep run records "
+                    "(research fit, research transfer-test; they need the bayes extra) and a session corpus "
+                    "(research analyze-e0; it needs the e0 extra). Name a folder with --sweep-dir or --corpus, "
+                    "LOOPMATH_SWEEP_DIR or LOOPMATH_E0_CORPUS, or config research.sweep_dir or research.e0_corpus.",
+    )
     rsub = research.add_subparsers(dest="research_command", required=True)
     for name, fn, helptext in (
-        ("fit", fit_verb, "fit the E1 cost model on the sweep data"),
-        ("transfer-test", transfer_test_verb, "score held-out cells from a fit"),
+        ("fit", fit_verb, "fit the research cost model on sweep run records"),
+        ("transfer-test", transfer_test_verb, "fit on some cells of the sweep and score the held-out ones"),
     ):
         p = rsub.add_parser(name, help=helptext)
         p.add_argument("--sweep-dir", default=None, help="sweep run records directory (default: LOOPMATH_SWEEP_DIR, then research.sweep_dir in config)")
@@ -405,10 +437,20 @@ def _add_fit(sub) -> None:
         else:
             p.add_argument("--ci", type=float, default=0.80, help="central interval for held-out coverage (default 0.80)")
         p.set_defaults(func=fn)
+    from .e0 import verb as _e0_verb
+
+    _e0_verb.register(rsub)
 
 
 def verify_receipts_verb(args: argparse.Namespace) -> int:
-    """Verify an E2 receipt ledger and print one machine-friendly result."""
+    """No ledger: check the store's receipts. A ledger path: verify that research receipt ledger."""
+    if args.ledger is None:
+        from .store.home import Store
+        from .store.verify import verify_lines, verify_store
+
+        res = verify_store(Store(args.home))
+        print("\n".join(verify_lines(res)))
+        return 1 if res["failed"] else 0
     from .receipts import ReceiptViolation, verify_receipts
 
     try:
@@ -421,18 +463,20 @@ def verify_receipts_verb(args: argparse.Namespace) -> int:
 
 
 def _add_verify_receipts(sub) -> None:
-    p = sub.add_parser("verify-receipts", help="verify an E2 receipt ledger")
+    p = sub.add_parser("verify-receipts", help="check that the receipts in your store are whole and scored right "
+                       "(or give a research ledger file)")
     p.add_argument(
         "ledger",
         nargs="?",
-        default="e2-receipts.jsonl",
-        help="receipt ledger (default: e2-receipts.jsonl)",
+        default=None,
+        help="a research receipt ledger to verify instead (e.g. e2-receipts.jsonl)",
     )
     p.add_argument(
         "--frozen",
         default=None,
-        help="checksum file (default: FROZEN.txt beside the ledger)",
+        help="with a ledger: its checksum file (default: FROZEN.txt beside the ledger)",
     )
+    p.add_argument("--home", default=None, metavar="PATH", help="the store (default: $LOOPMATH_HOME or ~/.loopmath)")
     p.set_defaults(func=verify_receipts_verb)
 
 
@@ -455,15 +499,14 @@ def main(argv: list[str] | None = None) -> int:
 
     _registry.register(sub)
 
-    if _importlib_util.find_spec("matplotlib") is not None:
-        # The E0 walkdown verb draws figures, so running it needs matplotlib.
-        # SPEC section 2's light-core rule says `analyze` runs on numpy and
-        # pandas, so matplotlib lives in the `e0` extra and this verb is simply
-        # absent without it. It registers from e0/verb.py without importing the
-        # walkdown, so no other command pays for pandas and matplotlib.
-        from .e0 import verb as _e0_verb
+    # The E0 walkdown draws figures, so running it needs matplotlib (the `e0`
+    # extra; SPEC section 2's light core is numpy and pandas). It is listed under
+    # `loopmath research`; the old top-level name stays callable, off the list.
+    # It registers from e0/verb.py without importing the walkdown, so no other
+    # command pays for pandas and matplotlib.
+    from .e0 import verb as _e0_verb
 
-        _e0_verb.register(sub)
+    _e0_verb.register(sub, listed=False)
 
     try:
         _add_fit(sub)

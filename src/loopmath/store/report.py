@@ -14,10 +14,12 @@ import math
 from datetime import datetime
 from typing import Any
 
+from ..output import fmt_time, fmt_usd
 from . import runs as R
+from .budget import is_history_row
 from .finish import Q_DEFAULT, evidence_for, rule_of
 from .home import NotFound, Store, StoreError
-from .ids import parse_ts, ulid_time
+from .ids import parse_ts, ulid_time, utc_iso
 
 EXPLORATION_SOURCES = ("exploration", "designed")
 
@@ -135,7 +137,7 @@ def recommendation_moves(store: Store, since: datetime | None, finished: list[di
         for (t0, _r0, c0), (t1, r1, c1) in zip(points, points[1:]):
             if c0 != c1:
                 n_explore = sum(1 for t in explore_times.get(key, []) if t0 <= t <= t1)
-                changes.append({"rec": r1, "at": t1.isoformat(), "from": c0, "to": c1, "exploration_runs_between": n_explore})
+                changes.append({"rec": r1, "at": utc_iso(t1), "from": c0, "to": c1, "exploration_runs_between": n_explore})
                 if n_explore:
                     moved_after_exploration += 1
         groups.append({"type": key[0], "repo": key[1], "recs": len(points), "first": points[0][2], "last": points[-1][2],
@@ -161,9 +163,9 @@ def report_payload(store: Store, since: datetime | None = None) -> dict[str, Any
     accepted = unknown = not_costed = history = 0
     for row in finished_rows:
         source = str(row.get("source") or "?")
-        if source == "habit":
+        if is_history_row(store, row):
             history += 1
-            continue  # history from onboard: not work loopmath recommended or recorded live
+            continue  # runs onboard wrote from the logs: not work loopmath recommended or recorded live
         try:
             doc = store._read(row["run"])
         except (NotFound, StoreError, ValueError):
@@ -194,7 +196,7 @@ def report_payload(store: Store, since: datetime | None = None) -> dict[str, Any
     for s in per_source.values():
         s["usd_per_accepted"] = round(s["usd"] / s["accepted"], 6) if s["accepted"] else None
     return {
-        "since": since.isoformat() if since else None,
+        "since": utc_iso(since) if since else None,
         "runs": {"total": len(rows), "finished": len(finished_rows), "open": len(rows) - len(finished_rows),
                  "history": history},
         "calibration": calibration(receipts),
@@ -215,7 +217,8 @@ def _pct(x: float | None) -> str:
 def report_lines(p: dict[str, Any]) -> list[str]:
     c = p["calibration"]
     history = p["runs"].get("history") or 0
-    lines = [f"report{' since ' + p['since'][:10] if p['since'] else ''}: {p['runs']['finished']} finished run(s), "
+    since = fmt_time(p["since"])[:10] if p["since"] else None  # the local date
+    lines = [f"report{' since ' + since if since else ''}: {p['runs']['finished']} finished run(s), "
              f"{p['runs']['open']} open"
              + (f"; {history} of them from onboard history, left out of cost per accepted change" if history else "")]
     if c["scored"]:
@@ -225,19 +228,20 @@ def report_lines(p: dict[str, Any]) -> list[str]:
             lines.append(f"mean log score of the outcome: {c['mean_log_score']:.3f} (0 is perfect; log 0.5 = -0.693 is a coin)")
         cost = c["cost"]
         if cost["predicted_mean_usd"] is not None and cost["realized_mean_usd"] is not None:
-            lines.append(f"cost per run: predicted ${cost['predicted_mean_usd']:,.2f}, realized ${cost['realized_mean_usd']:,.2f}")
+            lines.append(f"cost per run: predicted {fmt_usd(cost['predicted_mean_usd'])}, "
+                         f"realized {fmt_usd(cost['realized_mean_usd'])}")
         for d in c["success_by_decile"][:10]:
             lines.append(f"  predicted {d['predicted']:.0%} success, realized {d['realized']:.0%} (n={d['n']})")
     else:
         lines.append(f"receipts: {c['receipts']} ({c['waiting']} waiting for their run to finish); none scored yet")
     k = p["cost_per_accepted"]
     if k["usd"] is not None:
-        lines.append(f"cost per accepted change: ${k['usd']:,.2f} ({k['accepted']} accepted, {k['unknown']} unknown)"
+        lines.append(f"cost per accepted change: {fmt_usd(k['usd'])} ({k['accepted']} accepted, {k['unknown']} unknown)"
                      + (f"; known dollars only, {k['runs_not_costed']} run(s) lack some" if k["runs_not_costed"] else ""))
     else:
         lines.append(f"cost per accepted change: n/a ({k['accepted']} accepted so far)")
     e = p["exploration"]
-    lines.append(f"exploration picks taken: {e['taken']} (${e['usd']:,.2f}), {e['accepted']} accepted")
+    lines.append(f"exploration picks taken: {e['taken']} ({fmt_usd(e['usd'])}), {e['accepted']} accepted")
     m = p["recommendation"]
     if m["groups"]:
         lines.append(f"recommendation moved in {m['changed']} of {len(m['groups'])} task group(s); "
@@ -246,7 +250,7 @@ def report_lines(p: dict[str, Any]) -> list[str]:
             ch = g["changes"][-1]
             lines.append(f"  {g['type']} in {g['repo']}: {ch['from']} to {ch['to']}")
     else:
-        lines.append("recommendation: no stored recommendations " + (f"since {p['since'][:10]}" if p["since"] else "yet"))
+        lines.append("recommendation: no stored recommendations " + (f"since {since}" if since else "yet"))
     return lines[:25]
 
 
@@ -277,21 +281,21 @@ def report_html(p: dict[str, Any]) -> str:
     if by:
         parts.append("<h2>Cost per accepted change by source</h2>")
         parts.append(_table(["source", "runs", "known dollars", "runs missing dollars", "accepted", "dollars per accepted"],
-                            [[k, v["runs"], f"${v['usd']:,.2f}", v["runs_not_costed"], v["accepted"],
-                              "n/a" if v["usd_per_accepted"] is None else f"${v['usd_per_accepted']:,.2f}"]
+                            [[k, v["runs"], fmt_usd(v["usd"]), v["runs_not_costed"], v["accepted"],
+                              fmt_usd(v["usd_per_accepted"])]
                              for k, v in sorted(by.items())]))
     ex = p["exploration"]["runs"]
     if ex:
         parts.append("<h2>Exploration runs</h2>")
         parts.append(_table(["run", "configuration", "dollars", "outcome", "predicted success"],
                             [[e["run"], e["config"] or "",
-                              f"${e['usd']:,.2f}" if e["usd"] is not None else f"unknown (${e['usd_known']:,.2f} known)",
+                              fmt_usd(e["usd"]) if e["usd"] is not None else f"unknown ({fmt_usd(e['usd_known'])} known)",
                               "unknown" if e["z"] is None else ("accepted" if e["z"] >= 0.5 else "not accepted"),
                               _pct(e["predicted_p_success"])] for e in ex]))
     groups = [g for g in p["recommendation"]["groups"] if g["changes"]]
     if groups:
         parts.append("<h2>Recommendation changes</h2>")
         parts.append(_table(["type", "repo", "from", "to", "at", "exploration runs between"],
-                            [[g["type"], g["repo"], ch["from"], ch["to"], ch["at"], ch["exploration_runs_between"]]
+                            [[g["type"], g["repo"], ch["from"], ch["to"], fmt_time(ch["at"]), ch["exploration_runs_between"]]
                              for g in groups for ch in g["changes"]]))
     return "\n".join(parts) + "\n"

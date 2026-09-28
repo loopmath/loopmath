@@ -46,7 +46,7 @@ def to_html(graph: Graph) -> str:
     <div id="stats" class="stats"></div>
   </header>
   <div id="filters" class="filters"></div>
-  <div id="accounting" class="accounting"></div>
+  <details id="accounting" class="accounting" data-accounting></details>
   <section class="tablewrap" data-attempt-table>
     <div class="tablehead"><span id="tablecount"></span><span class="hint">click a row to expand the attempt; hover to highlight it in every graph</span></div>
     <div class="tablescroll"><table id="table"></table></div>

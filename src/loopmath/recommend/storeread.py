@@ -19,6 +19,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
+from ..store import run_names
 from ..types import Configuration
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -109,7 +110,16 @@ def index_rows(home: Path) -> Iterator[dict[str, Any]]:
 
 # Designed runs (loopmath-exp slates) are the planner's choice, not the user's habit: they feed the fit but not
 # the usual or the default usual's models, with no fallback to them.
-NOT_HABIT_SOURCES = frozenset({"designed"})
+# P2-12 (0.2.4): "your usual workflow" is the user's habit, as the skill promises: onboarded runs, runs recorded with
+# `--source habit`, runs of the usual itself (`usual`), and rows from imports or stores without a source. A run of a
+# recommended alternative, an exploration pick or an edited suggestion is not a habit: it is recorded, so it can be
+# the best recorded reference, but never the usual.
+NOT_HABIT_SOURCES = frozenset({"designed", "alternative", "exploration", "user_edit"})
+
+
+def is_habit(row: dict[str, Any]) -> bool:
+    """Whether an index row is the user's habit (its source is not in `NOT_HABIT_SOURCES`)."""
+    return row.get("source") not in NOT_HABIT_SOURCES
 
 
 def run_rows(home: Path) -> list[dict[str, Any]]:
@@ -135,9 +145,11 @@ def own_runs(home: Path | None) -> int:
 
 def usual_from_history(home: Path, task_type: str, repo: str, *, now: _dt.datetime | None = None,
                        days: int = HISTORY_DAYS) -> tuple[str | None, str | None]:
-    """(config id, level) seen in the most runs for (type, repo) in the last `days`, else for the type.
+    """(config id, level) seen in the most habit runs (`is_habit`) for (type, repo) in the last `days`, else for
+    the type.
 
-    Runs without a start time count; later runs win ties; designed runs do not count.
+    Runs without a start time count. A tie keeps the configuration that reached that count first (its last run is
+    the earlier), so one run of another workflow never switches the usual (0.2.4, as `onboard.usual`).
     """
     now = now or now_local()
     since = now - _dt.timedelta(days=days)
@@ -146,7 +158,7 @@ def usual_from_history(home: Path, task_type: str, repo: str, *, now: _dt.dateti
     last: dict[str, int] = {}
     for i, row in enumerate(run_rows(home)):
         cfg = row.get("config")
-        if not cfg or row.get("task_type") != task_type or row.get("source") in NOT_HABIT_SOURCES:
+        if not cfg or row.get("task_type") != task_type or not is_habit(row):
             continue
         ts = parse_ts(row.get("started_at"))
         if ts is not None and ts < since:
@@ -157,7 +169,7 @@ def usual_from_history(home: Path, task_type: str, repo: str, *, now: _dt.dateti
         last[cfg] = i
     for counts, level in ((by_repo, "repo"), (by_type, "type")):
         if counts:
-            best = max(counts, key=lambda c: (counts[c], last.get(c, -1)))
+            best = max(counts, key=lambda c: (counts[c], -last.get(c, -1)))
             return best, level
     return None, None
 
@@ -176,11 +188,12 @@ def usual_from_config(conf: Conf, task_type: str, repo: str) -> str | None:
 
 
 def model_habits(home: Path, limit: int = 500) -> list[tuple[str, str, str]]:
-    """(harness, model, effort) settings of recent runs, most used first, from stored run documents."""
+    """(harness, model, effort) settings of recent habit runs (`is_habit`), most used first, from stored run
+    documents: a run of a recommended alternative does not move the default workflow's models (0.2.4)."""
     counts: Counter = Counter()
-    rows = [r for r in run_rows(home) if r.get("source") not in NOT_HABIT_SOURCES][-limit:]
+    rows = [r for r in run_rows(home) if is_habit(r)][-limit:]
     for row in rows:
-        doc = read_json(home / "runs" / f"{row.get('run')}.ocp.json")
+        doc = read_json(home / "runs" / run_names.file_name(row.get('run')))
         conf = (doc or {}).get("run", {}).get("configuration") if isinstance(doc, dict) else None
         cfg = config_from_any(conf) if conf else None
         if cfg is None:
@@ -220,7 +233,7 @@ def recorded_configs(home: Path, task_type: str, repo: str, *,
             continue
         out = []
         for cfg_id in sorted(counts, key=lambda c: (-counts[c], -last.get(c, -1))):
-            doc = read_json(home / "runs" / f"{run_of.get(cfg_id)}.ocp.json") if cfg_id in run_of else None
+            doc = read_json(home / "runs" / run_names.file_name(run_of.get(cfg_id))) if cfg_id in run_of else None
             conf = doc.get("run", {}).get("configuration") if isinstance(doc, dict) else None
             cfg = config_from_any(conf) if conf else None
             if cfg is not None:
@@ -266,7 +279,7 @@ def find_config(home: Path, cfg_id: str, *, max_recs: int = 200) -> Configuratio
     for row in index_rows(home):
         if row.get("config") != cfg_id:
             continue
-        doc = read_json(home / "runs" / f"{row.get('run')}.ocp.json")
+        doc = read_json(home / "runs" / run_names.file_name(row.get('run')))
         conf = doc.get("run", {}).get("configuration") if isinstance(doc, dict) else None
         cfg = config_from_any(conf) if conf else None
         if cfg is not None:

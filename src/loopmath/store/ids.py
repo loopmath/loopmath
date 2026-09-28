@@ -2,7 +2,10 @@
 
 Ids are a prefix plus a ULID: 48 bits of milliseconds and 80 random bits in
 Crockford base32, so they sort by creation time and never collide across
-processes. Timestamps are ISO 8601 with the local offset.
+processes. Timestamps are ISO 8601 in UTC with a `Z` (0.2.4): onboard wrote UTC and the loop
+local time before, so one store held both forms. Older values stay as written and are read by
+instant (`parse_ts`); terminal lines show local time with the zone (`output.fmt_time`), and
+`--since` without an offset is local time.
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _last = [0, 0]  # (ms, random) of the previous id in this process, for monotonic ids
@@ -62,8 +65,23 @@ def ulid_time(value: str) -> datetime | None:
 
 
 def now_iso() -> str:
-    """Now, local time with offset, second precision."""
-    return datetime.now().astimezone().replace(microsecond=0).isoformat()
+    """Now, in UTC with a `Z`, second precision: `2026-09-28T14:05:09Z`."""
+    return utc_iso(datetime.now(timezone.utc).replace(microsecond=0))  # type: ignore[return-value]
+
+
+def utc_iso(value: datetime | str | None) -> str | None:
+    """A time (aware datetime, or an ISO string in any offset) as UTC with a `Z`, whole seconds unless it
+    has a fraction; None for None, and an unreadable string back as given (JSON keeps what it cannot read)."""
+    if value is None:
+        return None
+    dt = value if isinstance(value, datetime) else parse_ts(value)
+    if dt is None:
+        return value if isinstance(value, str) else None
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    dt = dt.astimezone(timezone.utc)
+    spec = "milliseconds" if dt.microsecond else "seconds"
+    return dt.replace(tzinfo=None).isoformat(timespec=spec) + "Z"
 
 
 def fit_id(at: datetime | None = None) -> str:
@@ -88,6 +106,12 @@ def parse_ts(value: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.astimezone()
     return dt
+
+
+def instant(value: str | None) -> float:
+    """Seconds since the epoch, for sorting times written with any offset; -inf when absent or unreadable."""
+    at = parse_ts(value)
+    return at.timestamp() if at is not None else float("-inf")
 
 
 _SINCE_RE = re.compile(r"\s*(\d+(?:\.\d+)?)\s*([a-z]+)\s*", re.IGNORECASE)

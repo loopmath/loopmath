@@ -53,6 +53,23 @@
   const scoreDots = cfgs => runsOf(cfgs).filter(r => num(r.score)).map(r => ({ v: r.score, cls: r.reached === false ? 'no' : '', t: runTip(r), tip: esc(runTip(r)) }));
   const costDots = cfgs => runsOf(cfgs).filter(r => num(r.cost_usd) && r.cost_usd > 0).map(r => ({ v: r.cost_usd, cls: r.reached === false ? 'no' : '', t: runTip(r) }));
 
+  // P2-1 (0.2.4): next to each estimate, the rows it rests on: rows from the user's runs and shipped rows. With none
+  // of the user's rows the estimate comes from the shipped prior, and the words say so.
+  const rows = data.rows || {};
+  const split = k => { const r = rows[k]; if (!r) return null; const y = +r.user || 0, t = Object.values(r).reduce((a, b) => a + (+b || 0), 0); return { yours: y, shipped: t - y }; };
+  const rowsWord = n => `${fmt.int(n)} ${n === 1 ? 'row' : 'rows'}`;
+  const basis = k => {
+    const r = split(k);
+    if (!r) return '';
+    if (!r.yours) return `comes from the shipped prior (none of your runs, ${rowsWord(r.shipped)} from shipped runs)`;
+    return `rests on ${rowsWord(r.yours)} from your runs` + (r.shipped ? ` and ${rowsWord(r.shipped)} from shipped runs` : ' alone');
+  };
+  const chanceHead = T && !FB ? 'score:' + SN : 'success';
+  const basisLine = (...pairs) => {
+    const parts = pairs.map(([what, k]) => { const b = basis(k); return b ? `the ${what} ${b}` : ''; }).filter(Boolean);
+    return parts.length ? ` <span class="v-basis">${parts.map((p, i) => i ? p : p[0].toUpperCase() + p.slice(1)).join('; ')}.</span>` : '';
+  };
+
   // ------------------------------------------------------------ the top
   const nr = fit.n_runs, yours = nr && typeof nr === 'object' ? +nr.user || 0 : null;
   const total = nr && typeof nr === 'object' ? Object.values(nr).reduce((a, b) => a + (+b || 0), 0) : (num(nr) ? nr : null);
@@ -63,14 +80,18 @@
   const bits = [`<b class="v-brand">loopmath <span>results</span></b>`, `<span>${esc(task.type || '')}${task.repo ? ' on ' + esc(task.repo) : ''}${about.length ? ' (' + esc(about.join('; ')) + ')' : ''}</span>`,
     T ? `<span>target <b>${esc(T.definition || T.rule)}</b></span>` : '<span>no score target</span>', `<span>fit <b>${esc(fit.id || 'n/a')}</b></span>`];
   const whence = !T ? '' : T.from === 'argument' ? ' (from <code>--target</code>)' : ` (the target of recommendation ${esc(T.rec || '')})`;
-  const taskWhy = { arguments: 'as given on the command line', store: 'the most common type and repo in your runs', 'default': 'no task given and no runs yet' }[task.from] || '';
+  // P3-28, P2-13 (0.2.4): where the type and repo came from, and how to pick another
+  const taskWhy = { arguments: 'as given on the command line', workflow: 'the task this workflow ran on', recommended: 'the task this workflow was recommended for (it has no runs yet)', store: 'the most common type and repo in your runs', 'default': 'no task given and no runs yet' }[task.from] || '';
+  const others = (task.ran_on || []).filter(o => o.type !== task.type || o.repo !== task.repo);
+  const taskHow = task.from === 'arguments' ? '' : ` To see another, pass <code>--type TYPE --repo REPO</code>` +
+    (others.length ? ` (this workflow also ran on ${others.slice(0, 3).map(o => `${esc(o.type)} in ${esc(o.repo)}`).join(', ')})` : '') + '.';
   let lede = T ? `Target <b>${esc(T.definition || T.rule)}</b>${whence}. ` : `No score target: pass <code>--target NAME&gt;=X</code> or run <code>loopmath recommend</code> with one to rank by it. `;
   lede += `Fitted ${esc(fmt.dt(fit.at))}` + (total != null ? ` on ${yours != null ? `<b>${fmt.int(yours)} of your runs</b> and ${fmt.int(total - yours)} shipped runs` : fmt.int(total) + ' runs'}` : '') +
-    (num(data.fit_time_s) ? `, in ${data.fit_time_s.toFixed(1)} s` : '') + `. For ${esc(task.type || '')} tasks in ${esc(task.repo || '')}${taskWhy ? ', ' + esc(taskWhy) : ''}. Ranges are 80%.`;
+    (num(data.fit_time_s) ? `, in ${data.fit_time_s.toFixed(1)} s` : '') + `. For ${esc(task.type || '')} tasks in ${esc(task.repo || '')}${taskWhy ? ', ' + esc(taskWhy) : ''}.${taskHow} Ranges are 80%.`;
 
   let h = `<div class="v-wrap"><div class="v-top">${bits.join('')}</div>
   <p class="v-kicker">Results after the fit</p>
-  <h1>What your runs say about ${esc(task.type || 'these')} tasks in ${esc(task.repo || 'this repo')}</h1>
+  <h1>What the fit predicts for ${esc(task.type || 'these')} tasks in ${esc(task.repo || 'this repo')}</h1>
   <p class="v-lede" id="lede">${lede}</p>
   <nav class="v-rail" aria-label="questions"><a href="#q1"><b>1</b>Which workflow</a><a href="#q2"><b>2</b>Which model and effort</a><a href="#q3"><b>3</b>Is more spend worth it</a><a href="#q4"><b>4</b>How sure</a><a href="#q5"><b>5</b>What was fitted</a></nav>`;
 
@@ -78,9 +99,10 @@
   // N3 (0.2.3): the server's rule (`typical_first`) leads a run cost with the typical run, the median, while the user
   // has no runs of their own or the range is wider than 10x; the mean follows, and the onboarding hint with no runs.
   const typicalRun = w => w && w.typical && w.cost && num(w.cost.median);
-  const runCost = w => typicalRun(w) ? `<b>${usd(w.cost.median)}</b> for a typical run (80% of runs ${rng(w.cost, usd)})`
-    : `<b>${usd(mean(w.cost))}</b> a run${tail(w.cost)}`;
-  const meanNote = w => !typicalRun(w) ? '' : ` <span id="runmean">The mean run costs ${usd(w.cost.mean)}${w.cost.mean > w.cost.median ? ', higher because a few runs cost far more' : ''}.` +
+  // P3-6 (0.2.4): each number is labelled median or mean, and belongs to the named workflow
+  const runCost = w => typicalRun(w) ? `a median run of <b>${usd(w.cost.median)}</b> (80% of its runs ${rng(w.cost, usd)})`
+    : `a mean of <b>${usd(mean(w.cost))}</b> a run${tail(w.cost)}`;
+  const meanNote = w => !typicalRun(w) ? '' : ` <span id="runmean">Its mean run costs ${usd(w.cost.mean)}${w.cost.mean > w.cost.median ? ', higher than the median because a few runs cost far more' : ''}; the list below shows means.` +
     (D.own_runs === 0 ? ' Onboard to see your own costs: <code>loopmath onboard</code>.' : '') + '</span>';
   function answer1() {
     if (!W.length) return `No workflow recorded for ${esc(task.type || '')} tasks in ${esc(task.repo || '')} yet. Record runs, or draw one configuration with <code>${esc(taskCmd)} --workflow CFG --html</code>.`;
@@ -91,14 +113,15 @@
     else if (bc) s = `With no score target the list is ranked by the chance of an accepted result: <b>${esc(best.name)}</b> is first at <b>${pct(bc.mean)}</b>${rng(bc, pct) ? ` (${rng(bc, pct)})` : ''}, ${runCost(best)}.${meanNote(best)}`;
     if (T && RES) {
       const c = W.filter(w => w.ell && num(w.ell.mean)).sort((a, b) => a.ell.mean - b.ell.mean)[0];
-      if (c) s += ` The cheapest per accepted result is <b>${esc(c.name)}</b>: <b>${usd(c.ell.mean)}</b> (${rng(c.ell, usd)}${tailWord(c.ell)}), with a ${pct(mean(chanceOf(c)))} ${FB ? 'chance of an accepted result' : 'chance to reach'} and ${usd(mean(c.cost))} a run.`;
+      if (c) s += ` The cheapest per accepted result is <b>${esc(c.name)}</b>: a mean of <b>${usd(c.ell.mean)}</b> (${rng(c.ell, usd)}${tailWord(c.ell)}), with a ${pct(mean(chanceOf(c)))} ${FB ? 'chance of an accepted result' : 'chance to reach'} and a mean of ${usd(mean(c.cost))} a run.`;
     } else if (T) {
       const c = W.filter(w => mean(chanceOf(w), 0) >= 0.5 && w.cost).sort((a, b) => a.cost.mean - b.cost.mean)[0];
       const often = FB ? 'is accepted more often than not' : 'reaches it more often than not';
-      s += c ? ` The cheapest that ${often} is <b>${esc(c.name)}</b>: ${pct(chanceOf(c).mean)}, ${usd(c.cost.mean)} a run.` : ` None ${FB ? 'is accepted' : 'reaches it'} more often than not.`;
+      s += c ? ` The cheapest that ${often} is <b>${esc(c.name)}</b>: ${pct(chanceOf(c).mean)}, a mean of ${usd(c.cost.mean)} a run.` : ` None ${FB ? 'is accepted' : 'reaches it'} more often than not.`;
       s += ` No rescue is priced for this target, so there is no cost per accepted result here; <code>loopmath recommend --type ${esc(LM.shq(task.type || ''))} --repo ${esc(LM.shq(task.repo || ''))} --target ${esc(LM.shq(T.rule || ''))}</code> prices one.`;
     }
     s += fbNote;
+    if (bc) s += basisLine([chanceWords, chanceHead], ['cost per run', 'cost']);
     const most = Math.max(0, ...W.map(w => w.runs || 0));
     if (most <= 3) s += ` No workflow has more than ${V.runs(most)} behind it, so the ranges are wide.`;
     return s;
@@ -135,12 +158,13 @@
     if (!models.length) return 'No settings to compare: the fit knows no model for this task. Set <code>models.allowed</code> in config, or record runs.';
     const clause = m => {
       const bu = m.units.find(u => u.effort === m.best);
-      let s = `<b>${esc(m.model)}</b>` + (bu ? ` scores ${bestWord} at ${esc(m.best)} (${esc(score(bu.perf.mean))} ${esc(scoreWord)}, ${usd(mean(bu.cost))} a run)` : ' has no score estimate');
+      let s = `<b>${esc(m.model)}</b>` + (bu ? ` scores ${bestWord} at ${esc(m.best)} (a mean of ${esc(score(bu.perf.mean))} ${esc(scoreWord)} and ${usd(mean(bu.cost))} a run)` : ' has no score estimate');
       if (T) s += m.cheapest ? `, and its cheapest effort whose mean reaches ${esc(tgt)} is ${esc(m.cheapest)}` : `, and no effort reaches ${esc(tgt)} on average`;
       return s;
     };
     return 'One agent working alone at each setting, predicted for this task. Compare efforts within a model. ' +
-      (mine.length ? mine.map(clause).join('; ') + '.' : 'None of these models has run on this task.');
+      (mine.length ? mine.map(clause).join('; ') + '.' : 'None of these models has run on this task.') +
+      basisLine(SN ? [scoreWord + ' estimate', 'score:' + SN] : ['chance of an accepted result', 'success'], ['cost per run', 'cost']);
   }
   function modelBlocks(list) {
     return list.map(m => {
@@ -179,22 +203,22 @@
     return ls.slice(0, 4);
   })();
   h += `<section class="v-q" id="q3"><p class="v-qno">3</p><h2>Is more spend worth it?</h2>`;
-  h += spendItems.length ? `<p class="v-answer" id="a3"></p><div class="v-fig"><div id="spend"></div><p class="v-figcap"><b>Figure 3.</b> ${esc(scoreWord)} against cost per run, one panel per graph, log cost axis. Line: the 80% ${esc(scoreWord)} range. Small dots: your runs. Filled and labelled with the level: the cheapest workflow whose mean reaches it.</p></div>`
+  h += spendItems.length ? `<p class="v-answer" id="a3"></p><div class="v-fig"><div id="spend"></div><p class="v-figcap"><b>Figure 3.</b> Mean ${esc(scoreWord)} against mean cost per run, one panel per graph, log cost axis fitted to the points. Line: the 80% ${esc(scoreWord)} range. Small dots: your runs. Filled and labelled with its levels: the cheapest workflow whose mean reaches them.</p></div>`
     : `<p class="v-answer" id="a3">No score is recorded for these runs, so there is no score to weigh against cost. Question 1 ranks the workflows by the chance of an accepted result and gives each one's cost.</p>`;
   h += '</section>';
 
   // ------------------------------------------------------------ 4. how sure
-  const rows = data.rows || {};
-  const split = k => { const r = rows[k]; if (!r) return null; const y = +r.user || 0, t = Object.values(r).reduce((a, b) => a + (+b || 0), 0); return { yours: y, shipped: t - y }; };
   const barHeads = [SN ? 'score:' + SN : null, 'success', 'cost', 'gate'].filter(k => k && rows[k]);
   const headName = k => k === 'score:' + SN ? scoreWord + (T ? ' (target)' : '') : { success: 'accepted or not', cost: 'cost', gate: 'review gates' }[k] || k;
   function answer4() {
     const sc = SN ? split('score:' + SN) : null, rr = W.map(w => w.runs || 0);
     let s = '';
-    if (sc) s += `The ${esc(scoreWord)} estimates rest on <b>${fmt.int(sc.yours)} of your runs</b>` + (sc.shipped ? ` and ${fmt.int(sc.shipped)} shipped rows.` : ` alone: no shipped run has a ${esc(scoreWord)} score.`);
+    if (sc) s += `The ${esc(scoreWord)} estimate ${basis('score:' + SN)}` + (sc.shipped ? '.' : `: no shipped run has a ${esc(scoreWord)} score.`);
+    const g0 = split('success');
+    if (g0) s += ` The chance of an accepted result ${basis('success')}.`;
     if (rr.length) s += ` Each workflow has ${Math.min(...rr) === Math.max(...rr) ? V.runs(rr[0]) : V.runs(Math.min(...rr)).replace(/ runs?$/, '') + ' to ' + V.runs(Math.max(...rr))} behind it.`;
-    const c = split('cost'), g = split('success');
-    if (c && c.shipped) s += ` Cost ${g && g.shipped ? 'and success also lean' : 'also leans'} on shipped runs.`;
+    const c = split('cost');
+    if (c) s += ` The cost per run ${basis('cost')}.`;
     return s || 'The fit recorded no row counts, so the page cannot say how many runs each estimate rests on.';
   }
   const bar = k => { const r = split(k); const t = r.yours + r.shipped || 1; return `<div class="b" data-head="${esc(k)}"><span>${esc(headName(k))}</span><span class="track"><i class="y" style="width:${(r.yours / t * 100).toFixed(1)}%"></i><i class="s" style="width:${(r.shipped / t * 100).toFixed(1)}%"></i></span><span class="num">${fmt.int(r.yours)} yours, ${fmt.int(r.shipped)} shipped</span></div>`; };
@@ -279,7 +303,9 @@
   function drawSpend() {
     const host = document.getElementById('spend');
     if (!host) return;
-    const res = V.scoreCost(host, spendItems, { xDomain: CD, yDomain: PD, target: T ? T.target : null, levels, better });
+    const xs = spendItems.flatMap(w => [w.cost.mean, ...w.dots.map(d => d.usd)]).filter(v => num(v) && v > 0);
+    const ys = spendItems.flatMap(w => [w.perf.lo, w.perf.hi, w.perf.mean, ...w.dots.map(d => d.score)]).concat(T ? [T.target] : []);
+    const res = V.scoreCost(host, spendItems, { xDomain: xs.length ? V.logDomain(xs) : CD, yDomain: span(ys, 0.06) || PD, target: T ? T.target : null, levels, better });
     const per = [];  // consecutive levels with the same cheapest workflow share one clause
     levels.forEach(L => {
       const k = Object.keys(res.cheapest).find(key => res.cheapest[key].indexOf(L) >= 0);
@@ -288,9 +314,13 @@
       if (last && last.w.key === k) last.levels.push(L); else per.push({ levels: [L], w: spendItems.find(w => w.key === k) });
     });
     const a3 = document.getElementById('a3');
-    a3.innerHTML = per.length ? 'The cheapest mean cost per ' + esc(scoreWord) + ' level: ' + per.map(({ levels: ls, w }) => `<b>${ls.map(L => esc(score(L))).join(' and ')}</b> ${esc(w.name)} at <b>${usd(w.cost.mean)}</b> a run${tail(w.cost)}`).join('; ') + '.' +
+    const lv = ls => ls.length > 1 ? `${esc(score(ls[0]))} to ${esc(score(ls[ls.length - 1]))}` : esc(score(ls[0]));
+    const at = w => `a mean of <b>${usd(w.cost.mean)}</b> a run${tail(w.cost)}`;
+    a3.innerHTML = (per.length ? per.map(({ levels: ls, w }, i) => i === 0
+      ? `The cheapest workflow whose mean ${esc(scoreWord)} reaches <b>${lv(ls)}</b> is <b>${esc(w.name)}</b>, at ${at(w)}.`
+      : `For <b>${lv(ls)}</b> it is <b>${esc(w.name)}</b>, at ${at(w)}.`).join(' ') +
       (levels.length && !Object.values(res.cheapest).some(ls => ls.indexOf(levels[levels.length - 1]) >= 0) ? ` No workflow's mean reaches ${esc(score(levels[levels.length - 1]))}.` : '')
-      : `No workflow's mean reaches ${T ? esc(tgt) : 'the levels shown'}.`;
+      : `No workflow's mean reaches ${T ? esc(tgt) : 'the levels shown'}.`) + basisLine([scoreWord + ' estimate', 'score:' + SN], ['cost per run', 'cost']);
   }
   function drawRuns() {
     const host = document.getElementById('runsplot');

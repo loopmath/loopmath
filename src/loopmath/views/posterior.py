@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import dataclasses
 import datetime as _dt
 import json
 import math
@@ -20,9 +21,11 @@ from typing import Any, Iterable
 
 from ..output import EXIT_NO_FIT, EXIT_NOT_FOUND, EXIT_OK, EXIT_USER, emit_json, fail, home as store_home
 from ..recommend.message import typical_first
+from ..store import run_names
 from ..recommend.storeread import own_runs
 from ..types import TASK_TYPE_IDS, Configuration, Task
 from .common import TAIL_NOTE, embed_json, extract_data, html_target, write_page  # noqa: F401 (extract_data, embed_json: the page's own)
+from .common import fmt_time, small_usd
 
 SCHEMA = "loopmath.view.posterior/1"
 SECTIONS = ("model", "effort", "role", "topology", "type", "repo", "feature")
@@ -667,9 +670,29 @@ def _now() -> str:
     return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def workflow_tasks(home: Path, cfg: str | None, task_type: str | None = None,
+                   repo: str | None = None) -> list[tuple[str, str, int]]:
+    """(type, repo, runs) of the stored runs of configuration `cfg`, within `--type` and `--repo` when given, most
+    runs first, then the most recent (P2-13, 0.2.4)."""
+    if not cfg:
+        return []
+    counts: Counter = Counter()
+    last: dict[tuple[str, str], int] = {}
+    for i, r in enumerate(_index_rows(home)):
+        key = (r.get("task_type"), r.get("repo"))
+        if (r.get("config") != cfg or key[0] not in TASK_TYPE_IDS or not key[1]
+                or task_type not in (None, key[0]) or repo not in (None, key[1])):
+            continue
+        counts[key] += 1
+        last[key] = i
+    return [(t, r, n) for (t, r), n in sorted(counts.items(), key=lambda kv: (-kv[1], -last[kv[0]]))]
+
+
 def choose_task(home: Path, task_type: str | None, repo: str | None, subtype: str | None = None,
-                features: dict[str, str] | None = None) -> tuple[Task, str]:
-    """The task the graphs are computed for: the arguments, else the most common (type, repo) in the store.
+                features: dict[str, str] | None = None, workflow: str | None = None) -> tuple[Task, str]:
+    """The task the graphs are computed for: the arguments; else, for `--workflow CFG`, the (type, repo) its runs
+    were for (the one with the most runs, P2-13), or for a workflow that never ran the (type, repo) of the newest
+    recommendation that listed it; else the most common (type, repo) in the store.
 
     `subtype` and `features` (`--subtype`, `--feature`, as `recommend`) go into the prediction either way.
     """
@@ -678,6 +701,12 @@ def choose_task(home: Path, task_type: str | None, repo: str | None, subtype: st
     more = {"subtype": subtype or None, "features": dict(features or {})}
     if task_type and repo:
         return Task(id="tsk_posterior_view", type=task_type, repo=repo, **more), "arguments"
+    ran = workflow_tasks(home, workflow, task_type, repo)
+    if ran:
+        return Task(id="tsk_posterior_view", type=ran[0][0], repo=ran[0][1], **more), "workflow"
+    listed = recommended_task(home, workflow, task_type, repo)
+    if listed:
+        return Task(id="tsk_posterior_view", type=listed[0], repo=listed[1], **more), "recommended"
     counts = Counter((r.get("task_type"), r.get("repo")) for r in _index_rows(home)
                      if r.get("task_type") in TASK_TYPE_IDS and r.get("repo")
                      and task_type in (None, r.get("task_type")) and repo in (None, r.get("repo")))
@@ -685,6 +714,77 @@ def choose_task(home: Path, task_type: str | None, repo: str | None, subtype: st
         (t, r), _ = counts.most_common(1)[0]
         return Task(id="tsk_posterior_view", type=t, repo=r, **more), "store"
     return Task(id="tsk_posterior_view", type=task_type or "feature", repo=repo or "unknown", **more), "default"
+
+
+def recommended_task(home: Path, cfg: str | None, task_type: str | None = None,
+                     repo: str | None = None) -> tuple[str, str] | None:
+    """(type, repo) of the newest stored recommendation that listed configuration `cfg` as a choice, a pair member
+    or a candidate, within `--type` and `--repo` when given (P2-13, 0.2.4: `posterior --workflow GOAL` for a goal
+    that never ran showed the store's most common task, with no numbers for the goal)."""
+    if not cfg:
+        return None
+    for path in _json_files(home / "recs"):
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        t = rec.get("task") if isinstance(rec, dict) else None
+        if (not isinstance(t, dict) or t.get("type") not in TASK_TYPE_IDS or not t.get("repo")
+                or task_type not in (None, t["type"]) or repo not in (None, t["repo"])):
+            continue
+        pair = rec.get("pair") if isinstance(rec.get("pair"), dict) else {}
+        listed = [c.get("config") for key in ("choices", "candidates") for c in rec.get(key) or [] if isinstance(c, dict)]
+        listed += list(pair.get("members") or [])
+        if cfg in [c.get("id") if isinstance(c, dict) else c for c in listed]:
+            return t["type"], t["repo"]
+    return None
+
+
+def recommend_task(home: Path, task: Task, fit_id: str, rule: Any = None) -> dict[str, Any] | None:
+    """The newest stored recommendation for the task's type and repo made on this fit (with this score target
+    when `rule` has one, else any): its id, the task id it asked the belief with (`asked_task`), its subtype and
+    features. The page predicts under that task, so a workflow gets the numbers `recommend` gave it (0.2.4: the
+    page used its own task id, so its ranges differed from recommend's for the same workflow)."""
+    for path in _json_files(home / "recs"):
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        t = rec.get("task") if isinstance(rec, dict) else None
+        if (not isinstance(t, dict) or t.get("type") != task.type or t.get("repo") != task.repo
+                or not isinstance(rec.get("asked_task"), str) or (rec.get("fit") or {}).get("id") != fit_id):
+            continue
+        other = _rec_rule(rec)
+        if rule is not None and rule.score is not None and (other is None or not _same_target(other, rule)):
+            continue
+        return {"rec": rec.get("rec"), "id": rec["asked_task"], "subtype": t.get("subtype"),
+                "features": {str(k): str(v) for k, v in (t.get("features") or {}).items()}}
+    return None
+
+
+def task_note(task: dict[str, Any], ran: list[tuple[str, str, int]] | None = None,
+              workflow: str | None = None) -> str | None:
+    """Which task the numbers are for when the command line did not name it, and how to pick another (P3-28, P2-13),
+    or None when `--type` and `--repo` named it."""
+    what = f"{task.get('type')} tasks in {task.get('repo')}"
+    how = "pick another with --type T --repo R"
+    src = task.get("from")
+    if src == "workflow":
+        n = ran[0][2] if ran else 0
+        head = f"{workflow} on {what}, the task its runs were for ({n} run{'' if n == 1 else 's'})"
+        others = [f"{t} in {r} ({k} run{'' if k == 1 else 's'})" for t, r, k in (ran or [])[1:4]]
+        if others:
+            more = len(ran or []) - 1 - len(others)
+            return (f"{head}; it also ran on {', '.join(others)}{f' and {more} more' if more > 0 else ''}: "
+                    f"{how}")
+        return head
+    if src == "recommended":
+        return f"{workflow} on {what}, the task it was recommended for (it has no runs yet); {how}"
+    if src == "store":
+        return f"{what}, the most common type and repo in your runs; {how}"
+    if src == "default":
+        return f"{what}: the store has no typed runs yet; {how}"
+    return None
 
 
 def task_features(items: Iterable[str], features: Any = None,
@@ -787,7 +887,7 @@ def _run_config(home: Path, run: Any, cfg: str) -> Configuration | None:
     if not run:
         return None
     try:
-        found = _find_config_dict(json.loads((home / "runs" / f"{run}.ocp.json").read_text(encoding="utf-8")), cfg)
+        found = _find_config_dict(json.loads((home / "runs" / run_names.file_name(run)).read_text(encoding="utf-8")), cfg)
     except (OSError, json.JSONDecodeError, ValueError):
         return None
     return _read_config(found) if found is not None else None
@@ -1127,9 +1227,17 @@ def build_view(state: Any, *, home: Path, level: str = "all", head: str | None =
     if head is not None and head not in present:
         raise ViewError(f"no estimates for head {head!r} in fit {state.fit_id}; heads: {', '.join(present) or 'none'}")
     nodes = [n for n in _all_nodes(levels) if head is None or n["head"] == head]
-    task, task_from = choose_task(home, task_type, repo, subtype, features)
+    task, task_from = choose_task(home, task_type, repo, subtype, features,
+                                  workflow=workflow if workflow and workflow.startswith("cfg_") else None)
+    ran = workflow_tasks(home, workflow, task_type, repo) if task_from == "workflow" else []
     target = choose_target(home, task, head, present)
     rule, rule_from, rescue = results_target(home, task, target_rule)
+    asked = recommend_task(home, task, state.fit_id, rule)
+    if asked is not None and (task.subtype not in (None, asked["subtype"]) or (task.features and dict(task.features) != asked["features"])):
+        asked = None  # --subtype or --feature name another task than the recommendation's
+    if asked is not None:  # the task `recommend` asked with, so the same workflow gets the same numbers
+        task = dataclasses.replace(task, id=asked["id"], subtype=task.subtype or asked["subtype"] or None,
+                                   features=dict(task.features) or asked["features"])
     if target_rule and head is None and f"score:{rule.score.name}" in present:  # `--target` orders the list too
         target = {"head": f"score:{rule.score.name}", "better": rule.score.better, "target": rule.score.target,
                   "from": "argument"}
@@ -1147,6 +1255,8 @@ def build_view(state: Any, *, home: Path, level: str = "all", head: str | None =
                 raise ViewError(_config_not_found(workflow, home), EXIT_NOT_FOUND)
             entries = [_entry(state, task, config, "argument")]
         configs[config.id] = config
+        entries[0]["runs"] = sum(1 for r in _index_rows(home) if r.get("config") == config.id  # as the list counts (0.2.4)
+                                 and r.get("task_type") == task.type and r.get("repo") == task.repo)
     else:
         entries = _workflow_list(state, home, task, target, configs)
     score_name = (rule.score.name if rule is not None
@@ -1164,7 +1274,7 @@ def build_view(state: Any, *, home: Path, level: str = "all", head: str | None =
         "generated_at": now or _now(),
         "fit": {"id": state.fit_id, "at": state.created_at, "n_runs": _n_runs(meta)},
         "task": {"type": task.type, "repo": task.repo, "subtype": task.subtype, "features": dict(task.features),
-                 "from": task_from},
+                 "from": task_from, "rec": asked["rec"] if asked else None},
         "head": head,
         "target": target,
         "heads": {h: head_info(h, meta, state) for h in (present if head is None else [head])},
@@ -1178,6 +1288,9 @@ def build_view(state: Any, *, home: Path, level: str = "all", head: str | None =
         "score_name": score_name,
         "own_runs": own,
     }
+    data["task"]["note"] = task_note(data["task"], ran, workflow)
+    if ran:
+        data["task"]["ran_on"] = [{"type": t, "repo": r, "runs": n} for t, r, n in ran]
     from ..priors.show import fit_prior  # the fit's starting prior, one line under the page's lede (lane 23P)
 
     data["prior"] = fit_prior(meta)
@@ -1247,7 +1360,10 @@ def fmt_display(node: dict[str, Any], heads: dict[str, Any] | None = None) -> st
 
 
 def _usd(x: float) -> str:
-    return f"${x:,.2f}" if abs(x) >= 0.01 or x == 0 else f"${x:.4f}"
+    """0.2.4 small-cost rule: `$0` for zero, one significant digit under $0.01, two decimals from $0.01 up."""
+    if x == 0:
+        return "$0"
+    return f"${x:,.2f}" if abs(x) >= 0.01 else small_usd(x)
 
 
 def _tokens(x: float) -> str:
@@ -1277,7 +1393,8 @@ def _fit_line(data: dict[str, Any]) -> str:
         runs = f"{int(n):,} runs"
     else:
         runs = "run count not recorded"
-    return f"Current estimates (the posterior) from fit {fit.get('id')} at {fit.get('at')}, {runs}. Ranges are 80%."
+    return (f"Current estimates (the posterior) from fit {fit.get('id')} at {fmt_time(fit.get('at'))}, {runs}. "
+            "Ranges are 80%.")
 
 
 def _workflow_lines(data: dict[str, Any]) -> list[str]:
@@ -1539,6 +1656,8 @@ def command(args: argparse.Namespace) -> int:
     note = subtype_note(state, data["task"])
     if note:
         print(note, file=sys.stderr)
+    if data["task"].get("note") and not args.json:  # P3-28: which task, when the command line did not name it (JSON: task.note)
+        print(f"note: showing {data['task']['note']}", file=sys.stderr)
     target = html_target(getattr(args, "html", None), "posterior", getattr(args, "home", None))
     if target is not None:  # with --json the path goes to stderr, so stdout holds only the JSON object
         write_page(target, render(data), json_mode=bool(args.json))

@@ -16,6 +16,7 @@ from scipy import sparse
 from loopmath.belief import fit as F
 from loopmath.belief.design import task_from_doc
 from loopmath.belief.state import load, load_latest
+from tests.pytensor_compile import skip_unless_pytensor_compiles
 
 NOW = datetime.fromisoformat("2026-09-23T12:00:00-07:00")
 
@@ -171,6 +172,7 @@ def test_full_without_the_bayes_extra_says_so(tmp_path, mixed_docs, monkeypatch)
 
 def test_pymc_check_agrees_with_the_closed_form_cost_head(mixed_docs):
     pytest.importorskip("pymc")
+    skip_unless_pytensor_compiles()
     from loopmath.belief import check_pymc
     from loopmath.belief.forest import Forest
 

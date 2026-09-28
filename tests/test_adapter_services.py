@@ -41,7 +41,7 @@ class _Adapter(Adapter):
         producer = {"name": self.name}
         if self.producer_version() is not None:
             producer["version"] = self.producer_version()
-        return {"ocp": "0.2", "producer": producer, "nodes": []}
+        return {"ocp": "0.2", "producer": producer, "nodes": [{"id": "n1"}]}  # `adapt` refuses an empty document
 
 
 register(_Adapter)

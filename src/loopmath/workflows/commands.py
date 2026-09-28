@@ -25,7 +25,7 @@ from .diff import diff_workflows
 from .format import (WorkflowFormatError, catalog, load_workflow_file, settings_warnings, user_workflows,
                      validate_settings, validate_workflow, workflow_warnings, workflows_dir)
 from .ocp import artifact_kind, configuration_from_any, rescue_to_ocp, workflow_from_any, workflow_to_ocp
-from .shapes import shape_name, shape_params
+from .shapes import build_shape, composed_shapes, nearest_catalog, shape_name, shape_params
 
 CFG_PREFIX = "cfg_"
 
@@ -46,7 +46,7 @@ class Resolved:
     """What a name on the command line stands for."""
 
     ref: str
-    origin: str  # catalog | user | file | store | inferred
+    origin: str  # catalog | user | file | store | inferred | composed
     workflow: Workflow
     settings: dict[str, Setting] = field(default_factory=dict)
     config: Configuration | None = None
@@ -176,7 +176,13 @@ def resolve(ref: str, home_override: str | None = None) -> Resolved:
         if found is not None:
             return found
         raise NotFound(f"{ref}: no configuration with this id in {home(home_override)} (workflows, recs, runs)")
-    raise NotFound(f"{ref}: not a catalog shape, a workflow in {workflows_dir(home_override)}, a file or a cfg_ id")
+    composed = composed_shapes().get(ref)
+    if composed is not None:  # a name onboard gives runs, such as team or team_review
+        return Resolved(ref, "composed", build_shape(composed),
+                        note=f"not in the catalog, so recommend does not offer it; "
+                             f"the nearest catalog shape is {nearest_catalog(composed)}")
+    raise NotFound(f"{ref}: not a catalog shape, a composed shape (such as team or team_review), a workflow in "
+                   f"{workflows_dir(home_override)}, a file or a cfg_ id")
 
 
 def _resolve_or_exit(ref: str, home_override: str | None) -> Resolved | int:
@@ -274,8 +280,10 @@ def list_workflows(args: argparse.Namespace) -> int:
                          "errors": list(uw.errors)})
         else:
             rows.append(_entry(uw.file.workflow, "user", uw.path, uw.errors, uw.file.configuration()))
+    composed = list(composed_shapes())
     if args.json:
-        emit_json("loopmath.workflows.list/1", {"workflows_dir": str(workflows_dir(args.home)), "workflows": rows})
+        emit_json("loopmath.workflows.list/1", {"workflows_dir": str(workflows_dir(args.home)), "workflows": rows,
+                                               "composed": composed})
         return EXIT_OK
     width = max(len(r["id"]) for r in rows)
     for r in rows:
@@ -286,6 +294,8 @@ def list_workflows(args: argparse.Namespace) -> int:
         print(text)
     if not any(r["origin"] == "user" for r in rows):
         print(f"no user workflows in {workflows_dir(args.home)}")
+    print(f"also composed, not in the catalog (onboard may name runs with them): {', '.join(composed)}; "
+          "loopmath workflows show NAME shows one")
     return EXIT_OK
 
 

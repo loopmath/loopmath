@@ -23,13 +23,14 @@ from typing import Any, Iterable, Mapping
 
 from ..belief.outcome import outcome_evidence
 from ..output import EXIT_NOT_FOUND, EXIT_OK, EXIT_USER, emit_json, fail
+from ..store import run_names
 from ..store.home import Store, StoreError
 from ..store.ids import parse_since  # the one `--since` reader: `m` is ambiguous, exit 2
 from ..store.lock import read_json
 from ..store.runs import run_cost as store_run_cost
 from ..types import AcceptanceRule
 from . import common
-from .common import as_dict, config_label, fmt_money, fmt_pct, fmt_usd, num
+from .common import as_dict, config_label, fmt_money, fmt_pct, fmt_time, fmt_usd, num
 
 SCHEMA = "loopmath.view.runs/1"
 DETAIL_CAP = 300  # Full detail for the newest 300 runs in the filtered set
@@ -46,7 +47,7 @@ def load_docs(store: Store, problems: list[str] | None = None) -> list[dict]:
     docs = []
     for path in sorted(store.runs_dir.glob("*.ocp.json")):
         try:
-            doc = store.run_doc(path.name[: -len(".ocp.json")])
+            doc = store.run_doc(run_names.run_id(path.name[: -len(".ocp.json")]))
         except (StoreError, OSError, ValueError) as exc:
             if problems is not None:
                 problems.append(f"{path.name}: {type(exc).__name__}")
@@ -375,10 +376,11 @@ def _outcome_word(row: Mapping[str, Any]) -> str:
 def _one_run_lines(row: Mapping[str, Any], sel: Mapping[str, Any], limit: int) -> list[str]:
     task, cfg, rc = row.get("task") or {}, row.get("config") or {}, row.get("receipt") or {}
     where = ", ".join(str(x) for x in (task.get("type"), task.get("subtype"), task.get("repo")) if x)
-    lines = [f"run {row['run']}  {row.get('state')}  started {row.get('started_at') or 'n/a'}",
+    lines = [f"run {row['run']}  {row.get('state')}  started {fmt_time(row.get('started_at'))}",
              f"task       {task.get('title') or 'n/a'}" + (f" ({where})" if where else ""),
              f"workflow   {cfg.get('label') or 'n/a'} [{cfg.get('id') or 'n/a'}]",
-             f"source     {row.get('source') or 'n/a'}" + (f"  slate {row['slate']}" if row.get("slate") else ""),
+             f"source     {row.get('source') or 'n/a'}" + (f"  slate {row['slate']}" if row.get("slate") else "")
+             + _preferred_words(row),
              f"cost       {fmt_money(row['cost'].get('usd'), row['cost'].get('tokens'))} over "
              + (_count(row["rounds"], "round") if row.get("rounds") else "n/a rounds"),
              f"outcome    {_outcome_word(row)}"]
@@ -396,7 +398,7 @@ def _one_run_lines(row: Mapping[str, Any], sel: Mapping[str, Any], limit: int) -
                  f"signals {len(sel.get('signals') or [])}")
     for sig in (sel.get("signals") or [])[: max(0, limit - len(lines))]:
         unit = _unit_suffix(sig.get("name"), sig.get("unit"))
-        lines.append(f"  {str(sig.get('observed_at') or '')[:16]}  {sig.get('kind')} {sig.get('name')} = "
+        lines.append(f"  {fmt_time(sig.get('observed_at'))}  {sig.get('kind')} {sig.get('name')} = "
                      f"{sig.get('value')}{unit} ({sig.get('tier')}){'  late' if sig.get('late') else ''}")
     return lines[:limit]
 
@@ -406,10 +408,31 @@ def _empty_lines(filters: Mapping[str, Any]) -> list[str]:
     if filters:
         shown = ", ".join(f"--{k} {v}" for k, v in filters.items() if k != "since_at")
         if filters.get("since_at"):
-            shown += f" (since {str(filters['since_at'])[:16].replace('T', ' ')})"
+            shown += f" (since {fmt_time(filters['since_at'])})"
         return [f"No runs match {shown}.", "Run `loopmath runs` without filters to see every recorded run."]
     return ["No runs recorded yet.",
             "Runs appear after `loopmath run start` and `loopmath run finish`, or after `loopmath run import FILE.ocp.json`."]
+
+
+def _preferred_words(row: Mapping[str, Any]) -> str:
+    """P3-24 (0.2.4): for a slate member, whom the judge of the slate's latest preference picked."""
+    pref = row.get("preference") or {}
+    if not pref.get("winner"):
+        return ""
+    judge = str((pref.get("judge") or {}).get("kind") or "judge")
+    return (f"  preferred by the {judge}" if pref["winner"] == row.get("run")
+            else f"  the {judge} preferred {pref['winner']}")
+
+
+def _slate_lines(rows: list[Mapping[str, Any]], slate: str | None) -> list[str]:
+    """Under `runs --slate SLT`: which run the judge preferred, from the rows' preference (P3-24, 0.2.4)."""
+    if not slate:
+        return []
+    pref = next((r["preference"] for r in rows if (r.get("preference") or {}).get("winner")), None)
+    if pref is None:
+        return [f"slate {slate}: no preference recorded yet"]
+    judge = str((pref.get("judge") or {}).get("kind") or "judge")
+    return [f"slate {slate}: the {judge} preferred {pref['winner']}"]
 
 
 def summary_lines(data: Mapping[str, Any], limit: int = 25, *, wide: bool = False) -> list[str]:
@@ -428,25 +451,28 @@ def summary_lines(data: Mapping[str, Any], limit: int = 25, *, wide: bool = Fals
     head = f"{_count(len(rows), 'run')}, {fmt_money(usd, tok)}; "
     head += f"{acc} of {len(known)} with a known outcome accepted ({fmt_pct(acc / len(known))})" if known else "no known outcomes"
     head += f"; cost inside its range for {inside} of {_count(len(with_rc), 'receipt')}" if with_rc else "; no receipts"
-    notes = list(data.get("notes") or [])
+    notes = _slate_lines(rows, (data.get("filters") or {}).get("slate")) + list(data.get("notes") or [])
     room = limit - 2 - len(notes)
     shown = rows[: room if len(rows) <= room else room - 1]
     # the workflow column is the configuration label (graph, then model/effort per piece), so runs of one graph differ
-    cells = [(str(r["run"]), str(r.get("started_at") or "n/a")[:16].replace("T", " "),
+    # P2-6 (0.2.4): local time with its zone, as every page and CLI line shows a time
+    cells = [(str(r["run"]), fmt_time(r.get("started_at")),
               str((r.get("config") or {}).get("label") or (r.get("config") or {}).get("workflow") or "n/a"),
               str(r.get("source") or "n/a")[:11],
               fmt_usd(r["cost"].get("usd")), r.get("rounds") if r.get("rounds") is not None else "-",
-              _outcome_word(r), str((r.get("config") or {}).get("id") or "n/a")) for r in shown]
+              _outcome_word(r) + _preferred_words(r).replace("  ", "; ", 1),
+              str((r.get("config") or {}).get("id") or "n/a")) for r in shown]
     # the run id is never cut: it is what `--run RUN` takes
     w_run = max([len("run")] + [len(c[0]) for c in cells])
     w_wf = max([len("workflow")] + [len(c[2]) for c in cells])
     w_src = max([len("source")] + [len(c[3]) for c in cells])
     w_cfg = max([len("config")] + [len(c[7]) for c in cells])
+    w_at = max([len("started")] + [len(c[1]) for c in cells])
     cfg_head = f" {'config':<{w_cfg}}" if wide else ""
-    lines = [head, f"{'run':<{w_run}}  {'started':<16}  {'workflow':<{w_wf}}{cfg_head} {'source':<{w_src}} {'cost':>9} {'rnd':>3}  outcome"]
+    lines = [head, f"{'run':<{w_run}}  {'started':<{w_at}}  {'workflow':<{w_wf}}{cfg_head} {'source':<{w_src}} {'cost':>9} {'rnd':>3}  outcome"]
     for run_id, started, wf, src, usd_s, rounds, word, cfg in cells:
         cfg_cell = f" {cfg:<{w_cfg}}" if wide else ""
-        lines.append(f"{run_id:<{w_run}}  {started:<16}  {wf:<{w_wf}}{cfg_cell} {src:<{w_src}} {usd_s:>9} {rounds!s:>3}  {word}")
+        lines.append(f"{run_id:<{w_run}}  {started:<{w_at}}  {wf:<{w_wf}}{cfg_cell} {src:<{w_src}} {usd_s:>9} {rounds!s:>3}  {word}")
     if len(rows) > len(shown):
         lines.append(f"... {len(rows) - len(shown)} more; --json or --html for all, --run RUN for one")
     return (lines + notes)[:limit]

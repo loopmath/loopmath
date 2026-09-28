@@ -111,7 +111,7 @@ export function attemptAuditSource(sourceOracle) {
       if (!marker || !same(renderedValue, expectedValue)) errors.push('node ' + n.i + ' card token differs for ' + stream);
       if (!marker?.textContent.trim()) errors.push('node ' + n.i + ' card token is blank for ' + stream);
     }
-    const complete = n.tok_record && tokenStreams.every(stream => Number.isFinite(n.tok?.[stream]));
+    const complete = n.tok_record && SOURCE.token_total_streams.every(stream => Number.isFinite(n.tok?.[stream]));
     const total = complete ? SOURCE.token_total_streams.reduce((sum, stream) => sum + n.tok[stream], 0) : null;
     if (n.tokComplete !== complete || n.tokTotal !== total) errors.push('node ' + n.i + ' token completeness or total differs');
     const tokenText = terms.includes('tokens') ? card.querySelectorAll('dd')[terms.indexOf('tokens')].textContent : '';

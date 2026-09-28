@@ -21,6 +21,7 @@ from typing import Any
 from ..output import EXIT_NOT_FOUND, EXIT_OK, fail, home as home_dir
 from ..recommend import commands as C
 from ..recommend import engine, storeread
+from ..store import run_names
 from ..recommend.curve import accepted_within
 from ..recommend.engine import Recommendation, r6
 from ..recommend.storeread import Conf
@@ -221,7 +222,7 @@ def recorded_runs(home: Any) -> list[tuple[Configuration, int]]:
                 run_of[str(cfg)] = str(row["run"])
     out = []
     for cfg_id, n in counts.items():
-        doc = storeread.read_json(home / "runs" / f"{run_of[cfg_id]}.ocp.json") if cfg_id in run_of else None
+        doc = storeread.read_json(home / "runs" / run_names.file_name(run_of[cfg_id])) if cfg_id in run_of else None
         conf = doc.get("run", {}).get("configuration") if isinstance(doc, dict) else None
         cfg = storeread.config_from_any(conf) if conf else None
         if cfg is not None:

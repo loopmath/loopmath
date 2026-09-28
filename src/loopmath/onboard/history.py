@@ -87,10 +87,46 @@ def load_history(since_days: float, *, logs: str | Path | None = None,
     records, _coverage = grade_mod.grade_all(records)
     records, _warnings = price_mod.price_all(records, price_mod.load_prices())
     if stage is not None:
-        stage(f"linking {len(records):,} sessions and the files they touched; "
-              "with thousands of sessions this takes several minutes")
+        # Only a cold cache is slow: most files parsed now, not read from the cache.
+        seen = (diag.get("files_seen") or {}).get("total", 0)
+        cold = seen and 2 * int(diag.get("cache_hits") or 0) < seen
+        stage(f"linking {len(records):,} sessions and the files they touched"
+              + ("; with thousands of sessions this takes several minutes" if cold else ""))
     graph = extract(records)
     return History(since_days=since_days, records=records, graph=graph, files=files, diagnostics=diag)
+
+
+def parse_cache() -> Path:
+    """The log parse cache file (under `ingest.cache_dir()`, with the link cache beside it)."""
+    from .. import ingest
+
+    return ingest._cache_path()
+
+
+def cache_size() -> tuple[Path, int]:
+    """The cache folder and the bytes its parse cache and link cache hold."""
+    from ..ingest.base import cache_dir
+
+    root = cache_dir()
+    total = 0
+    parsed = parse_cache()
+    if parsed.is_file():
+        total += parsed.stat().st_size
+    for folder, _dirs, names in os.walk(root / "links-v2"):
+        for name in names:
+            try:
+                total += os.stat(os.path.join(folder, name)).st_size
+            except OSError:
+                pass
+    return root, total
+
+
+def size_text(n: int) -> str:
+    """Bytes for a person: 9.6 KB, 252 MB."""
+    for unit, scale in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if n >= scale:
+            return f"{n / scale:,.0f} {unit}" if n >= 10 * scale else f"{n / scale:.1f} {unit}"
+    return f"{n:,} bytes"
 
 
 @dataclass
@@ -298,11 +334,16 @@ def _git(args: list[str], cwd: str) -> str | None:
     return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
 
 
+NO_REPO = "(no repo)"
+
+
 def repo_for(cwd: str | None) -> str:
     """The repo a session worked in: the git `origin` remote as `owner/name` (local git,
-    no network), else the git top-level folder name, else the workspace name, else
-    `unknown`. A folder that no longer exists is looked up through its nearest existing
-    parent."""
+    no network), else the git top-level folder name; outside any git repo (the home folder,
+    a temp folder, a folder of repos) `(no repo)`, not a folder name; `unknown` without a
+    folder. A folder that no longer exists is looked up through its nearest existing
+    parent; if that is in no repo either, its workspace name stands in, since a removed
+    worktree was most likely a repo."""
     from ..ingest.base import workspace_name
 
     if not cwd:
@@ -327,7 +368,8 @@ def repo_for(cwd: str | None) -> str:
                     _origin_cache[top] = _git(["remote", "get-url", "origin"], top)
                 url = _origin_cache[top]
                 name = (remote_name(url) if url else None) or Path(top).name
-    name = name or workspace_name(cwd) or "unknown"
+    if not name:
+        name = (workspace_name(cwd) if not Path(cwd).is_dir() else None) or NO_REPO
     _repo_cache[cwd] = name
     return name
 

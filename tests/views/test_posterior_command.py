@@ -73,7 +73,8 @@ def test_json_levels_task_workflows_and_data(store, capsys):
     obj = _json(capsys, ["posterior", "--home", str(home), "--json"])
     assert list(obj["levels"])[:7] == list(P.SECTIONS)
     assert obj["fit"] == {"id": FIT_ID, "at": state.created_at, "n_runs": {"prior": 1150, "user": 7}}
-    assert obj["task"] == {"type": "feature", "repo": "loopmath/loopmath", "subtype": None, "features": {}, "from": "store"}
+    assert obj["task"] == {"type": "feature", "repo": "loopmath/loopmath", "subtype": None, "features": {}, "from": "store", "rec": None,
+                           "note": "feature tasks in loopmath/loopmath, the most common type and repo in your runs; pick another with --type T --repo R"}
     ids = _ids()
     configs = [w["config"] for w in obj["workflows"]]
     assert configs == [ids["usual"], ids["pir"], ids["solo"]]

@@ -110,7 +110,8 @@ def test_dry_run_terminal_summary(env, capsys):
     assert lines[0].startswith("loopmath onboard (dry run): last 7d: sessions from ")  # the window, then the span
     assert any(line.startswith("  labeller: claude (claude-haiku-4-5), 2 groups in 1 call, expected about $") for line in lines)
     assert "  not classified: 1 (no prompt in the session 1)" in lines
-    assert lines[-1].startswith("  dry run: no labelling call, nothing written")
+    assert lines[-1].startswith("  dry run: no labelling call, no runs or fit written; it kept the log parse cache (")
+    assert "so the next read is fast" in lines[-1]  # new-user test P3-3: say what the dry run writes
     assert len(lines) <= 25
     _clean(out, err)
 
@@ -192,6 +193,18 @@ def test_full_run_writes_runs_usual_and_fit(env, capsys):
     assert json.loads(out)["labeler"]["saved"] is False
 
 
+def test_labelling_spend_is_recorded_once(env, capsys):
+    """The labeller's calls count in `budget` and `status` spend (0.2.4); keywords and dry runs spend nothing."""
+    e = env()
+    code, _, err = e.run("--labeler", "claude:claude-haiku-4-5", "--yes", "--json", capsys=capsys)
+    assert code == 0, err
+    assert e.store.spends == [{"kind": "labeling", "usd": 0.004, "tokens": 2650,
+                               "detail": {"labeler": "claude:claude-haiku-4-5", "calls": 1, "groups": 2}}]
+    for argv in (("--labeler", "none", "--yes"), ("--labeler", "claude:claude-haiku-4-5", "--dry-run")):
+        assert e.run(*argv, capsys=capsys)[0] == 0
+    assert len(e.store.spends) == 1
+
+
 def test_terminal_summary_after_a_run(env, capsys):
     e = env()
     code, out, err = e.run("--labeler", "claude:claude-haiku-4-5", "--yes", capsys=capsys)
@@ -262,8 +275,10 @@ def test_since_goes_through_the_one_store_reader(env, capsys):
 def test_the_opening_line_warns_of_the_wait_even_when_captured(env, capsys):
     e = env()
     code, _, err = e.run("--dry-run", "--labeler", "none", "--json", capsys=capsys)
-    assert code == 0 and err.splitlines()[0] == (
-        "onboard: reading Claude Code and Codex history, last 7d; a large history can take several minutes")
+    first = "onboard: reading Claude Code and Codex history, last 7d"
+    assert code == 0 and err.splitlines()[0] == first + "; a large history can take several minutes on the first read"
+    code, _, err = e.run("--dry-run", "--labeler", "none", "--json", capsys=capsys)
+    assert code == 0 and err.splitlines()[0] == first  # P3-8: the parse cache is warm now
 
 
 def test_counts_of_one_are_singular():
@@ -288,12 +303,13 @@ def test_keyword_guess_with_none(env, capsys):
 def test_none_labeller_says_how_many_got_no_type_and_what_types_them(env, capsys, monkeypatch):
     real = C.L.taskmodel.guess_type
     monkeypatch.setattr(C.L.taskmodel, "guess_type", lambda text: (None, 0.0) if "README" in text else real(text))
-    hint = ("  1 group got no type from keywords; a model labeller types them "
-            "(--labeler claude:MODEL, codex:MODEL or command:CMD)")
+    advice = "a model labeller types them (--labeler claude:MODEL, codex:MODEL or command:CMD)"
+    hint = f"  1 group got no type from keywords; {advice}"
     e = env()
     code, out, _ = e.run("--dry-run", "--labeler", "none", capsys=capsys)
     lines = out.splitlines()
-    assert code == 0 and any(x.endswith("; 1 matched no keyword") for x in lines) and hint in lines
+    assert code == 0 and any(x.endswith(f"; 1 matched no keyword; {advice}") for x in lines)
+    assert hint not in lines and out.count(advice) == 1  # P3-7: the dry run says it once
     code, out, _ = e.run("--labeler", "none", "--yes", capsys=capsys)
     lines = out.splitlines()
     assert code == 0 and "  not classified: 1 (no prompt in the session 1)" in lines  # G1: stored as unknown

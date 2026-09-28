@@ -121,6 +121,36 @@ def _print_summary(s: dict) -> None:
                   f"(table in pymc_check.json)")
 
 
+def _in_pymc_check(exc: BaseException) -> bool:
+    """Whether `exc` was raised inside the `--full` PyMC check (check_pymc, pymc or pytensor)."""
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_globals.get("__name__") == "loopmath.belief.check_pymc":
+            return True
+        tb = tb.tb_next
+    return False
+
+
+def _pymc_check_failed(home: Path, exc: BaseException) -> int:
+    """`fit --full` whose PyMC check failed (a compiler error, say): remove the unfinished fit
+    folder and say what happened in one line, without a traceback."""
+    from .fit import FitBusy, fit_lock, remove_partials
+
+    try:
+        with fit_lock(home, LOCK_WAIT_S):  # under the lock every .partial is from a fit that stopped
+            remove_partials(home)
+    except FitBusy:
+        pass  # the next fit removes it
+    lines = [ln.strip() for ln in str(exc).splitlines() if ln.strip()]
+    said = ([ln for ln in lines if ln.startswith("ld:")]  # the linker's reason, then the first compiler error
+            or [ln for ln in lines if ln.startswith("error:") or " error: " in ln])
+    detail = (said[0] if said else (lines or [type(exc).__name__])[-1])[:200]
+    kind = "could not compile its model on this machine" if type(exc).__name__ == "CompileError" else "stopped"
+    return output.fail(f"fit --full: the PyMC check {kind} ({type(exc).__name__}: {detail}). No fit was "
+                       "written and fits/latest did not move; loopmath fit without --full fits as usual.",
+                       output.EXIT_USER)
+
+
 def fit(args: argparse.Namespace) -> int:
     home = output.home(getattr(args, "home", None))
     without = tuple(getattr(args, "without", None) or ())
@@ -140,10 +170,16 @@ def fit(args: argparse.Namespace) -> int:
         else:
             print(f"fit queued: {started.get('reason', 'a fit is running')}")
         return output.EXIT_OK
+    import contextlib
+    import sys
+
     from .fit import FitBusy, NothingToFit, UnknownSource, fit as run_fit
 
+    # --full: a failed compile makes pytensor print where it left the C code on stdout, which is for the result
+    quiet = contextlib.redirect_stdout(sys.stderr) if full else contextlib.nullcontext()
     try:
-        path = run_fit(home, no_prior=no_prior, without=without, full=full, wait_s=LOCK_WAIT_S)
+        with quiet:
+            path = run_fit(home, no_prior=no_prior, without=without, full=full, wait_s=LOCK_WAIT_S)
     except FitBusy:
         return output.fail(f"another fit has held {home / 'fits'} for more than {int(LOCK_WAIT_S)} s; "
                            "try again later or use --background", output.EXIT_LOCKED)
@@ -151,6 +187,10 @@ def fit(args: argparse.Namespace) -> int:
         return output.fail(str(exc), output.EXIT_NOT_FOUND)
     except NothingToFit as exc:
         return output.fail(str(exc), output.EXIT_USER)
+    except Exception as exc:
+        if not (full and _in_pymc_check(exc)):
+            raise
+        return _pymc_check_failed(home, exc)
     summary = _summary(path)
     if as_json:
         output.emit_json(SCHEMA, summary)
