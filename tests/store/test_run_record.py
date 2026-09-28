@@ -81,6 +81,39 @@ def test_two_sessions_become_two_verified_attempts_on_their_pieces(fx, capsys):
     assert obj["receipt"] == {"id": None, "line": f"actual ${obj['cost']['usd']:,.2f}; unknown"}
 
 
+@pytest.mark.parametrize("trigger", ["record", "finish", "background"])
+def test_relative_home_callers_reach_the_shared_launcher(fx, tmp_path, monkeypatch, capsys, trigger):
+    from loopmath.store import fitjob
+
+    monkeypatch.chdir(tmp_path)
+    seen = []
+    spawn = fitjob.spawn_fit
+
+    def capture(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return type("Child", (), {"pid": 12345})()
+
+    def launch(home, **opts):
+        with monkeypatch.context() as patch:
+            patch.setattr(fitjob.subprocess, "Popen", capture)
+            return spawn(home, **opts)
+
+    monkeypatch.setattr(fitjob, "spawn_fit", launch)
+    if trigger == "record":
+        args = ["run", "record", *OPEN, "--session", "lead-1"]
+    elif trigger == "finish":
+        code, opened, err = run(capsys, "start", *OPEN, "--home", "relative")
+        assert code == 0, err
+        args = ["run", "finish", "--run", opened["run"]]
+    else:
+        args = ["fit", "--background", "--no-prior", "--without", "shared"]
+    assert cli.main([*args, "--home", "relative", "--json"]) == 0, capsys.readouterr()
+    assert len(seen) == 1
+    argv, opts = seen[0]
+    target = str(tmp_path / "relative")
+    assert argv[argv.index("--home") + 1] == opts["cwd"] == opts["env"]["LOOPMATH_HOME"] == target
+
+
 def test_piece_names_override_the_mapping_and_a_session_twice_counts_once(fx, capsys):
     obj = record(capsys, *OPEN, "--session", "review=lead-1", "--session", "implement=cx-review-1",
                  "--session", "lead-1")

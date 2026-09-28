@@ -86,7 +86,7 @@ const App = (() => {
         const small = Number(v.toFixed(digits));
         if (small >= 10 ** (1 - digits)) digits -= 1;  // 0.00096 rounds up to $0.001, still one digit
         if (small < 0.01) return '$' + small.toFixed(digits);
-        v = small;  // 0.0096 rounds up to a cent
+        return '$' + small.toFixed(2);  // 0.0096 rounds up to $0.01
       }
       return '$' + v.toFixed(v < 0.1 ? 3 : 2);
     },

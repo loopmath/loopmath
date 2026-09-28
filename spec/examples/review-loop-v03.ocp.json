@@ -218,28 +218,32 @@
       "kind": "plan",
       "title": "plan the export command",
       "group": "build",
-      "state": "done"
+      "state": "done",
+      "vertex": "plan"
     },
     {
       "id": "B1",
       "kind": "impl",
       "title": "implement the export command",
       "group": "build",
-      "state": "done"
+      "state": "done",
+      "vertex": "implement"
     },
     {
       "id": "B2",
       "kind": "docs",
       "title": "document the export command",
       "group": "build",
-      "state": "done"
+      "state": "done",
+      "vertex": "implement"
     },
     {
       "id": "R1",
       "kind": "review",
       "title": "review the export command",
       "group": "checks",
-      "state": "done"
+      "state": "done",
+      "vertex": "review"
     },
     {
       "id": "T1",
@@ -327,7 +331,8 @@
         "output_tokens": 2400,
         "requests": 5,
         "basis": "measured"
-      }
+      },
+      "vertex": "plan"
     },
     {
       "id": "B1.a1",
@@ -356,7 +361,8 @@
         "output_tokens": 8800,
         "requests": 16,
         "basis": "measured"
-      }
+      },
+      "vertex": "implement"
     },
     {
       "id": "B1.a2",
@@ -388,7 +394,8 @@
         "output_tokens": 5100,
         "requests": 11,
         "basis": "measured"
-      }
+      },
+      "vertex": "implement"
     },
     {
       "id": "R1.a1",
@@ -416,7 +423,8 @@
         "output_tokens": 1900,
         "requests": 4,
         "basis": "allocated"
-      }
+      },
+      "vertex": "review"
     },
     {
       "id": "B1.a3",
@@ -448,7 +456,8 @@
         "output_tokens": 3900,
         "requests": 9,
         "basis": "measured"
-      }
+      },
+      "vertex": "implement"
     },
     {
       "id": "R1.a2",
@@ -477,7 +486,8 @@
         "output_tokens": 1200,
         "requests": 3,
         "basis": "allocated"
-      }
+      },
+      "vertex": "review"
     },
     {
       "id": "B2.a1",
@@ -496,7 +506,8 @@
       "outcome": {
         "result": "done",
         "evidence": "asserted"
-      }
+      },
+      "vertex": "implement"
     },
     {
       "id": "T1.a1",

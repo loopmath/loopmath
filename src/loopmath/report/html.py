@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .terminal import PRIVACY_LINE, beat3_exclusions
+from .eligibility import unavailable_lines
+from ..surface_presentation import shown_band_support_note
 
 
 _STYLE = """
@@ -130,7 +132,7 @@ def _configuration_table(surface: dict[str, Any]) -> str:
         key=_sort_value,
     )
     if not rows:
-        return '<p class="note">No configurations met the minimum run count.</p>'
+        return "".join(f'<p class="note">{escape(line)}</p>' for line in unavailable_lines(surface))
 
     scale_low, scale_high = _band_positions(rows)
     span = scale_high - scale_low
@@ -237,8 +239,9 @@ def render(
     exclusions = "".join(f"<li>{escape(line.strip())}</li>" for line in exclusion_lines)
     notices = [
         surface.get(key)
-        for key in ("tier_note", "overlap_caveat", "band_note", "band_support_note")
+        for key in ("tier_note", "overlap_caveat", "band_note")
     ]
+    notices.append(shown_band_support_note(surface))
     notices.extend(price_warnings or [])
     notes_html = "".join(f'<p class="note">{escape(str(note))}</p>' for note in notices if note)
     coverage_text = coverage_line or "No grading coverage available."

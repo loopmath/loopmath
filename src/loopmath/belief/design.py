@@ -741,10 +741,19 @@ def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | 
 
     nodes = {n.get("id"): n for n in doc.get("nodes") or [] if isinstance(n, dict)}
     node_vertex = {i: n.get("vertex") for i, n in nodes.items()}
+    from ..ocp.membership import imported_node_map
+
+    imported_vertices = imported_node_map(doc)
     attempts: list[AttemptObs] = []
     by_piece_round: dict[tuple[str, int], list[dict]] = {}
     for a in doc.get("attempts") or []:
         piece = a.get("vertex") or node_vertex.get(a.get("node"))
+        node = nodes.get(a.get("node"))
+        if (piece not in st.settings and node is not None and "vertex" not in a and "vertex" not in node
+                and _check_name(a, node) is None):
+            mapped = imported_vertices.get(a.get("node"))
+            if isinstance(mapped, str) and mapped in st.settings:
+                piece = mapped
         if piece not in st.settings:
             name = _check_name(a, nodes.get(a.get("node")) or {})
             if name is not None:

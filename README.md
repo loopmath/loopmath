@@ -203,7 +203,7 @@ The store is `~/.loopmath`. Set `LOOPMATH_HOME` or pass `--home` to put it elsew
 - signals, receipts and fits;
 - your config and your workflows;
 - the views you write;
-- the caches: the log parse cache, and the folder where `fit --full` compiles its model (when that compile fails, it also leaves the C code it tried in the system temp folder and prints where).
+- the caches: the log parse cache, and the folder where `fit --full` compiles its model (when that compile fails, it also leaves the C code it tried in a `pytensor_compilation_error_*` file in the system temp folder and prints where).
 
 Do not edit the store by hand; use the commands. `loopmath verify-receipts` checks the receipts in your store; give a file to verify a research receipt ledger instead.
 
@@ -222,7 +222,7 @@ loopmath analyze                 # cost per accepted run from the last 14 days o
 loopmath graph --workspace NAME --format html --out graph.html
 ```
 
-`analyze` reads `~/.claude/projects` and `~/.codex/sessions`. It grades the outcome evidence it finds, prices known models, and prints cost per accepted run with an 80% band. It also lists what it could not use and why; when no workflow configuration has enough runs to compare, it says how many runs it read and what kept each out, and what to try (`--min-n`, `--grading`). `loopmath analyze --json` prints the same as one JSON object, and `--home PATH` keeps its parse cache in that store.
+`analyze` reads `~/.claude/projects` and `~/.codex/sessions`. It grades the outcome evidence it finds, prices known models, and prints cost per accepted run with an 80% band. It also lists what it could not use and why; when no workflow configuration is eligible to compare, it names the largest comparison exclusion, its count, and what to try. `loopmath analyze --json` prints the same as one JSON object, and `--home PATH` keeps its parse cache in that store.
 
 `loopmath prices` lists the packaged prices with the source of each. A rate marked "rate not confirmed" is a best public-price guess, and every dollar figure priced with one says so.
 

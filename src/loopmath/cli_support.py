@@ -100,19 +100,9 @@ def _extremes_ratio(df, result, price_mod) -> dict:
     table = result.get("table")
     n_configs = 0 if table is None else len(table)
     if n_configs < 2:
-        if n_configs == 0:
-            return {
-                "unavailable": (
-                    "no workflow configuration met the minimum run count, so there "
-                    "is nothing to compare"
-                )
-            }
-        return {
-            "unavailable": (
-                "only one workflow configuration met the minimum run count, so "
-                "there is nothing to compare"
-            )
-        }
+        from .report.eligibility import unavailable_lines
+
+        return {"unavailable": "; ".join(unavailable_lines(result, n_configs))}
     ordered = table.sort_values("cost_per_accepted")
     cheap = ordered.iloc[0]["arm"]
     dear = ordered.iloc[-1]["arm"]

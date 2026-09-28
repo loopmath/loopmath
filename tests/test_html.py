@@ -67,3 +67,19 @@ def test_dynamic_text_is_escaped():
     output = render(**data)
     assert "<script" not in output
     assert "&lt;script" in output
+
+
+def test_unshown_spread_band_has_no_support_sentence():
+    from tests.test_analyze_cli import _no_configuration
+    from loopmath.surface_presentation import _band_support_note, walkdown_line
+
+    for draws in (0, 640):
+        data = demo_data()
+        surface = _no_configuration(draws)
+        data.update(surface=surface, walkdown_line=walkdown_line(surface))
+        assert "spread band on the line above" not in render(**data)
+    surface.update(band_n_draws_min=600, band_n_invalid_draws_total=3,
+                   band_support_note=_band_support_note(600, 1000, 3, 640))
+    output = render(**data)
+    assert "600 of 1000" in output and "3 resampling draws were excluded" in output
+    assert "spread band on the line above" not in output

@@ -10,7 +10,7 @@ from loopmath.adapters.opencode import OpenCodeAdapter
 from loopmath.adapters.opencode_store import _message_tokens
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "adapters" / "opencode"
-NS = "dev.dagr.adapter.opencode"
+NS = "dev.loopmath.adapter.opencode"
 
 
 def _message(n: int, model: str, tokens: dict) -> dict:

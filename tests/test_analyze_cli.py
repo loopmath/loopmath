@@ -73,10 +73,11 @@ def test_an_empty_table_says_why_and_what_to_do():
                               {"reason": "no usable cost value", "n": 4}, {"reason": "no model label", "n": 0}]}
     lines = beat2_configurations(surface, "dollar spread: n/a", [])
     text = "\n".join(lines)
-    assert "  no workflow configuration has 5 runs with a known outcome (the minimum, --min-n)" in lines
-    assert ("  of 1,234 runs read, 1,200 had no acceptance evidence in the logs, 30 are in configurations with "
-            "fewer runs than that, 4 had no usable cost") in lines
-    assert "no model name" not in text and "--min-n 3" in text and "--grading" in text
+    assert "30 of 30 runs with known outcomes, usable cost and model labels" in lines[1]
+    assert "minimum run count (--min-n 5)" in lines[1]
+    assert "before comparison: 1,200 unknown acceptance, 4 no usable cost value" in text
+    assert "no model label" not in text and "--min-n 3" in text
+
 
 
 def test_json_and_home(tmp_path, capsys, monkeypatch):
@@ -110,3 +111,59 @@ def test_json_has_no_band_for_an_na_spread():
         out = analyze_payload(surface, diag={}, coverage={}, price_lines=[], grading=None, walkdown=walkdown(surface))
         assert (out["spread"]["band"] is not None) is has_band, over
         assert out["spread"]["pooled"] is None or not has_band or out["spread"]["pooled"] == 1.8
+
+
+def test_empty_table_headline_names_the_dominant_overlap_exclusion():
+    from loopmath.surface_estimation import cost_surface
+
+    # Both substantial configurations share one cell, but need two for a
+    # comparison. The small third configuration fails only the run minimum.
+    rows = [{"run_id": f"{arm}-{i}", "arm": arm, "cell": "shared-task-mix",
+             "usd": 0.1, "accepted": True, "tier": "reported", "workspace": "example/widget"}
+            for arm, count in (("a", 12), ("b", 12), ("small", 3)) for i in range(count)]
+    surface = cost_surface(pd.DataFrame(rows), min_n=5, min_overlap_cells=2, n_boot=0)
+    surface["min_n"] = 5  # the analyze command attaches its CLI setting before rendering
+    assert surface["table"].empty
+    counts = {row["reason"]: row["n"] for row in surface["exclusions"]}
+    assert counts["configuration below min_overlap_cells"] == 24
+    assert counts["configuration below min_n"] == 3
+    lines = beat2_configurations(surface, walkdown_line(surface), [])
+    headline = lines[1].lower()
+    assert "24" in headline and ("overlap" in headline or "task-mix" in headline), lines
+    advice = "\n".join(lines).lower()
+    assert "comparable" in advice or "shared" in advice or "same task" in advice
+    assert "lower the minimum" not in advice
+
+
+def test_cli_nondefault_minimum_agrees_in_terminal_json_and_html(tmp_path, monkeypatch, capsys):
+    from loopmath.report import html, terminal
+    from tests.test_ingest_ocp import _attempt, _doc
+
+    attempts = [_attempt("analysis", suffix=f"{model}-{i}", model=model)
+                for model, count in (("synthetic-a", 8), ("synthetic-b", 8), ("synthetic-c", 4))
+                for i in range(count)]
+    source = tmp_path / "analysis.json"
+    source.write_text(json.dumps(_doc("analysis", attempts=attempts)))
+    args = ["analyze", "--ocp", str(source), "--min-n", "9", "--boot", "0",
+            "--quiet", "--home", str(tmp_path / "store")]
+    assert main([*args, "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["min_n"] == 9
+
+    # analyze has no HTML flag. Render its actual CLI-computed surface through
+    # the HTML renderer too, without substituting estimator or helper output.
+    pages = []
+    terminal_render = terminal.render
+
+    def render_both(**kwargs):
+        pages.append(html.render(**kwargs))
+        return terminal_render(**kwargs)
+
+    monkeypatch.setattr(terminal, "render", render_both)
+    assert main(args) == 0
+    text = capsys.readouterr().out
+    explanation = payload["cheapest_vs_dearest"]["unavailable"]
+    for output in (text, explanation, pages[0]):
+        assert "20 of 20" in output
+        assert "minimum run count (--min-n 9)" in output
+        assert "minimum run count (--min-n 5)" not in output

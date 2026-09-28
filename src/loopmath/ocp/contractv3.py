@@ -31,9 +31,9 @@ Mapping summary (contract v3 -> OCP 0.1):
   task.policy          -> node.ext["dev.dagr.policy"] (typed, inert)
   attempt.locator      -> dropped (volatile runtime address)
   attempt.liveness     -> dropped (live-view data, not telemetry)
-  costs                -> ABSENT: contract v3 carries no token usage.
-                          This is the known gap; a v3 amendment or the
-                          orchestrator plugin must supply attempt.cost.
+  graph export ext     -> per-attempt costs and full model/harness/effort,
+                          joined by task and attempt IDs. Plain contracts
+                          without this telemetry keep costs absent.
 """
 
 from __future__ import annotations
@@ -146,6 +146,9 @@ def convert(doc):
         raise ValueError("input is not a dagr contract run document")
     # The contract's own version key is 'dagr' (the pre-rename product name).
     contract_version = doc.get("dagr", 1)
+    from .graph_contract import telemetry
+
+    graph_records = telemetry(doc)
 
     run_in = doc["run"]
     run = {"id": run_in.get("id", "unknown-run")}
@@ -159,6 +162,9 @@ def convert(doc):
         "source_contract": f"dagr/{contract_version}",
     }
     put(producer, "emitted_at", doc.get("generated_at"))
+    if graph_records is not None:
+        producer["capabilities"] = {"groups": True, "events": True, "edges_dep": True,
+                                    "cost_usd": True, "cost_tokens": True, "outcome_evidence": True}
 
     groups = []
     for prj in doc.get("projects", []) or []:
@@ -190,7 +196,10 @@ def convert(doc):
                 edges.append({"from": src, "to": tid, "kind": "dep"})
 
         for att in task.get("attempts", []) or []:
-            attempts.append(convert_attempt(tid, att))
+            converted = convert_attempt(tid, att)
+            if graph_records is not None:
+                converted.update(graph_records[tid, converted["id"]])
+            attempts.append(converted)
 
     events = []
     for ev in doc.get("events", []) or []:

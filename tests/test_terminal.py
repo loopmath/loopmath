@@ -323,7 +323,7 @@ def test_render_empty_surface_does_not_raise():
         walkdown_line="",
         price_warnings=[],
     )
-    assert "no configurations met the minimum run count" in out
+    assert "no workflow configuration is eligible" in out
     assert PRIVACY_LINE in out
 
 
@@ -337,7 +337,7 @@ def test_render_empty_dataframe_table_does_not_raise():
         walkdown_line="walkdown unavailable",
         price_warnings=[],
     )
-    assert "no configurations met the minimum run count" in out
+    assert "no workflow configuration is eligible" in out
 
 
 def test_render_zero_records_does_not_raise():

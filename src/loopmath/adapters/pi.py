@@ -2,7 +2,7 @@
 
 One Pi session is one OCP node with one attempt. Usage-bearing entries are
 measured requests: their token and USD fields are summed into the attempt's
-core cost record, while ``dev.dagr.adapter.pi.usage_records`` retains the exact
+core cost record, while ``dev.loopmath.adapter.pi.usage_records`` retains the exact
 per-entry breakdown that OCP v0.2 cannot express. Model labels on assistant
 messages are verified; thinking effort is reported by Pi's explicit
 ``thinking_level_change`` entries.
@@ -57,7 +57,7 @@ from .registry import register
 
 
 _DEFAULT_STORE = Path.home() / ".pi" / "agent" / "sessions"
-_EXT = "dev.dagr.adapter.pi"
+_EXT = "dev.loopmath.adapter.pi"
 
 
 class _PiModule(_ModuleType):

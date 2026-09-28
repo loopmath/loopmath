@@ -184,8 +184,8 @@ def analyze(args: argparse.Namespace) -> int:
         seed=args.seed,
         ci=args.ci,
     )
-    result["ratio_pair"] = _extremes_ratio(df, result, price_mod)
     result["min_n"] = args.min_n
+    result["ratio_pair"] = _extremes_ratio(df, result, price_mod)
 
     if getattr(args, "json", False):
         from .output import emit_json

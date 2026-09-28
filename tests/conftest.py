@@ -60,7 +60,7 @@ NEEDS_PRIVATE_PATH = {
 # is removed at interpreter exit too, after that hook: atexit runs the hooks
 # registered last first, and pytensor registers its hook when it is imported.
 ISOLATED_VARS = ("LOOPMATH_HOME", "LOOPMATH_CACHE_DIR")
-SAVED_VARS = ISOLATED_VARS + ("PYTENSOR_FLAGS",)
+SAVED_VARS = ISOLATED_VARS + ("PYTENSOR_FLAGS", "MPLCONFIGDIR")
 USER_STORE = Path.home() / ".loopmath"
 HOME_GUARD_TEST = "tests/test_home_guard.py::"
 _USER_STORE_BEFORE = pytest.StashKey[dict]()
@@ -95,6 +95,7 @@ def pytest_configure(config):
     config.stash[_ISOLATION] = (folder, saved)
     os.environ["LOOPMATH_HOME"] = os.path.join(folder, "home")
     os.environ["LOOPMATH_CACHE_DIR"] = os.path.join(folder, "cache")
+    os.environ["MPLCONFIGDIR"] = os.path.join(folder, "matplotlib")
     atexit.register(shutil.rmtree, folder, True)
     from loopmath.fit_bayes import use_store_compiledir
 

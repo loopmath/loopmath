@@ -137,24 +137,9 @@ PRIVACY_LINE = "Local only. Nothing uploaded."
 
 def _no_configuration_lines(surface: dict) -> list[str]:
     """Why the table is empty, from the surface's own exclusion counts, and what to try."""
-    min_n = surface.get("min_n")
-    counts = {e.get("reason"): int(e.get("n") or 0) for e in surface.get("exclusions") or []}
-    n_rows = surface.get("n_rows")
-    head = (f"  no workflow configuration has {min_n} runs with a known outcome (the minimum, --min-n)"
-            if min_n else "  no configurations met the minimum run count")
-    lines = [head]
-    parts = []
-    for reason, words in (("unknown acceptance", "had no acceptance evidence in the logs"),
-                          ("configuration below min_n", "are in configurations with fewer runs than that"),
-                          ("no usable cost value", "had no usable cost"),
-                          ("no model label", "had no model name")):
-        if counts.get(reason):
-            parts.append(f"{_fmt_int(counts[reason])} {words}")
-    if parts and n_rows:
-        lines.append(f"  of {_fmt_int(n_rows)} runs read, " + ", ".join(parts))
-    lines.append("  to get a table: read more history (--all, or a larger --since), lower the minimum "
-                 "(--min-n 3), or see which evidence counted as acceptance (--grading)")
-    return lines
+    from .eligibility import unavailable_lines
+
+    return ["  " + line for line in unavailable_lines(surface)]
 
 
 def beat2_configurations(

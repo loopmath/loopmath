@@ -485,3 +485,12 @@ def test_swarm_a_page_is_offline_and_stays_under_the_size_limit():
 
     assert network_findings(page) == []
     assert len(page.encode("utf-8")) < LIMIT
+def test_graph_money_rounding_at_the_cent_boundary():
+    from loopmath.graph.html_common import COMMON_JS
+
+    start = COMMON_JS.index("usd: v => {") + len("usd: ")
+    stop = COMMON_JS.index("\n    dur:", start)
+    function = COMMON_JS[start:stop].rstrip().rstrip(",")
+    probe = f"const usd = {function}; console.log(JSON.stringify([null, 0, .0004, .00096, .0096, .00995, .01].map(usd)));"
+    result = subprocess.run(["node", "-e", probe], capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == ["n/a", "$0", "$0.0004", "$0.001", "$0.01", "$0.01", "$0.010"]

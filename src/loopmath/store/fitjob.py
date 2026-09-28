@@ -113,7 +113,8 @@ def spawn_fit(home: Path, *, no_prior: bool | None = None, without: tuple[str, .
 
     With neither `no_prior` nor `without` given (the store's own refits) the fit leaves out what the
     latest fit left out, decided when it runs; `fit --background` passes its flags, even empty ones."""
-    home = Path(home)
+    # Anchor paths in the caller before the child changes its working directory.
+    home = Path(home).expanduser().resolve()
     fits = _fits(home)
     inherit = no_prior is None and without is None
     opts = _opts(bool(no_prior), without or (), full, inherit=inherit)
@@ -132,6 +133,9 @@ def spawn_fit(home: Path, *, no_prior: bool | None = None, without: tuple[str, .
     if full:
         cmd.append("--full")
     env = dict(os.environ)
+    env["LOOPMATH_HOME"] = str(home)
+    if env.get("LOOPMATH_CACHE_DIR"):
+        env["LOOPMATH_CACHE_DIR"] = str(Path(env["LOOPMATH_CACHE_DIR"]).expanduser().resolve())
     root = _package_root()
     env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     log_path = fits / "fit.log"

@@ -11,7 +11,8 @@ only when absent:
 - `run.task` from `run.labels` (`task`, `type`, `repo`) when any is present:
   `id` from the `task` label, else the run id; `labeled_by` is
   `{how: inferred, tier: heuristic}`;
-- `node.vertex` from its attempts' `role.value` when they agree on one value;
+- absent model-attempt vertices from the configuration's saved node mapping,
+  then `node.vertex` from unanimous `role.value` when still absent;
 - `run.provenance = {kind: logged, chooser: habit}`;
 - `run.configuration = {source: habit}`, plus the inferred workflow and
   settings when `infer` returns one (lane 04's `loopmath.workflows.infer`),
@@ -106,6 +107,22 @@ def migrate_doc(doc: dict[str, Any], *, infer: Infer | None = infer_configuratio
             task["labeled_by"] = {"how": "inferred", "tier": "heuristic"}
             run["task"] = task
 
+    run.setdefault("provenance", {"kind": "logged", "chooser": "habit"})
+    if "configuration" not in run:
+        inferred = infer(source if origin else out) if infer is not None else None
+        if inferred is not None:
+            configuration, confidence = inferred
+            configuration = dict(configuration, source="habit")
+            configuration.setdefault("ext", {})[INFERRED_KEY] = {"confidence": confidence, "tier": "heuristic"}
+            run["configuration"] = configuration
+        else:
+            run["configuration"] = {"source": "habit"}
+
+    # The exact inference map takes precedence over a role word generated
+    # below, while vertices explicitly present in the input remain untouched.
+    from .membership import materialize
+
+    materialize(out)
     roles: dict[str, set[str]] = {}
     for attempt in _list(out.get("attempts")):
         if not isinstance(attempt, dict):
@@ -119,14 +136,4 @@ def migrate_doc(doc: dict[str, Any], *, infer: Infer | None = infer_configuratio
         if isinstance(nid, str) and "vertex" not in node and len(roles.get(nid, ())) == 1:
             node["vertex"] = next(iter(roles[nid]))
 
-    run.setdefault("provenance", {"kind": "logged", "chooser": "habit"})
-    if "configuration" not in run:
-        inferred = infer(source if origin else out) if infer is not None else None
-        if inferred is not None:
-            configuration, confidence = inferred
-            configuration = dict(configuration, source="habit")
-            configuration.setdefault("ext", {})[INFERRED_KEY] = {"confidence": confidence, "tier": "heuristic"}
-            run["configuration"] = configuration
-        else:
-            run["configuration"] = {"source": "habit"}
     return out

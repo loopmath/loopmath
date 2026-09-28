@@ -52,7 +52,7 @@ def test_pi_fixture_emits_conforming_exact_graph_counts_and_no_relations():
     assert len(doc["groups"]) == 3
     assert len(doc["events"]) == 3
     assert doc["artifacts"] == []
-    assert doc["run"]["ext"]["dev.dagr.adapter.pi"]["selection"] == {
+    assert doc["run"]["ext"]["dev.loopmath.adapter.pi"]["selection"] == {
         "files_seen": 3,
         "sessions_parsed": 3,
         "sessions_selected": 3,
@@ -99,7 +99,7 @@ def test_pi_maps_per_message_usage_cost_model_and_effort():
         "usd": pytest.approx(0.00213),
         "basis": "measured",
     }
-    alpha_ext = alpha["ext"]["dev.dagr.adapter.pi"]
+    alpha_ext = alpha["ext"]["dev.loopmath.adapter.pi"]
     assert alpha_ext["incomplete_usage_records"] == 0
     assert alpha_ext["malformed_records"] == 0
     assert [record["id"] for record in alpha_ext["usage_records"]] == [
@@ -132,8 +132,8 @@ def test_pi_maps_per_message_usage_cost_model_and_effort():
         "usd": pytest.approx(0.001329),
         "basis": "measured",
     }
-    beta_records = beta["ext"]["dev.dagr.adapter.pi"]["usage_records"]
-    assert beta["ext"]["dev.dagr.adapter.pi"]["incomplete_usage_records"] == 1
+    beta_records = beta["ext"]["dev.loopmath.adapter.pi"]["usage_records"]
+    assert beta["ext"]["dev.loopmath.adapter.pi"]["incomplete_usage_records"] == 1
     assert "reasoning_tokens" not in beta["cost"]
     assert "reasoning" not in beta_records[1]["tokens"]
     assert [record["kind"] for record in beta_records] == [
@@ -183,7 +183,7 @@ def test_pi_store_selection_accepts_one_jsonl_file_and_replaces_discovery():
     assert [attempt["session"] for attempt in doc["attempts"]] == [
         "pi-synthetic-beta"
     ]
-    assert doc["run"]["ext"]["dev.dagr.adapter.pi"]["selection"]["files_seen"] == 1
+    assert doc["run"]["ext"]["dev.loopmath.adapter.pi"]["selection"]["files_seen"] == 1
 
 
 def test_pi_discover_sessions_and_registry_are_deterministic(monkeypatch):
@@ -204,7 +204,7 @@ def test_pi_accepts_session_version_2_and_reports_fixture_accounting():
     assert "pi-synthetic-gamma" in {
         attempt["session"] for attempt in doc["attempts"]
     }
-    selection = doc["run"]["ext"]["dev.dagr.adapter.pi"]["selection"]
+    selection = doc["run"]["ext"]["dev.loopmath.adapter.pi"]["selection"]
     assert selection["files_seen"] == 3
     assert selection["sessions_parsed"] == 3
     assert selection["sessions_selected"] == 3
@@ -226,7 +226,7 @@ def test_pi_counts_unsupported_or_missing_session_versions(tmp_path, version):
 
     doc = _emit(Selection(stores=(path,)))
     assert doc["nodes"] == []
-    selection = doc["run"]["ext"]["dev.dagr.adapter.pi"]["selection"]
+    selection = doc["run"]["ext"]["dev.loopmath.adapter.pi"]["selection"]
     assert selection["files_seen"] == 1
     assert selection["sessions_parsed"] == 0
     assert selection["sessions_selected"] == 0
@@ -254,7 +254,7 @@ def test_pi_workspace_filter_retains_session_with_unknown_workspace(tmp_path):
     assert [attempt["session"] for attempt in doc["attempts"]] == [
         "pi-unknown-workspace"
     ]
-    selection = doc["run"]["ext"]["dev.dagr.adapter.pi"]["selection"]
+    selection = doc["run"]["ext"]["dev.loopmath.adapter.pi"]["selection"]
     assert selection["retained_unknown_workspace"] == 1
     assert selection["omitted"]["workspace_filter"] == 0
 
@@ -284,7 +284,7 @@ def test_pi_time_filter_retains_session_with_unknown_start_timestamp(tmp_path):
     assert [attempt["session"] for attempt in doc["attempts"]] == [
         "pi-unknown-timestamp"
     ]
-    selection = doc["run"]["ext"]["dev.dagr.adapter.pi"]["selection"]
+    selection = doc["run"]["ext"]["dev.loopmath.adapter.pi"]["selection"]
     assert selection["retained_unknown_timestamp"] == 1
     assert selection["omitted"]["time_filter"] == 0
 

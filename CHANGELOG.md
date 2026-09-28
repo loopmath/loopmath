@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.5 (2026-09-28)
+
+Fixes background fits, learning from imported runs and analysis explanations. Predictions for stores without adapter imports are unchanged.
+
+- Background fits stay in the requested store when `--home` or `LOOPMATH_HOME` is relative. This covers imported and finished runs, recorded sessions, late outcomes and explicit background fits, including their inherited exclusions.
+- Imported Pi, OpenCode and graph attempts now contribute to the fit through their saved workflow membership. Existing migrated adapter runs can be used by the next `loopmath fit` without rewriting their history. Checks without model usage remain checks.
+- Migrating a graph run export preserves its measured dollars, token counts and full model settings. To repair graph runs imported with 0.2.4, migrate the original graph export again with `loopmath ocp migrate`, re-import the migrated document with `loopmath run import --finish`, then run `loopmath fit` explicitly. Re-importing an already-finished run can leave an existing fit unchanged.
+- When analysis cannot compare configurations, it names the largest exclusion and its count, separates missing outcome evidence from comparison exclusions, and suggests what would make a comparison possible. Terminal, JSON and HTML explanations agree, including a custom `--min-n`.
+- Graph costs that round up to one cent display as `$0.01`. HTML reports omit support notes for spread bands that are not shown.
+- Pi and OpenCode exports use current extension names; older exports remain readable.
+
 ## 0.2.4 (2026-09-28)
 
 Fixes from a new-user test of 0.2.3. The prior and the belief model are 0.2.3's: the same runs and task give the same cost, chance and score. The results page now predicts for the same task as `recommend`, so its ranges match.

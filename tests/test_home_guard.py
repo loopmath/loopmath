@@ -18,6 +18,7 @@ def test_the_session_store_and_cache_are_a_temp_folder(session_store_folder):
     cache = base.cache_dir()
     assert home == session_store_folder / "home"
     assert cache == session_store_folder / "cache"
+    assert os.environ["MPLCONFIGDIR"] == str(session_store_folder / "matplotlib")
     user_store = os.path.expanduser("~/.loopmath")
     for path in (home, cache):
         assert not str(path).startswith(user_store + os.sep), path

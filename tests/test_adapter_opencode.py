@@ -109,7 +109,7 @@ def test_five_message_usage_streams_and_session_usd_are_measured(doc):
 def test_mixed_models_are_not_misattributed_to_one_core_model(doc):
     root = _attempt(doc, "ses_fixture_root")
     assert "model" not in root
-    usage = root["ext"]["dev.dagr.adapter.opencode"]["model_usage"]
+    usage = root["ext"]["dev.loopmath.adapter.opencode"]["model_usage"]
     assert [(item["provider"], item["model"], item["requests"]) for item in usage] == [
         ("openai", "gpt-5.3-codex-spark", 1),
         ("openai", "gpt-5.4-mini", 1),
@@ -147,7 +147,7 @@ def test_session_and_workspace_filters_keep_only_exact_matches():
     assert _ids(child) == {"ses_fixture_child"}
     assert len(child["nodes"]) == len(child["attempts"]) == 1
     assert child["edges"] == []
-    assert child["run"]["ext"]["dev.dagr.adapter.opencode"] == {
+    assert child["run"]["ext"]["dev.loopmath.adapter.opencode"] == {
         "parent_relations_omitted": 1,
         "selection_excluded_by_session_id": 3,
     }
@@ -157,7 +157,7 @@ def test_session_and_workspace_filters_keep_only_exact_matches():
     )
     assert _ids(alpha) == {"ses_fixture_root", "ses_fixture_child"}
     assert len(alpha["edges"]) == 1
-    assert alpha["run"]["ext"]["dev.dagr.adapter.opencode"] == {
+    assert alpha["run"]["ext"]["dev.loopmath.adapter.opencode"] == {
         "selection_excluded_by_workspace": 2
     }
 
@@ -190,7 +190,7 @@ def test_time_bounds_are_inclusive(since, until, expected, excluded):
         Selection(stores=(FIXTURE,), since=since, until=until)
     )
     assert _ids(doc) == expected
-    assert doc["run"]["ext"]["dev.dagr.adapter.opencode"][
+    assert doc["run"]["ext"]["dev.loopmath.adapter.opencode"][
         "selection_excluded_by_time"
     ] == excluded
 
@@ -200,7 +200,7 @@ def test_limit_selects_the_most_recent_session():
     assert _ids(doc) == {"ses_fixture_free_big_pickle"}
     assert len(doc["nodes"]) == len(doc["attempts"]) == 1
     assert doc["edges"] == []
-    assert doc["run"]["ext"]["dev.dagr.adapter.opencode"] == {
+    assert doc["run"]["ext"]["dev.loopmath.adapter.opencode"] == {
         "selection_excluded_by_limit": 3
     }
 
@@ -260,7 +260,7 @@ def test_inventory_selection_counts_survive_single_materialization_pass(
 
     assert _ids(doc) == {"selected-new"}
     assert exported == ["selected-new"]
-    assert doc["run"]["ext"]["dev.dagr.adapter.opencode"] == {
+    assert doc["run"]["ext"]["dev.loopmath.adapter.opencode"] == {
         "selection_excluded_by_limit": 1,
         "selection_excluded_by_session_id": 1,
         "selection_excluded_by_time": 1,
@@ -284,7 +284,7 @@ def test_unknown_filter_fields_are_included_and_counted(tmp_path):
         )
     )
     assert _ids(doc) == {"ses_fixture_unknown_fields"}
-    assert doc["run"]["ext"]["dev.dagr.adapter.opencode"] == {
+    assert doc["run"]["ext"]["dev.loopmath.adapter.opencode"] == {
         "selection_unknown_created_at": 1,
         "selection_unknown_workspace": 1,
     }
@@ -303,7 +303,7 @@ def test_incomplete_usage_and_model_attribution_are_counted(tmp_path):
     assert "cache_creation_tokens" not in attempt["cost"]
     assert attempt["cost"]["input_tokens"] == 200
     assert attempt["model"]["tier"] == "reported"
-    assert attempt["ext"]["dev.dagr.adapter.opencode"] == {
+    assert attempt["ext"]["dev.loopmath.adapter.opencode"] == {
         "model_requests_unattributed": 1,
         "usage_incomplete_messages": {"cache_creation_tokens": 1},
     }
@@ -342,7 +342,7 @@ def test_every_possible_extension_member_is_documented():
     for path in paths:
         assert f"| `{path}` |" in documented
     assert (
-        "| OpenCode | `dev.dagr.adapter.opencode` | `(namespace root)` | run, attempt |"
+        "| OpenCode | `dev.loopmath.adapter.opencode` | `(namespace root)` | run, attempt |"
         in documented
     )
 

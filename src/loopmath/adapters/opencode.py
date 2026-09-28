@@ -103,7 +103,7 @@ _sys.modules[__name__].__class__ = _OpenCodeModule
 del _ModuleType, _OpenCodeModule, _opencode_store, _sys
 
 
-_EXT = "dev.dagr.adapter.opencode"
+_EXT = "dev.loopmath.adapter.opencode"
 
 def _session_created(session: _SessionSource) -> datetime | None:
     return _timestamp(_as_mapping(session.info.get("time")).get("created"))
