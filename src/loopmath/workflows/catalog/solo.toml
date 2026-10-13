@@ -1,0 +1,29 @@
+id = "solo"
+version = 1
+title = "One agent implements"
+edges = [
+  "issue -> implement",
+  "repo -> implement",
+  "implement -> diff",
+]
+
+[[pieces]]
+id = "implement"
+role = "implementer"
+width = 1
+
+[[artifacts]]
+id = "issue"
+kind = "issue"
+
+[[artifacts]]
+id = "repo"
+kind = "repo"
+
+[[artifacts]]
+id = "diff"
+kind = "diff"
+
+[control]
+budget_rounds = 1
+rescue = "redo_usual"

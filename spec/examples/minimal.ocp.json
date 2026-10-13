@@ -1,0 +1,86 @@
+{
+  "ocp": "0.1",
+  "producer": {
+    "name": "hand-written-example",
+    "version": "0.1",
+    "framework": "none",
+    "emitted_at": "2026-08-30T12:00:00Z"
+  },
+  "privacy": { "profile": "metadata_only" },
+  "run": {
+    "id": "run-minimal-01",
+    "title": "minimal: impl reviewed then gated",
+    "started_at": "2026-08-30T09:00:00Z",
+    "ended_at": "2026-08-30T10:00:00Z",
+    "workspace": "example-project"
+  },
+  "nodes": [
+    { "id": "T1", "kind": "impl", "title": "implement feature", "state": "done" },
+    { "id": "R1", "kind": "review", "title": "review feature", "state": "done" },
+    { "id": "G1", "kind": "gate", "title": "acceptance gate", "state": "done" }
+  ],
+  "edges": [
+    { "from": "T1", "to": "R1", "kind": "dep" },
+    { "from": "T1", "to": "G1", "kind": "fan_in" },
+    { "from": "R1", "to": "G1", "kind": "fan_in" }
+  ],
+  "attempts": [
+    {
+      "id": "T1.a1",
+      "node": "T1",
+      "n": 1,
+      "actor": "dev",
+      "model": { "raw": "claude-fable-5", "id": "claude-fable-5", "family": "fable", "provider": "anthropic" },
+      "effort": "xhigh",
+      "cause": { "type": "initial" },
+      "status": "rejected",
+      "started_at": "2026-08-30T09:00:00Z",
+      "ended_at": "2026-08-30T09:20:00Z",
+      "outcome": { "result": "rejected", "evidence": "reported", "via": "R1", "reason": "missing error handling" },
+      "cost": { "input_tokens": 12000, "cached_input_tokens": 84000, "output_tokens": 9500, "requests": 14 }
+    },
+    {
+      "id": "T1.a2",
+      "node": "T1",
+      "n": 2,
+      "actor": "dev",
+      "model": { "raw": "claude-fable-5", "id": "claude-fable-5", "family": "fable", "provider": "anthropic" },
+      "effort": "xhigh",
+      "cause": { "type": "sent_back", "ref": "R1.a1", "by": "reviewer", "reason": "fix findings" },
+      "status": "done",
+      "started_at": "2026-08-30T09:25:00Z",
+      "ended_at": "2026-08-30T09:40:00Z",
+      "outcome": { "result": "done", "evidence": "verified", "receipt": "tests pass 42/42" },
+      "cost": { "input_tokens": 8000, "cached_input_tokens": 61000, "output_tokens": 5200, "requests": 9 }
+    },
+    {
+      "id": "R1.a1",
+      "node": "R1",
+      "n": 1,
+      "actor": "reviewer",
+      "model": { "raw": "opus5", "family": "opus5", "provider": "anthropic" },
+      "effort": "max",
+      "cause": { "type": "initial" },
+      "status": "done",
+      "started_at": "2026-08-30T09:20:00Z",
+      "ended_at": "2026-08-30T09:45:00Z",
+      "outcome": { "result": "done", "evidence": "reported" },
+      "cost": { "input_tokens": 15000, "cached_input_tokens": 20000, "output_tokens": 3100, "requests": 4 }
+    },
+    {
+      "id": "G1.a1",
+      "node": "G1",
+      "n": 1,
+      "actor": "orchestrator",
+      "cause": { "type": "initial" },
+      "status": "done",
+      "started_at": "2026-08-30T09:45:00Z",
+      "ended_at": "2026-08-30T09:50:00Z",
+      "outcome": { "result": "done", "evidence": "verified", "receipt": "gate cmd exit 0" }
+    }
+  ],
+  "events": [
+    { "at": "2026-08-30T09:20:00Z", "type": "attempt_settled", "attempt": "T1.a1", "detail": "rejected by review" },
+    { "at": "2026-08-30T09:50:00Z", "type": "promoted", "node": "G1", "detail": "fan-in complete" }
+  ]
+}

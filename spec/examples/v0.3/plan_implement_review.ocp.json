@@ -1,0 +1,549 @@
+{
+  "ocp": "0.3",
+  "producer": {
+    "name": "loopmath",
+    "version": "0.1.0",
+    "emitted_at": "2026-09-23T10:00:00-07:00",
+    "capabilities": {
+      "task": true,
+      "configuration": true,
+      "signals": true,
+      "slate": true,
+      "receipt": true,
+      "edges_dep": true,
+      "artifacts": true,
+      "cost_usd": true,
+      "cost_tokens": true,
+      "outcome_evidence": true,
+      "groups": false
+    },
+    "framework": "loopmath"
+  },
+  "privacy": {
+    "profile": "metadata_only"
+  },
+  "run": {
+    "id": "run_ex_plan_implement_review",
+    "started_at": "2026-09-23T10:00:00-07:00",
+    "task": {
+      "id": "tsk_ex_plan_implement_review",
+      "title": "example task for plan_implement_review",
+      "type": "feature",
+      "repo": "example/widget",
+      "base_commit": "a1b2c3d",
+      "features": {
+        "size": "s",
+        "lang": "python",
+        "has_tests": "yes"
+      },
+      "source": {
+        "kind": "live"
+      },
+      "labeled_by": {
+        "how": "orchestrator"
+      }
+    },
+    "configuration": {
+      "id": "cfg_9f823d1b1d85",
+      "workflow": {
+        "id": "plan_implement_review",
+        "version": 1,
+        "title": "Plan, implement, review",
+        "pieces": [
+          {
+            "id": "plan",
+            "role": "planner",
+            "width": 1
+          },
+          {
+            "id": "implement",
+            "role": "implementer",
+            "width": 1
+          },
+          {
+            "id": "review",
+            "role": "reviewer",
+            "width": 1
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "issue",
+            "kind": "issue"
+          },
+          {
+            "id": "repo",
+            "kind": "repo"
+          },
+          {
+            "id": "plan_doc",
+            "kind": "plan"
+          },
+          {
+            "id": "diff",
+            "kind": "diff"
+          },
+          {
+            "id": "verdict",
+            "kind": "verdict"
+          }
+        ],
+        "edges": [
+          [
+            "issue",
+            "plan"
+          ],
+          [
+            "repo",
+            "plan"
+          ],
+          [
+            "plan",
+            "plan_doc"
+          ],
+          [
+            "issue",
+            "implement"
+          ],
+          [
+            "repo",
+            "implement"
+          ],
+          [
+            "plan_doc",
+            "implement"
+          ],
+          [
+            "implement",
+            "diff"
+          ],
+          [
+            "diff",
+            "review"
+          ],
+          [
+            "issue",
+            "review"
+          ],
+          [
+            "plan_doc",
+            "review"
+          ],
+          [
+            "review",
+            "verdict"
+          ]
+        ],
+        "control": {
+          "gates": [
+            "review"
+          ],
+          "repair": {
+            "review": "implement"
+          },
+          "budget": 3,
+          "rescue": {
+            "kind": "configuration",
+            "ref": "usual"
+          }
+        }
+      },
+      "settings": {
+        "plan": {
+          "harness": "claude-code",
+          "model": {
+            "raw": "claude-opus-5-5",
+            "id": "claude-opus-5-5"
+          },
+          "effort": "xhigh",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "implement": {
+          "harness": "claude-code",
+          "model": {
+            "raw": "claude-opus-5-5",
+            "id": "claude-opus-5-5"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "review": {
+          "harness": "codex",
+          "model": {
+            "raw": "gpt-6-astra",
+            "id": "gpt-6-astra"
+          },
+          "effort": "xhigh",
+          "context_policy": "fresh",
+          "options": {}
+        }
+      },
+      "source": "exploration",
+      "rec": "rec_ex01"
+    },
+    "provenance": {
+      "kind": "designed",
+      "chooser": "loopmath"
+    },
+    "acceptance_rule": {
+      "name": "tests+review",
+      "definition": "tests pass and the reviewer approves",
+      "requires": [
+        "tests",
+        "review"
+      ],
+      "score": null,
+      "excludes_events": [
+        "revert",
+        "incident"
+      ],
+      "window_days": 14
+    },
+    "signals": [
+      {
+        "id": "sig_review_1",
+        "kind": "verdict",
+        "name": "review",
+        "value": "accept",
+        "at_attempt": "review.a1",
+        "observed_at": "2026-09-23T10:40:00-07:00",
+        "source": {
+          "kind": "orchestrator"
+        },
+        "tier": "reported"
+      },
+      {
+        "id": "sig_tests_ci",
+        "kind": "verdict",
+        "name": "tests",
+        "value": "pass",
+        "at_attempt": "review.a1",
+        "observed_at": "2026-09-23T10:42:00-07:00",
+        "source": {
+          "kind": "ci",
+          "ref": "ci/run/4411"
+        },
+        "tier": "verified"
+      },
+      {
+        "id": "sig_runtime",
+        "kind": "score",
+        "name": "runtime_s",
+        "value": 2520.0,
+        "unit": "s",
+        "better": "lower",
+        "scale": "log",
+        "observed_at": "2026-09-23T10:43:00-07:00",
+        "source": {
+          "kind": "orchestrator"
+        },
+        "tier": "verified"
+      }
+    ],
+    "title": "Plan, implement, review on example/widget",
+    "ended_at": "2026-09-23T10:43:00-07:00"
+  },
+  "nodes": [
+    {
+      "id": "plan",
+      "kind": "plan",
+      "vertex": "plan",
+      "state": "done",
+      "title": "planner (plan)"
+    },
+    {
+      "id": "implement",
+      "kind": "impl",
+      "vertex": "implement",
+      "state": "done",
+      "title": "implementer (implement)"
+    },
+    {
+      "id": "review",
+      "kind": "review",
+      "vertex": "review",
+      "state": "done",
+      "title": "reviewer (review)",
+      "gate": {
+        "rule": "review"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "plan",
+      "to": "implement",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "plan",
+      "to": "review",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "implement",
+      "to": "review",
+      "kind": "dep",
+      "tier": "reported"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "plan.a1",
+      "node": "plan",
+      "vertex": "plan",
+      "n": 1,
+      "round": 1,
+      "harness": "claude-code",
+      "model": {
+        "raw": "claude-opus-5-5",
+        "id": "claude-opus-5-5"
+      },
+      "effort": "xhigh",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "started_at": "2026-09-23T10:01:00-07:00",
+      "cwd": "~/work/widget",
+      "ended_at": "2026-09-23T10:13:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 320000,
+        "output_tokens": 16000,
+        "requests": 20,
+        "usd": 0.99,
+        "basis": "measured",
+        "tariff": {
+          "id": "prices-3f9a1c2e",
+          "date": "2026-09-01",
+          "source": "prices.toml"
+        }
+      },
+      "role": {
+        "value": "planner",
+        "tier": "verified",
+        "evidence": "workflow piece role"
+      }
+    },
+    {
+      "id": "implement.a1",
+      "node": "implement",
+      "vertex": "implement",
+      "n": 1,
+      "round": 1,
+      "harness": "claude-code",
+      "model": {
+        "raw": "claude-opus-5-5",
+        "id": "claude-opus-5-5"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "started_at": "2026-09-23T10:14:00-07:00",
+      "cwd": "~/work/widget",
+      "ended_at": "2026-09-23T10:26:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 320000,
+        "output_tokens": 16000,
+        "requests": 20,
+        "usd": 0.99,
+        "basis": "measured",
+        "tariff": {
+          "id": "prices-3f9a1c2e",
+          "date": "2026-09-01",
+          "source": "prices.toml"
+        }
+      },
+      "role": {
+        "value": "implementer",
+        "tier": "verified",
+        "evidence": "workflow piece role"
+      }
+    },
+    {
+      "id": "review.a1",
+      "node": "review",
+      "vertex": "review",
+      "n": 1,
+      "round": 1,
+      "harness": "codex",
+      "model": {
+        "raw": "gpt-6-astra",
+        "id": "gpt-6-astra"
+      },
+      "effort": "xhigh",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "started_at": "2026-09-23T10:27:00-07:00",
+      "cwd": "~/work/widget",
+      "ended_at": "2026-09-23T10:39:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "input_tokens": 8000,
+        "cached_input_tokens": 320000,
+        "output_tokens": 16000,
+        "requests": 20,
+        "usd": 0.77,
+        "basis": "measured",
+        "tariff": {
+          "id": "prices-3f9a1c2e",
+          "date": "2026-09-01",
+          "source": "prices.toml"
+        }
+      },
+      "role": {
+        "value": "reviewer",
+        "tier": "verified",
+        "evidence": "workflow piece role"
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "plan_doc",
+      "path": "artifacts/plan_doc",
+      "kind": {
+        "value": "plan",
+        "tier": "verified",
+        "evidence": "declared by the workflow"
+      },
+      "producer": "plan.a1",
+      "writers": [
+        "plan.a1"
+      ],
+      "consumers": [
+        "implement.a1",
+        "review.a1"
+      ],
+      "first_write_at": "2026-09-23T10:13:00-07:00",
+      "n_writes": 1,
+      "n_reads": 2,
+      "vertex": "plan_doc",
+      "version": 1
+    },
+    {
+      "id": "diff",
+      "path": "artifacts/diff",
+      "kind": {
+        "value": "code",
+        "tier": "verified",
+        "evidence": "declared by the workflow"
+      },
+      "producer": "implement.a1",
+      "writers": [
+        "implement.a1"
+      ],
+      "consumers": [
+        "review.a1"
+      ],
+      "first_write_at": "2026-09-23T10:26:00-07:00",
+      "n_writes": 1,
+      "n_reads": 1,
+      "vertex": "diff",
+      "version": 1
+    },
+    {
+      "id": "verdict",
+      "path": "artifacts/verdict",
+      "kind": {
+        "value": "review",
+        "tier": "verified",
+        "evidence": "declared by the workflow"
+      },
+      "producer": "review.a1",
+      "writers": [
+        "review.a1"
+      ],
+      "consumers": [],
+      "first_write_at": "2026-09-23T10:39:00-07:00",
+      "n_writes": 1,
+      "n_reads": 0,
+      "vertex": "verdict",
+      "version": 1
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-09-23T10:00:00-07:00",
+      "type": "note",
+      "detail": "run started"
+    },
+    {
+      "at": "2026-09-23T10:01:00-07:00",
+      "type": "attempt_started",
+      "attempt": "plan.a1",
+      "node": "plan"
+    },
+    {
+      "at": "2026-09-23T10:13:00-07:00",
+      "type": "attempt_settled",
+      "attempt": "plan.a1",
+      "node": "plan"
+    },
+    {
+      "at": "2026-09-23T10:14:00-07:00",
+      "type": "attempt_started",
+      "attempt": "implement.a1",
+      "node": "implement"
+    },
+    {
+      "at": "2026-09-23T10:26:00-07:00",
+      "type": "attempt_settled",
+      "attempt": "implement.a1",
+      "node": "implement"
+    },
+    {
+      "at": "2026-09-23T10:27:00-07:00",
+      "type": "attempt_started",
+      "attempt": "review.a1",
+      "node": "review"
+    },
+    {
+      "at": "2026-09-23T10:39:00-07:00",
+      "type": "attempt_settled",
+      "attempt": "review.a1",
+      "node": "review"
+    },
+    {
+      "at": "2026-09-23T10:40:00-07:00",
+      "type": "signal_observed",
+      "detail": "verdict review"
+    },
+    {
+      "at": "2026-09-23T10:42:00-07:00",
+      "type": "signal_observed",
+      "detail": "verdict tests"
+    },
+    {
+      "at": "2026-09-23T10:43:00-07:00",
+      "type": "signal_observed",
+      "detail": "score runtime_s"
+    },
+    {
+      "at": "2026-09-23T10:43:00-07:00",
+      "type": "run_finished",
+      "detail": "accepted; 3 attempts, 2.75 usd"
+    }
+  ]
+}

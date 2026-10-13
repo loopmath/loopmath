@@ -1,0 +1,25 @@
+{
+  "dagr": 3,
+  "generated_at": "2026-09-20T12:00:00-07:00",
+  "run": {"id": "contract-run-01", "title": "contract v3 example: implement, review, gate", "started_at": "2026-09-20T09:00:00-07:00"},
+  "projects": [{"id": "widget", "title": "widget repo"}],
+  "tasks": [
+    {"id": "T1", "kind": "impl", "title": "add --since", "project": "widget", "state": "done",
+     "policy": {"retries": 1},
+     "attempts": [{"n": 1, "actor": "dev", "model": "opus·high", "state": "done",
+                   "started_at": "2026-09-20T09:01:00-07:00", "ended_at": "2026-09-20T09:40:00-07:00",
+                   "cause": {"type": "initial"}, "outcome": {"result": "done", "evidence": "reported"}}]},
+    {"id": "R1", "kind": "review", "title": "review T1", "project": "widget", "state": "done", "deps": ["T1"],
+     "attempts": [{"n": 1, "actor": "reviewer", "model": "gpt-6-astra", "state": "done",
+                   "started_at": "2026-09-20T09:41:00-07:00", "ended_at": "2026-09-20T09:55:00-07:00",
+                   "cause": {"type": "initial"}, "outcome": {"result": "done", "evidence": "reported"}}]},
+    {"id": "G1", "kind": "gate", "title": "tests gate", "project": "widget", "state": "done", "deps": ["T1", "R1"],
+     "attempts": [{"n": 1, "actor": "ci", "state": "done",
+                   "started_at": "2026-09-20T09:56:00-07:00", "ended_at": "2026-09-20T09:59:00-07:00",
+                   "cause": {"type": "initial"}, "outcome": {"result": "done", "evidence": "verified"}}]}
+  ],
+  "events": [
+    {"at": "2026-09-20T09:01:00-07:00", "type": "attempt_started", "task": "T1", "attempt": "T1.a1"},
+    {"at": "2026-09-20T09:40:00-07:00", "type": "attempt_settled", "task": "T1", "attempt": "T1.a1", "verb": "settle"}
+  ]
+}

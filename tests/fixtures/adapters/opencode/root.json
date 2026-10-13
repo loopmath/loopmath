@@ -1,0 +1,128 @@
+{
+  "info": {
+    "id": "ses_fixture_root",
+    "projectID": "project_fixture_alpha",
+    "directory": "/synthetic/workspaces/alpha",
+    "path": "alpha",
+    "title": "Invented title that must not be emitted",
+    "version": "1.17.11",
+    "agent": "build",
+    "model": {
+      "providerID": "openai",
+      "id": "gpt-5.4-mini",
+      "variant": "high"
+    },
+    "cost": 0.0015,
+    "tokens": {
+      "input": 150,
+      "output": 30,
+      "reasoning": 7,
+      "cache": {
+        "read": 15,
+        "write": 3
+      }
+    },
+    "time": {
+      "created": 1704067200000,
+      "updated": 1704069000000,
+      "archived": 1704070800000
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "id": "msg_fixture_root_user",
+        "sessionID": "ses_fixture_root",
+        "role": "user",
+        "agent": "build",
+        "time": {"created": 1704067200000}
+      },
+      "parts": [
+        {
+          "id": "part_fixture_root_user",
+          "messageID": "msg_fixture_root_user",
+          "sessionID": "ses_fixture_root",
+          "type": "text",
+          "text": "INVENTED_PRIVATE_PROMPT_ROOT"
+        }
+      ]
+    },
+    {
+      "info": {
+        "id": "msg_fixture_root_assistant_1",
+        "sessionID": "ses_fixture_root",
+        "role": "assistant",
+        "parentID": "msg_fixture_root_user",
+        "agent": "build",
+        "providerID": "openai",
+        "modelID": "gpt-5.3-codex-spark",
+        "variant": "high",
+        "cost": 0.001,
+        "tokens": {
+          "input": 100,
+          "output": 20,
+          "reasoning": 5,
+          "cache": {"read": 10, "write": 2},
+          "total": 137
+        },
+        "time": {"created": 1704067260000, "completed": 1704067320000},
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "id": "part_fixture_root_reasoning",
+          "messageID": "msg_fixture_root_assistant_1",
+          "sessionID": "ses_fixture_root",
+          "type": "reasoning",
+          "text": "INVENTED_PRIVATE_REASONING_ROOT"
+        },
+        {
+          "id": "part_fixture_root_finish_1",
+          "messageID": "msg_fixture_root_assistant_1",
+          "sessionID": "ses_fixture_root",
+          "type": "step-finish",
+          "reason": "stop",
+          "cost": 0.001,
+          "tokens": {
+            "input": 100,
+            "output": 20,
+            "reasoning": 5,
+            "cache": {"read": 10, "write": 2},
+            "total": 137
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "id": "msg_fixture_root_assistant_2",
+        "sessionID": "ses_fixture_root",
+        "role": "assistant",
+        "parentID": "msg_fixture_root_user",
+        "agent": "build",
+        "providerID": "openai",
+        "modelID": "gpt-5.4-mini",
+        "variant": "high",
+        "cost": 0.0005,
+        "tokens": {
+          "input": 50,
+          "output": 10,
+          "reasoning": 2,
+          "cache": {"read": 5, "write": 1},
+          "total": 68
+        },
+        "time": {"created": 1704067380000, "completed": 1704067440000},
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "id": "part_fixture_root_text",
+          "messageID": "msg_fixture_root_assistant_2",
+          "sessionID": "ses_fixture_root",
+          "type": "text",
+          "text": "INVENTED_PRIVATE_RESPONSE_ROOT"
+        }
+      ]
+    }
+  ]
+}

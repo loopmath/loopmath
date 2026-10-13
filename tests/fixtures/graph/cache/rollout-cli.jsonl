@@ -1,0 +1,4 @@
+{"timestamp":"2026-08-31T10:05:02.000Z","type":"session_meta","payload":{"id":"01a0d0d0-0000-7000-8000-005168725350","timestamp":"2026-08-31T10:05:02.000Z","cwd":"__WS__","originator":"codex-tui","cli_version":"0.144.1","source":"cli"}}
+{"timestamp":"2026-08-31T10:05:02.000Z","type":"turn_context","payload":{"turn_id":"turn-1","cwd":"__WS__","model":"gpt-5.6-sol","effort":"medium"}}
+{"timestamp":"2026-08-31T10:05:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Review step 1"}]}}
+{"timestamp":"2026-08-31T10:05:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"VERDICT: APPROVE"}]}}

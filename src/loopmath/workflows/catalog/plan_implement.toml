@@ -1,0 +1,42 @@
+id = "plan_implement"
+version = 1
+title = "Plan, then implement"
+edges = [
+  "issue -> plan",
+  "repo -> plan",
+  "plan -> plan_doc",
+  "issue -> implement",
+  "repo -> implement",
+  "plan_doc -> implement",
+  "implement -> diff",
+]
+
+[[pieces]]
+id = "plan"
+role = "planner"
+width = 1
+
+[[pieces]]
+id = "implement"
+role = "implementer"
+width = 1
+
+[[artifacts]]
+id = "issue"
+kind = "issue"
+
+[[artifacts]]
+id = "repo"
+kind = "repo"
+
+[[artifacts]]
+id = "plan_doc"
+kind = "plan"
+
+[[artifacts]]
+id = "diff"
+kind = "diff"
+
+[control]
+budget_rounds = 1
+rescue = "redo_usual"

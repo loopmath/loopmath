@@ -1,0 +1,17 @@
+{
+  "ocp": "0.2",
+  "producer": { "name": "golden-fixture", "version": "1" },
+  "privacy": { "profile": "metadata_only" },
+  "run": { "id": "golden-minimal-run" },
+  "nodes": [
+    { "id": "build", "kind": "impl", "state": "done" }
+  ],
+  "attempts": [
+    {
+      "id": "build.a1",
+      "node": "build",
+      "status": "done",
+      "outcome": { "result": "done", "evidence": "verified" }
+    }
+  ]
+}

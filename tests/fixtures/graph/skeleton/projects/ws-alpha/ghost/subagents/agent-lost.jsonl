@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-08-31T10:02:30Z","sessionId":"ghost","agentId":"agent-lost","isSidechain":true,"cwd":"/ws/alpha","message":{"role":"user","content":"Check the docs"}}
+{"type":"assistant","timestamp":"2026-08-31T10:02:40Z","sessionId":"ghost","agentId":"agent-lost","isSidechain":true,"cwd":"/ws/alpha","message":{"role":"assistant","content":[{"type":"text","text":"Docs are fine."}]}}

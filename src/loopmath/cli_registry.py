@@ -1,0 +1,502 @@
+"""The 0.1.0 command registry (design/0.1/02-commands.md).
+
+Every command and flag of the spec is declared here, and each command points to a
+handler `module:function` in the owning package. Handlers are imported only
+when their command runs, so a package that fails to import never breaks `--help` or
+another command. A new flag is declared here first.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib
+import sys
+
+from .output import EXIT_OK, HTML_DEFAULT, emit_json
+
+
+def _lazy(target: str):
+    module_name, fn_name = target.split(":")
+
+    def run(args: argparse.Namespace) -> int:
+        module = importlib.import_module(module_name)
+        return getattr(module, fn_name)(args)
+
+    run.target = target  # type: ignore[attr-defined]
+    return run
+
+
+def _common(p: argparse.ArgumentParser, *, json_flag: bool = True, html: bool = False) -> None:
+    p.add_argument("--home", default=None, metavar="PATH", help="store root (default: $LOOPMATH_HOME or ~/.loopmath); the log parse cache follows it unless LOOPMATH_CACHE_DIR is set")
+    if json_flag:
+        p.add_argument("--json", action="store_true", help="print one JSON object on stdout")
+    if html:
+        p.add_argument("--html", nargs="?", const=HTML_DEFAULT, default=None, metavar="PATH",
+                       help="write a self-contained HTML view (default path under $LOOPMATH_HOME/views/)")
+
+
+HORIZON_HELP = ("the run's wall-clock time budget: 8h, 90m or seconds; none for open-ended "
+                "(default: the one the fit recorded for this task, else open-ended)")
+
+
+def _task_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--task-file", default=None, metavar="FILE", help="the task as a JSON file, instead of the flags below")
+    p.add_argument("--type", dest="task_type", default=None, metavar="T", help="task type (see loopmath task-types)")
+    p.add_argument("--repo", default=None, metavar="R", help="repository as owner/name from its origin remote, e.g. acme/api (else its folder name)")
+    p.add_argument("--subtype", default=None, metavar="S", help="your own subtype of the task type (config subtypes)")
+    p.add_argument("--title", default=None, metavar="TEXT", help="a short title for the task")
+    p.add_argument("--feature", action="append", default=[], metavar="K=V", help="task feature (repeatable)")
+    p.add_argument("--horizon", default=None, metavar="TIME", help=HORIZON_HELP)
+    p.add_argument("--base-commit", default=None, metavar="SHA", help="the commit the work starts from")
+
+
+def task_types_verb(args: argparse.Namespace) -> int:
+    from .output import home
+    from .store.config import Config, ConfigError
+    from .taskmodel import task_types_payload
+
+    try:  # the store's declared features, read without creating the store
+        conf = Config.load(home(getattr(args, "home", None)) / "config.toml")
+    except ConfigError as exc:
+        print(f"warning: {exc}; showing the built-in features", file=sys.stderr)
+        features, subtypes = None, None
+    else:
+        features, subtypes = conf.features_or_builtin(), conf.get("subtypes")
+    payload = task_types_payload(subtypes, features)
+    if args.json:
+        emit_json(payload["schema"], payload)
+        return EXIT_OK
+    for t in payload["types"]:
+        print(f"{t['id']:<10} {t['description']}")
+    print()
+    for f in payload["features"]:
+        values = "|".join(f["values"]) or "free text"
+        scope = f"({', '.join(f['types'])} only)" if f.get("types") else ""
+        print((f"--feature {f['key']}=<{values}>  " + " ".join(x for x in (f["description"], scope) if x)).rstrip())
+    print(f"--horizon <8h|90m|seconds|none>  {payload['horizon']['description']}")
+    return EXIT_OK
+
+
+FIT_HELP = "read this kept fit instead of the latest one: a fit_ id from `loopmath status` or the fits folder"
+
+
+# ---------------------------------------------------------------- planning
+def _add_planning(sub) -> None:
+    p = sub.add_parser("task-types", help="list task types and task features")
+    _common(p)
+    p.set_defaults(func=task_types_verb)
+
+    p = sub.add_parser("workflows", help="catalog and user workflows: list, show, validate, diff")
+    ws = p.add_subparsers(dest="workflows_command", required=True)
+    q = ws.add_parser("list", help="list catalog and user workflows")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.workflows.commands:list_workflows"))
+    q = ws.add_parser("show", help="show one workflow")
+    q.add_argument("id", metavar="ID", help="a catalog name, a user workflow (id or file stem), a file (workflow TOML, configuration or run JSON, run folder) or a cfg_ id")
+    _common(q, html=True)
+    q.set_defaults(func=_lazy("loopmath.workflows.commands:show"))
+    q = ws.add_parser("validate", help="validate a workflow TOML file")
+    q.add_argument("file", metavar="FILE", help="a workflow TOML file")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.workflows.commands:validate"))
+    q = ws.add_parser("diff", help="differences between two workflows or configurations")
+    q.add_argument("a", metavar="A", help="a catalog name, a user workflow (id or file stem), a file (workflow TOML, configuration or run JSON, run folder) or a cfg_ id")
+    q.add_argument("b", metavar="B", help="the same kinds as A")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.workflows.commands:diff"))
+
+    p = sub.add_parser("recommend", help="choices for one task (options 1 to 5) with chance and cost, the success-cost curve")
+    _task_args(p)
+    rule = p.add_mutually_exclusive_group()
+    rule.add_argument("--rule", default=None, metavar="RULE", help="a named acceptance rule from config")
+    rule.add_argument("--target", default=None, metavar="NAME>=X", help="score-target rule for this call, quoted: the shell reads > and < as redirections; e.g. 'heldout_perf>=2400' or 'runtime_s<=200'")
+    p.add_argument("--goal", default=None, choices=["default", "p50", "p70", "p80", "p90", "p95", "p99"],
+                   help="the pick to aim for: default (lowest expected dollars to an accepted result) or the curve row for that chance of success (default: config goal)")
+    p.add_argument("--usual", default=None, metavar="CFG", help="a configuration id to treat as the usual one: "
+                   "the [cfg_...] printed after a workflow")
+    p.add_argument("--workflow", action="append", default=[], metavar="FILE.toml", help="also consider this workflow (repeatable)")
+    p.add_argument("--models", default=None, metavar="M,M,...", help="restrict candidate models")
+    p.add_argument("--fit", default=None, metavar="ID", help=FIT_HELP)
+    p.add_argument("--brief", action="store_true", help="with --json: a short object for agents (task, reference, "
+                   "goal, rescue, choices, message, rec, and page with --html); the stored recommendation keeps everything")
+    _common(p, html=True)
+    p.set_defaults(func=_lazy("loopmath.recommend.commands:recommend"))
+
+    # Hidden: no help= keeps it out of the command list, and HIDDEN keeps it out of the usage line.
+    p = sub.add_parser("plan", description="Experimental, and hidden from loopmath --help: slates worth running "
+                                           "over a backlog, within a budget, for designed experiments.")
+    p.add_argument("--backlog", required=True, metavar="tasks.jsonl", help='one task as JSON per line, such as '
+                   '{"type": "bug_fix", "repo": "acme/api", "title": "..."}')
+    p.add_argument("--budget-usd", required=True, type=float, metavar="X", help="dollars to spend over the whole backlog")
+    p.add_argument("--slate-size", type=int, default=2, help="runs per slate (default 2)")
+    p.add_argument("--max-slates", type=int, default=None, metavar="N", help="stop after N slates")
+    p.add_argument("--members", default="goal+explore", choices=["goal+explore", "grid"],
+                   help="goal plus exploration picks from the fit, or a covering grid over the catalog when there is no fit")
+    p.add_argument("--models", default=None, metavar="M,M,...", help="restrict candidate models")
+    rule = p.add_mutually_exclusive_group()
+    rule.add_argument("--rule", default=None, metavar="RULE", help="a named acceptance rule from config")
+    rule.add_argument("--target", default=None, metavar="NAME>=X", help="score-target rule, quoted: e.g. 'heldout_perf>=2400'")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.recommend.commands:plan"))
+
+
+# ---------------------------------------------------------------- recording
+SOURCES = ["usual", "alternative", "exploration", "user_edit", "habit", "designed"]
+TIER_CHOICES = ["verified", "reported", "heuristic", "asserted"]
+
+
+def _add_recording(sub) -> None:
+    p = sub.add_parser("run", help="record a run: start, record, import, attempt, artifact, finish, sessions")
+    rs = p.add_subparsers(dest="run_command", required=True)
+
+    q = rs.add_parser("start", help="open a run (OCP v0.3 skeleton in the store)")
+    _task_args(q)
+    q.add_argument("--config", default=None, metavar="CFG", help="configuration id from recommend")
+    q.add_argument("--workflow", default=None, metavar="FILE.toml", help="a workflow TOML file, a catalog name or a workflow in "
+                   "your store; its settings are used, and --set sets or overrides a piece")
+    q.add_argument("--set", action="append", default=[], metavar="PIECE=HARNESS:MODEL:EFFORT", help="piece setting (repeatable)")
+    q.add_argument("--source", default=None, choices=SOURCES, help="why this configuration was chosen (not with --choice)")
+    q.add_argument("--rec", default=None, metavar="REC", help="the recommend id this run follows (stores a before-receipt)")
+    q.add_argument("--choice", default=None, metavar="KEY", help="start a choice from recommend's choices (goal, pair, "
+                   "reference, most_likely, cheapest_run) with --rec: the task, configuration and source come from it; a pair "
+                   "opens a slate with both runs")
+    slate = q.add_mutually_exclusive_group()
+    slate.add_argument("--slate", default=None, metavar="SLT", help="add the run to this slate")
+    slate.add_argument("--new-slate", action="store_true", help="open a new slate with this run in it")
+    q.add_argument("--rule", default=None, metavar="RULE", help="a named acceptance rule from config; with --rec "
+                   "it replaces the rule the recommendation was made for")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:run_start"))
+
+    q = rs.add_parser("attempt", help="add or settle an attempt")
+    q.add_argument("--run", required=True, metavar="RUN", help="run id from run start")
+    q.add_argument("--end", default=None, metavar="ATT", help="settle this attempt instead of adding one")
+    q.add_argument("--status", default=None, choices=["done", "failed", "rejected", "canceled", "lost"], help="how the attempt ended (with --end)")
+    q.add_argument("--ended-at", default=None, metavar="TS", help="ISO time it ended (default: now)")
+    q.add_argument("--piece", default=None, metavar="VERTEX", help="the workflow piece this attempt runs")
+    q.add_argument("--harness", default=None, choices=["claude-code", "codex", "command"], help="what runs the attempt")
+    q.add_argument("--model", default=None, metavar="M", help="model name")
+    q.add_argument("--effort", default=None, metavar="E", help="reasoning effort")
+    q.add_argument("--cwd", default=None, metavar="PATH", help="the folder the agent works in; with no --session its log is matched by this folder, a session that started in the attempt's window, and the model")
+    q.add_argument("--session", default=None, metavar="ID", help="session id, or self for the orchestrator's own Claude Code session, counted only inside this attempt's started-at to ended-at window (outside Claude Code: the one Claude Code session in this folder active in the last 10 minutes; run sessions lists the ids)")
+    q.add_argument("--round", type=int, default=1, metavar="K", help="round of this piece, 1 for the first try")
+    q.add_argument("--cause", default="initial", choices=["initial", "sent_back", "gate_failed", "followup", "other"],
+                   help="why this attempt was started")
+    q.add_argument("--started-at", default=None, metavar="TS", help="ISO time it started (default: now)")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:run_attempt"))
+
+    q = rs.add_parser("artifact", help="record an artifact")
+    q.add_argument("--run", required=True, metavar="RUN", help="run id from run start")
+    q.add_argument("--kind", required=True, metavar="KIND", help="what the artifact is, e.g. plan, diff, review")
+    q.add_argument("--path", required=True, metavar="P", help="where it is")
+    q.add_argument("--by", required=True, metavar="ATT", help="the attempt that wrote it")
+    q.add_argument("--read-by", action="append", default=[], metavar="ATT", help="an attempt that read it (repeatable)")
+    q.add_argument("--supersedes", default=None, metavar="ART", help="the artifact this one replaces")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:run_artifact"))
+
+    q = rs.add_parser("finish", help="match logs, cost, validate, receipt, background refit")
+    q.add_argument("--run", required=True, metavar="RUN", help="run id from run start")
+    q.add_argument("--no-fit", action="store_true", help="do not start a background refit")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:run_finish"))
+
+    q = rs.add_parser("import", help="store OCP v0.3 runs written by the orchestrator (files or a directory)")
+    q.add_argument("files", nargs="+", metavar="FILE.ocp.json|DIR", help="OCP documents, or a directory of *.ocp.json files")
+    q.add_argument("--finish", action="store_true", help="also finish each run once stored; one background refit at the end")
+    q.add_argument("--no-fit", action="store_true", help="do not start the background refit")
+    q.add_argument("--brief", action="store_true", help="with --json: a short object for agents (counts, failures with "
+                   "file and error, the overlap with the shipped prior, the next step)")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:run_import"))
+
+    q = rs.add_parser("record", help="record a finished run in one call: its sessions, commits and verdicts, then finish")
+    q.add_argument("--run", default=None, metavar="RUN", help="the open run from run start; without it a run is opened "
+                   "from the flags below, as run start does")
+    _task_args(q)
+    q.add_argument("--rec", default=None, metavar="REC", help="the recommend id the run follows (with --choice, or --config)")
+    q.add_argument("--choice", default=None, metavar="KEY", help="open the run from this choice of --rec (not pair)")
+    q.add_argument("--config", default=None, metavar="CFG", help="configuration id from recommend")
+    q.add_argument("--workflow", default=None, metavar="FILE.toml", help="a workflow file, catalog name or stored workflow")
+    q.add_argument("--set", action="append", default=[], metavar="PIECE=HARNESS:MODEL:EFFORT", help="piece setting (repeatable)")
+    q.add_argument("--source", default=None, choices=SOURCES, help="why this configuration was chosen (with --config or --workflow)")
+    q.add_argument("--rule", default=None, metavar="RULE", help="a named acceptance rule from config; with --rec "
+                   "it replaces the rule the recommendation was made for")
+    q.add_argument("--session", action="append", default=[], metavar="[PIECE=]ID", help="a session that worked on the run: a "
+                   "Claude Code session id, a Codex thread id, or self for this Claude Code session (repeatable); "
+                   "PIECE= names its piece; run sessions lists the ids. Only the part of a session inside the window "
+                   "counts; a Codex session counts the usage it logged inside the window: each reading's increase at "
+                   "the reading's time, a reading on either edge included. A sub-agent or Codex child thread counts in "
+                   "full when it started inside the window, not at all when it started before; a Codex reading lower "
+                   "than the one before it (a compaction reset) counts from zero; a Codex session with a reading that "
+                   "has no time, or whose increases inside the window add up to less than zero, counts whole, with a note")
+    q.add_argument("--cwd", action="append", default=[], metavar="[PIECE=]PATH", help="a folder an agent with no session id "
+                   "worked in; its log is matched at finish by folder and time (repeatable)")
+    q.add_argument("--since", default=None, metavar="TS", help="when the work began (e.g. 2h or a local ISO time); with "
+                   "--run the default is the run's start")
+    q.add_argument("--until", default=None, metavar="TS", help="when the work ended (e.g. 1h or a local ISO time; default now)")
+    q.add_argument("--verified", action="append", default=[], metavar="NAME=VALUE", help="a verdict you observed yourself "
+                   "(pass, fail, accept, reject, error)")
+    q.add_argument("--reported", action="append", default=[], metavar="NAME=VALUE", help="a verdict someone reported")
+    q.add_argument("--score", action="append", default=[], metavar="NAME=VALUE", help="a score (NAME= when not measured)")
+    commits = q.add_mutually_exclusive_group()
+    commits.add_argument("--commit", action="append", default=[], metavar="SHA", help="a commit the run made (repeatable)")
+    commits.add_argument("--no-commits", action="store_true", help="do not record the commits since the base commit")
+    q.add_argument("--no-fit", action="store_true", help="do not start a background refit")
+    _common(q)
+    q.set_defaults(slate=None, new_slate=False, func=_lazy("loopmath.store.record:run_record"))
+
+    q = rs.add_parser("sessions", help="list the recent Claude Code and Codex sessions in this folder, with their ids")
+    q.add_argument("--cwd", default=None, metavar="PATH", help="the folder the sessions ran in (default: this one)")
+    q.add_argument("--days", type=float, default=7, metavar="N", help="how far back to look (default 7)")
+    q.add_argument("--limit", type=int, default=10, metavar="N", help="at most this many, newest first (default 10)")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:run_sessions"))
+
+    p = sub.add_parser("outcome", help="record a verdict, score, late event or pair preference")
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--run", default=None, metavar="RUN", help="the run the signal is about")
+    target.add_argument("--slate", default=None, metavar="SLT", help="the slate a preference is about (with --prefer)")
+    target.add_argument("--commit", default=None, metavar="SHA", help="late event: find runs by commit")
+    target.add_argument("--rule", default=None, metavar="NAME",
+                        help="review: judge each RUN by its latest review or accepted verdict (accept, approve or "
+                        "pass is a success); --undo-rule undoes that, and so does naming the rule a run had before "
+                        "(tests when it had none) unless it is named review. A run with a tests verdict is refused, "
+                        "and nothing is written if any RUN is refused")
+    target.add_argument("--undo-rule", action="store_true",
+                        help="restore each RUN's rule from before --rule review moved it, exactly as it was")
+    p.add_argument("rule_runs", nargs="*", default=[], metavar="RUN", help="with --rule or --undo-rule: the runs to move")
+    p.add_argument("--signal", default=None, metavar="NAME=VALUE", help="NAME= (empty) declares an unmeasured score")
+    p.add_argument("--kind", default="verdict", choices=["verdict", "score", "event"], help="what the signal is (default verdict)")
+    p.add_argument("--unit", default=None, metavar="U", help="score unit")
+    p.add_argument("--better", default=None, choices=["higher", "lower"], help="which way a score improves")
+    p.add_argument("--target", type=float, default=None, metavar="X", help="the score that counts as success")
+    p.add_argument("--scale", default="linear", choices=["linear", "log", "fraction"], help="how the score is modelled")
+    p.add_argument("--at-attempt", default=None, metavar="ATT", help="the attempt the signal belongs to")
+    p.add_argument("--source", default="orchestrator", choices=["orchestrator", "user", "ci", "tracker", "judge"],
+                   help="who reports the signal")
+    p.add_argument("--tier", default="reported", choices=TIER_CHOICES, help="how far the signal can be trusted")
+    p.add_argument("--observed-at", default=None, metavar="TS", help="ISO time it was observed (default: now)")
+    p.add_argument("--prefer", default=None, metavar="RUN|tie", help="the slate member that did better, or tie")
+    p.add_argument("--judge", default=None, choices=["referee", "user", "model"], help="who judged the preference (default referee)")
+    p.add_argument("--blinded", action="store_true", help="the judge did not know which run was which")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.store.commands:outcome"))
+
+    p = sub.add_parser("budget", help="spend against the cap; set the cap")
+    p.add_argument("--usd", type=float, default=None, metavar="X", help="set the cap in dollars")
+    p.add_argument("--period", default=None, choices=["week", "month", "none"], help="the cap is per week, per month, or in total (none)")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.store.commands:budget"))
+
+    p = sub.add_parser("config", help="get or set configuration")
+    cs = p.add_subparsers(dest="config_command", required=True)
+    q = cs.add_parser("get", help="print one key, or all of the config")
+    q.add_argument("key", nargs="?", default=None, metavar="KEY")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:config_get"))
+    q = cs.add_parser("set", help="set one key",
+                      description="Sets one key in config.toml. benchmark_prior_weight is unset by default: each "
+                                  "benchmark in the shipped benchmarks.toml has its own weight, in runs, shared by "
+                                  "a model's results on it; a number here is one weight for every benchmark, and 0 "
+                                  "turns benchmark priors off.")
+    q.add_argument("key", metavar="KEY")
+    q.add_argument("value", metavar="VALUE")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:config_set"))
+    q = cs.add_parser("unset", help="remove one key, so it reads its default",
+                      description="Removes one key from config.toml and keeps every other line, comments too. "
+                                  "A key that is not in the file is not an error.")
+    q.add_argument("key", metavar="KEY")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.store.commands:config_unset"))
+
+
+LABELER_KINDS = ("claude", "codex", "command")
+
+
+def labeler_spec(value: str) -> str:
+    """`--labeler`: `claude:<model>`, `codex:<model>`, `command:<cmd>` or `none`."""
+    kind, sep, rest = value.partition(":")
+    if value == "none" or (sep and kind in LABELER_KINDS and rest.strip()):
+        return value
+    raise argparse.ArgumentTypeError(
+        f"expected claude:<model>, codex:<model>, command:<cmd> or none, not {value!r}"
+    )
+
+
+# ---------------------------------------------------------------- learning
+def _add_learning(sub) -> None:
+    p = sub.add_parser("fit", help="refit the belief from the prior bundle and your runs",
+                       description="Builds the belief from the shipped prior and your runs and points fits/latest at it: "
+                                   "a new fit replaces the one recommend and posterior read. The 5 newest fits, and any a "
+                                   "receipt or stored recommendation names, are kept; recommend --fit ID and posterior "
+                                   "--fit ID read one of them. Runs in your store always count as yours.")
+    p.add_argument("--background", action="store_true", help="start the fit and return at once")
+    p.add_argument("--full", action="store_true", help="also run the PyMC check (needs the bayes extra)")
+    p.add_argument("--no-prior", action="store_true", help="fit your runs alone, without the shipped prior, shared runs or benchmark factors")
+    p.add_argument("--without", action="append", default=[], metavar="SOURCE",
+                   help="leave out one source: e0, sweep or rq1 (shipped prior; never your own runs, whatever their label), benchmark (benchmark prior factors), user (your runs), shared or shared:ORG (imported runs); repeatable")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.belief.commands:fit"))
+
+    p = sub.add_parser("onboard", help="turn your Claude Code and Codex history into runs and a first fit",
+                       description="Reads your Claude Code and Codex history (read only), groups sessions, has the labeller you choose "
+                                   "name each task type, records one habit run per group, saves your usual workflow per task type "
+                                   "and repo, and runs a first fit. Reading the history uses up to 8 worker processes "
+                                   "(one per CPU); set LOOPMATH_WORKERS=1 to keep it in one process.")
+    p.add_argument("--since", default="90d", metavar="D", help="how far back to read: 90d, 12w, 36h or a date (default 90d)")
+    p.add_argument("--labeler", default=None, type=labeler_spec, metavar="claude:MODEL|codex:MODEL|command:CMD|none",
+                   help="what labels task types: a model through your own claude or codex CLI, your own command, or none; there is no default, and your choice is saved as config onboard.labeler")
+    p.add_argument("--yes", action="store_true", help="go ahead without asking, after showing the expected labelling cost")
+    p.add_argument("--dry-run", action="store_true", help="show what it would do: no labelling calls, no runs or fit written")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.onboard.commands:onboard"))
+
+    p = sub.add_parser("share", help="write the shareable part of your store to a file",
+                       description="Keeps task types, features, workflows, settings, tokens, dollars and outcomes; "
+                                   "repos, tasks and runs only as salted hashes; no titles, paths, commands, session ids or commits.")
+    p.add_argument("--out", default=None, metavar="FILE", help="the share file to write: plain JSON for FILE.json, gzip JSON for FILE.json.gz or any other name (check it first with --preview)")
+    p.add_argument("--since", default=None, metavar="D", help="only runs since then: 90d, 4w, 12h or a date")
+    p.add_argument("--preview", action="store_true", help="print exactly what would leave; writes no share file")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.share.commands:share"))
+
+    p = sub.add_parser("prior", help="the shipped prior bundle: show, build, import-shared, remove-shared")
+    ps = p.add_subparsers(dest="prior_command", required=True)
+    q = ps.add_parser("build", help="rebuild the packaged prior bundle from the sweep, E0 and RQ1 inputs")
+    q.add_argument("--out", default=None, metavar="DIR", help="where to write the bundle (required)")
+    q.add_argument("--sweep-dir", action="append", default=None, metavar="PATH", help="sweep results, one folder per batch; repeatable (default: LOOPMATH_SWEEP_DIR, one folder)")
+    q.add_argument("--e0-corpus", default=None, metavar="PATH", help="E0 corpus (default: LOOPMATH_E0_CORPUS)")
+    q.add_argument("--rq1-dir", default=None, metavar="PATH", help="RQ1 OCP documents (default: LOOPMATH_PRIOR_RQ1)")
+    q.add_argument("--lanes-dir", default=None, metavar="PATH", help="build lane rows (default: LOOPMATH_PRIOR_LANES)")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.priors.commands:build"))
+    q = ps.add_parser("show", help="what the packaged prior bundle holds and where it came from")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.priors.commands:show"))
+    q = ps.add_parser("import-shared", help="add a share file from another organization to your priors")
+    q.add_argument("file", metavar="FILE", help="a loopmath.share/1 file written by loopmath share (gzip or plain JSON)")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.share.commands:import_shared"))
+    q = ps.add_parser("remove-shared", help="take an imported organization's runs out of your priors")
+    q.add_argument("org", metavar="ORG", help="the organization import-shared named, as shared:HASH or HASH")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.share.commands:remove_shared"))
+
+
+# ---------------------------------------------------------------- viewing
+def _add_viewing(sub) -> None:
+    p = sub.add_parser("runs", help="previous runs (table, one run, HTML page)")
+    p.add_argument("run_id", nargs="?", default=None, metavar="RUN", help="show this one run in full, as --run RUN")
+    p.add_argument("--type", dest="task_type", default=None, metavar="T", help="only this task type (see loopmath task-types)")
+    p.add_argument("--repo", default=None, metavar="R", help="only this repository")
+    p.add_argument("--since", default=None, metavar="D", help="only runs started since then: 90d, 2w, 12h, or a date or time such as 2026-01-15 or 2026-01-15T09:30 (local time)")
+    p.add_argument("--slate", default=None, metavar="SLT", help="only this slate")
+    p.add_argument("--run", default=None, metavar="RUN", help="show this one run in full; RUN is an id from the run column of loopmath runs")
+    p.add_argument("--wide", action="store_true", help="also show each run's cfg_ configuration id")
+    _common(p, html=True)
+    p.set_defaults(func=_lazy("loopmath.views.runs:command"))
+
+    p = sub.add_parser("posterior", help="current estimates by level and by workflow graph")
+    p.add_argument("--level", default="all",
+                   choices=["model", "effort", "role", "topology", "type", "repo", "feature", "all"], help="which level of estimates (default all)")
+    p.add_argument("--head", default=None, metavar="cost|tokens|success|gate|score:NAME", help="which quantity to show")
+    p.add_argument("--target", default=None, metavar="NAME>=X", help="score target for the chance to reach and the cost per accepted result, as for recommend (default: the latest recommendation's target for this type and repo)")
+    p.add_argument("--workflow", default=None, metavar="CFG|FILE.toml", help="also draw this configuration with each piece's estimate: a cfg_ id from loopmath recommend --json or your runs, or FILE.toml with settings")
+    p.add_argument("--type", dest="task_type", default=None, metavar="T", help="task type for the workflow graph (default: the most common in your runs, else feature)")
+    p.add_argument("--repo", default=None, metavar="R", help="repository for the workflow graph (default: the most common in your runs)")
+    p.add_argument("--subtype", default=None, metavar="S", help="your own subtype of the task type, as for recommend")
+    p.add_argument("--feature", action="append", default=[], metavar="K=V", help="task feature for the workflow graph (repeatable), as for recommend")
+    p.add_argument("--horizon", default=None, metavar="TIME", help=HORIZON_HELP)
+    p.add_argument("--fit", default=None, metavar="ID", help=FIT_HELP)
+    p.add_argument("--all", action="store_true", help="also show the rows about providers and models you have not run, and every row")
+    _common(p, html=True)
+    p.set_defaults(func=_lazy("loopmath.views.posterior:command"))
+
+    p = sub.add_parser("status", help="fit age, open runs, spend, store health")
+    p.add_argument("--reindex", action="store_true", help="rebuild the run index from the run files first")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.store.commands:status"))
+
+    p = sub.add_parser("report", help="receipt calibration and exploration outcomes")
+    p.add_argument("--since", default=None, metavar="D", help="only receipts since then: 30d, 2w, 12h or a date")
+    _common(p, html=True)
+    p.set_defaults(func=_lazy("loopmath.store.commands:report"))
+
+    p = sub.add_parser("doctor", help="check logs, store, fit, prices and skill")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.skill.commands:doctor"))
+
+    p = sub.add_parser("skill", help="install, remove or print the orchestrator skills")
+    ss = p.add_subparsers(dest="skill_command", required=True)
+    for verb, helptext in (("install", "write the six skills for Claude Code, Codex or both"),
+                           ("uninstall", "remove what install wrote")):
+        q = ss.add_parser(verb, help=helptext)
+        q.add_argument("--target", default="auto", choices=["auto", "claude-code", "codex", "both"],
+                       help="which agent: auto (default) is every agent whose home folder exists, else claude-code")
+        q.add_argument("--scope", default="user", choices=["user", "project"],
+                       help="for you in every folder (user), or for this repository only (project)")
+        q.add_argument("--dir", default=None, metavar="PATH", help="the project folder for --scope project "
+                       "(default: this folder)")
+        if verb == "install":
+            q.add_argument("--dry-run", action="store_true", help="print every file install would write or "
+                           "change, and write nothing")
+        _common(q)
+        q.set_defaults(func=_lazy(f"loopmath.skill.commands:{verb}"))
+    q = ss.add_parser("show", help="print one skill (default loopmath, the start-here skill) or the shared reference")
+    q.add_argument("name", nargs="?", default="loopmath", metavar="NAME",
+                   help="loopmath, loopmath-onboard, loopmath-import-runs, loopmath-update-fit, loopmath-plan-task, "
+                   "loopmath-record-run, or reference")
+    q.set_defaults(func=_lazy("loopmath.skill.commands:show"))
+
+    p = sub.add_parser("ocp", help="validate or migrate OCP documents")
+    os_ = p.add_subparsers(dest="ocp_command", required=True)
+    q = os_.add_parser("validate", help="check OCP documents against the schema and conformance rules (exit 1 on an error, 2 on a missing file)")
+    q.add_argument("files", nargs="+", metavar="FILE")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.ocp.commands:validate"))
+    q = os_.add_parser("migrate", help="convert OCP v0.1 and v0.2 documents and contract v3 run files to v0.3 (inputs are never changed)")
+    q.add_argument("files", nargs="+", metavar="FILE")
+    q.add_argument("--out", default=None, metavar="DIR", help="write each result to DIR as NAME.ocp.json; a result with errors is never written (needed for several files unless --json)")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.ocp.commands:migrate"))
+
+
+HIDDEN = frozenset({"plan", "analyze-e0"})  # callable, but not listed by `loopmath --help`
+
+
+def command_metavar(sub) -> str:
+    """The `{a,b,...}` command list for usage lines, without the hidden commands."""
+    return "{" + ",".join(name for name in sub.choices if name not in HIDDEN) + "}"
+
+
+def register(sub) -> None:
+    """Add every 0.1.0 command to the top-level subparsers."""
+    _add_planning(sub)
+    _add_recording(sub)
+    _add_learning(sub)
+    _add_viewing(sub)
+    importlib.import_module("loopmath.builder.cli").add(sub)  # `builder` (0.2.1)
+
+
+# Handler targets, for the registry test: every one must import and be callable.
+def targets(parser: argparse.ArgumentParser) -> list[str]:
+    found: list[str] = []
+
+    def walk(p: argparse.ArgumentParser) -> None:
+        func = p.get_default("func")
+        if func is not None and hasattr(func, "target"):
+            found.append(func.target)
+        for action in p._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child in action.choices.values():
+                    walk(child)
+
+    walk(parser)
+    return sorted(set(found))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(0)

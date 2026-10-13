@@ -1,0 +1,15 @@
+{
+  "id": "33333333-4444-4555-8666-777777777777",
+  "provider": "claude",
+  "cwd": "/synthetic/workspace",
+  "createdAt": "2026-08-10T20:00:00Z",
+  "updatedAt": "2026-08-10T20:05:00Z",
+  "lastStatus": "PRIVATE SYNTHETIC UNKNOWN STATUS",
+  "runtimeInfo": {
+    "sessionId": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+  },
+  "persistence": {
+    "sessionId": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    "nativeHandle": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+  }
+}

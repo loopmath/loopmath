@@ -1,0 +1,46 @@
+id = "best_of_n"
+version = 1
+title = "Best of n: parallel implementers, a referee picks one"
+edges = [
+  "issue -> implement",
+  "repo -> implement",
+  "implement -> candidates",
+  "candidates -> select",
+  "issue -> select",
+  "select -> diff",
+]
+
+[[pieces]]
+id = "implement"
+role = "implementer"
+width = 3
+
+[[pieces]]
+id = "select"
+role = "referee"
+width = 1
+
+[[artifacts]]
+id = "issue"
+kind = "issue"
+
+[[artifacts]]
+id = "repo"
+kind = "repo"
+
+[[artifacts]]
+id = "candidates"
+kind = "diff"
+
+[[artifacts]]
+id = "diff"
+kind = "diff"
+
+[control]
+budget_rounds = 1
+rescue = "redo_usual"
+
+[[control.gates]]
+id = "g_select"
+after = "select"
+rule = "referee_pick"

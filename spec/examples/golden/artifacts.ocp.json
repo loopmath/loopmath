@@ -1,0 +1,48 @@
+{
+  "ocp": "0.2",
+  "producer": { "name": "golden-fixture", "version": "1" },
+  "privacy": { "profile": "metadata_only" },
+  "run": { "id": "golden-artifacts" },
+  "nodes": [
+    { "id": "write", "kind": "impl", "state": "done" },
+    { "id": "read", "kind": "test", "state": "done" }
+  ],
+  "edges": [
+    {
+      "from": "write",
+      "to": "read",
+      "kind": "artifact",
+      "tier": "verified",
+      "artifact": "result",
+      "from_attempt": "write.a1",
+      "to_attempt": "read.a1"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "write.a1",
+      "node": "write",
+      "status": "done",
+      "outcome": { "result": "done", "evidence": "verified" }
+    },
+    {
+      "id": "read.a1",
+      "node": "read",
+      "status": "done",
+      "outcome": { "result": "done", "evidence": "verified" }
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "result",
+      "path": "build/result.json",
+      "kind": { "value": "data", "tier": "verified" },
+      "producer": "write.a1",
+      "writers": ["write.a1"],
+      "consumers": ["read.a1"],
+      "first_write_at": "2026-09-03T12:00:00Z",
+      "n_writes": 1,
+      "n_reads": 1
+    }
+  ]
+}

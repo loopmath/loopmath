@@ -1,0 +1,12 @@
+{
+ "source": "ws-delta/runs/ledger.json",
+ "attempts": [
+  {
+   "task": "P1", "n": 1, "actor": "dev", "model": "opus5", "started_at": "2026-08-31T12:01:00Z", "ended_at": "2026-08-31T12:03:00Z", "result": "done",
+   "cause": {"type": "retry"},
+   "session": {"value": "delta-impl", "tier": "verified", "source": "the only dev session"},
+   "labels": {"send_back": {"value": "yes", "tier": "verified", "source": "a string is not a bool: malformed, dropped"}, "approved": {"value": true, "tier": "verified", "source": "kept"}}
+  },
+  "not an attempt"
+ ]
+}

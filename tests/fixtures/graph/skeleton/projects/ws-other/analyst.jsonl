@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-08-31T10:04:00Z","sessionId":"analyst","cwd":"/ws/other","message":{"role":"user","content":"Audit the alpha build from here."}}
+{"type":"assistant","timestamp":"2026-08-31T10:08:30Z","sessionId":"analyst","cwd":"/ws/other","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_ext","name":"Bash","input":{"command":"cd /ws/alpha && codex exec \"Audit the tests in /ws/alpha/tests\"","description":"Launch a codex audit inside the alpha workspace"}}]}}
+{"type":"user","timestamp":"2026-08-31T10:10:00Z","sessionId":"analyst","cwd":"/ws/other","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ext","content":"audit done"}]}}

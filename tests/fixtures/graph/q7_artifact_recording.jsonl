@@ -1,0 +1,13 @@
+{"timestamp":"2026-09-03T10:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"empty","name":"Write","input":{"file_path":"/w/empty.py","content":""}}]}}
+{"timestamp":"2026-09-03T10:00:01Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"empty","content":"ok"}]}}
+{"timestamp":"2026-09-03T10:00:02Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"unicode","name":"Write","input":{"file_path":"/w/unicode.md","content":"é\n"}}]}}
+{"timestamp":"2026-09-03T10:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"unicode","content":"ok"}]}}
+{"timestamp":"2026-09-03T10:00:04Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"edit","name":"Edit","input":{"file_path":"/w/edit.h","old_string":"a\nkeep\nb\n","new_string":"c\nkeep\nb\n"}}]}}
+{"timestamp":"2026-09-03T10:00:05Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"edit","content":"ok"}]}}
+{"timestamp":"2026-09-03T10:00:06Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"multi","name":"MultiEdit","input":{"file_path":"/w/multi.ts","edits":[{"old_string":"","new_string":"x\n"},{"old_string":"y\nsame","new_string":"z\nsame\nq"}]}}]}}
+{"timestamp":"2026-09-03T10:00:07Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"multi","content":"ok"}]}}
+{"timestamp":"2026-09-03T10:00:08Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"notebook","name":"NotebookEdit","input":{"notebook_path":"/w/n.ipynb"}}]}}
+{"timestamp":"2026-09-03T10:00:09Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"notebook","content":"ok"}]}}
+{"timestamp":"2026-09-03T10:00:10Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"failed","name":"Write","input":{"file_path":"/w/failed.txt","content":"x"}}]}}
+{"timestamp":"2026-09-03T10:00:11Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"failed","content":"ok","is_error":true}]}}
+{"timestamp":"2026-09-03T10:00:12Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"missing","name":"Write","input":{"file_path":"/w/missing.txt","content":"x"}}]}}

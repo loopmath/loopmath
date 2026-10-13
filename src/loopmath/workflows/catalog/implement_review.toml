@@ -1,0 +1,47 @@
+id = "implement_review"
+version = 1
+title = "Implement, then review"
+edges = [
+  "issue -> implement",
+  "repo -> implement",
+  "implement -> diff",
+  "diff -> review",
+  "issue -> review",
+  "review -> verdict",
+]
+
+[[pieces]]
+id = "implement"
+role = "implementer"
+width = 1
+
+[[pieces]]
+id = "review"
+role = "reviewer"
+width = 1
+
+[[artifacts]]
+id = "issue"
+kind = "issue"
+
+[[artifacts]]
+id = "repo"
+kind = "repo"
+
+[[artifacts]]
+id = "diff"
+kind = "diff"
+
+[[artifacts]]
+id = "verdict"
+kind = "verdict"
+
+[control]
+budget_rounds = 3
+rescue = "redo_usual"
+
+[[control.gates]]
+id = "g_review"
+after = "review"
+rule = "review_approve"
+on_fail = "implement"

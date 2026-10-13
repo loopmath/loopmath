@@ -1,0 +1,218 @@
+"""Clip a `--session self` match, or a named session bounded by `run record`, to the attempt's own window.
+
+`--session self` names the Claude Code session that runs the command, and
+that session usually did other work before and after the attempt. Such an
+attempt (the store marks it `ext["dev.loopmath.match"].session_from == "self"`)
+is clipped to `[started_at, ended_at]`, inclusive, by transcript entry time.
+So is a named Claude Code session that `run record` bounded to the run's
+window because it started before the run or ran past `--until`
+(`session_from == "window"`, 0.2.4):
+
+- a request counts when its first entry falls in the window, with the ingest
+  parser's own accounting (per-stream maximum over a `requestId`'s lines,
+  lines without one counted directly, the model of its first line that names
+  a real one);
+- a sub-agent that starts inside the window counts in full, even past the
+  end: a sub-agent file by its earliest entry, a sidechain agent embedded in
+  the session file by its earliest entry of any type (its prompt, not its
+  first response); one that started before the window does not count;
+- with no `ended_at` the caller clips at run finish (see `settle`).
+
+A named Codex session bounded the same way (0.2.6) counts each usage
+reading's increase at the reading's time, edges included, with its children by
+start as above; one that cannot be placed raises `WindowRefused` and counts
+whole (see `codex_window`). `--session self` names a Claude Code session only.
+
+Other sessions the orchestrator named keep their whole cost. The basis stays
+`measured`; `cost.ext["dev.loopmath.logmatch"].clip` records the window.
+Only timestamps, request ids, agent ids, models and usage counts are read.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from pathlib import Path
+from typing import Any, Mapping
+
+from ..ingest.base import Tokens, canonical_model, iter_jsonl
+from . import codex_window
+from .match import Match, _epoch, _utc
+
+MATCH_EXT = "dev.loopmath.match"
+
+
+def is_self(attempt: Mapping[str, Any]) -> bool:
+    """True when the store recorded the attempt's session as `--session self`."""
+    return _session_from(attempt) == "self"
+
+
+def is_clipped(attempt: Mapping[str, Any]) -> bool:
+    """True when the attempt counts only its window of the session: `--session self`, or a named session
+    `run record` bounded to the run's window (`session_from == "window"`)."""
+    return _session_from(attempt) in ("self", "window")
+
+
+def _session_from(attempt: Mapping[str, Any]) -> Any:
+    ext = attempt.get("ext")
+    rec = ext.get(MATCH_EXT) if isinstance(ext, Mapping) else None
+    return rec.get("session_from") if isinstance(rec, Mapping) else None
+
+
+def _inside(epoch: float | None, lo: float | None, hi: float | None) -> bool:
+    if lo is None and hi is None:
+        return True  # an open window keeps everything, as the parser does
+    if epoch is None:
+        return False
+    return (lo is None or epoch >= lo) and (hi is None or epoch <= hi)
+
+
+def window_tokens(path: str | Path, lo: float | None, hi: float | None) -> dict[str | None, Tokens]:
+    """Four streams per canonical model for the requests of `path` inside `[lo, hi]`.
+
+    `None` leaves that side open, so `window_tokens(p, None, None)` equals the
+    parser's `tokens_by_model` for a Claude Code session file. A request is
+    placed by its own first entry; an embedded sidechain agent by its earliest
+    entry of any type (its prompt usually precedes its first response), and
+    then all of its requests go with it.
+    """
+    agent_start: dict[str, float] = {}
+    request_first: dict[str, float | None] = {}
+    request_agent: dict[str, str | None] = {}
+    request_model: dict[str, str] = {}
+    request_max: dict[str, list[int]] = {}
+    direct: list[tuple[float | None, str | None, str | None, tuple[int, int, int, int]]] = []
+    for obj in iter_jsonl(path):
+        epoch = _epoch(obj.get("timestamp"))
+        agent = obj.get("agentId") if obj.get("isSidechain") is True else None
+        if not isinstance(agent, str) or not agent:
+            agent = None
+        if agent is not None and epoch is not None and (agent not in agent_start or epoch < agent_start[agent]):
+            agent_start[agent] = epoch
+        if obj.get("type") != "assistant":
+            continue
+        msg = obj.get("message") or {}
+        raw = msg.get("model")
+        line_model = None
+        if isinstance(raw, str) and raw.strip() and not raw.strip().startswith("<"):
+            line_model = raw.strip()
+        usage = msg.get("usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
+        vals = (
+            int(usage.get("input_tokens") or 0),
+            int(usage.get("cache_read_input_tokens") or 0),
+            int(usage.get("cache_creation_input_tokens") or 0),
+            int(usage.get("output_tokens") or 0),
+        )
+        request_id = obj.get("requestId")
+        if request_id:
+            if request_id not in request_first:
+                request_first[request_id] = epoch
+                request_agent[request_id] = agent
+            if line_model is not None and request_id not in request_model:
+                request_model[request_id] = line_model
+            prev = request_max.setdefault(request_id, [0, 0, 0, 0])
+            for i, v in enumerate(vals):
+                if v > prev[i]:
+                    prev[i] = v
+        else:
+            direct.append((epoch, agent, line_model, vals))
+
+    def counts(epoch: float | None, agent: str | None) -> bool:
+        return _inside(agent_start.get(agent) if agent is not None else epoch, lo, hi)
+
+    by_model: dict[str | None, list[int]] = {}
+    for epoch, agent, line_model, vals in direct:
+        if counts(epoch, agent):
+            part = by_model.setdefault(canonical_model(line_model), [0, 0, 0, 0])
+            for i, v in enumerate(vals):
+                part[i] += v
+    for request_id, streams in request_max.items():
+        if counts(request_first[request_id], request_agent[request_id]):
+            part = by_model.setdefault(canonical_model(request_model.get(request_id)), [0, 0, 0, 0])
+            for i, v in enumerate(streams):
+                part[i] += v
+    return {
+        model: Tokens(in_=v[0], cache_read=v[1], cache_write=v[2], out=v[3])
+        for model, v in by_model.items()
+        if any(v)
+    }
+
+
+def clip_match(match: Match, start: str | None, end: str) -> Match:
+    """`match` cut to `[start, end]` (see the module docstring); `start=None` is open.
+
+    A Codex session raises `codex_window.WindowRefused` when its window cannot be placed.
+    """
+    lo, hi = _epoch(start), _epoch(end)
+    at = start or match.started_at
+    if match.harness == "codex":
+        parts = codex_window.session_parts(match, lo, hi, at, end)
+    elif match.harness == "claude-code":
+        parts = _claude_parts(match, lo, hi, at, end)
+    else:
+        raise ValueError(f"a {match.harness} session is not clipped")
+    children: list[str] = []
+    for part in match.parts:
+        if part.get("role") == "child" and _inside(_epoch(part.get("started_at")), lo, hi):
+            parts.append(part)
+            if part["session"] not in children:
+                children.append(part["session"])
+    if not parts:
+        # Nothing in the window: still this session, with no requests.
+        parts.append(
+            {
+                "session": match.session_id,
+                "role": "session",
+                "harness": match.harness,
+                "model": None,
+                "tokens": Tokens(),
+                "path": str(match.session_path),
+                "parent": None,
+                "started_at": at,
+                "ended_at": end,
+            }
+        )
+    total = Tokens()
+    models: list[str] = []
+    for part in parts:
+        t = part["tokens"]
+        total.in_ += t.in_
+        total.cache_read += t.cache_read
+        total.cache_write += t.cache_write
+        total.out += t.out
+        if part["model"] and part["model"] not in models:
+            models.append(part["model"])
+    own = [p for p in parts if p["role"] == "session" and p["model"]]
+    model = max(own, key=lambda p: p["tokens"].total)["model"] if own else match.model
+    return dataclasses.replace(
+        match,
+        tokens=total,
+        model=model,
+        started_at=_utc(lo) if lo is not None else match.started_at,
+        ended_at=_utc(hi) if hi is not None else match.ended_at,
+        children=children,
+        parts=parts,
+        models=models,
+        artifacts=[],
+        clip={"from": start or match.started_at, "to": end},
+    )
+
+
+def _claude_parts(match: Match, lo: float | None, hi: float | None, at: str, end: str) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    for model, tokens in window_tokens(match.session_path, lo, hi).items():
+        parts.append(
+            {
+                "session": match.session_id,
+                "role": "session",
+                "harness": match.harness,
+                "model": model,
+                "tokens": tokens,
+                "path": str(match.session_path),
+                "parent": None,
+                "started_at": at,
+                "ended_at": end,
+            }
+        )
+    return parts

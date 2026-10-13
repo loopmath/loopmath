@@ -1,0 +1,659 @@
+{
+ "schema": "loopmath.view.posterior/1",
+ "generated_at": "2026-09-23T16:00:00-07:00",
+ "fit": {
+  "id": "fit_20260923160000",
+  "at": "2026-09-23T16:00:00-07:00",
+  "n_runs": {
+   "prior": 1150,
+   "user": 23
+  }
+ },
+ "levels": {
+  "model": [
+   {
+    "level": "provider",
+    "key": "anthropic",
+    "head": "cost",
+    "effect": {
+     "mean": 0.0,
+     "lo": -0.3,
+     "hi": 0.3,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 1.0,
+     "lo": 0.74,
+     "hi": 1.35,
+     "level": 0.8
+    },
+    "support": 900,
+    "parent": null,
+    "source_mix": {
+     "sweep": 600,
+     "user": 20
+    }
+   },
+   {
+    "level": "family",
+    "key": "opus",
+    "head": "cost",
+    "effect": {
+     "mean": 0.25,
+     "lo": 0.05,
+     "hi": 0.45,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 1.28,
+     "lo": 1.05,
+     "hi": 1.57,
+     "level": 0.8
+    },
+    "support": 520,
+    "parent": "anthropic",
+    "source_mix": {
+     "sweep": 500,
+     "user": 20
+    }
+   },
+   {
+    "level": "version",
+    "key": "claude-opus-5-5",
+    "head": "cost",
+    "effect": {
+     "mean": 0.3,
+     "lo": 0.0,
+     "hi": 0.6,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 1.35,
+     "lo": 1.0,
+     "hi": 1.82,
+     "level": 0.8
+    },
+    "support": 20,
+    "parent": "opus",
+    "source_mix": {
+     "user": 20
+    }
+   },
+   {
+    "level": "family",
+    "key": "fable",
+    "head": "cost",
+    "effect": {
+     "mean": -0.6,
+     "lo": -0.8,
+     "hi": -0.4,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 0.55,
+     "lo": 0.45,
+     "hi": 0.67,
+     "level": 0.8
+    },
+    "support": 200,
+    "parent": "anthropic",
+    "source_mix": {
+     "sweep": 200
+    }
+   },
+   {
+    "level": "provider",
+    "key": "openai",
+    "head": "cost",
+    "effect": {
+     "mean": 0.1,
+     "lo": -0.2,
+     "hi": 0.4,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 1.1,
+     "lo": 0.82,
+     "hi": 1.49,
+     "level": 0.8
+    },
+    "support": 400,
+    "parent": null,
+    "source_mix": {
+     "sweep": 300,
+     "rq1": 44
+    }
+   },
+   {
+    "level": "family",
+    "key": "astra",
+    "head": "cost",
+    "effect": {
+     "mean": 0.1,
+     "lo": -0.5,
+     "hi": 0.7,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 1.1,
+     "lo": 0.61,
+     "hi": 2.01,
+     "level": 0.8
+    },
+    "support": 0,
+    "parent": "openai",
+    "source_mix": {
+     "benchmark": 1
+    }
+   }
+  ],
+  "effort": [
+   {
+    "level": "effort",
+    "key": "high",
+    "head": "success",
+    "effect": {
+     "mean": 0.0,
+     "lo": -0.2,
+     "hi": 0.2,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 0.0,
+     "lo": -4.0,
+     "hi": 4.0,
+     "level": 0.8
+    },
+    "support": 500,
+    "parent": null,
+    "source_mix": {
+     "sweep": 480,
+     "user": 20
+    }
+   },
+   {
+    "level": "effort",
+    "key": "xhigh",
+    "head": "success",
+    "effect": {
+     "mean": 0.3,
+     "lo": 0.0,
+     "hi": 0.6,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 5.0,
+     "lo": 0.0,
+     "hi": 10.0,
+     "level": 0.8
+    },
+    "support": 300,
+    "parent": null,
+    "source_mix": {
+     "sweep": 300
+    }
+   }
+  ],
+  "role": [
+   {
+    "level": "role",
+    "key": "reviewer",
+    "head": "gate",
+    "effect": {
+     "mean": 0.4,
+     "lo": 0.1,
+     "hi": 0.7,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 7.0,
+     "lo": 2.0,
+     "hi": 12.0,
+     "level": 0.8
+    },
+    "support": 150,
+    "parent": null,
+    "source_mix": {
+     "sweep": 130,
+     "user": 20
+    }
+   }
+  ],
+  "topology": [
+   {
+    "level": "topology",
+    "key": "implement_review",
+    "head": "success",
+    "effect": {
+     "mean": 0.35,
+     "lo": 0.1,
+     "hi": 0.6,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 6.0,
+     "lo": 2.0,
+     "hi": 10.0,
+     "level": 0.8
+    },
+    "support": 180,
+    "parent": null,
+    "source_mix": {
+     "sweep": 160,
+     "user": 20
+    }
+   },
+   {
+    "level": "topology",
+    "key": "solo",
+    "head": "success",
+    "effect": {
+     "mean": -0.2,
+     "lo": -0.4,
+     "hi": 0.0,
+     "level": 0.8
+    },
+    "display": {
+     "mean": -3.5,
+     "lo": -7.0,
+     "hi": 0.0,
+     "level": 0.8
+    },
+    "support": 400,
+    "parent": null,
+    "source_mix": {
+     "sweep": 400
+    }
+   }
+  ],
+  "type": [
+   {
+    "level": "type",
+    "key": "feature",
+    "head": "success",
+    "effect": {
+     "mean": -0.1,
+     "lo": -0.4,
+     "hi": 0.2,
+     "level": 0.8
+    },
+    "display": {
+     "mean": -2.0,
+     "lo": -7.0,
+     "hi": 3.0,
+     "level": 0.8
+    },
+    "support": 412,
+    "parent": null,
+    "source_mix": {
+     "sweep": 390,
+     "user": 22
+    }
+   }
+  ],
+  "repo": [
+   {
+    "level": "repo",
+    "key": "loopmath/loopmath",
+    "head": "success",
+    "effect": {
+     "mean": 0.1,
+     "lo": -0.5,
+     "hi": 0.7,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 2.0,
+     "lo": -9.0,
+     "hi": 11.0,
+     "level": 0.8
+    },
+    "support": 23,
+    "parent": "feature",
+    "source_mix": {
+     "user": 23
+    }
+   }
+  ],
+  "feature": [
+   {
+    "level": "feature:size",
+    "key": "s",
+    "head": "cost",
+    "effect": {
+     "mean": -0.3,
+     "lo": -0.5,
+     "hi": -0.1,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 0.74,
+     "lo": 0.61,
+     "hi": 0.9,
+     "level": 0.8
+    },
+    "support": 210,
+    "parent": null,
+    "source_mix": {
+     "sweep": 200,
+     "user": 10
+    }
+   }
+  ],
+  "score:heldout_perf": [
+   {
+    "level": "family",
+    "key": "sol",
+    "head": "score:heldout_perf",
+    "effect": {
+     "mean": 60.0,
+     "lo": -40.0,
+     "hi": 160.0,
+     "level": 0.8
+    },
+    "display": {
+     "mean": 60.0,
+     "lo": -40.0,
+     "hi": 160.0,
+     "level": 0.8
+    },
+    "support": 22,
+    "parent": "openai",
+    "source_mix": {
+     "rq1": 22
+    }
+   }
+  ]
+ },
+ "workflow": {
+  "config": "cfg_48a78920bd7d",
+  "label": "plan_implement_review: claude-opus-5-5/xhigh, claude-opus-5-5/high, gpt-6-astra/xhigh",
+  "graph": {
+   "config": "cfg_48a78920bd7d",
+   "label": "plan_implement_review: claude-opus-5-5/xhigh, claude-opus-5-5/high, gpt-6-astra/xhigh",
+   "nodes": [
+    {
+     "id": "plan",
+     "kind": "piece",
+     "role": "planner",
+     "setting": {
+      "harness": "claude-code",
+      "model": "claude-opus-5-5",
+      "effort": "xhigh",
+      "context_policy": "fresh",
+      "options": {}
+     },
+     "prediction": {
+      "piece": "plan",
+      "cost": {
+       "usd": {
+        "mean": 1.13,
+        "lo": 0.73,
+        "hi": 1.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 203399.99999999997,
+        "lo": 132210.0,
+        "hi": 317303.99999999994,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.0,
+       "lo": 1.0,
+       "hi": 2.0,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    {
+     "id": "implement",
+     "kind": "piece",
+     "role": "implementer",
+     "setting": {
+      "harness": "claude-code",
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "context_policy": "fresh",
+      "options": {}
+     },
+     "prediction": {
+      "piece": "implement",
+      "cost": {
+       "usd": {
+        "mean": 1.13,
+        "lo": 0.73,
+        "hi": 1.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 203399.99999999997,
+        "lo": 132210.0,
+        "hi": 317303.99999999994,
+        "level": 0.8
+       }
+      },
+      "gate_pass": null,
+      "rounds": {
+       "mean": 1.2,
+       "lo": 1.0,
+       "hi": 2.0,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    {
+     "id": "review",
+     "kind": "piece",
+     "role": "reviewer",
+     "setting": {
+      "harness": "codex",
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "context_policy": "fresh",
+      "options": {}
+     },
+     "prediction": {
+      "piece": "review",
+      "cost": {
+       "usd": {
+        "mean": 1.13,
+        "lo": 0.73,
+        "hi": 1.76,
+        "level": 0.8
+       },
+       "tokens": {
+        "mean": 203399.99999999997,
+        "lo": 132210.0,
+        "hi": 317303.99999999994,
+        "level": 0.8
+       }
+      },
+      "gate_pass": {
+       "mean": 0.72,
+       "lo": 0.6,
+       "hi": 0.83,
+       "level": 0.8
+      },
+      "rounds": {
+       "mean": 1.2,
+       "lo": 1.0,
+       "hi": 2.0,
+       "level": 0.8
+      },
+      "cost_per_round": null
+     }
+    },
+    {
+     "id": "plan_doc",
+     "kind": "artifact"
+    },
+    {
+     "id": "patch",
+     "kind": "artifact"
+    },
+    {
+     "id": "review_notes",
+     "kind": "artifact"
+    }
+   ],
+   "edges": [
+    {
+     "from": "plan",
+     "to": "plan_doc"
+    },
+    {
+     "from": "plan_doc",
+     "to": "implement"
+    },
+    {
+     "from": "implement",
+     "to": "patch"
+    },
+    {
+     "from": "patch",
+     "to": "review"
+    },
+    {
+     "from": "review",
+     "to": "review_notes"
+    }
+   ],
+   "gates": [
+    {
+     "id": "g_review",
+     "after": "review",
+     "rule": "review_approve",
+     "on_fail": "implement"
+    }
+   ]
+  },
+  "per_piece": {
+   "plan": {
+    "piece": "plan",
+    "cost": {
+     "usd": {
+      "mean": 1.13,
+      "lo": 0.73,
+      "hi": 1.76,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 203399.99999999997,
+      "lo": 132210.0,
+      "hi": 317303.99999999994,
+      "level": 0.8
+     }
+    },
+    "gate_pass": null,
+    "rounds": {
+     "mean": 1.0,
+     "lo": 1.0,
+     "hi": 2.0,
+     "level": 0.8
+    },
+    "cost_per_round": null
+   },
+   "implement": {
+    "piece": "implement",
+    "cost": {
+     "usd": {
+      "mean": 1.13,
+      "lo": 0.73,
+      "hi": 1.76,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 203399.99999999997,
+      "lo": 132210.0,
+      "hi": 317303.99999999994,
+      "level": 0.8
+     }
+    },
+    "gate_pass": null,
+    "rounds": {
+     "mean": 1.2,
+     "lo": 1.0,
+     "hi": 2.0,
+     "level": 0.8
+    },
+    "cost_per_round": null
+   },
+   "review": {
+    "piece": "review",
+    "cost": {
+     "usd": {
+      "mean": 1.13,
+      "lo": 0.73,
+      "hi": 1.76,
+      "level": 0.8
+     },
+     "tokens": {
+      "mean": 203399.99999999997,
+      "lo": 132210.0,
+      "hi": 317303.99999999994,
+      "level": 0.8
+     }
+    },
+    "gate_pass": {
+     "mean": 0.72,
+     "lo": 0.6,
+     "hi": 0.83,
+     "level": 0.8
+    },
+    "rounds": {
+     "mean": 1.2,
+     "lo": 1.0,
+     "hi": 2.0,
+     "level": 0.8
+    },
+    "cost_per_round": null
+   }
+  },
+  "gates": [
+   {
+    "id": "g_review",
+    "pass": {
+     "mean": 0.72,
+     "lo": 0.6,
+     "hi": 0.83,
+     "level": 0.8
+    }
+   }
+  ]
+ },
+ "data": {
+  "rows": {
+   "cost": {
+    "sweep": 1549,
+    "user": 61
+   },
+   "success": {
+    "sweep": 660,
+    "rq1": 44,
+    "user": 23
+   }
+  },
+  "dropped": [
+   {
+    "reason": "asserted cost",
+    "n": 3
+   }
+  ],
+  "scales": {
+   "cost": {
+    "family": 0.62,
+    "version": 0.28
+   },
+   "success": {
+    "family": 0.9,
+    "version": 0.41
+   }
+  },
+  "sensitivity": null
+ }
+}

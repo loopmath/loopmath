@@ -1,0 +1,13 @@
+{"type":"user","timestamp":"2026-08-30T09:59:00.000Z","cwd":"__WS__","message":{"role":"user","content":"Build the thing and get every module reviewed."}}
+{"type":"assistant","timestamp":"2026-08-30T10:00:00.000Z","cwd":"__WS__","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p1","name":"Bash","input":{"command":"nohup tools/review.sh T1 src/a.py > reviews/.log-T1 2>&1 &\necho dispatched"}}]}}
+{"type":"user","timestamp":"2026-08-30T10:00:00.500Z","cwd":"__WS__","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p1","content":"dispatched"}]}}
+{"type":"assistant","timestamp":"2026-08-30T10:05:00.000Z","cwd":"__WS__","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p2","name":"Bash","input":{"command":"for t in T2 T3; do tools/review.sh $t src/b.py; done"}}]}}
+{"type":"user","timestamp":"2026-08-30T10:11:00.000Z","cwd":"__WS__","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p2","content":"VERDICT: APPROVE\nVERDICT: APPROVE"}]}}
+{"type":"assistant","timestamp":"2026-08-30T10:15:00.000Z","cwd":"__WS__","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p3","name":"Bash","input":{"command":"tools/review.sh T5 src/e.py"}}]}}
+{"type":"user","timestamp":"2026-08-30T10:15:01.000Z","cwd":"__WS__","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p3","content":"cat: reviews/T5.md: No such file or directory"}]}}
+{"type":"assistant","timestamp":"2026-08-30T10:20:00.000Z","cwd":"__WS__","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p4","name":"Bash","input":{"command":"tools/noop.sh"}}]}}
+{"type":"user","timestamp":"2026-08-30T10:20:01.000Z","cwd":"__WS__","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p4","content":"12"}]}}
+{"type":"assistant","timestamp":"2026-08-30T10:21:00.000Z","cwd":"__WS__","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p5","name":"Bash","input":{"command":"grep -n codex tools/review.sh"}}]}}
+{"type":"user","timestamp":"2026-08-30T10:21:00.500Z","cwd":"__WS__","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p5","content":"7:codex exec --model gpt-5.6-sol"}]}}
+{"type":"assistant","timestamp":"2026-08-30T10:22:00.000Z","cwd":"__WS__","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p6","name":"Bash","input":{"command":"bash ../other-ws/tools/review.sh T6 src/f.py; tools/gone.sh; tools/$t.sh"}}]}}
+{"type":"user","timestamp":"2026-08-30T10:22:01.000Z","cwd":"__WS__","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p6","content":"bash: tools/gone.sh: No such file or directory"}]}}

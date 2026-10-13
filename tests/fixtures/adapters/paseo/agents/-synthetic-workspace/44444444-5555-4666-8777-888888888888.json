@@ -1,0 +1,14 @@
+{
+  "id": "44444444-5555-4666-8777-888888888888",
+  "provider": "codex",
+  "cwd": "/synthetic/workspace",
+  "createdAt": "2026-08-10T21:00:00Z",
+  "updatedAt": "2026-08-10T21:05:00Z",
+  "runtimeInfo": {
+    "sessionId": "cccccccc-dddd-4eee-8fff-000000000000"
+  },
+  "persistence": {
+    "sessionId": "cccccccc-dddd-4eee-8fff-000000000000",
+    "nativeHandle": "cccccccc-dddd-4eee-8fff-000000000000"
+  }
+}

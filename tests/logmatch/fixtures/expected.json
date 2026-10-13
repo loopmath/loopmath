@@ -1,0 +1,68 @@
+{
+ "00000000-0000-4000-8000-000000000001": {
+  "children": 7,
+  "effort": "medium",
+  "ended_at": "2026-09-20T17:43:06Z",
+  "harness": "claude-code",
+  "models": [
+   "fable-5",
+   "sonnet-5",
+   "opus-5"
+  ],
+  "started_at": "2026-09-20T17:02:04Z",
+  "tokens": {
+   "cache_read": 3689023,
+   "cache_write": 641706,
+   "in": 162,
+   "out": 89793
+  }
+ },
+ "019f0000-0000-7000-8000-000000000001": {
+  "children": 0,
+  "effort": "low",
+  "ended_at": "2026-09-20T18:00:03Z",
+  "harness": "codex",
+  "models": [
+   "gpt-6-sol"
+  ],
+  "started_at": "2026-09-20T18:00:00Z",
+  "tokens": {
+   "cache_read": 12544,
+   "cache_write": 0,
+   "in": 3864,
+   "out": 5
+  }
+ },
+ "019f0000-0000-7000-8000-000000000002": {
+  "children": 0,
+  "effort": "xhigh",
+  "ended_at": "2026-09-20T19:02:37Z",
+  "harness": "codex",
+  "models": [
+   "gpt-5.6-sol"
+  ],
+  "started_at": "2026-09-20T19:00:00Z",
+  "tokens": {
+   "cache_read": 147584,
+   "cache_write": 0,
+   "in": 18387,
+   "out": 4031
+  }
+ },
+ "019f0000-0000-7000-8000-000000000003": {
+  "children": 3,
+  "effort": "xhigh",
+  "ended_at": "2026-09-20T20:03:32Z",
+  "harness": "codex",
+  "models": [
+   "gpt-6-astra"
+  ],
+  "started_at": "2026-09-20T20:00:00Z",
+  "tokens": {
+   "cache_read": 2013696,
+   "cache_write": 0,
+   "in": 172458,
+   "out": 10637
+  }
+ }
+}

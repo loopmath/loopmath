@@ -1,0 +1,100 @@
+{
+  "info": {
+    "id": "ses_fixture_other",
+    "projectID": "project_fixture_beta",
+    "directory": "/synthetic/workspaces/beta",
+    "path": "beta",
+    "title": "Invented unrelated title that must not be emitted",
+    "version": "1.17.11",
+    "agent": "general",
+    "model": {
+      "providerID": "opencode",
+      "id": "north-mini-code-free"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 60,
+      "output": 15,
+      "reasoning": 3,
+      "cache": {"read": 6, "write": 0}
+    },
+    "time": {
+      "created": 1704240000000,
+      "updated": 1704241800000,
+      "archived": 1704243600000
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "id": "msg_fixture_other_big_pickle",
+        "sessionID": "ses_fixture_other",
+        "role": "assistant",
+        "agent": "general",
+        "providerID": "opencode",
+        "modelID": "big-pickle",
+        "cost": 0,
+        "tokens": {
+          "input": 10,
+          "output": 3,
+          "reasoning": 1,
+          "cache": {"read": 1, "write": 0},
+          "total": 15
+        },
+        "time": {"created": 1704240060000, "completed": 1704240120000},
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "id": "part_fixture_other_big_pickle",
+          "messageID": "msg_fixture_other_big_pickle",
+          "sessionID": "ses_fixture_other",
+          "type": "text",
+          "text": "INVENTED_PRIVATE_RESPONSE_BIG_PICKLE"
+        }
+      ]
+    },
+    {
+      "info": {
+        "id": "msg_fixture_other_deepseek",
+        "sessionID": "ses_fixture_other",
+        "role": "assistant",
+        "agent": "general",
+        "providerID": "opencode",
+        "modelID": "deepseek-v4-flash-free",
+        "cost": 0,
+        "tokens": {
+          "input": 20,
+          "output": 5,
+          "reasoning": 1,
+          "cache": {"read": 2, "write": 0},
+          "total": 28
+        },
+        "time": {"created": 1704240180000, "completed": 1704240240000},
+        "finish": "stop"
+      },
+      "parts": []
+    },
+    {
+      "info": {
+        "id": "msg_fixture_other_north",
+        "sessionID": "ses_fixture_other",
+        "role": "assistant",
+        "agent": "general",
+        "providerID": "opencode",
+        "modelID": "north-mini-code-free",
+        "cost": 0,
+        "tokens": {
+          "input": 30,
+          "output": 7,
+          "reasoning": 1,
+          "cache": {"read": 3, "write": 0},
+          "total": 41
+        },
+        "time": {"created": 1704240300000, "completed": 1704240360000},
+        "finish": "stop"
+      },
+      "parts": []
+    }
+  ]
+}

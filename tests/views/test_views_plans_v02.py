@@ -1,0 +1,135 @@
+"""The 0.2 planning page (D119): one decision first, the search's strategy sentence verbatim (Z2 A), copy
+buttons that hand over an option (0.2.1 P4), and a page that fits a phone."""
+
+from __future__ import annotations
+
+import copy
+from pathlib import Path
+
+import pytest
+
+from loopmath.views import common, plans
+from tests.views._plans_helpers import _score, money, read_page, recommend2
+
+ASSETS = Path(plans.__file__).resolve().parent / "assets"
+# The sentence 2A writes (DESIGN 10.3), with characters that must reach the page as text, not markup.
+TEXT = ("Try implement_review: claude-fable-5-1/medium <first>; if it misses (about 3 in 10 tasks), your best recorded "
+        "workflow rescues it; expected $11.21 per accepted result, against $24.01 with your best recorded workflow alone & more.")
+
+ORDER = r"""(() => {
+  const s = document.getElementById('strategy'), h1 = document.querySelector('h1'), nums = document.getElementById('nums');
+  const after = (a, b) => !!(a && b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING));
+  return { text: s ? s.textContent : null, html: s ? s.innerHTML : null, afterH1: after(h1, s), beforeNums: after(s, nums),
+           count: document.getElementById('app').textContent.split('if it misses').length - 1 };
+})()"""
+
+
+def _strategy(data: dict) -> dict:
+    goal = data["goal"]["config"]
+    return {"kind": "try_then_rescue", "text": TEXT, "pick": {"config": goal, "label": "implement_review"},
+            "reference": {"config": data["reference"]["config"]["id"], "kind": "best_recorded", "name": "your best recorded workflow"},
+            "chance": {"pick": 0.69, "reference": 0.70}, "misses": {"n": 3, "of": 10, "share": 0.31},
+            "rescue": {"kind": "redo_usual", "usd": 24.01}, "run_cost_usd": 3.81, "expected_rescue_usd": 7.40,
+            "cost_per_accepted_usd": 11.21, "reference_cost_per_accepted_usd": 24.01}
+
+
+@pytest.mark.parametrize("where", ["goal", "choice"])
+def test_the_strategy_sentence_is_shown_verbatim_under_the_heading(where, tmp_path, probe):
+    data = recommend2(_score())
+    strategy = _strategy(data)
+    if where == "goal":
+        data["goal"]["strategy"] = strategy
+    data["choices"] = [{"key": "goal", "config": data["goal"]["config"], "strategy": copy.deepcopy(strategy)}]
+    page = tmp_path / f"plans-strategy-{where}.html"
+    page.write_text(plans.render(data), encoding="utf-8")
+    got = probe(page, ORDER)
+    assert got["exceptions"] == [] and got["console_errors"] == []
+    r = got["result"]
+    assert r["text"] == TEXT and "&lt;first&gt;" in r["html"] and "&amp; more" in r["html"]
+    assert r["afterH1"] and r["beforeNums"] and r["count"] == 1  # once, where the page states the pick
+
+
+def test_no_strategy_sentence_when_it_is_null(tmp_path, probe):
+    data = recommend2(_score())
+    data["goal"]["strategy"] = None
+    data["choices"] = [{"key": "goal", "config": data["goal"]["config"], "strategy": None}]
+    page = tmp_path / "plans-no-strategy.html"
+    page.write_text(plans.render(data), encoding="utf-8")
+    got = probe(page, ORDER)
+    assert got["exceptions"] == [] and got["result"]["text"] is None and got["result"]["count"] == 0
+
+
+def test_every_copy_button_hands_over_an_option(tmp_path, probe):
+    """P4 (0.2.1): no CLI commands on the page; every button says "Copy option" and copies what the user pastes into
+    the conversation with their agent: `option <n>: <label>` for a numbered option, else `workflow <config id>: <label>`."""
+    data = recommend2(_score())
+    data["task"]["title"] = "Fix the 'quoted' thing"
+    data["pair"] = {"members": [data["goal"]["config"], data["exploration"]["best_value"]["candidate"]["config"]["id"]],
+                    "explore_pick": "best_value", "instructions": ["run start --new-slate, then run start --slate SLT"]}
+    r = read_page(tmp_path, probe, data, "plans-copies")
+    lines = [r["pickCmd"], *r["betCmds"], *(o["cmd"] for o in r["opened"].values()), r["pairCmd"]]
+    assert len(lines) >= 8 and not any("loopmath" in x or "--" in x for x in lines), lines
+    assert all(o["cmd"].startswith(f"workflow {cfg}: ") for cfg, o in r["opened"].items())
+    assert r["pickCmd"].startswith(f"workflow {data['goal']['config']}: ")
+    assert r["pairCmd"].startswith(f"workflow {data['goal']['config']}: ") and ", and beside it workflow " in r["pairCmd"]
+    assert r["copyLabels"] == ["Copy option"]
+
+
+def test_numbered_options_copy_their_number_and_label(tmp_path, probe):
+    """The choices are numbered options (0.2.1's `option`, else their place): the goal, the pair, the reference and the
+    cheapest run copy `option <n>: <label>`; any other workflow copies its configuration id."""
+    data = recommend2(_score())
+    goal, ref = data["goal"]["config"], data["reference"]["config"]["id"]
+    other = next(c["config"]["id"] for c in data["candidates"] if c["config"]["id"] not in (goal, ref))
+    explore = data["exploration"]["best_value"]["candidate"]["config"]["id"]
+    data["pair"] = {"members": [goal, explore], "explore_pick": "best_value", "instructions": []}
+    data["choices"] = [{"key": "goal", "config": goal, "members": [goal], "label": "the goal label"},
+                       {"key": "pair", "config": goal, "members": [goal, explore], "label": "goal + explore"},
+                       {"key": "reference", "config": ref, "members": [ref], "label": "the reference label"},
+                       {"key": "cheapest_run", "config": other, "members": [other], "label": "the cheap label"}]
+    r = read_page(tmp_path, probe, data, "plans-choice")
+    assert r["pickCmd"] == "option 1: the goal label" and r["pairCmd"] == "option 2: goal + explore"
+    assert r["opened"][ref]["cmd"] == "option 3: the reference label" and r["opened"][other]["cmd"] == "option 4: the cheap label"
+    marks = {row["cfg"]: row["marks"] for row in r["rows"]}
+    assert marks[goal][0] == "option 1" and marks[ref][0] == "option 3" and marks[other][0] == "option 4"
+    rest = [c for c in r["opened"] if c not in (goal, ref, other)]
+    assert rest and all(r["opened"][c]["cmd"].startswith(f"workflow {c}: ") for c in rest)
+
+
+def test_search_origins_read_as_words(tmp_path, probe):
+    """The search adds the origins front, thompson and polish; the page names them in words."""
+    data = recommend2(_score())
+    rows = data["candidates"] + data["alternatives"]
+    for c, origin in zip(rows, ["front", "thompson", "polish"]):
+        c["origin"] = origin
+    r = read_page(tmp_path, probe, data, "plans-origins")
+    subs = " ".join(row["cells"][0] for row in r["rows"])
+    for word in ("found by the search", "found in a search draw", "near the pick"):
+        assert word in subs and word in r["body"]
+    assert not any(w in subs for w in ("front", "thompson", "polish"))
+
+
+def test_the_arithmetic_and_the_order_hold_on_the_page(tmp_path, probe):
+    data = recommend2(_score())
+    r = read_page(tmp_path, probe, data, "plans-arith")
+    ells = [money(row["cells"][4]) for row in r["rows"]]
+    assert ells == sorted(ells) and len(ells) == len({c["config"]["id"] for c in data["candidates"] + data["alternatives"]} | {data["reference"]["config"]["id"]})
+    for row in r["rows"]:
+        run, rescue, ell = money(row["cells"][2]), money(row["cells"][3]), money(row["cells"][4])
+        assert abs(run + rescue - ell) <= 0.015, row  # run cost + expected rescue = cost per accepted result, to the cent
+    assert r["summaries"][0].startswith("The arithmetic") and "rescue =" in r["summaries"][0]
+
+
+def test_the_page_fits_a_phone(tmp_path, probe):
+    data = recommend2(_score())
+    data["goal"]["strategy"] = _strategy(data)
+    r = read_page(tmp_path, probe, data, "plans-phone", limit=3, width=390)
+    assert r["width"] <= 390 and r["strategy"] == TEXT and r["three"]
+
+
+def test_the_page_is_offline_and_has_no_em_dashes():
+    page = plans.render(recommend2(_score()))
+    assert "https:" not in page and "http:" not in page.replace("'ht' + 'tp:'", "")
+    for name in ("viz.js", "viz.css", "plans.js", "plans.css"):
+        assert chr(0x2014) not in (ASSETS / name).read_text(encoding="utf-8"), name
+    assert common.extract_data(page)["schema"] == plans.SCHEMA

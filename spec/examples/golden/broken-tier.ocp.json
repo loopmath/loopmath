@@ -1,0 +1,13 @@
+{
+  "ocp": "0.2",
+  "producer": { "name": "golden-fixture", "version": "1" },
+  "privacy": { "profile": "metadata_only" },
+  "run": { "id": "broken-tier" },
+  "nodes": [
+    { "id": "first", "kind": "impl" },
+    { "id": "second", "kind": "test" }
+  ],
+  "edges": [
+    { "from": "first", "to": "second", "kind": "dep", "tier": "certain" }
+  ]
+}

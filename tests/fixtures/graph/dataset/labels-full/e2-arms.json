@@ -1,0 +1,26 @@
+{
+ "arms": [
+  {
+   "workspace": "ws-delta", "task": "T1", "arm": "S",
+   "dev_session": {"value": "delta-impl", "tier": "verified", "source": "receipt session id for T1/S"},
+   "verdict": {"value": "rejected", "tier": "verified", "source": "verdicts file accept=false for T1/S; referee ran ephemeral, no session"},
+   "roles": {
+    "delta-impl": {"value": "dev", "tier": "verified", "source": "the receipt's dev session"},
+    "delta-reviewer": {"value": "reviewer", "tier": "heuristic", "source": "audit session matched by its task header"},
+    "delta-audit-missing": {"value": "reviewer", "tier": "heuristic", "source": "an audit session the graph lacks"}
+   }
+  },
+  {
+   "workspace": "ws-delta", "task": "T2", "arm": "V",
+   "dev_session": {"value": "delta-nobody", "tier": "verified", "source": "receipt session id for T2/V; the graph has no such node"},
+   "verdict": {"value": "accepted", "tier": "verified", "source": "verdicts file accept=true for T2/V"},
+   "roles": {"delta-nobody": {"value": "dev", "tier": "verified", "source": "the receipt's dev session"}}
+  },
+  {
+   "workspace": "ws-other", "task": "T3", "arm": "W",
+   "dev_session": {"value": "delta-lead", "tier": "verified", "source": "the id exists in the graph, but under ws-delta, not this run's workspace"},
+   "verdict": {"value": "accepted", "tier": "verified", "source": "verdicts file accept=true for T3/W"},
+   "roles": {}
+  }
+ ]
+}

@@ -1,0 +1,23 @@
+{
+  "id": "11111111-2222-4333-8444-555555555555",
+  "provider": "claude",
+  "cwd": "/synthetic/workspace",
+  "workspaceId": "workspace-synthetic",
+  "createdAt": "2026-08-10T18:00:00.000",
+  "updatedAt": "2026-08-10T18:30:00.000Z",
+  "lastActivityAt": "2026-08-10T18:29:00.000Z",
+  "title": "Invented fixture planning session",
+  "lastStatus": "closed",
+  "config": {
+    "model": "claude-sonnet-5",
+    "thinkingOptionId": "high",
+    "systemPrompt": "Invented fixture prompt that must never be emitted."
+  },
+  "runtimeInfo": {
+    "sessionId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+  },
+  "persistence": {
+    "sessionId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    "nativeHandle": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+  }
+}

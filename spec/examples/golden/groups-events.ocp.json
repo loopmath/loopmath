@@ -1,0 +1,35 @@
+{
+  "ocp": "0.2",
+  "producer": { "name": "golden-fixture", "version": "1" },
+  "privacy": { "profile": "metadata_only" },
+  "run": { "id": "golden-groups-events" },
+  "groups": [
+    { "id": "project" },
+    { "id": "phase", "parent": "project" }
+  ],
+  "nodes": [
+    { "id": "check", "kind": "test", "group": "phase", "state": "done" }
+  ],
+  "attempts": [
+    {
+      "id": "check.a1",
+      "node": "check",
+      "status": "done",
+      "outcome": { "result": "done", "evidence": "verified" }
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-09-03T12:00:00Z",
+      "type": "attempt_started",
+      "node": "check",
+      "attempt": "check.a1"
+    },
+    {
+      "at": "2026-09-03T12:01:00Z",
+      "type": "attempt_settled",
+      "node": "check",
+      "attempt": "check.a1"
+    }
+  ]
+}

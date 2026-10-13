@@ -1,0 +1,160 @@
+{
+  "ocp": "0.3",
+  "producer": {
+    "name": "ocp-from-contractv3",
+    "version": "0.1",
+    "framework": "herdr-dagr",
+    "source_contract": "dagr/3",
+    "emitted_at": "2026-09-20T12:00:00-07:00"
+  },
+  "privacy": {
+    "profile": "metadata_only",
+    "note": "converted from contract v3; notes/criteria dropped, labels truncated"
+  },
+  "run": {
+    "id": "contract-run-01",
+    "title": "contract v3 example: implement, review, gate",
+    "started_at": "2026-09-20T09:00:00-07:00",
+    "ext": {
+      "dev.loopmath.migration": {
+        "from": "dagr/3"
+      }
+    },
+    "provenance": {
+      "kind": "logged",
+      "chooser": "habit"
+    },
+    "configuration": {
+      "source": "habit"
+    }
+  },
+  "groups": [
+    {
+      "id": "widget",
+      "title": "widget repo"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "T1",
+      "kind": "impl",
+      "title": "add --since",
+      "group": "widget",
+      "state": "done",
+      "ext": {
+        "dev.dagr.policy": {
+          "retries": 1
+        }
+      }
+    },
+    {
+      "id": "R1",
+      "kind": "review",
+      "title": "review T1",
+      "group": "widget",
+      "state": "done"
+    },
+    {
+      "id": "G1",
+      "kind": "gate",
+      "title": "tests gate",
+      "group": "widget",
+      "state": "done"
+    }
+  ],
+  "edges": [
+    {
+      "from": "T1",
+      "to": "R1",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "T1",
+      "to": "G1",
+      "kind": "fan_in",
+      "tier": "reported"
+    },
+    {
+      "from": "R1",
+      "to": "G1",
+      "kind": "fan_in",
+      "tier": "reported"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "T1.a1",
+      "node": "T1",
+      "status": "done",
+      "n": 1,
+      "actor": "dev",
+      "model": {
+        "raw": "opus·high",
+        "family": "opus"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "initial"
+      },
+      "started_at": "2026-09-20T09:01:00-07:00",
+      "ended_at": "2026-09-20T09:40:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      }
+    },
+    {
+      "id": "R1.a1",
+      "node": "R1",
+      "status": "done",
+      "n": 1,
+      "actor": "reviewer",
+      "model": {
+        "raw": "gpt-6-astra"
+      },
+      "cause": {
+        "type": "initial"
+      },
+      "started_at": "2026-09-20T09:41:00-07:00",
+      "ended_at": "2026-09-20T09:55:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      }
+    },
+    {
+      "id": "G1.a1",
+      "node": "G1",
+      "status": "done",
+      "n": 1,
+      "actor": "ci",
+      "cause": {
+        "type": "initial"
+      },
+      "started_at": "2026-09-20T09:56:00-07:00",
+      "ended_at": "2026-09-20T09:59:00-07:00",
+      "outcome": {
+        "result": "done",
+        "evidence": "verified"
+      }
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-09-20T09:01:00-07:00",
+      "type": "attempt_started",
+      "node": "T1",
+      "attempt": "T1.a1"
+    },
+    {
+      "at": "2026-09-20T09:40:00-07:00",
+      "type": "attempt_settled",
+      "node": "T1",
+      "attempt": "T1.a1",
+      "ext": {
+        "dev.dagr.verb": "settle"
+      }
+    }
+  ]
+}
