@@ -26,8 +26,13 @@ def _lazy(target: str):
     return run
 
 
-def _common(p: argparse.ArgumentParser, *, json_flag: bool = True, html: bool = False) -> None:
-    p.add_argument("--home", default=None, metavar="PATH", help="store root (default: $LOOPMATH_HOME or ~/.loopmath); the log parse cache follows it unless LOOPMATH_CACHE_DIR is set")
+HOME_HELP = ("store root (default: $LOOPMATH_HOME or ~/.loopmath); the log parse cache follows it unless "
+             "LOOPMATH_CACHE_DIR is set")
+
+
+def _common(p: argparse.ArgumentParser, *, json_flag: bool = True, html: bool = False,
+            home_help: str = HOME_HELP) -> None:
+    p.add_argument("--home", default=None, metavar="PATH", help=home_help)
     if json_flag:
         p.add_argument("--json", action="store_true", help="print one JSON object on stdout")
     if html:
@@ -48,6 +53,67 @@ def _task_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--feature", action="append", default=[], metavar="K=V", help="task feature (repeatable)")
     p.add_argument("--horizon", default=None, metavar="TIME", help=HORIZON_HELP)
     p.add_argument("--base-commit", default=None, metavar="SHA", help="the commit the work starts from")
+
+
+def _check_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--check", default=None, metavar="CHK", help="record into this check-change check: the run gets "
+                   "its pair's task and slate (with --arm)")
+    p.add_argument("--arm", default=None, choices=["base", "cand"], help="the check arm the run is (with --check)")
+    p.add_argument("--pair", default=None, metavar="PNN", help="the check's pair (default: the earliest one missing "
+                   "this arm)")
+    p.add_argument("--label", action="append", default=[], metavar="KEY=VALUE", help="a run label (repeatable), "
+                   "e.g. config=new; check-change from-runs picks runs by label")
+
+
+def _add_compare(sub) -> None:
+    p = sub.add_parser("check-change", help="paired A/B check of a change: start, status, from-runs")
+    cs = p.add_subparsers(dest="check_command", required=True, metavar="{start,status,from-runs}")
+
+    def decision(q: argparse.ArgumentParser) -> None:
+        q.add_argument("--rule", default=None, metavar="RULE", help="what counts as accepted: accept (default: each "
+                       "run's own rule, as runs and recommend read it), tests, a named rule, review, NAME>=X, or "
+                       "score:NAME[:lower] for a raw score")
+        q.add_argument("--budget-usd", type=float, default=None, metavar="USD", help="dollars the check may spend")
+        q.add_argument("--objective", default=None, choices=["cpar", "gain"], help="cost per accepted result "
+                       "(default for an acceptance rule) or the gain in acceptance or score")
+        q.add_argument("--floor", type=float, default=None, metavar="F", help="the smallest improvement that counts "
+                       "(default 0.05; 0 for a score); a lower floor states no false adopt bound")
+        q.add_argument("--confidence", type=float, default=None, metavar="C", help="reject at P(better) <= 1 - C; "
+                       "adopt at the calibrated threshold for alpha = 1 - C (default 0.95)")
+        q.add_argument("--horizon-runs", type=float, default=None, metavar="N", help="the number of future runs "
+                       "the change will serve, which prices the next pair (default 50; for example 500 for a "
+                       "long-lived change)")
+        q.add_argument("--value-usd", type=float, default=None, metavar="USD", help="dollars per point of gain "
+                       "(default: the base's cost per accepted result)")
+
+    q = cs.add_parser("start", help="start a check: its pairs, each pair's arm order, and the next pair to run")
+    q.add_argument("--base", required=True, metavar="LABEL|PATH", help="the base arm: a label, or its harness tree")
+    q.add_argument("--cand", required=True, metavar="LABEL|PATH", help="the candidate arm: a label, or its harness tree")
+    tasks = q.add_mutually_exclusive_group(required=True)
+    tasks.add_argument("--tasks", default=None, metavar="FILE.jsonl", help="one task per line; one pair per task")
+    tasks.add_argument("--n", type=int, default=None, metavar="N", help="N pairs, each taking its task from its "
+                       "first run")
+    decision(q)
+    q.add_argument("--seed", type=int, default=0, metavar="S", help="seed of the arm orders and the comparison")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.compare.commands:check_start"))
+
+    q = cs.add_parser("status", help="the check's comparison, verdict and next pair")
+    q.add_argument("check", nargs="?", default=None, metavar="CHK", help="the check (default: the newest)")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.compare.commands:check_status"))
+
+    q = cs.add_parser("from-runs", help="compare finished runs already in the store, chosen by label")
+    q.add_argument("--base-label", required=True, metavar="SEL", help="the base runs: KEY=VALUE (a run label), "
+                   "CHK:base|cand, a cfg_ configuration id, a harness digest as sha256:<hex> or digest:sha256:<hex> "
+                   "(a prefix of one digest will do), arm:NAME, or a word (label arm=WORD)")
+    q.add_argument("--cand-label", required=True, metavar="SEL", help="the candidate runs, as --base-label")
+    decision(q)
+    q.add_argument("--max-pairs", type=int, default=None, metavar="N", help="the cap the false adopt bound is "
+                   "stated for (default 24; give the number of pairs for a single look)")
+    q.add_argument("--seed", type=int, default=0, metavar="S", help="seed of the comparison's draws")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.compare.commands:check_from_runs"))
 
 
 def task_types_verb(args: argparse.Namespace) -> int:
@@ -119,6 +185,11 @@ def _add_planning(sub) -> None:
     p.add_argument("--fit", default=None, metavar="ID", help=FIT_HELP)
     p.add_argument("--brief", action="store_true", help="with --json: a short object for agents (task, reference, "
                    "goal, rescue, choices, message, rec, and page with --html); the stored recommendation keeps everything")
+    p.add_argument("--harness-variants", nargs="?", const=5, type=int, default=None, metavar="N",
+                   help="also price the N harness trees recorded on your runs that the fit saw most (default 5), for the "
+                   "default pick and the goal, against the bare harness label on the same draws")
+    p.add_argument("--harness", default=None, metavar="PATH|auto", help="also price this harness tree as the first "
+                   "variant (auto: the git working tree of this folder), even when no run recorded it")
     _common(p, html=True)
     p.set_defaults(func=_lazy("loopmath.recommend.commands:recommend"))
 
@@ -165,6 +236,7 @@ def _add_recording(sub) -> None:
     slate.add_argument("--new-slate", action="store_true", help="open a new slate with this run in it")
     q.add_argument("--rule", default=None, metavar="RULE", help="a named acceptance rule from config; with --rec "
                    "it replaces the rule the recommendation was made for")
+    _check_args(q)
     _common(q)
     q.set_defaults(func=_lazy("loopmath.store.commands:run_start"))
 
@@ -198,6 +270,9 @@ def _add_recording(sub) -> None:
 
     q = rs.add_parser("finish", help="match logs, cost, validate, receipt, background refit")
     q.add_argument("--run", required=True, metavar="RUN", help="run id from run start")
+    q.add_argument("--harness", default=None, metavar="PATH|auto|none", help="record the run's harness tree (its "
+                   "CLAUDE.md, AGENTS.md, skills, hooks, MCP servers and other parts) in run.ext: PATH, or auto for the "
+                   "git working tree the attempts ran in; default: config harness.record, which is none")
     q.add_argument("--no-fit", action="store_true", help="do not start a background refit")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.store.commands:run_finish"))
@@ -206,6 +281,9 @@ def _add_recording(sub) -> None:
     q.add_argument("files", nargs="+", metavar="FILE.ocp.json|DIR", help="OCP documents, or a directory of *.ocp.json files")
     q.add_argument("--finish", action="store_true", help="also finish each run once stored; one background refit at the end")
     q.add_argument("--no-fit", action="store_true", help="do not start the background refit")
+    q.add_argument("--replace", action="store_true", help="take this copy of a run already in the store with different "
+                   "content (without it such a run is refused); outcomes added after the import are kept, and a "
+                   "copy that changes one is refused")
     q.add_argument("--brief", action="store_true", help="with --json: a short object for agents (counts, failures with "
                    "file and error, the overlap with the shipped prior, the next step)")
     _common(q)
@@ -243,7 +321,11 @@ def _add_recording(sub) -> None:
     commits = q.add_mutually_exclusive_group()
     commits.add_argument("--commit", action="append", default=[], metavar="SHA", help="a commit the run made (repeatable)")
     commits.add_argument("--no-commits", action="store_true", help="do not record the commits since the base commit")
+    q.add_argument("--harness", default=None, metavar="PATH|auto|none", help="record the run's harness tree (its "
+                   "CLAUDE.md, AGENTS.md, skills, hooks, MCP servers and other parts) in run.ext: PATH, or auto for the "
+                   "git working tree the attempts ran in; default: config harness.record, which is none")
     q.add_argument("--no-fit", action="store_true", help="do not start a background refit")
+    _check_args(q)
     _common(q)
     q.set_defaults(slate=None, new_slate=False, func=_lazy("loopmath.store.record:run_record"))
 
@@ -401,7 +483,7 @@ def _add_viewing(sub) -> None:
 
     p = sub.add_parser("posterior", help="current estimates by level and by workflow graph")
     p.add_argument("--level", default="all",
-                   choices=["model", "effort", "role", "topology", "type", "repo", "feature", "all"], help="which level of estimates (default all)")
+                   choices=["model", "effort", "role", "topology", "type", "repo", "feature", "harness", "all"], help="which level of estimates (default all; harness: the harness labels and their parts)")
     p.add_argument("--head", default=None, metavar="cost|tokens|success|gate|score:NAME", help="which quantity to show")
     p.add_argument("--target", default=None, metavar="NAME>=X", help="score target for the chance to reach and the cost per accepted result, as for recommend (default: the latest recommendation's target for this type and repo)")
     p.add_argument("--workflow", default=None, metavar="CFG|FILE.toml", help="also draw this configuration with each piece's estimate: a cfg_ id from loopmath recommend --json or your runs, or FILE.toml with settings")
@@ -472,13 +554,43 @@ def command_metavar(sub) -> str:
     return "{" + ",".join(name for name in sub.choices if name not in HIDDEN) + "}"
 
 
+def _add_gate(sub) -> None:
+    p = sub.add_parser("gate", help="adopt or reject a harness change: compare base and candidate runs")
+    p.add_argument("--base", required=True, metavar="SEL",
+                   help="the base arm: digest:sha256:<hex> or sha256:<hex> (the harness record's digest; a prefix of "
+                        "one digest will do), a cfg_ configuration id, or arm:<name> or arm=<name>")
+    p.add_argument("--cand", required=True, metavar="SEL", help="the candidate arm, in the same forms as --base")
+    p.add_argument("--runs", default=None, metavar="FILE",
+                   help="read loopmath.harness-runs/0.1 rows from FILE instead of the store's runs; the store's "
+                        "config is still read for its rules")
+    p.add_argument("--task", default=None, metavar="ID", help="only runs of this task")
+    p.add_argument("--rule", default="score:judge", metavar="R",
+                   help="what counts as better: score:NAME (higher is better), score:NAME:lower, an acceptance rule "
+                        "such as accept, or a rule defined under [rules.NAME] in the store's config (default "
+                        "score:judge)")
+    p.add_argument("--floor", type=float, default=None, metavar="X",
+                   help="the smallest gain worth adopting: in the score's units under a score rule, a fraction under "
+                        "an acceptance rule (default: compare's, 0 for a score)")
+    p.add_argument("--r-min", type=int, default=2, metavar="N", help="pairs before any adoption (default 2)")
+    p.add_argument("--r-max", type=int, default=8, metavar="N", help="most replicates per arm (default 8)")
+    p.add_argument("--budget-usd", type=float, default=None, metavar="X",
+                   help="cap on the dollars of both arms' runs, 0 or more (0 buys no further pair); needs every "
+                        "run's cost")
+    p.add_argument("--max-cost-ratio", type=float, default=None, metavar="R",
+                   help="reject when the candidate costs more than R times the base per run; needs every run's cost")
+    _common(p, home_help=HOME_HELP + "; the store's config.toml is read for the rules it defines, also with --runs")
+    p.set_defaults(func=_lazy("loopmath.gate.commands:gate"))
+
+
 def register(sub) -> None:
     """Add every 0.1.0 command to the top-level subparsers."""
     _add_planning(sub)
     _add_recording(sub)
     _add_learning(sub)
     _add_viewing(sub)
+    _add_compare(sub)
     importlib.import_module("loopmath.builder.cli").add(sub)  # `builder` (0.2.1)
+    _add_gate(sub)
 
 
 # Handler targets, for the registry test: every one must import and be callable.

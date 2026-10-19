@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.3.0 (2026-10-19)
+
+Testing a harness change. A run can carry a record of its harness tree, and the fit learns each named part's effect on cost and success. Runs another tool made come in through two run importers. `check-change` decides whether a change beats what it replaces, on paired runs, and `gate` answers adopt, reject or replicate for a loop that adopts changes on its own. A store with no harness record anywhere gives 0.2.8's numbers exactly.
+
+### Harness parts and `--harness`
+
+- A harness record (`loopmath.harness/0.1`, `spec/harness.md`) sits on a run at `run.ext["dev.loopmath.harness"]`: a digest of the tree's harness files and its named parts, such as `skill:pdf`, `mcp:github`, `hook:Stop` and `prompt:<sha8>`. It holds no path, hook command or environment value. `loopmath.harness` builds one from a tree (`record_from_tree`, `digest`, `factors`), reading files only.
+- `run finish` and `run record` take `--harness PATH|auto|none`. `auto` is the git working tree the run's attempts ran in, and it refuses when they ran in two. The default is `none`, and the config key `harness.record` (`none` or `auto`) changes it. `run import` keeps a record another tool wrote.
+- In the cost and success heads (and the score heads), each part is a node under its piece's harness label, shrunk by its own fitted scale. A part with no data adds its scale's uncertainty and nothing else.
+- `posterior --json` lists each part's effect under `factors`, with 80 and 95% ranges and a note, and `--level harness` shows the labels with their parts. The success ranges carry `calibrated: false`, and the text output says so in one line. In simulation, their 80% ranges held 60% of nonzero effects. The cost ranges met their stated coverage.
+- `recommend --harness-variants [N]` prices the N trees your runs used most, and `--harness PATH|auto` prices one more. Each is priced for the default pick's and the goal's configurations against the bare harness label on the same draws, with `p_better` and `delta_p_success`. The success-side numbers carry `calibrated: false`. The search itself is unchanged.
+- Shared exports and prior bundles do not carry the record.
+
+### Runs from other tools
+
+- `loopmath adapt harness-runs FILE --out DIR` reads a `loopmath.harness-runs/0.1` file (`spec/harness-runs.md`), one JSON line per rollout, as an auto-research loop, a plugin eval suite or a hand A/B writes it. `loopmath adapt harness2 RUNS --out DIR` reads a harness2 runs folder, and `--rows FILE` also writes its rollouts as rows. Both write one OCP v0.3 document per run, and `loopmath run import DIR --finish` stores them.
+- `run import` of a document already imported changes nothing when its content is the same: the run, its finish state and the outcomes added since all stay, and the summary counts it `unchanged`. A document whose run id is in the store with other content is refused by name, with the fields that differ, and the command exits 1. `--replace` takes the new copy and keeps the outcomes added after the import, and refuses a copy that would overwrite one. The summary counts new, unchanged and replaced runs.
+
+### `check-change`
+
+- `check-change start --base LABEL|PATH --cand LABEL|PATH --n N` plans the pairs and each pair's arm order, `check-change status` gives the comparison, the verdict once there is one and the next pair worth running, and `check-change from-runs --base-label SEL --cand-label SEL` compares finished runs already in the store, picked by a run label, a configuration id, a harness digest (`sha256:<hex>` or `digest:sha256:<hex>`, or a prefix of one digest) or `arm:NAME`. A side that matches no finished run exits 1 and lists the arms there, a prefix of more than one digest lists its matches, and a path that does not exist exits 2, as in `gate`.
+- With no `--rule`, it judges the runs by the rule `runs` and `recommend` apply to them. Runs that resolve to different rules, a score whose runs disagree on which way it is better, and an unknown rule or score name are refused, naming the score names there and the rules that score at least one of the runs, one name each. A rule that scores no pair says so, with verdict more, and names the rules that score the runs.
+- An unknown cost is never a reason to reject. When a run has no dollar cost, the decision is on the outcomes alone: the gain, with no stop on the next pair's value. The output says the cost is unknown and how many runs have none, and `--json` gives `comparison.outcomes_only`. A budget, or `--objective cpar` by name, needs every run's cost and refuses with exit 1, naming the runs without one; `status` still shows the check.
+- `--json` gives `comparison.verdict` (adopt, reject or more) and `comparison.stop`, why the check stops: decided, cap, budget or value.
+
+### `gate`
+
+- `loopmath gate --base SEL --cand SEL` answers adopt the candidate, reject it and keep the base, or replicate N more pairs first, on the finished runs in the store or on the rows of `--runs FILE`. An arm is a harness digest (`sha256:<hex>`, or a prefix of one digest), a configuration id or `arm=NAME`; `digest:sha256:<hex>` and `arm:NAME` work too. `--rule` also takes a rule defined under `[rules.NAME]` in the store's config, which the gate reads as `check-change` does, also with `--runs`. In Python, `loopmath.gate.decide(base_runs, cand_runs, GatePolicy(...))` gives the same answer and writes nothing.
+- The comparison is `check-change`'s, and the gate adds the loop's policy: no adoption before `--r-min` pairs, looks at 1, 2, 4 and so on pairs up to `--r-max`, a futility stop, a `--floor`, a `--budget-usd` for both arms (0 buys no further pair) and a `--max-cost-ratio`. When the cap or the budget makes the current pair count the last look, or a count is not a planned look (one past `--r-max` included), a reason line says so. When nothing resolves, it keeps the base and says where it stopped.
+- Under an acceptance rule, the measure is the cut in cost per accepted result, a fraction, shown beside the gain in the chance of acceptance; when a cost is unknown, the measure and the floor are the gain in the chance of acceptance. The floor line names the measure and its unit.
+- No evidence is an input error, never a replicate: an arm that matches no run, or a rule that scores no pair, exits 1 and names the arms or the rules and score names there.
+- An unknown cost is never a reason to reject. `--budget-usd` and `--max-cost-ratio` need every run's cost and refuse, naming the runs without one. With neither flag, a run with no recorded cost leaves the decision to the outcomes alone, the next pair's value stops nothing, and the cost reads `unknown`, never $0, with the count of runs that have none.
+- Errors name the flags, and under `--json` each is one JSON object on stdout; a missing `--runs` file exits 2.
+
+### Upgrading from 0.2.8
+
+`run import` no longer replaces a stored run whose document changed: it refuses it and exits 1. A script that re-imports changed documents on purpose passes `--replace`.
+
+### Known issues
+
+- Under `--json`, `fit`, `posterior`, `recommend` and `runs` print an error on stderr only, with no JSON object on stdout. This predates these changes.
+- `posterior` shows the first score in its levels when no `--head score:NAME` is given. After an import that can be a score your own runs do not have; pass `--head score:NAME` for the one you want.
+- `recommend` marks a reference on a retired model only with "(retired model)", and does not say plainly that the reference is not offered because its model is retired.
+- `LOOPMATH_HOME` set to a file, not a folder, makes `status` stop with a traceback. This predates these changes.
+- Under `--json`, a usage error (a missing flag, or a value of the wrong type) prints the usage and the error on stderr only and exits 2, with no JSON object on stdout. Every command does this, `gate` and `check-change` included.
+
 ## 0.2.8 (2026-10-12)
 
 Token counts that the dollars beside them can buy, gpt-6.1-sol as the current sol at its list price, and a run line that puts its tokens next to the cost they belong to. With the same store and the same model list, every number that is not a token count is unchanged.

@@ -68,7 +68,8 @@ def test_one_file_with_no_fit_keeps_the_single_file_output(capsys, home, tmp_pat
     assert spawned == []
     assert set(out) == {"schema", "run", "path", "migrated_from", "state", "finished",  # as in 0.1.0,
                         "shipped_overlap",  # plus the shipped-source overlap count
-                        "already_in_store"}  # and whether the run was in the store before (0.2.4)
+                        "already_in_store",  # and whether the run was in the store before (0.2.4)
+                        "import"}  # and whether it is new, unchanged or replaced
     assert out["finished"]["fit"] == {"started": False, "reason": "--no-fit"}
     code, out, err = cli(capsys, home, "run", "import", str(path), "--finish")
     assert code == 0, err
@@ -85,7 +86,7 @@ def test_a_bad_file_is_reported_and_the_rest_still_import(capsys, home, tmp_path
     assert code == 1, err
     lines = out.splitlines()
     assert lines[0].startswith(f"FAIL  {bad}: ") and "not JSON" in lines[0]
-    assert lines[1].startswith(f"FAIL  {future}: ") and "0.3" in lines[1]
+    assert lines[1].startswith(f"FAIL  {future} declares OCP") and "0.3" in lines[1] and lines[1].count(str(future)) == 1
     assert lines[-2] == "2 runs imported (2 new), 2 failed; 2 finished"
     assert spawned == [str(home)]
     assert set(Store(home).index_rows()) == {"run-a", "run-b"}
@@ -120,8 +121,8 @@ def test_many_files_keep_the_summary_within_25_lines(capsys, home, tmp_path, spa
     assert out.splitlines() == ["30 runs imported (30 new), 0 failed; 30 finished", "refit: not started (--no-fit)"]
 
 
-BRIEF_KEYS = {"schema", "imported", "failed", "finished", "already_finished", "failures", "more_failures",
-              "shipped_overlap", "overlap_note", "fit", "next"}
+BRIEF_KEYS = {"schema", "imported", "new", "unchanged", "replaced", "failed", "refused", "finished",
+              "already_finished", "failures", "more_failures", "shipped_overlap", "overlap_note", "fit", "next"}
 
 
 def test_brief_is_counts_failures_overlap_and_the_next_step(capsys, home, tmp_path, spawned):
@@ -164,6 +165,7 @@ def test_brief_says_when_runs_stay_open_or_nothing_imported(capsys, home, tmp_pa
     code, out, err = cli(capsys, home, "run", "import", str(paths[0]), str(tmp_path / "none.ocp.json"), "--json",
                          "--brief")
     assert code == 2 and out["imported"] == 1 and out["failed"] == 1
-    assert out["next"] == "1 run stored open: finish each with loopmath run finish --run RUN --json"
+    assert out["next"] == (f"1 run stored open: import again with --finish to finish them (loopmath run import "
+                           f"{paths[0]} {tmp_path / 'none.ocp.json'} --finish); outcomes added since are kept")
     code, out, err = cli(capsys, home, "run", "import", str(tmp_path / "none.ocp.json"), "--json", "--brief")
     assert code == 2 and out["imported"] == 0 and out["next"].startswith("nothing was imported")

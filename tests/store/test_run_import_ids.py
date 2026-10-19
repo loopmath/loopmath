@@ -127,7 +127,7 @@ def test_every_adapter_fixture_goes_through_adapt_migrate_import_finish_and_reim
 
     code, out, err = cli(capsys, home, "run", "import", str(ocp03), "--finish")
     assert code == 0, err
-    assert f"{len(docs)} runs imported (0 new, {len(docs)} already in the store and replaced), 0 failed" in out
+    assert f"{len(docs)} runs imported (0 new, {len(docs)} unchanged), 0 failed" in out
     assert sorted(p.name for p in store.runs_dir.glob("*.ocp.json")) == names  # no duplicate file
     assert set(store.index_rows()) == set(minted.values())  # no duplicate run
     code, status, err = cli(capsys, home, "status", "--json")
@@ -164,6 +164,7 @@ def test_a_producer_capability_false_for_what_the_store_adds_is_lifted_and_kept(
     caps = stored["producer"]["capabilities"]
     assert caps["events"] is True and caps["outcome_evidence"] is True and caps["signals"] is True
     assert caps["cost_usd"] is False  # the store adds no cost here, so the producer's promise stands
+    assert stored["run"]["ext"]["dev.loopmath.import"].pop("content")["digest"].startswith("sha256:")
     assert stored["run"]["ext"]["dev.loopmath.import"] == {"capabilities_false": ["events", "outcome_evidence", "signals"],
                                                           "stored_by": "run import"}  # 0.2.7 marks what run import stored
 

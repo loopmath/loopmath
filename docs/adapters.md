@@ -440,3 +440,84 @@ Known gap: cross-document qualified-session reconciliation is out of scope for
 this integration. Node ids are not globally deduplicated from bare
 `attempt.session` values; future reconciliation must qualify the session by
 its vendor namespace and provenance.
+
+## Run importers
+
+`loopmath adapt harness2` and `loopmath adapt harness-runs` are run importers, not ADE adapters: they write one OCP v0.3 run per rollout (a task, a configuration, a score signal and a cost), where an adapter writes one OCP v0.2 document per selection. `adapt` routes the two names before the adapter lookup, and `list_adapters()` does not list them.
+
+```
+loopmath adapt harness2 ~/harness2/runs --out ocp/       # one <run id>.ocp.json per rollout; --json for the summary
+loopmath adapt harness-runs runs.jsonl --out ocp/        # any tool's loopmath.harness-runs/0.1 rows
+loopmath run import ocp/ --finish                         # store them; the same documents again change nothing
+```
+
+Both exit 0 when written, 1 when refused (nothing is written; an empty input is refused too) and 2 for a usage error or a missing input. The summary names the experiments and each model whose runs stay unpriced (`loopmath prices` shows the price table). With `--json`, a refusal is one JSON object on stdout with `"ok": false`, the error and the exit code; the summary goes to stderr when the documents take stdout (no `--out`). A row error names `<file>:<line>`; a harness2 row error names the rollout.
+
+**The generic format** is `loopmath.harness-runs/0.1`, specified in `spec/harness-runs.md` with a JSON Schema and three worked examples (an auto-research loop, plugin evals and a hand A/B). A row names the task, the harness tree (a `loopmath.harness` record or a tree path), the agent, model and effort, the outcome (a judge score or an accept/reject verdict) and the cost. `loopmath.harness_runs` has the writer (`row`, `append`, and `locked` to read, check and append under the file's lock), the reader (`read`), `to_ocp`, and `rollout_cost` for OpenCode and Codex streams.
+
+**harness2.** `loopmath adapt harness2 PATH` reads a harness2 runs root, a bench folder (`jb`, `lab`, `wb/<subset>`), an `adapt` folder or a `harness2-demo` output folder. It reads the JB, LAB and WorkBuddy (`wb/code`, `wb/web`, `wb/office`) benches of a root together. It reads files only and never imports or runs harness2.
+
+- One row per rollout: each task's base rollouts and every stage of each mode (`inv`, `dom`, `agg` in parallel mode; `inv`, `dom`, `c` per round in sequential mode). `arm` is `base`, `candidate`, or `adopted` for the stage the selection chose. A fallback selection adopts nothing.
+- The harness record is the stage's tree, with its parent: parallel stages edit `base`; sequential round t edits `base` (t = 1) or `c<t-1>`. The record's `tool` keeps harness2's own tree fingerprint and whether it matches the rollout's `.adapt_complete` marker.
+- A tree whose fingerprint no longer matches its marker was edited after the rollout ran. Its row gets no record, so the edit's factors never reach that rollout's score, and the reader says so in a note. A stage whose parent tree changed that way keeps its own record without a parent. The parent's rollout is found as its own row finds it (an adopted parent by its recorded run dir). When that rollout is gone, cannot be told apart from another, or has a marker naming another run, the parent cannot be checked: the record has no parent, with `parent_unverified` naming why. Where the rollout exists with no marker (the demo, a failed rollout) the tree is read as it is.
+- **Experiment.** harness2's run ids leave out the executor and judge, so two runs roots can share every run id. Each row's `experiment` is `h2-<16 hex>`: SHA-256 over the bench, the agg namespace and its `config.json`, never a path, so moving a folder keeps it. `--experiment LABEL` tells repeats of one configuration apart (`LABEL-h2-<16 hex>`). `loopmath.adapters.harness2.experiment_id(runs_root, agg_namespace, label=None)` gives the same id to another writer of the same rollouts.
+- **Outcome.** `judged.json` scores the adopted rollouts and `base_judged.json` the bases, as `n_passed / n_criteria` with `scale: fraction`, the judge named from the row or `config.json`. A judge row scores a rollout only when its `run_id` is that rollout's and its task, mode, k and label agree; a row left from an earlier selection is stale and scores nothing, with the reason. A failed or ungraded judge row is a null score, never 0. Stages that were not adopted were never judged.
+- **Cost.** harness2 records `rollout_usd` as 0, so the importer never reads it. It reads every trajectory file of the rollout (each retry is spend): OpenCode's `step_finish` tokens and cost, or Codex's `turn.completed` usage, priced from the price table. OpenCode's own dollars count only when every billable step reports a number; otherwise the whole token total is priced and the reported part is kept as `partial_usd`. A step or turn that started with no usage after it, or ended with counts missing or not whole numbers, makes the counts incomplete: the attempt then has no cost, never a cost read as 0. A model with no price row keeps its tokens and no dollars. Editing and selection spend stays in ext.
+- **Times.** A run's and attempt's `started_at` and `ended_at` come only from the rollout's own records (the runner config, the stream, the marker). When none is known they are absent; only the score's `observed_at` falls back to the folder's time.
+- **Failed and unavailable.** A rollout folder with no `.adapt_complete` marker is a failed attempt, and a stream cut mid-step makes its counts incomplete: no core cost, the counted tokens in ext. A rollout with no folder at all is skipped as unavailable, with the reason.
+- **WorkBuddy.** Namespaces are `wb-<subset>-<sub>-<mode><k>...`. A rollout is a Harbor trial folder under `wb/<subset>/rollouts/<label>/<run>/`. A base is found from its summary `run_dir` and an adopted stage from its selection's `chosen_run_dir`; both are recorded as absolute paths on the machine that ran harness2, so the reader keeps only their last three parts and requires them to sit under the bench's own `rollouts` folder. Bases are never matched by marker, since one batch marks all its trials with the first base's run id. Any other stage is the trial in its label folder whose marker names its run id; of several, the one whose marker names the current tree. The score is the verifier's own unrounded score from the judge files, with the judge named `wb-<subset>-verifier`. The model is the marker's `solver`. **Cost is unknown**: the agent stream (`agent/oc-output.txt` or `agent/codex-output.jsonl`) is Harbor's and its usage is not read, so each row says so in `cost_unread` and the summary has a note.
+- **Benches it does not read.** A bench folder under the root that it does not read (`<x>/adapt` for another bench, `wb/<subset>/adapt` for another subset) is listed in `skipped` and counted as `unsupported`, so a mixed root never drops one silently; a root with nothing else is refused, naming them. A namespace folder whose name does not parse, or that names another bench than its folder's, is listed and counted as `unread_namespace`.
+- **Format.** It reads `method_version` 2 and marker version 1, and refuses any other by name, with exit 1 and nothing written. Summaries with the older `arms`/`arm` keys are read as harness2 itself reads them.
+
+The ext members the run importers write:
+
+| Importer | Ext namespace | Member path | OCP entity | JSON type | Semantics |
+|---|---|---|---|---|---|
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `schema` | run | string | The row format the run came from, `loopmath.harness-runs/0.1`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `row_id` | run | string | The row's stable id (`id`, else `<tool.name>:<experiment>:<tool.run_id>`); the run id is a hash of it, so importing the same row again changes nothing, and a changed one is refused unless `run import --replace`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `arm` | run | string | The row's `arm`, also written to `run.labels.arm`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `experiment` | run | string | The row's `experiment`, also in `dev.loopmath.pair`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `status` | run | string | The row's `status` (`done` or `failed`) as given. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `tool` | run | object | The producing tool's ids as given. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `tool.name` | run | string | The producing tool, e.g. `harness2`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `tool.version` | run | string | The producing tool's version. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `tool.run_id` | run | string | The tool's own id for the rollout (harness2: `<namespace>/<task_id>/<label>`). |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `tool.task_id` | run | string | The tool's own task id. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `tool.stage` | run | string | The tool's stage label (harness2: `base1`, `inv1`, `dom1`, `agg1`, `c1`, ...). |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `row_ext` | run | object | The row's `ext`, kept whole (the harness2 reader's own members are listed below). |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `extra` | run | object | Unknown top-level row fields, kept whole. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `retained_text` | run | array of strings | Where the run keeps text the row's writer chose (strings in unknown row fields, in ext namespaces not under `dev.loopmath.`, or in outcome fields beyond the known ones). Present only then, and the document's `privacy.profile` is then `full`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost` | attempt | object | How the attempt's cost was read: the marks below. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.recovered` | attempt | boolean | True when the numbers were read back from a trajectory after the fact. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.usd_source` | attempt | string or null | Where core `cost.usd` came from: `opencode`, `loopmath-prices`, `reported`; null with no dollars. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.unpriced` | attempt | string or null | Why there is no core `cost.usd`: no price row for the model, or incomplete counts. Never priced at 0. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.complete` | attempt | boolean | False when the stream showed spend its counts miss; then the attempt has no core cost. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.incomplete` | attempt | string | What the counts miss, e.g. `1 step started with no step_finish after`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.partial_tokens` | attempt | object | The counted tokens of an incomplete stream, kept out of core cost. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.partial_tokens.input` | attempt | integer | Counted input tokens of an incomplete stream. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.partial_tokens.cache_read` | attempt | integer | Counted cache-read tokens of an incomplete stream. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.partial_tokens.cache_write` | attempt | integer | Counted cache-write tokens of an incomplete stream. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.partial_tokens.output` | attempt | integer | Counted output tokens of an incomplete stream. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.partial_usd` | attempt | number | Dollars the tool reported for only some billable steps; a note, never core `cost.usd`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.files` | attempt | integer | Stream files read for the rollout (each retry is a file, and each is spend). |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost.skipped_lines` | attempt | integer | Stream lines that did not parse, counted, never fatal. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `n_passed` | signal | integer | Criteria the judge passed. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `n_criteria` | signal | integer | Criteria the judge graded; the score is `n_passed / n_criteria`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `all_pass` | signal | boolean | Whether every criterion passed. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `metric` | signal | string | The bench's grading metric as the judge named it. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `error` | signal | string | The judge's error when it gave no score; the score stays null, never 0. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `bench` | row ext | string | The harness2 bench: `jb`, `lab`, `wb-<subset>` or `demo`. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `substrate` | row ext | string | The executor substrate from the namespace: `oc` (OpenCode) or `cx` (Codex). |
+| `harness2` | `dev.loopmath.adapter.harness2` | `namespace` | row ext | string | The namespace the rollout ran in, `<bench>-<sub>-<mode><k>[-s<seed>][-<tag>]`. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `mode` | row ext | string | `agg` (parallel) or `seq` (sequential); bases are listed under `agg`, where they ran. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `label` | row ext | string | The stage label. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `k` | row ext | integer | The sweep's k. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `experiment_label` | row ext | string | The `--experiment` label, when one was given. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `editor_usd` | row ext | number | harness2's reported spend on editing this stage's tree: improver spend, not the rollout's. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `selector_usd` | row ext | number | harness2's reported spend on the selection that adopted this rollout. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `unscored_reason` | row ext | string | Why a rollout the judge files mention has no score, e.g. a stale judge row for an earlier selection. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `bare_base` | row ext | boolean | The summary listed this base as a bare label, as older summaries do; it is never scored. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `tree_changed` | row ext | boolean | The tree no longer matches the rollout's `.adapt_complete` fingerprint; the row has no record. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `parent_changed` | row ext | boolean | The parent tree no longer matches its own rollout's marker; the record has no parent. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `parent_unverified` | row ext | string | Why the rollout that ran the parent tree cannot be checked (gone, not told apart from another, or marked for another run); the record has no parent. |
+| `harness2` | `dev.loopmath.adapter.harness2` | `cost_unread` | row ext | string | WorkBuddy: the agent stream the reader does not read, and that the cost is therefore unknown. |

@@ -17,7 +17,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, Sequence
 
 from ..taskmodel import BUILTIN_FEATURES, HORIZON_KEY, FeatureSet, parse_horizon
 from ..types import (
@@ -143,6 +143,27 @@ def setting_terms(harness: str, model: str, effort: str, weight: float = 1.0,
     return tuple(terms)
 
 
+def factor_node(harness: str, factor: str) -> str:
+    """The node of a harness factor: `hfactor:<harness>|<factor>`, with `%` and `|` in the harness label written
+    `%25` and `%7C`, so the first bare `|` ends the label and two (label, factor) pairs never share a node
+    (`split_factor_node` is the inverse). Labels without those characters read as written."""
+    return f"hfactor:{harness.replace('%', '%25').replace('|', '%7C')}|{factor}"
+
+
+def split_factor_node(node: str) -> tuple[str, str]:
+    """(harness label, factor) of an `hfactor:` node (`factor_node`)."""
+    label, _, factor = node.split(":", 1)[1].partition("|")
+    return label.replace("%7C", "|").replace("%25", "%"), factor
+
+
+@lru_cache(maxsize=65536)
+def factor_terms(harness: str, factors: tuple[str, ...], weight: float = 1.0) -> tuple[Term, ...]:
+    """A piece's harness factors (`spec/harness.md`): `factor_node(harness, factor)`, each a child of the
+    piece's `harness:<harness>` node. Empty without factors, so a run without a record keeps 0.2.8's rows."""
+    h = harness or "unknown"
+    return tuple((factor_node(h, f), f"harness:{h}", weight) for f in factors)
+
+
 @lru_cache(maxsize=65536)
 def role_terms(role: str, model: str, weight: float = 1.0) -> tuple[Term, ...]:
     fam = model_path(model)[1]
@@ -180,6 +201,7 @@ class Structure:
     gate_loop: dict[int, int | None] = field(default_factory=dict)  # gate index -> index into loops
     shape: str = ""  # topology and position key (`shape_key`); empty means the workflow id
     copies: dict[str, int] = field(default_factory=dict)  # piece -> copies in its group (`copy_groups`)
+    factors: tuple[str, ...] = ()  # the run's harness factors, sorted (`spec/harness.md`); () without a record
 
 
 def topological_pieces(workflow: Workflow) -> list[str]:
@@ -263,7 +285,8 @@ def default_gate_rule(role: str) -> str:
     return {"reviewer": "review_approve", "tester": "tests_pass", "referee": "referee_pick"}.get(role, "gate")
 
 
-def structure(config: Configuration) -> Structure:
+def structure(config: Configuration, factors: Iterable[str] = ()) -> Structure:
+    """The configuration's structure; `factors` are the harness factors every piece runs with (sorted, unique)."""
     wf = config.workflow
     order = topological_pieces(wf)
     roles = {p.id: canonical_role(p.role) for p in wf.pieces}
@@ -309,7 +332,7 @@ def structure(config: Configuration) -> Structure:
         for i in gidx:
             gate_loop[i] = len(loops) - 1
     return Structure(wf.id, order, roles, settings, widths, gates, loops, k_max, piece_loop, gate_loop,
-                     shape_key(wf.id, roles.values()), copy_groups(order, roles, reach))
+                     shape_key(wf.id, roles.values()), copy_groups(order, roles, reach), tuple(sorted(set(factors))))
 
 
 # ---------------------------------------------------------------- rows
@@ -333,7 +356,8 @@ def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None,
               prices: Mapping[str, float] | None = None) -> tuple[Term, ...]:
     """Cost and tokens rows without the task part: setting, role, topology, position, round, control,
     and with a `source` the position x source node `psrc:<shape>#<pos>|<source>` and the family x source
-    node `fsrc:<family>|<source>` (spec 04 section 1). `effort` is the value of the terms a timebox caps, the
+    node `fsrc:<family>|<source>` (spec 04 section 1); the structure's harness factors under the piece's
+    harness, at 1 (`factor_terms`). `effort` is the value of the terms a timebox caps, the
     effort and shape (topology, position) terms (`effort_weight`: below 1 under a timebox); the role, psrc and
     fsrc terms stay at 1. `prices` is a fit's price offsets (`FitState.price_offsets`, spec 04 section 2): the
     model's `price:offset` term goes last. The cost head has that node and the tokens head does not, so a
@@ -347,6 +371,8 @@ def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None,
     if effort != 1.0:
         st_terms, shape_terms = _effort_scaled(st_terms, float(effort)), _effort_scaled(shape_terms, float(effort))
     terms = st_terms + role_terms(st.roles[piece], m) + shape_terms
+    if st.factors:
+        terms += factor_terms(h, st.factors)
     if source is not None:
         fam = model_path(m)[1]
         terms += ((f"psrc:{position}|{source}", f"position:{position}", 1.0),
@@ -364,14 +390,17 @@ def gate_rest(st: Structure, gate: GateInfo, k: int) -> tuple[Term, ...]:
 
 def run_rest(st: Structure) -> tuple[Term, ...]:
     """Success and score rows without the task part: topology, control, and per piece its model chain,
-    effort and harness (weight 1/n) plus its role and role x family (weight 1/g, g the copies in its
-    group, so parallel copies carry the role effect once, as one wide piece does)."""
+    effort and harness (weight 1/n) with its harness factors at that weight, plus its role and role x family
+    (weight 1/g, g the copies in its group, so parallel copies carry the role effect once, as one wide piece
+    does)."""
     terms: list[Term] = [(f"topology:{st.shape or st.workflow_id}", None, 1.0)]
     terms += _control_terms(st.k_max, max(st.widths.values() or [1]))
     n = max(1, len(st.pieces))
     for piece in st.pieces:
         h, m, e = _s(st.settings[piece])
         terms += setting_terms(h, m, e, 1.0 / n)
+        if st.factors:
+            terms += factor_terms(h, st.factors, 1.0 / n)
         terms += role_terms(st.roles[piece], m, 1.0 / (st.copies.get(piece) or 1))
     return tuple(terms)
 
@@ -403,9 +432,10 @@ def _control_terms(k_max: int, width: int) -> list[Term]:
 
 
 def rows_for_config(task: Task, config: Configuration, source: str = "user",
-                    features: FeatureSet | None = None) -> dict:
-    """Prediction rows: per (piece, round), per (gate, round), one run row, and the structure."""
-    st = structure(config)
+                    features: FeatureSet | None = None, factors: Sequence[str] = ()) -> dict:
+    """Prediction rows: per (piece, round), per (gate, round), one run row, and the structure. `factors`: the
+    harness factors on every piece (`spec/harness.md`)."""
+    st = structure(config, factors)
     cost = {}
     for piece in st.pieces:
         rounds = st.k_max if st.piece_loop.get(piece) is not None else 1
@@ -446,6 +476,13 @@ class ParsedRun:
     rule: AcceptanceRule
     dropped: dict[str, int] = field(default_factory=dict)
     checks: dict[str, int] = field(default_factory=dict)  # check name -> attempts that ran no model
+    harness: dict | None = None  # the run's harness record (`harness.run_record`), None without one
+
+    @property
+    def factors(self) -> tuple[str, ...]:
+        from ..harness import factors
+
+        return factors(self.harness)
 
 
 class Unusable(ValueError):
@@ -746,7 +783,10 @@ def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | 
     config = config_from_doc(cfg)
     task = task_from_doc(doc, origin)
     source = task.source
-    st = structure(config)
+    from ..harness import factors as harness_factors, run_record
+
+    harness = run_record(doc)
+    st = structure(config, harness_factors(harness))
     dropped: dict[str, int] = {}
     checks: dict[str, int] = {}
 
@@ -812,7 +852,7 @@ def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | 
         for name in (evidence.scores or {}):
             score_meta.setdefault(str(name), {"unit": None, "better": "higher", "scale": "linear"})
     return ParsedRun(str(run.get("id") or task.id), task, config, source, attempts, gates, evidence,
-                     score_meta, use_rule, dropped, checks)
+                     score_meta, use_rule, dropped, checks, harness)
 
 
 def _gate_observations(doc: dict, st: Structure, by_piece_round: dict) -> list[tuple[int, int, bool]]:
@@ -881,7 +921,7 @@ def _gate_observations(doc: dict, st: Structure, by_piece_round: dict) -> list[t
 def rows_for_run(run_doc: dict) -> dict:
     """Fitting rows for one run document: {cost, tokens, gate, success, scores} plus its structure."""
     pr = parse_run(run_doc)
-    st = structure(pr.config)
+    st = structure(pr.config, pr.factors)
     out: dict[str, Any] = {"run": pr.run_id, "source": pr.source, "structure": st,
                            "cost": [], "tokens": [], "gate": [], "success": None, "scores": {}}
     for a in pr.attempts:

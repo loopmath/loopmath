@@ -284,10 +284,16 @@ def _positive_int(value: str) -> int:
 
 
 def adapt_verb(args: argparse.Namespace) -> int:
-    """Run one registered ADE adapter and serialize its OCP v0.2 document."""
+    """Run one registered ADE adapter and serialize its OCP v0.2 document, or one of the run importers."""
     import json
     from pathlib import Path
 
+    if args.name in ("harness2", "harness-runs"):   # run importers: one OCP v0.3 run per rollout (docs/adapters.md)
+        from .harness_runs.commands import adapt_runs
+
+        return adapt_runs(args)
+    if args.path:
+        args.store.append(args.path)
     from .adapters import Selection, UnknownAdapterError, lookup
 
     out_path = None
@@ -343,15 +349,28 @@ def adapt_verb(args: argparse.Namespace) -> int:
 
 
 def _add_adapt(sub) -> None:
-    p = sub.add_parser("adapt", help="emit OCP v0.2 from an ADE store (loopmath ocp migrate converts it to v0.3)")
-    p.add_argument("name", metavar="NAME", help="registered adapter name")
-    p.add_argument("--out", default=None, help="write here instead of stdout (any path; missing folders are created; an existing file is replaced)")
+    p = sub.add_parser(
+        "adapt", help="emit OCP v0.2 from an ADE store (loopmath ocp migrate converts it to v0.3), or import runs",
+        description="Emit OCP v0.2 from an ADE store, or import rollouts as OCP v0.3 runs with a run importer: "
+                    "`loopmath adapt harness2 RUNS --out DIR` reads a harness2 runs folder, and "
+                    "`loopmath adapt harness-runs FILE --out DIR` reads a loopmath.harness-runs/0.1 file "
+                    "(spec/harness-runs.md). Then `loopmath run import DIR --finish` stores them.")
+    p.add_argument("name", metavar="NAME", help="registered adapter name, or a run importer: harness2, harness-runs")
+    p.add_argument("path", nargs="?", default=None, metavar="PATH",
+                   help="the input: the same as --store PATH for an adapter; the runs folder (harness2) or rows file (harness-runs) for a run importer")
+    p.add_argument("--out", default=None, help="write here instead of stdout (any path; missing folders are created; an existing file is replaced). Run importers: a folder, one <run id>.ocp.json per rollout")
     p.add_argument("--store", action="append", default=[], metavar="PATH", help="use this store path instead of discovery (repeatable)")
     p.add_argument("--session", action="append", default=[], metavar="ID", help="include this session id (repeatable; default: all)")
     p.add_argument("--workspace", action="append", default=[], metavar="WORKSPACE", help="include this workspace (repeatable; default: all)")
     p.add_argument("--since", default=None, metavar="RFC3339", help="include sessions at or after this timestamp")
     p.add_argument("--until", default=None, metavar="RFC3339", help="include sessions at or before this timestamp")
     p.add_argument("--limit", type=_positive_int, default=None, metavar="N", help="emit at most N selected sessions")
+    p.add_argument("--json", action="store_true", help="run importers: print the import summary as JSON (loopmath.adapt.runs/1)")
+    p.add_argument("--rows", default=None, metavar="FILE", help="run importers: also write the loopmath.harness-runs/0.1 rows here")
+    p.add_argument("--experiment", default=None, metavar="ID", help="run importers: label this experiment, to tell repeats of one configuration apart")
+    p.add_argument("--accept-at", type=float, default=None, metavar="X", help="run importers: accept a run whose score reaches X (default: the tests rule)")
+    p.add_argument("--type", default=None, metavar="TYPE", help="run importers: the task type for rows that give none (default research)")
+    p.add_argument("--repo", default=None, metavar="REPO", help="run importers: the task repo for rows that give none")
     p.set_defaults(func=adapt_verb)
 
 

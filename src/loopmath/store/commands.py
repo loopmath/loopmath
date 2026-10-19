@@ -8,7 +8,9 @@ Each handler prints a short terminal summary, or exactly one JSON object with
 from __future__ import annotations
 
 import argparse
+import copy
 import functools
+import hashlib
 import json
 import os
 import subprocess
@@ -280,6 +282,22 @@ def parse_set(items: list[str]) -> dict[str, Setting]:
     return out
 
 
+def parse_labels(items: list[str] | None) -> dict[str, str]:
+    """`--label KEY=VALUE`, repeatable, into `run.labels` (OCP string labels)."""
+    out: dict[str, str] = {}
+    for item in items or []:
+        key, sep, value = item.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not key or not value:
+            raise UserError(f"--label takes KEY=VALUE, such as config=new; got {item!r}")
+        if len(value) > 500:
+            raise UserError(f"--label {key}: a label value is at most 500 characters")
+        if out.get(key, value) != value:
+            raise UserError(f"--label {key} is given twice, as {out[key]!r} and {value!r}")
+        out[key] = value
+    return out
+
+
 def config_from_workflow(value: str, sets: list[str], home: Path) -> Configuration:
     """The file's `[settings.<piece>]` first, `--set` overriding per piece; `--set` is needed only for
     the pieces the file leaves unset. The id is the workflows module's, as `workflows validate` prints it."""
@@ -432,9 +450,26 @@ def start_choice(args: argparse.Namespace, store: Store, conf: Any, *, single: s
 
 def start_plain(args: argparse.Namespace, store: Store, conf: Any, *, started_at: str | None = None) -> dict[str, Any]:
     """`run start` from task flags or a task file, and --config or --workflow with --source."""
+    if getattr(args, "check", None) or getattr(args, "arm", None) or getattr(args, "pair", None):
+        # Into a check: from the claim to the commit under one store lock, so a pair's second arm sees the
+        # first arm's slate and joins it, and a second start of one arm takes the next pair or is refused.
+        with store.lock():
+            return _start_plain(args, store, conf, started_at=started_at)
+    return _start_plain(args, store, conf, started_at=started_at)
+
+
+def _start_plain(args: argparse.Namespace, store: Store, conf: Any, *, started_at: str | None = None) -> dict[str, Any]:
     if not args.source:
         raise UserError("give --source (usual, alternative, exploration, user_edit, habit or designed), "
                         "or --rec REC --choice KEY")
+    labels = parse_labels(getattr(args, "label", None))
+    claimed = None
+    if getattr(args, "check", None) or getattr(args, "arm", None) or getattr(args, "pair", None):
+        from ..compare import checks
+
+        if not getattr(args, "check", None):
+            raise UserError("--arm and --pair record into a check: give --check CHK too")
+        claimed = checks.claim(store, args)  # points the task file and the slate at the check's pair
     payload = store.rec(args.rec) if args.rec else None
     task = task_from_args(args, conf.get("org") or None, features=conf.features_or_builtin(), rec=payload)
     if args.rec and not args.config and not args.workflow:  # name the configurations the recommendation offers
@@ -454,8 +489,23 @@ def start_plain(args: argparse.Namespace, store: Store, conf: Any, *, started_at
             raise NotFound(f"no slate {args.slate}; start the first member with --new-slate")
         slate = args.slate
     rule = rec_rule(args, payload, conf)
-    return _open_run(store, args, task, cfg, source=args.source, slate=slate, rule=rule,
-                     base_commit=args.base_commit, started_at=started_at)
+    out = _open_run(store, args, task, cfg, source=args.source, slate=slate, rule=rule,
+                    base_commit=args.base_commit, started_at=started_at)
+    if labels:
+        store.tag_run(out["run"], labels=labels)
+    if claimed is not None:
+        warning = checks.commit(store, claimed, out["run"])
+        if warning:
+            print(f"warning: {warning}", file=sys.stderr)
+        out["check"] = claimed
+    return out
+
+
+def check_flags_refused(args: argparse.Namespace, why: str) -> None:
+    given = [flag for flag, attr in (("--check", "check"), ("--arm", "arm"), ("--pair", "pair"), ("--label", "label"))
+             if getattr(args, attr, None)]
+    if given:
+        raise UserError(f"{why}; {', '.join(given)} apply to a run that opens from task flags or a task file")
 
 
 @handler("run.start")
@@ -463,6 +513,7 @@ def run_start(args: argparse.Namespace) -> int:
     store = _store(args)
     conf = store.config()
     if getattr(args, "choice", None):
+        check_flags_refused(args, "--choice opens the runs of a recommendation")
         out = start_choice(args, store, conf)
         slate = out["slate"]
         lines = [f"{r['run']}  {r['label']} ({r['source']})" for r in out["runs"]] + ([slate] if slate else [])
@@ -593,8 +644,19 @@ def _finish_lines(res: dict[str, Any]) -> list[str]:
     ev = res.get("evidence") or {}
     lines.append(f"outcome: {_outcome_word(ev.get('z'))} (tier {ev.get('tier')}, q {ev.get('q')})")
     lines.append(f"receipt: {res['receipt']}" if res["receipt"] else "receipt: none (no stored recommendation for this configuration)")
+    if res.get("harness"):
+        lines.append(_harness_line(res["harness"]))
+    if res.get("harness_note"):
+        lines.append(res["harness_note"])
     lines.append(_fit_line(res.get("fit") or {}))
     return lines
+
+
+def _harness_line(recorded: dict[str, Any]) -> str:
+    """The record `--harness` wrote (`finish.record_harness`), and the tree it was read from."""
+    from ..harness import describe
+
+    return f"harness: recorded {describe(recorded)} from {recorded['tree']}"
 
 
 def _fit_line(fit: dict[str, Any]) -> str:
@@ -607,16 +669,201 @@ def _fit_line(fit: dict[str, Any]) -> str:
 
 @handler("run.finish")
 def run_finish(args: argparse.Namespace) -> int:
-    from .finish import finish_run
+    from .finish import finish_run, harness_setting
 
     store = _store(args)
-    res = finish_run(store, args.run, no_fit=args.no_fit)
-    return _out(args, "run.finish", res, _finish_lines(res))
+    res = finish_run(store, args.run, no_fit=args.no_fit, harness=harness_setting(store, args.harness),
+                     harness_default=args.harness is None)
+    lines = _finish_lines(res)
+    res.pop("harness_note", None)  # a text line only: --json stays as it is without the config key
+    return _out(args, "run.finish", res, lines)
 
 
-def _read_import(store: Store, path: Path, label: str) -> dict[str, Any]:
+def _fail_line(f: dict[str, Any]) -> str:
+    """A failed file's line, naming its path once: many errors lead with it, or end with it."""
+    label, err = f["file"], f["error"].replace(f"{f['file']}: ", "", 1)
+    if err.startswith(f"{label} ") or err.endswith(f" {label}"):
+        return f"FAIL  {err}"
+    return f"FAIL  {label}: {err}"
+
+
+class ImportRefused(UserError):
+    """A document whose run id is in the store with different imported content (without --replace)."""
+
+    def __init__(self, label: str, run: str, differs: list[str], harness2: bool) -> None:
+        shown = ", ".join(differs[:DIFFERS_SHOWN]) + (f" and {len(differs) - DIFFERS_SHOWN} more"
+                                                       if len(differs) > DIFFERS_SHOWN else "")
+        super().__init__(f"{label}: run {run} is in the store with different content ({shown}); not imported")
+        self.run, self.differs, self.harness2 = run, differs, harness2
+
+
+class ReplaceRefused(UserError):
+    """`--replace` of a run whose new copy holds an outcome recorded after the import, under the same id, with
+    another value: a later outcome is never overwritten."""
+
+    def __init__(self, label: str, run: str, outcomes: list[str]) -> None:
+        shown = ", ".join(outcomes[:DIFFERS_SHOWN]) + (f" and {len(outcomes) - DIFFERS_SHOWN} more"
+                                                         if len(outcomes) > DIFFERS_SHOWN else "")
+        super().__init__(f"{label}: run {run} not replaced: the new copy has {_count(len(outcomes), 'outcome')} "
+                         f"recorded after the import under the same id with another value ({shown}); --replace "
+                         "never overwrites a later outcome")
+        self.run, self.outcomes = run, outcomes
+
+
+DIFFERS_SHOWN = 6
+CONTENT_DEPTH = 3   # parts recorded per imported run, to name the fields a later copy differs in
+
+
+def _refused_hint(harness2: bool) -> str:
+    return ("a second harness2 runs folder with the same config makes the same run ids: re-adapt it with "
+            "`loopmath adapt harness2 PATH --experiment NAME` to keep both, or pass --replace to take the new copy"
+            if harness2 else "pass --replace to take the new copy (outcomes added after the import are kept)")
+
+
+def _canon(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _parts(value: Any, prefix: str = "", depth: int = CONTENT_DEPTH) -> dict[str, Any]:
+    """Path -> value, `depth` steps down (a key or a list index each); deeper values stay whole."""
+    if depth and isinstance(value, (dict, list)) and value:
+        items = value.items() if isinstance(value, dict) else enumerate(value)
+        out: dict[str, Any] = {}
+        for k, v in items:
+            out.update(_parts(v, f"{prefix}[{k}]" if isinstance(value, list) else f"{prefix}.{k}" if prefix else str(k),
+                              depth - 1))
+        return out
+    return {prefix: value}
+
+
+def _imported_content(doc: dict[str, Any]) -> dict[str, Any]:
+    """A document as its producer wrote it: without the store's own ext members, which a run copied from
+    another store carries."""
+    out = copy.deepcopy(doc)
+    ext = (out.get("run") or {}).get("ext")
+    if isinstance(ext, dict):
+        ext.pop(R.EXT_STORE, None)
+        ext.pop(EXT_IMPORT, None)
+    return out
+
+
+def _outcome_ids(items: Any) -> list[str]:
+    """Signal or preference ids (a canonical hash for one without an id)."""
+    return [str(x["id"]) if isinstance(x.get("id"), str) and x["id"] else
+            "sha256:" + hashlib.sha256(_canon(x).encode("utf-8")).hexdigest()[:16]
+            for x in items or [] if isinstance(x, dict)]
+
+
+def _content_record(content: dict[str, Any]) -> dict[str, Any]:
+    """What `run import` keeps of the content it imported (`run.ext["dev.loopmath.import"].content`): a digest,
+    a short digest per part, and the ids of the signals and preferences it brought. A replace adds `later`, the
+    ids of the outcomes recorded after the import that it kept (`_record_later`)."""
+    run = content.get("run") or {}
+    return {"digest": "sha256:" + hashlib.sha256(_canon(content).encode("utf-8")).hexdigest(),
+            "parts": {p: hashlib.sha256(_canon(v).encode("utf-8")).hexdigest()[:16] for p, v in _parts(content).items()},
+            "signals": _outcome_ids(run.get("signals")), "preferences": _outcome_ids(run.get("preferences"))}
+
+
+def _recorded(stored: dict[str, Any]) -> dict[str, Any] | None:
+    ext = ((stored.get("run") or {}).get("ext") or {}).get(EXT_IMPORT)
+    content = ext.get("content") if isinstance(ext, dict) else None
+    return content if isinstance(content, dict) and isinstance(content.get("digest"), str) else None
+
+
+def _imported_before(stored: dict[str, Any]) -> bool:
+    """Whether `run import` stored this run (its mark from 0.2.7, or a content record)."""
+    ext = ((stored.get("run") or {}).get("ext") or {}).get(EXT_IMPORT)
+    return isinstance(ext, dict) and bool(ext.get("stored_by") or ext.get("content"))
+
+
+def _leaves(value: Any, prefix: str = "") -> tuple[dict[str, Any], set[str]]:
+    """Every leaf by path, and the paths of the non-empty containers."""
+    leaves, inner = {}, set()
+    if isinstance(value, (dict, list)) and value:
+        inner.add(prefix)
+        items = value.items() if isinstance(value, dict) else enumerate(value)
+        for k, v in items:
+            sub_leaves, sub_inner = _leaves(v, f"{prefix}[{k}]" if isinstance(value, list) else f"{prefix}.{k}" if prefix else str(k))
+            leaves.update(sub_leaves)
+            inner |= sub_inner
+    else:
+        leaves[prefix] = value
+    return leaves, inner
+
+
+def _differs(stored: dict[str, Any], record: dict[str, Any], lifted: dict[str, Any]) -> list[str]:
+    """The parts in which a new copy differs from what was imported for its id, [] when it is the same.
+
+    A run imported with its content record is compared with that record, never with the store's current
+    state, so outcomes added since do not count. A run stored before records were kept is compared with the
+    stored document: every value the new copy has must be stored as it is (the store only adds)."""
+    prev = _recorded(stored)
+    if prev is not None:
+        if prev["digest"] == record["digest"]:
+            return []
+        a, b = prev.get("parts") or {}, record["parts"]
+        return sorted(p for p in a.keys() | b.keys() if a.get(p) != b.get(p)) or ["(the document)"]
+    have, inner = _leaves(_imported_content(stored))
+    new, _ = _leaves(_imported_content(lifted))
+    return sorted(p for p, v in new.items()
+                  if not ((p in have and have[p] == v) or (v in ({}, []) and p in inner)))
+
+
+def _later_outcomes(stored: dict[str, Any], content: dict[str, Any]) -> tuple[list[dict], list[dict], int]:
+    """Signals and preferences recorded after the import, which --replace keeps: those its content record does
+    not list, and those it keeps as later (`later`), which an earlier copy that carried an equal outcome did not
+    make imported. A run stored before records were kept cannot tell them from imported ones: the count of stored
+    signals and preferences the new copy lacks is returned as dropped."""
+    run = stored.get("run") or {}
+    sigs = [x for x in run.get("signals") or [] if isinstance(x, dict)]
+    prefs = [x for x in run.get("preferences") or [] if isinstance(x, dict)]
+    prev = _recorded(stored)
+    if prev is not None:
+        own = prev.get("later") if isinstance(prev.get("later"), dict) else {}
+
+        def after(items: list[dict], key: str) -> list[dict]:
+            had, later = set(prev.get(key) or []), set(own.get(key) or [])
+            return [x for x, i in zip(items, _outcome_ids(items)) if i not in had or i in later]
+
+        return after(sigs, "signals"), after(prefs, "preferences"), 0
+    new = content.get("run") or {}
+    keep_s, keep_p = set(_outcome_ids(new.get("signals"))), set(_outcome_ids(new.get("preferences")))
+    return [], [], (sum(i not in keep_s for i in _outcome_ids(sigs)) + sum(i not in keep_p for i in _outcome_ids(prefs)))
+
+
+def _keep_later(doc: dict[str, Any], key: str, later: list[dict]) -> tuple[int, list[str]]:
+    """Add each later outcome to the new copy's `run.<key>`: (how many it now holds, the ids it already held
+    with another value)."""
+    items = doc.setdefault("run", {}).setdefault(key, [])
+    held = dict(zip(_outcome_ids(items), items))
+    kept, clash = 0, []
+    for item, oid in zip(later, _outcome_ids(later)):
+        item = {k: v for k, v in item.items() if k != "run"} if key == "signals" else dict(item)
+        if oid not in held:
+            items.append(item)
+            held[oid] = item
+            kept += 1
+        elif _canon(held[oid]) == _canon(item):
+            kept += 1
+        else:
+            clash.append(oid)
+    return kept, clash
+
+
+def _record_later(doc: dict[str, Any], record: dict[str, Any], signals: list[dict], preferences: list[dict]) -> None:
+    """Keep in the new copy's content record the ids of the outcomes recorded after the import, so each stays
+    later through every replace, even one whose copy carries it equal."""
+    later = {key: ids for key, ids in (("signals", _outcome_ids(signals)), ("preferences", _outcome_ids(preferences)))
+             if ids}
+    if later:
+        _mark_import(doc, {**record, "later": later})
+
+
+def _read_import(store: Store, path: Path, label: str, *, replace: bool = False) -> dict[str, Any]:
     """Read, migrate when needed and store one document:
-    `{run, path, migrated_from, state, already_in_store, finished: None}`."""
+    `{run, path, migrated_from, state, already_in_store, import, finished: None}`, `import` being new, unchanged
+    or replaced. A document whose run is in the store with the same imported content changes nothing; with
+    different content it is refused (ImportRefused) unless `replace`."""
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -634,14 +881,45 @@ def _read_import(store: Store, path: Path, label: str) -> dict[str, Any]:
     elif version != "0.3":
         raise UserError(f"{label} declares OCP {version!r}; run import reads 0.3 (0.1 and 0.2 are migrated)")
 
+    content = _imported_content(doc)
+    record = _content_record(content)
     _lift_store_capabilities(doc)
-    _mark_import(doc)
+    _mark_import(doc, record)
     given = (doc.get("run") or {}).get("id")
-    existed = run_names.file_stem(given) is not None and store.exists(given)
-    run = store.import_run(doc, finished=False)
-    done = R.is_finished(store.run_doc(run))
-    return {"run": run, "path": str(store.run_path(run)), "migrated_from": version if migrated else None,
-            "state": R.FINISHED if done else R.OPEN, "already_in_store": existed, "finished": None}
+    entry = {"migrated_from": version if migrated else None, "finished": None}
+    with store.lock():
+        existed = run_names.file_stem(given) is not None and store.exists(given)
+        kept = dropped = 0
+        if existed:
+            stored = store.run_doc(given)
+            differs = _differs(stored, record, doc)
+            done = R.is_finished(stored)
+            if not differs:
+                mark = ((doc.get("run") or {}).get("ext") or {}).get(EXT_IMPORT)
+                if not done and not _imported_before(stored) and isinstance(mark, dict):
+                    # The first import into a run that `run start` made: from now on it holds imported content.
+                    store.tag_run(given, ext={EXT_IMPORT: mark})
+                return {"run": given, "path": str(store.run_path(given)), **entry,
+                        "state": R.FINISHED if done else R.OPEN, "already_in_store": True, "import": "unchanged"}
+            # An open run that loopmath started and never imported is the producer's to fill (run start, then
+            # run import of the orchestrator's document); its pending signals stay in their own file.
+            if not replace and (done or _imported_before(stored)):
+                producer = doc.get("producer") if isinstance(doc.get("producer"), dict) else {}
+                raise ImportRefused(label, given, differs, producer.get("framework") == "harness2")
+            later_s, later_p, dropped = _later_outcomes(stored, content)
+            kept_s, clash_s = _keep_later(doc, "signals", later_s)
+            kept_p, clash_p = _keep_later(doc, "preferences", later_p)
+            if clash_s or clash_p:
+                raise ReplaceRefused(label, given, clash_s + clash_p)
+            kept = kept_s + kept_p
+            _record_later(doc, record, later_s, later_p)
+        run = store.import_run(doc, finished=False)
+        done = R.is_finished(store.run_doc(run))
+    out = {"run": run, "path": str(store.run_path(run)), **entry, "state": R.FINISHED if done else R.OPEN,
+           "already_in_store": existed, "import": "replaced" if existed else "new"}
+    if existed:
+        out.update(kept_outcomes=kept, dropped_outcomes=dropped)
+    return out
 
 
 # Elements the store itself writes into a stored run: the run_finished event, the outcome of an
@@ -668,16 +946,17 @@ def _lift_store_capabilities(doc: dict[str, Any]) -> None:
         ext[EXT_IMPORT] = {**prev, "capabilities_false": sorted(set(prev.get("capabilities_false") or []) | set(lifted))}
 
 
-def _mark_import(doc: dict[str, Any]) -> None:
+def _mark_import(doc: dict[str, Any], record: dict[str, Any] | None = None) -> None:
     """From 0.2.7 `run import` marks what it stored (`run.ext["dev.loopmath.import"].stored_by`), so a run whose
     rule cannot read its review verdict is read by the review rule (`belief.rules`). `Store.import_run` itself
-    does not mark, and runs imported before 0.2.7 carry no mark."""
+    does not mark, and runs imported before 0.2.7 carry no mark. The mark also keeps the record of the imported
+    content (`content`), which tells a later copy of the same run apart from a changed one."""
     from ..belief.rules import STORED_BY_IMPORT
 
     ext = doc.setdefault("run", {}).setdefault("ext", {})
     if isinstance(ext, dict):
         prev = ext.get(EXT_IMPORT) if isinstance(ext.get(EXT_IMPORT), dict) else {}
-        ext[EXT_IMPORT] = {**prev, "stored_by": STORED_BY_IMPORT}
+        ext[EXT_IMPORT] = {**prev, "stored_by": STORED_BY_IMPORT, **({"content": record} if record else {})}
 
 
 def _import_fit(store: Store, args: argparse.Namespace, changed: int, stored_finished: int) -> dict[str, Any]:
@@ -714,24 +993,45 @@ def run_import(args: argparse.Namespace) -> int:
     store = _store(args)
     if len(args.files) != 1 or Path(args.files[0]).expanduser().is_dir() or _brief(args):
         return _import_many(args, store, _import_items(args.files))
-    payload = _read_import(store, Path(args.files[0]).expanduser(), args.files[0])
+    try:
+        payload = _read_import(store, Path(args.files[0]).expanduser(), args.files[0], replace=args.replace)
+    except ImportRefused as exc:
+        raise UserError(f"{exc}; {_refused_hint(exc.harness2)}") from None
     run = payload["run"]
-    lines = [run + ("  (already in the store; replaced by this file)" if payload["already_in_store"] else "")]
+    lines = [run + _import_note(payload)]
     from ..priors import overlap_note, shipped_overlap  # Say once when the prior holds this run
     payload["shipped_overlap"] = shipped_overlap([run])
     lines += [n for n in [overlap_note(payload["shipped_overlap"])] if n]
     if args.finish and payload["state"] == R.FINISHED:
         print(f"note: {run} was already finished by loopmath; stored as finished, --finish skipped", file=sys.stderr)
-        payload["fit"] = _import_fit(store, args, 0 if payload["already_in_store"] else 1, 1)
+        payload["fit"] = _import_fit(store, args, 0 if payload["import"] == "unchanged" else 1, 1)
         lines.append(_fit_line(payload["fit"]))
     elif args.finish:
         res = finish_run(store, run, no_fit=args.no_fit)
         payload["finished"] = res
         lines += _finish_lines(res)
+    elif payload["state"] == R.OPEN:
+        lines.append(f"next: stored open: import again with --finish to finish it ({_again(list(args.files))}); "
+                     "outcomes added since are kept")
     return _out(args, "run.import", payload, lines)
 
 
 FAILED_SHOWN = 10
+
+
+def _import_note(entry: dict[str, Any]) -> str:
+    """What happened to a run that was already in the store, after its id."""
+    if entry.get("import") == "unchanged":
+        return "  (already in the store, unchanged)"
+    if entry.get("import") != "replaced":
+        return ""
+    note = "  (already in the store; replaced by this file"
+    if entry.get("kept_outcomes"):
+        note += f", keeping {_count(entry['kept_outcomes'], 'later outcome')}"
+    if entry.get("dropped_outcomes"):
+        note += (f"; dropped {_count(entry['dropped_outcomes'], 'later outcome')}: stored before loopmath recorded "
+                 "imported content, so it cannot tell them from imported ones")
+    return note + ")"
 
 
 def _brief(args: argparse.Namespace) -> bool:
@@ -739,28 +1039,36 @@ def _brief(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "brief", False) and args.json)
 
 
-def _import_next(payload: dict[str, Any]) -> str:
+def _again(files: list[str]) -> str:
+    shown = " ".join(files[:3]) + (" ..." if len(files) > 3 else "")
+    return f"loopmath run import {shown} --finish"
+
+
+def _import_next(payload: dict[str, Any], files: list[str]) -> str:
     """The one step to take after an import, for `--brief`."""
     if not payload["imported"]:
         return "nothing was imported: fix the failed files and import them again"
     open_runs = sum(1 for f in payload["files"] if f["ok"] and f.get("state") == R.OPEN)
     if open_runs:
-        return f"{_count(open_runs, 'run')} stored open: finish each with loopmath run finish --run RUN --json"
+        return (f"{_count(open_runs, 'run')} stored open: import again with --finish to finish them "
+                f"({_again(files)}); outcomes added since are kept")
     if payload["fit"].get("started"):
         return "loopmath posterior --html once the background fit ends (loopmath status --json: fit.running)"
     return "loopmath fit --json"
 
 
-def _import_brief(payload: dict[str, Any], failed: list[dict[str, Any]], note: str | None) -> dict[str, Any]:
+def _import_brief(payload: dict[str, Any], failed: list[dict[str, Any]], note: str | None,
+                  files: list[str]) -> dict[str, Any]:
     """Counts, failures (file and error), the overlap with the shipped prior and the next step."""
     fit = payload["fit"]
-    return {"imported": payload["imported"], "failed": payload["failed"], "finished": payload["finished"],
-            "already_finished": payload["already_finished"],
+    return {"imported": payload["imported"], "new": payload["new"], "unchanged": payload["unchanged"],
+            "replaced": payload["replaced"], "failed": payload["failed"], "refused": payload["refused"],
+            "finished": payload["finished"], "already_finished": payload["already_finished"],
             "failures": [{"file": f["file"], "error": f["error"]} for f in failed[:FAILED_SHOWN]],
             "more_failures": max(0, len(failed) - FAILED_SHOWN),
             "shipped_overlap": payload["shipped_overlap"], "overlap_note": note,
             "fit": {k: fit[k] for k in ("started", "reason") if k in fit},
-            "next": _import_next(payload)}
+            "next": _import_next(payload, files), **({"hint": payload["hint"]} if payload.get("hint") else {})}
 
 
 def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, Path | None]]) -> int:
@@ -778,19 +1086,24 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
         try:
             if path is None:
                 raise NotFound(f"no *.ocp.json files in {label}")
-            entry.update(_read_import(store, path, label))
+            entry.update(_read_import(store, path, label, replace=args.replace))
             if args.finish and entry["state"] == R.FINISHED:
                 already += 1
             elif args.finish:
                 entry["finished"] = finish_run(store, entry["run"], no_fit=args.no_fit, spawn=deferred)
                 entry["state"] = R.FINISHED
                 finished += 1
-            changed += int(entry["state"] == R.FINISHED and (entry["finished"] is not None or not entry["already_in_store"]))
+            changed += int(entry["state"] == R.FINISHED and (entry["finished"] is not None or entry["import"] != "unchanged"))
             entry = {"file": label, "ok": True, **{k: v for k, v in entry.items() if k != "file"}}
         except StoreLocked:
             raise
         except (NotFound, EndBeforeStart) as exc:
             entry.update(ok=False, error=str(exc), exit=EXIT_NOT_FOUND)
+        except ImportRefused as exc:
+            entry.update(ok=False, error=str(exc), exit=EXIT_USER, refused={"run": exc.run, "differs": exc.differs},
+                         harness2=exc.harness2)
+        except ReplaceRefused as exc:
+            entry.update(ok=False, error=str(exc), exit=EXIT_USER, refused={"run": exc.run, "outcomes": exc.outcomes})
         except ValidationFailed as exc:
             first = (exc.result.get("errors") or [{}])[0] if isinstance(exc.result, dict) else {}
             detail = f": {first.get('code', '')} {first.get('path', '')} {first.get('message', '')}".rstrip() if first else ""
@@ -798,6 +1111,8 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
         except (StoreError, ConfigError, ValueError, OSError) as exc:
             entry.update(ok=False, error=f"{label}: {exc}" if isinstance(exc, OSError) else str(exc),
                          exit=getattr(exc, "exit_code", EXIT_USER))
+        if not entry["ok"] and entry["error"].startswith(f"{label}: "):  # the path is in `file` already
+            entry["error"] = entry["error"][len(label) + 2:]
         if not entry["ok"] and entry.get("run"):
             entry["error"] = f"stored as {entry['run']} ({entry.get('state')}), then: {entry['error']}"
         files.append(entry)
@@ -807,31 +1122,45 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
     fit = _import_fit(store, args, changed, sum(1 for f in ok if f["state"] == R.FINISHED))
     imported_runs = [f["run"] for f in ok]  # every run this call stored, for notes over the whole import
     old = sum(1 for f in ok if f["already_in_store"])
-    payload = {"files": files, "runs": imported_runs, "imported": len(ok), "new": len(ok) - old,
-               "already_in_store": old, "failed": len(failed), "finished": finished,
-               "already_finished": already, "fit": fit}
+    refused = [f for f in failed if f.get("refused")]
+    payload = {"files": [{k: v for k, v in f.items() if k != "harness2"} for f in files], "runs": imported_runs,
+               "imported": len(ok), "new": len(ok) - old, "already_in_store": old,
+               "unchanged": sum(1 for f in ok if f.get("import") == "unchanged"),
+               "replaced": sum(1 for f in ok if f.get("import") == "replaced"), "failed": len(failed),
+               "refused": len(refused), "finished": finished, "already_finished": already, "fit": fit}
+    if any("differs" in f["refused"] for f in refused):
+        payload["hint"] = _refused_hint(any(f.get("harness2") for f in refused))
     from ..priors import overlap_note, shipped_overlap
 
     payload["shipped_overlap"] = shipped_overlap(imported_runs)  # once for the whole import
     code = EXIT_NOT_FOUND if any(f["exit"] == EXIT_NOT_FOUND for f in failed) else EXIT_USER if failed else EXIT_OK
     if _brief(args):
-        brief = _import_brief(payload, failed, overlap_note(payload["shipped_overlap"]))
+        brief = _import_brief(payload, failed, overlap_note(payload["shipped_overlap"]), list(args.files))
         emit_json(_schema("run.import"), brief)
         return code
     if args.json:
         emit_json(_schema("run.import"), payload)
         return code
-    lines = [f"FAIL  {f['file']}: {f['error']}" for f in failed[:FAILED_SHOWN]]
+    lines = [_fail_line(f) for f in failed[:FAILED_SHOWN]]
     if len(failed) > FAILED_SHOWN:
         lines.append(f"  and {len(failed) - FAILED_SHOWN} more failed (use --json for all)")
-    if len(lines) + len(ok) + 2 <= 25:
-        lines += [f"{f['run']}  {f['state']}" for f in ok]
-    kinds = f"{len(ok) - old} new" + (f", {old} already in the store and replaced" if old else "")
+    each = len(lines) + len(ok) + 2 <= 25
+    if each:
+        lines += [f"{f['run']}  {f['state']}" + (_import_note(f) if f.get("import") == "replaced" else "") for f in ok]
+    kinds = ", ".join([f"{payload['new']} new"] + [f"{payload[k]} {k}" for k in ("unchanged", "replaced") if payload[k]])
     summary = f"{_count(len(ok), 'run')} imported ({kinds}), {len(failed)} failed"
     if args.finish:
         summary += f"; {finished} finished" + (f", {already} already finished" if already else "")
     lines += [summary, _fit_line(fit)]
     lines += [n for n in [overlap_note(payload["shipped_overlap"])] if n]
+    if any(f.get("state") == R.OPEN for f in ok):
+        lines.append(f"next: {_import_next(payload, list(args.files))}")
+    if payload.get("hint"):
+        lines.append(f"hint: {payload['hint']}")
+    dropped =sum(f.get("dropped_outcomes") or 0 for f in ok)
+    if dropped and not each:
+        lines.append(f"note: --replace dropped {_count(dropped, 'later outcome')} of runs stored before loopmath "
+                     "recorded imported content")
     for line in lines:
         print(line)
     return code

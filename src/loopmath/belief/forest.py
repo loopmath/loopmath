@@ -12,7 +12,8 @@ Node ids are `level:key`. Keys nest along a chain so that each node has one pare
 `family_effort:opus|high`; `role:reviewer`, `role_family:reviewer|opus`;
 `topology:implement_review`, `position:implement_review#1`, `psrc:implement_review#1|sweep`;
 `feature:size=s`;
-`source:sweep`; `org:<org>` (crossed, since org is optional); `gate:<rule>`.
+`source:sweep`; `org:<org>` (crossed, since org is optional); `gate:<rule>`;
+`hfactor:claude-code|skill:pdf`, a harness factor under `harness:claude-code` (`spec/harness.md`).
 Fixed effects (wide priors, no scale fit): `fixed:intercept`, `round:2`, `round:3+`,
 `control:budget`, `control:width`.
 """
@@ -46,6 +47,7 @@ DEFAULT_SCALES: dict[str, tuple[float, float, float]] = {
     "feature": (0.3, 0.4, 0.4),
     "source": (0.3, 0.5, 0.5),
     "gate": (0.5, 0.7, 0.7),
+    "hfactor": (0.2, 0.3, 0.3),  # a harness part present against absent, under its harness label
 }
 HEAD_KIND_COLUMN = {"cost": 0, "logit": 1, "score": 2}
 
@@ -71,6 +73,7 @@ PARENT_LEVEL = {
     "position": "topology",
     "psrc": "position",
     "fsrc": "family",
+    "hfactor": "harness",
 }
 
 # Level names the posterior command accepts, and the node levels each one shows.
@@ -79,6 +82,7 @@ LEVEL_ALIASES = {
     "effort": ("effort", "family_effort"),
     "role": ("role", "role_family"),
     "topology": ("topology", "position", "psrc"),
+    "harness": ("harness", "hfactor"),
 }
 
 ROLE_WORDS = ("planner", "implementer", "reviewer", "tester", "referee", "worker")

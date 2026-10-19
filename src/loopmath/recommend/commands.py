@@ -429,7 +429,8 @@ def task_block(task: Task, belief: Any) -> dict[str, Any]:
     return out
 
 
-def build_payload(rec: Recommendation, belief: Any, rec_id: str, now) -> dict[str, Any]:
+def build_payload(rec: Recommendation, belief: Any, rec_id: str, now,
+                  harness_variants: dict[str, Any] | None = None) -> dict[str, Any]:
     core = rec.payload()
     out = {"task": task_block(rec.task, belief), "rule": core["rule"], "fit": fit_info(belief, now)}
     for key in ("usual", "curve", "default_pick", "goal", "alternatives", "exploration", "pair", "message"):
@@ -442,6 +443,8 @@ def build_payload(rec: Recommendation, belief: Any, rec_id: str, now) -> dict[st
     out["reference"] = core["reference"]  # recommend/2 keys after the /1 ones, so /1 readers keep their order
     out["choices"] = core["choices"]
     out["search"] = core["search"]  # spec 05 section 1a; null when the search did not run
+    if harness_variants is not None:
+        out["harness_variants"] = harness_variants  # only with --harness-variants or --harness (`spec/harness.md`)
     if rec.own_runs is not None:
         out["own_runs"] = rec.own_runs  # 0.2.3: the user's recorded runs; 0 leads each run cost with the typical run
     return out
@@ -633,8 +636,8 @@ def usual_note(rec: Recommendation, task: dict[str, Any]) -> str:
         return f"The usual comes from config usual.{task.get('type')}; --usual CFG names another."
     if rec.is_usual:
         return ""
-    return (f"No habit runs of {where} (onboarded, or started with --source habit); "
-            f"name a usual workflow with --usual CFG.")
+    return (f"No habit runs of {task.get('type')} tasks in the last {storeread.HISTORY_DAYS} days (onboarded, or "
+            f"started with --source habit); name a usual workflow with --usual CFG.")
 
 
 def alternative_words(a: dict[str, Any], rec: Recommendation) -> str:
@@ -708,8 +711,20 @@ def recommend(args: argparse.Namespace) -> int:
         return fail(str(exc), EXIT_NOT_FOUND)
     except ValueError as exc:
         return fail(str(exc))
+    hv = None
+    if getattr(args, "harness_variants", None) is not None or getattr(args, "harness", None) not in (None, "none"):
+        from ..harness import resolve_tree
+        from .variants import asked_variant, harness_block
+
+        try:
+            tree = resolve_tree(getattr(args, "harness", None), cwd=Path.cwd())
+            seen = list((getattr(belief, "design", None) or {}).get("harness_variants") or [])
+            hv = harness_block(belief, asked, rule, rec, n=max(0, int(getattr(args, "harness_variants", None) or 0)),
+                               asked=asked_variant(tree, seen) if tree is not None else None, home=home)
+        except (OSError, ValueError) as exc:
+            return fail(str(exc))
     rec_id = "rec_" + storeread.ulid()
-    payload = build_payload(rec, belief, rec_id, now)
+    payload = build_payload(rec, belief, rec_id, now, harness_variants=hv)
     # `asked_task`: the task id the belief was asked with, so `posterior` can predict under the same task (0.2.4)
     stored = {"schema": SCHEMA, **payload, "asked_task": asked.id,
               "candidates": [rec.candidate_dict(c) for c in rec.candidates]}
@@ -727,7 +742,12 @@ def recommend(args: argparse.Namespace) -> int:
         out = brief(payload) if getattr(args, "brief", False) else payload
         emit_json(SCHEMA, {**out, "page": str(target)} if target is not None else out)
     elif target is None:
-        print("\n".join(summary(payload, rec)))
+        lines = summary(payload, rec)
+        if hv is not None:
+            from .variants import text_lines
+
+            lines += text_lines(hv)
+        print("\n".join(lines))
     return EXIT_OK
 
 
@@ -735,6 +755,8 @@ def brief(payload: dict[str, Any]) -> dict[str, Any]:
     """The `--brief` projection: BRIEF_KEYS, the reference without its prediction draws, and no `bands` (0.2.1:
     the pages read them from the full JSON; an agent reads the chance's range and `p_accepted_within`)."""
     out = {k: payload[k] for k in BRIEF_KEYS if k in payload}
+    if "harness_variants" in payload:  # asked for with a flag, so kept
+        out["harness_variants"] = payload["harness_variants"]
     if isinstance(out.get("reference"), dict):
         ref = {k: v for k, v in out["reference"].items() if k != "prediction"}
         if isinstance(ref.get("numbers"), dict):

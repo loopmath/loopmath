@@ -343,10 +343,62 @@ def test_import_stores_replaces_and_finishes(capsys, home, tmp_path):
     assert code == 1 and "0.3" in err
     old = tmp_path / "old.ocp.json"
     old.write_text(json.dumps({**doc, "ocp": "0.1"}))
-    code, out, err = cli(capsys, home, "run", "import", str(old), "--json")
+    code, out, err = cli(capsys, home, "run", "import", str(old), "--replace", "--json")   # its content differs
     assert (code == 0 and out["migrated_from"] == "0.1") or (code == 1 and "migration" in err)  # the OCP migrator or a stub
     code, _, err = cli(capsys, home, "run", "import", str(tmp_path / "none.json"))
     assert code == 2
+
+
+def test_a_started_run_takes_its_first_import_then_counts_as_imported_content(capsys, home, tmp_path):
+    """run start, then the orchestrator's document: taken without --replace. After that the run holds imported
+    content: the same document again changes nothing, and a changed one is refused."""
+    run = _start(capsys, home)["run"]
+    doc = Store(home).run_doc(run)
+    doc["run"]["ext"] = {}
+    doc["producer"] = {"name": "herdr-dagr", "version": "1"}
+    doc["attempts"] = [{"id": "att_x1", "node": "implement", "n": 1, "status": "done", "harness": "codex",
+                        "model": {"raw": "gpt-6-sol"}, "started_at": "2026-09-23T10:00:00-07:00",
+                        "ended_at": "2026-09-23T10:30:00-07:00"}]
+    path = tmp_path / "x.ocp.json"
+    path.write_text(json.dumps(doc))
+    code, out, err = cli(capsys, home, "run", "import", str(path), "--json")
+    assert code == 0 and out["import"] == "replaced" and out["state"] == "open", err
+    stored = Store(home).run_doc(run)
+    code, out, err = cli(capsys, home, "run", "import", str(path), "--json")
+    assert code == 0 and out["import"] == "unchanged", err
+    assert Store(home).run_doc(run) == stored
+    doc["attempts"][0]["model"] = {"raw": "gpt-6-luna"}
+    path.write_text(json.dumps(doc))
+    code, out, err = cli(capsys, home, "run", "import", str(path))
+    assert code == 1 and "different content" in err and "attempts[0].model" in err, err
+    assert Store(home).run_doc(run) == stored
+
+
+def test_an_identical_first_import_into_a_started_run_records_its_content(capsys, home, tmp_path):
+    """run start, then the run's own document as it is: counted unchanged, and the import still records its
+    content, so a changed copy after it is refused without --replace."""
+    run = _start(capsys, home)["run"]
+    path = tmp_path / "same.ocp.json"
+    path.write_text(Store(home).run_path(run).read_text(encoding="utf-8"), encoding="utf-8")
+    code, _, err = cli(capsys, home, "outcome", "--run", run, "--signal", "tests=pass", "--kind", "verdict")
+    assert code == 0, err                 # pending on the open run
+    code, out, err = cli(capsys, home, "run", "import", str(path), "--json")
+    assert code == 0 and out["import"] == "unchanged" and out["state"] == "open", err
+    mark = Store(home).run_doc(run)["run"]["ext"]["dev.loopmath.import"]
+    assert mark["stored_by"] and mark["content"]["digest"].startswith("sha256:"), mark
+    assert [x["name"] for x in Store(home).pending_signals(run)] == ["tests"]
+    assert Store(home).index_rows()[run]["state"] == "open"
+    stored = Store(home).run_doc(run)
+    code, out, err = cli(capsys, home, "run", "import", str(path), "--json")
+    assert code == 0 and out["import"] == "unchanged" and Store(home).run_doc(run) == stored, err
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["run"]["labels"] = {**(doc["run"].get("labels") or {}), "note": "changed"}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    code, out, err = cli(capsys, home, "run", "import", str(path))
+    assert code == 1 and "different content" in err and "run.labels" in err, err
+    assert Store(home).run_doc(run) == stored
+    code, out, err = cli(capsys, home, "run", "import", str(path), "--replace", "--json")
+    assert code == 0 and out["import"] == "replaced", err
 
 
 def test_import_of_a_run_loopmath_finished_keeps_it_finished(capsys, home, tmp_path):

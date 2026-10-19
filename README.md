@@ -24,6 +24,8 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
+Installing needs the network: pip, pipx and uv download the build backend (setuptools 77 or newer) and the dependencies (jsonschema, numpy, pandas, scipy), from a clone too, so `pip install --no-index -e .` fails offline.
+
 ## First run
 
 ```sh
@@ -115,7 +117,7 @@ A pair runs the goal workflow and an exploration pick from the same base commit,
 
 A run counts as a success when it is accepted under your rule. By default that means the task's tests pass. A run that `onboard` brought in from your logs, or that `run import` stored, with no tests verdict but a review or accepted verdict, is judged by the review rule instead: a success when its latest review or accepted verdict is accept, approve or pass. `loopmath runs` lists other finished runs such a verdict could settle, with the command that moves them to the review rule, `loopmath outcome --rule review RUN...`. `loopmath outcome --undo-rule RUN...` undoes that, restoring each run's rule as it was; naming that rule (`tests` when it had none) does too, unless the run's own rule was also named review. A review verdict on a reviewer's last attempt then counts twice: as the review gate's pass, and as the run's success. A rule can also be a score target: `loopmath recommend ... --target 'heldout_perf>=2400'` or `--target 'runtime_s<=200'` gives the expected score and the chance of reaching the target. Set standing rules and other options with `loopmath config set KEY VALUE` (`loopmath config get` lists every key, set or not, `config set` refuses a key loopmath does not read, and `loopmath config unset KEY` returns a key to its default), and the spending cap with `loopmath budget --usd X --period month`. Spend counts your runs and onboard's labelling calls; runs onboard brought in from your logs are shown apart and not counted. A run you record with `--source habit` counts.
 
-Runs recorded by another tool that writes OCP v0.3, such as an experiment runner, come in with `loopmath run import DIR --finish`: several files or a directory, with one refit at the end (`--no-fit` skips it). It says how many runs were new and how many were already in the store; importing finished runs into a store with no fit starts a fit. Runs in your store always count as yours, whatever source their documents name. `loopmath fit --without SOURCE` leaves out one shipped prior source, and `loopmath status` names the options of the current fit.
+Runs recorded by another tool that writes OCP v0.3, such as an experiment runner, come in with `loopmath run import DIR --finish`: several files or a directory, with one refit at the end (`--no-fit` skips it). It says how many runs were new, unchanged or replaced; importing finished runs into a store with no fit starts a fit. Importing the same documents again changes nothing and keeps the outcomes you added since, and with `--finish` it finishes the runs left open (without it, the runs are stored open and it says to import again with `--finish`). A document whose run id is already in the store with different content is refused by name, with the fields that differ; `--replace` takes it and keeps the outcomes added after the import, and refuses a copy that would overwrite one. Runs in your store always count as yours, whatever source their documents name. `loopmath fit --without SOURCE` leaves out one shipped prior source, and `loopmath status` names the options of the current fit.
 
 ## The three views
 
@@ -141,7 +143,7 @@ The workflow builder is the one page that is served: `loopmath builder --type bu
 | OCP | `ocp` (validate, migrate) |
 | Log analysis | `analyze`, `graph`, `adapt`, `prices`, `validate-prices`, `scan` |
 
-Each command prints a short summary by default. With `--json`, it prints exactly one JSON object instead. Exit codes: 0 ok, 1 user error, 2 not found, 3 not implemented, 4 store locked, 5 no fit yet. For flags, `loopmath <command> --help` is the source of truth. Commands, pages and the `runs` table show times in your local time with the zone; the store and `--json` keep UTC. A cost under a cent shows one significant digit (`$0.004`), and an exact zero is `$0`.
+Each command prints a short summary by default. With `--json`, it prints exactly one JSON object instead. One exception: `loopmath adapt harness2` and `adapt harness-runs` without `--out` print the run documents on stdout, one per line, so their `--json` summary goes to stderr. Exit codes: 0 ok, 1 user error, 2 not found, 3 not implemented, 4 store locked, 5 no fit yet. For flags, `loopmath <command> --help` is the source of truth. Commands, pages and the `runs` table show times in your local time with the zone; the store and `--json` keep UTC. A cost under a cent shows one significant digit (`$0.004`), and an exact zero is `$0`.
 
 A workflow is a TOML file. `loopmath workflows list` shows the catalog and yours, which live in `~/.loopmath/workflows/`. It also lists the shapes loopmath composes from catalog pieces, such as `team`; `loopmath workflows show team` says what one is and that `recommend` does not offer it. This one implements, then sends a rejected change back once or twice:
 
@@ -194,6 +196,42 @@ effort = "high"
 ```
 
 Check it with `loopmath workflows validate FILE`, compare it with `loopmath workflows diff implement_review FILE`, and pass it to `recommend --workflow FILE` to have it considered, or to `run start --workflow FILE --source user_edit` to record a run with its settings (`--set PIECE=HARNESS:MODEL:EFFORT` overrides a piece).
+
+## Harness parts
+
+A run can record the harness it ran with: the prompt files, skills, plugins, MCP servers, hooks, sub-agents and commands in its working tree. loopmath stores a digest of those files and a list of named parts (`skill:pdf`, `mcp:github`, `hook:PostToolUse:Edit|Write`, `prompt:3f2a9c1d`), never a path, a hook command or an environment value. The fit then learns each part's effect on cost and success, as a change from its harness label.
+
+- `loopmath run finish --harness auto` (or `run record --harness auto`) records the git working tree the run's attempts ran in; `--harness PATH` names a tree; `--harness none` records nothing. The default is `none`; `loopmath config set harness.record auto` makes `auto` the default, and the flag wins.
+- `loopmath run import` keeps a record another tool wrote.
+- `loopmath posterior --json` lists each part under `factors`, and `--level harness` shows the labels and their parts:
+
+  ```json
+  {"factor": "skill:pdf", "harness": "claude-code", "kind": "skill", "name": "pdf",
+   "node": "hfactor:claude-code|skill:pdf", "runs": 12,
+   "cost": {"mean": 0.87, "lo": 0.74, "hi": 1.02, "level": 0.8, "lo95": 0.68, "hi95": 1.11},
+   "success": {"mean": 4.1, "lo": -1.0, "hi": 9.0, "level": 0.8, "lo95": -3.6, "hi95": 11.5,
+               "log_odds": {"mean": 0.18, "lo": -0.04, "hi": 0.41, "level": 0.8, "lo95": -0.16, "hi95": 0.52},
+               "calibrated": false}}
+  ```
+
+  `cost` is the multiplier on an attempt's dollars when the part is present; `success` is percentage points.
+- `loopmath recommend --harness-variants` prices the trees your runs used most, and `--harness PATH` prices one more, against the bare harness label on the same draws.
+
+An estimate is the change when a named part is present, pooled over its versions. It is not the effect of one edit, and a part on every run cannot be told apart from its harness. The cost ranges met their stated coverage in simulation. **The success ranges did not:** they pull effects toward 0, and their 80% ranges held 60% of nonzero effects. So they are marked `calibrated: false`, and so are the success-side numbers of a priced variant. With no record anywhere, every number is what it was before. The record, the digest, the factor map and the limits are in [`spec/harness.md`](spec/harness.md).
+
+## Testing a harness change
+
+These commands are for changing the harness your agents run with and finding out whether the change paid off.
+
+- **Harness parts and `--harness`.** Record the tree each run used (`run finish --harness auto` or `PATH`), and the fit learns each named part's effect, as in the section above. `recommend --harness-variants` prices the trees your runs used on the configurations those runs used, and on the recommendation's own when their harness has data on the parts; `--harness PATH` prices one more tree. Where a tree is not priced, `not_priced` in `--json` says why. The record, the factor map and the limits are in [`spec/harness.md`](spec/harness.md).
+- **`adapt harness-runs` and `adapt harness2`.** These bring in runs another tool made. `loopmath adapt harness-runs FILE --out DIR` reads a `loopmath.harness-runs/0.1` file, one JSON line per rollout, as an auto-research loop, a plugin eval suite or a hand A/B writes it. `loopmath adapt harness2 RUNS --out DIR` reads a harness2 runs folder. Then `loopmath run import DIR --finish` stores the runs. The row format, outcomes, costs and worked examples are in [`spec/harness-runs.md`](spec/harness-runs.md).
+- **`check-change`.** It decides whether a change beats what it replaces, on paired runs:
+  - `check-change start --base LABEL|PATH --cand LABEL|PATH --n N` plans the pairs and each pair's arm order;
+  - `check-change status` gives the comparison, the verdict once there is one (adopt or reject) and the next pair worth running;
+  - `check-change from-runs --base-label SEL --cand-label SEL` compares finished runs already in the store, picked by a run label, a configuration id, a harness digest (a prefix of one digest will do) or `arm:NAME`.
+
+  `--rule` names what counts as accepted, and `loopmath check-change --help` lists the rest. A run with no dollar cost leaves the decision to the outcomes alone, and the cost reads unknown; a budget or `--objective cpar` then refuses, naming the runs without one.
+- **`gate`.** For a loop that adopts changes on its own, it answers: adopt the candidate, reject it and keep the base, or replicate N more pairs first. `loopmath gate --base SEL --cand SEL` reads the finished runs in the store, or `--runs FILE` reads `loopmath.harness-runs/0.1` rows; an arm is a harness digest (`sha256:<hex>` or `digest:sha256:<hex>`, a prefix of one digest will do), a configuration id, or `arm=NAME` or `arm:NAME`; `check-change from-runs` takes the same forms. `--rule` takes the built-in rules or a rule defined under `[rules.NAME]` in the store's config, which the gate reads as `check-change` does, also with `--runs`. The comparison of the paired runs is `check-change`'s, and the gate adds the loop's policy to it: no adoption before `--r-min` pairs, looks at 1, 2, 4 and so on pairs up to `--r-max`, a `--floor` (the smallest gain worth adopting, 0 or more; under an acceptance rule it applies to the cut in cost per accepted result, a fraction, or to the gain in the chance of acceptance when a cost is unknown), and the dollars, `--budget-usd` for both arms (0 buys no further pair) and `--max-cost-ratio`. With no evidence, an arm that matches no run or a rule that scores no pair, it exits 1 and names the arms or the rules that are there. Both dollar flags need every run's cost and refuse, naming the runs without one; with neither flag, a run with no recorded cost leaves the decision to the outcomes alone, and the cost reads unknown, never $0. When nothing resolves within the cap or the budget, it keeps the base and says where it stopped. In Python, `loopmath.gate.decide(base_runs, cand_runs, GatePolicy(...))` gives the same answer and writes nothing; `loopmath gate --help` lists the rest.
 
 ## The store and privacy
 

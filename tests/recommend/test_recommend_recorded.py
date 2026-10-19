@@ -111,8 +111,8 @@ def test_designed_runs_are_candidates_and_the_best_recorded_one_is_the_reference
     lines = text.splitlines()
     assert lines[2].startswith("No usual workflow; reference: your best recorded workflow (")
     # 0.2.4: where the reference comes from and how to name a usual, under the reference line
-    assert lines[3] == ("  No habit runs of feature tasks in acme/app (onboarded, or started with --source habit); "
-                        "name a usual workflow with --usual CFG.")
+    assert lines[3] == ("  No habit runs of feature tasks in the last 90 days (onboarded, or started with --source "
+                        "habit); name a usual workflow with --usual CFG.")
     assert lines[4].startswith("Rescue when a run fails: $0.73 (reference workflow repeated until accepted); ")
     assert sum(x.startswith("Rescue") for x in lines) == 1 and len(lines) <= 25
     assert "than the usual" not in text and "your usual" not in text.lower()

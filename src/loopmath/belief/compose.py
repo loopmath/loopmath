@@ -210,6 +210,14 @@ def interval(values: np.ndarray, mean: float | None = None) -> tuple[float, floa
     return (float(np.mean(v)) if mean is None else float(mean)), float(lo), float(hi)
 
 
+def ranges(values: np.ndarray, mean: float | None = None) -> dict:
+    """The mean, the 80% range (`interval`'s 10th and 90th percentiles) and the 95% range of draws."""
+    v = np.asarray(values, float)
+    lo95, lo, hi, hi95 = np.percentile(v, [2.5, Q_LO, Q_HI, 97.5])
+    return {"mean": float(np.mean(v)) if mean is None else float(mean), "lo": float(lo), "hi": float(hi),
+            "level": 0.8, "lo95": float(lo95), "hi95": float(hi95)}
+
+
 def predictive(expected: np.ndarray, simulated: np.ndarray) -> tuple[float, float, float]:
     """The mean is E[C_run]; the range is the 10th and 90th percentiles of one simulated run per draw."""
     lo, hi = np.percentile(simulated, [Q_LO, Q_HI])

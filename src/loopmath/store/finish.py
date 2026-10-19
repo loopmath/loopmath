@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from ..belief.outcome import TIER_Q
@@ -532,9 +533,43 @@ def rule_of(doc: dict[str, Any]) -> AcceptanceRule:
     return resolve_rule_or_default(doc)
 
 
+def record_harness(doc: dict[str, Any], value: str | None, *, default: bool = False) -> dict[str, Any] | None:
+    """`--harness PATH|auto|none` (`spec/harness.md` section 7): the record of the run's harness tree, in
+    `run.ext["dev.loopmath.harness"]`. `none` or no value writes nothing and keeps a record already there.
+    Returns what was written, with the tree it was read from (the record itself holds no path), else None.
+    ValueError when `auto` finds two trees or no git working tree, or the path is not a folder. `default`: the
+    value is the config key `harness.record`, not the flag; then `auto` without one tree writes nothing and
+    returns `{"note": ...}`, so the run finishes as it would without the key."""
+    from .. import harness as H
+
+    try:
+        tree = H.resolve_tree(value, R.attempt_cwds(doc), cwd=Path.cwd())
+    except H.NoTree as exc:
+        if not default:
+            raise
+        return {"note": f"harness: no record: {exc.detail} (harness.record is auto; --harness PATH records one)"}
+    if tree is None:
+        return None
+    run = doc.setdefault("run", {})
+    if not isinstance(run.get("ext"), dict):
+        run["ext"] = {}
+    rec = run["ext"][H.EXT_KEY] = H.record_from_tree(tree)
+    return {"tree": str(tree), **{k: rec[k] for k in ("digest", "source", "layouts", "factors")}}
+
+
+def harness_setting(store: Store, value: str | None) -> str:
+    """The `--harness` value, else the config key `harness.record` (`none` or `auto`, default `none`). Only the
+    `run record` and `run finish` commands read the key; `run import --finish` records nothing."""
+    return value if value is not None else str(store.config().get("harness.record") or "none")
+
+
 def finish_run(store: Store, run: str, *, settle: Settle | None = None, no_fit: bool = False,
-               spawn: Callable[..., dict[str, Any]] | None = None, _tries: int | None = None) -> dict[str, Any]:
+               spawn: Callable[..., dict[str, Any]] | None = None, harness: str | None = None,
+               harness_default: bool = False, _tries: int | None = None) -> dict[str, Any]:
     """Returns the `run finish --json` payload. Raises NotFound, StoreError or ValidationFailed.
+    `harness`: the `--harness` value (`record_harness`); None records nothing. `harness_default`: it is the
+    config key's, not the flag's; when `auto` then finds no single tree, the payload has `harness_note`, a line
+    for the text output that the handlers take out before `--json`.
 
     Signals, evidence, receipt and validation are computed from one snapshot (the run file at its
     rev plus the pending signals); the commit raises Conflict if either moved, and the whole pass
@@ -551,6 +586,9 @@ def finish_run(store: Store, run: str, *, settle: Settle | None = None, no_fit: 
     _settle_leftovers(doc, now)
     R.merge_signals(doc, store.pending_signals(run))
     _close(doc, now)
+    recorded = record_harness(doc, harness, default=harness_default)
+    note = recorded.pop("note") if recorded is not None and "note" in recorded else None
+    recorded = recorded or None
 
     cfg = (doc.get("run") or {}).get("configuration") or {}
     rec_id = cfg.get("rec")
@@ -577,7 +615,8 @@ def finish_run(store: Store, run: str, *, settle: Settle | None = None, no_fit: 
     except Conflict:
         if tries <= 1:
             raise
-        return finish_run(store, run, settle=settle, no_fit=no_fit, spawn=spawn, _tries=tries - 1)
+        return finish_run(store, run, settle=settle, no_fit=no_fit, spawn=spawn, harness=harness,
+                          harness_default=harness_default, _tries=tries - 1)
 
     fit_started: dict[str, Any] = {"started": False, "reason": "--no-fit"}
     if not no_fit:
@@ -596,6 +635,8 @@ def finish_run(store: Store, run: str, *, settle: Settle | None = None, no_fit: 
         "receipt": receipt_dict["id"] if receipt_dict else None,
         "fit_started": bool(fit_started.get("started")),
         "fit": fit_started,
+        **({"harness": recorded} if recorded is not None else {}),  # only when a record was written
+        **({"harness_note": note} if note else {}),  # text only: the handlers take it out before --json
     }
 
 

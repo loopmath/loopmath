@@ -37,7 +37,7 @@ def test_one_run_of_an_alternative_is_a_recorded_reference_not_the_usual(env, ca
     assert obj["usual"] is None and obj["reference"]["kind"] == "best_recorded"
     assert obj["reference"]["config"]["id"] == CHEAP.id
     _, text = run(capsys, ARGV)
-    assert "No habit runs of feature tasks in acme/app" in text and "your usual" not in text.lower()
+    assert "No habit runs of feature tasks in the last 90 days" in text and "your usual" not in text.lower()
 
 
 def test_the_usual_does_not_switch_after_one_run(env, capsys):
@@ -97,7 +97,7 @@ def test_the_summary_and_the_rec_id_stay_when_the_lines_run_over(env, capsys, mo
     assert len(lines) <= 25, len(lines)
     assert lines[-1].startswith("rec: rec_") and lines[-2] == obj["message"]
     assert "  horizon 2 h (as recorded for acme/app)" in lines
-    assert any(x.startswith("  No habit runs of feature tasks in acme/app") for x in lines)
+    assert any(x.startswith("  No habit runs of feature tasks in the last 90 days (") for x in lines)  # its window
     alts = lines[lines.index("Alternatives:") + 1:next(i for i, x in enumerate(lines) if x.startswith("Exploration"))]
     assert len(alts) >= 2 and alts[-1] == f"  and {5 - (len(alts) - 1)} more (recommend --json)", alts
     # without the notes line the five fit, with no count line

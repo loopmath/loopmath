@@ -249,6 +249,7 @@ def test_run_import_marks_what_it_stored(tmp_path, capsys):
     code, _, err = cli(capsys, home, "run", "import", str(path), "--no-fit")
     assert code == 0, err
     ext = Store(home).run_doc("run_imp1")["run"]["ext"]["dev.loopmath.import"]
+    assert ext.pop("content")["digest"].startswith("sha256:")   # the record of the imported content
     assert ext == {"capabilities_false": ["x"], "stored_by": "run import"}
 
 

@@ -31,10 +31,10 @@ from ..logmatch.match import SessionError, default_roots, explain_match, resolve
 from ..output import fmt_time, fmt_usd
 from ..types import Signal
 from . import runs as R
-from .commands import (UserError, _choice_members, _model_id, _out, _signal_value, _store, rec_rule,
-                       config_from_workflow, config_label, handler, piece_settings, resolve_config, start_choice,
-                       start_plain)
-from .finish import _match_tier, finish_run, rule_of
+from .commands import (UserError, _choice_members, _harness_line, _model_id, _out, _signal_value, _store,
+                       check_flags_refused, config_from_workflow, config_label, handler, piece_settings, rec_rule,
+                       resolve_config, start_choice, start_plain)
+from .finish import _match_tier, finish_run, harness_setting, rule_of
 from .home import NotFound, Store
 from .ids import new_id, now_iso, parse_since, parse_ts, utc_iso
 
@@ -471,6 +471,8 @@ def record(store: Store, args: argparse.Namespace) -> dict[str, Any]:
                                       ("--rec", args.rec), ("--choice", args.choice), ("--config", args.config),
                                       ("--workflow", args.workflow), ("--set", args.set), ("--source", args.source),
                                       ("--rule", args.rule)) if v]
+        given += [flag for flag, attr in (("--check", "check"), ("--arm", "arm"), ("--pair", "pair"),
+                                          ("--label", "label")) if getattr(args, attr, None)]
         if given:  # the open run has them all; a flag it would ignore is refused
             raise UserError(f"--run records into the run `run start` opened, with its task, configuration, rule and "
                             f"base commit; drop {', '.join(given)}")
@@ -478,6 +480,7 @@ def record(store: Store, args: argparse.Namespace) -> dict[str, Any]:
         if R.is_finished(doc):
             raise UserError(f"run {args.run} is already finished")
     elif args.choice:
+        check_flags_refused(args, "--choice opens the runs of a recommendation")
         if not args.rec:
             raise UserError("--choice KEY needs --rec REC, the recommendation it comes from")
     elif not (args.config or args.workflow):
@@ -613,7 +616,8 @@ def record(store: Store, args: argparse.Namespace) -> dict[str, Any]:
         recorded.append({"signal": signal.id, "kind": sig["kind"], "name": sig["name"], "value": sig["value"],
                          "tier": sig["tier"]})
 
-    res = finish_run(store, run, no_fit=args.no_fit)
+    res = finish_run(store, run, no_fit=args.no_fit, harness=harness_setting(store, args.harness),
+                     harness_default=args.harness is None)
     final = store.run_doc(run)
     z = (res.get("evidence") or {}).get("z")
     outcome = "accepted" if z == 1 else "rejected" if z == 0 else "unknown"
@@ -643,6 +647,8 @@ def record(store: Store, args: argparse.Namespace) -> dict[str, Any]:
                                                                res["cost"]["usd"], outcome)},
         "fit": res["fit"],
         "notes": notes,
+        **({"harness": res["harness"]} if res.get("harness") else {}),  # only when a record was written
+        **({"harness_note": res["harness_note"]} if res.get("harness_note") else {}),  # text only (run_record)
     }
 
 
@@ -657,10 +663,16 @@ def _lines(p: dict[str, Any]) -> list[str]:
         lines.append(f"unmatched {u['attempt']}: {u['reason']}")
     lines += [f"note: {n}" for n in p["notes"]]
     lines.append(f"receipt: {p['receipt']['line']}")
+    if p.get("harness"):
+        lines.append(_harness_line(p["harness"]))
+    if p.get("harness_note"):
+        lines.append(p["harness_note"])
     return lines
 
 
 @handler("run.record")
 def run_record(args: argparse.Namespace) -> int:
     payload = record(_store(args), args)
-    return _out(args, "run.record", payload, _lines(payload))
+    lines = _lines(payload)
+    payload.pop("harness_note", None)  # a text line only: --json stays as it is without the config key
+    return _out(args, "run.record", payload, lines)

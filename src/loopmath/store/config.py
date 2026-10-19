@@ -43,6 +43,7 @@ DEFAULTS: dict[str, Any] = {
     "explore": {"default_pick": "best_value"},
     "budget": {"period": "month"},
     "outcome": {"q": {"verified": 0.98, "reported": 0.95, "heuristic": 0.8, "asserted": 0.7}},
+    "harness": {"record": "none"},  # `run record` and `run finish` without --harness (`spec/harness.md`)
 }
 
 CHOICES: dict[str, tuple[str, ...]] = {
@@ -50,6 +51,7 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "rescue.kind": ("retry", "redo_usual", "person", "none"),
     "explore.default_pick": ("best_value", "max_gain"),
     "budget.period": ("week", "month", "none"),
+    "harness.record": ("none", "auto"),
 }
 LABELER_KINDS = ("claude", "codex", "command")
 LABELER_KEYS = ("onboard.labeler", "labeler")  # `labeler` is the spec 02 name; D39 stores `onboard.labeler`
@@ -62,7 +64,7 @@ COUNT_KEYS = ("plan.exact_picks",)  # whole numbers >= 0; the recommender owns t
 RESCUE_KEYS = ("rescue.decay", "rescue.max_attempts", "rescue.min_chance")  # `check_rescue`
 KNOWN_ROOTS = ("org", "acceptance_rule", "rules", "goal", "rescue", "models", "harnesses", "subtypes",
                "labeler", "benchmark_prior_weight", "explore", "referee", "budget", "outcome", "usual",
-               "usual_meta", "research", "onboard", "plan", "efforts", "features")
+               "usual_meta", "research", "onboard", "plan", "efforts", "features", "harness")
 STRING_ROOTS = ("research",)  # values stored as given, never parsed as JSON
 # Every key loopmath reads; a `<...>` part is a name of your choice. `config get` lists the unset ones and
 # `config set` refuses a key that is none of these nor a table above one (such as `rescue`).
@@ -72,7 +74,7 @@ KEYS = ("org", "acceptance_rule", "rules.<name>", "goal", "rescue.kind", "rescue
         "budget.usd", "budget.period", "outcome.q.<tier>", "onboard.labeler", "onboard.skip",
         "usual.<type>.<repo>", "usual_meta.<type>.<repo>", "research.sweep_dir", "research.e0_corpus",
         "features.min_tasks", "features.<key>.<field>", "plan.time_budget_s", "plan.exact_picks",
-        "efforts.<model>")
+        "efforts.<model>", "harness.record")
 UNLISTED_KEYS = ("labeler",)  # the spec 02 name of onboard.labeler: `config set` still takes it
 
 

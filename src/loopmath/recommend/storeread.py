@@ -287,6 +287,20 @@ def find_config(home: Path, cfg_id: str, *, max_recs: int = 200) -> Configuratio
     return None
 
 
+def config_of_run(home: Path, run: str, cfg_id: str) -> Configuration | None:
+    """The configuration `cfg_id` of the stored run `run`, decoded as the fit decodes it (`belief.design`); None
+    when the run is gone, unreadable or now names another configuration."""
+    from ..belief.design import config_from_doc
+
+    doc = read_json(home / "runs" / run_names.file_name(run))
+    conf = doc.get("run", {}).get("configuration") if isinstance(doc, dict) else None
+    try:
+        cfg = config_from_doc(conf) if isinstance(conf, dict) else None
+    except (TypeError, ValueError, LookupError):  # `Unusable` is a ValueError
+        return None
+    return cfg if cfg is not None and cfg.id == cfg_id else None
+
+
 def config_from_any(d: dict | None) -> Configuration | None:
     """A `Configuration` from its `to_dict()` form or from OCP v0.3 `run.configuration`; None when unreadable.
 

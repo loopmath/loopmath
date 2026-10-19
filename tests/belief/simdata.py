@@ -159,11 +159,15 @@ def make_task(rng: np.random.Generator, i: int, *, n_tasks: int = 60, ttype: str
 
 def simulate_run(truth: Truth, task: Task, cfg: Configuration, run_id: str, rng: np.random.Generator, *,
                  source: str = "sweep", q: float = 0.98, tier: str = "verified",
-                 score: dict | None = None, rule: dict | None = None, sim_source: str | None = None) -> dict:
-    """One finished OCP v0.3 run document. `score`: {name, scale, better, unit}."""
+                 score: dict | None = None, rule: dict | None = None, sim_source: str | None = None,
+                 harness: dict | None = None) -> dict:
+    """One finished OCP v0.3 run document. `score`: {name, scale, better, unit}. `harness`: a harness record,
+    written to `run.ext` and simulated through its factors' true effects."""
+    from loopmath.harness import EXT_KEY, factors
+
     src = sim_source or source
-    rows = rows_for_config(task, cfg, src)
-    st = structure(cfg)
+    rows = rows_for_config(task, cfg, src, factors=factors(harness))
+    st = structure(cfg, factors(harness))
     attempts, nodes, signals = [], [], []
     for p in st.pieces:
         nodes.append({"id": p, "kind": st.roles[p], "vertex": p, "state": "done"})
@@ -228,7 +232,7 @@ def simulate_run(truth: Truth, task: Task, cfg: Configuration, run_id: str, rng:
                                   "source": "designed"},
                 "acceptance_rule": rule or {"name": "tests", "definition": "tests pass", "requires": ["tests"]},
                 "signals": signals,
-                "ext": {"dev.loopmath": {"state": "finished"}}},
+                "ext": {"dev.loopmath": {"state": "finished"}, **({EXT_KEY: harness} if harness else {})}},
         "nodes": nodes,
         "attempts": attempts,
     }

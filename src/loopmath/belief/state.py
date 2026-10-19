@@ -61,8 +61,9 @@ from ..types import (
     AcceptanceRule, BeliefState, Configuration, Interval, LookaheadResult, Money, NodeSummary, PiecePrediction,
     Prediction, ScorePrediction, Task,
 )
-from .compose import Intervals, RunDraws, compose, cost_per_round, interval
-from .design import Structure, cost_rest, gate_rest, other_design, run_rest, structure, task_features, task_terms
+from .compose import Intervals, RunDraws, compose, cost_per_round, interval, ranges
+from .design import (Structure, cost_rest, gate_rest, other_design, run_rest, split_factor_node, structure,
+                     task_features, task_terms)
 from .forest import LEVEL_ALIASES, canonical_model_id, default_scale, display_level, level_of, node_key, scale_group
 from .block import BlockFactor, blocks, leading_diagonal
 from .gaussian import _cho, cov_factor
@@ -447,9 +448,10 @@ class FitState:
             return 1.0
         return self.timebox_effort if self.resolve_task(task)[1]["horizon"]["used"] else 1.0
 
-    def _plan(self, config: Configuration, effort: float = 1.0) -> dict:
-        """The configuration's rows without the task part; `effort` from `effort_for(task)`."""
-        st = structure(config)
+    def _plan(self, config: Configuration, effort: float = 1.0, factors: Sequence[str] = ()) -> dict:
+        """The configuration's rows without the task part; `effort` from `effort_for(task)`, `factors` the harness
+        factors every piece runs with (`spec/harness.md`; none: the bare harness labels, as in 0.2.8)."""
+        st = structure(config, factors)
         cost = {}
         for piece in st.pieces:
             rounds = st.k_max if st.piece_loop.get(piece) is not None else 1
@@ -837,31 +839,37 @@ class FitState:
         return pred, {"g": g, "ell": ell_usd, "run": rd, "reach": reach_means, "success_from": success_from}
 
     def _predict_many(self, task: Task, configs: Sequence[Configuration], rule: AcceptanceRule | None,
-                      rescue_usd: float | None) -> list[tuple[Prediction, dict]]:
+                      rescue_usd: float | None, factors: Sequence[str] = ()) -> list[tuple[Prediction, dict]]:
         effort = self.effort_for(task)
-        plans = [self._plan(c, effort) for c in configs]
+        plans = [self._plan(c, effort, factors) for c in configs]
         tparts = self._task_parts(task)
         self._warm(plans)
         return [self._predict(task, p, tparts, rule, rescue_usd) for p in plans]
 
     def predict(self, task: Task, config: Configuration, rule: AcceptanceRule | None = None, *,
-                rescue_usd: float | None = None) -> Prediction:
-        return self._predict_many(task, [config], rule, rescue_usd)[0][0]
+                rescue_usd: float | None = None, factors: Sequence[str] = ()) -> Prediction:
+        return self._predict_many(task, [config], rule, rescue_usd, factors)[0][0]
 
     def predict_many(self, task: Task, configs: Sequence[Configuration], rule: AcceptanceRule | None = None, *,
-                     rescue_usd: float | None = None) -> list[Prediction]:
-        return [p for p, _ in self._predict_many(task, configs, rule, rescue_usd)]
+                     rescue_usd: float | None = None, factors: Sequence[str] = ()) -> list[Prediction]:
+        return [p for p, _ in self._predict_many(task, configs, rule, rescue_usd, factors)]
+
+    def predict_with_draws(self, task: Task, configs: Sequence[Configuration], rule: AcceptanceRule | None = None,
+                           *, rescue_usd: float | None = None,
+                           factors: Sequence[str] = ()) -> list[tuple[Prediction, dict]]:
+        """Each prediction with its joint draws (`g`, `ell`, ...), aligned across calls on the same fit."""
+        return self._predict_many(task, configs, rule, rescue_usd, factors)
 
     def success_draws(self, task: Task, configs: Sequence[Configuration],
-                      rule: AcceptanceRule | None = None) -> np.ndarray:
+                      rule: AcceptanceRule | None = None, *, factors: Sequence[str] = ()) -> np.ndarray:
         """The 400 joint draws of `g` per configuration, shape (len(configs), 400)."""
-        out = self._predict_many(task, configs, rule, None)
+        out = self._predict_many(task, configs, rule, None, factors)
         return np.stack([d["g"] for _, d in out]) if out else np.zeros((0, N_DRAWS))
 
     def ell_draws(self, task: Task, configs: Sequence[Configuration], rule: AcceptanceRule | None = None, *,
-                  rescue_usd: float | None = None) -> np.ndarray:
+                  rescue_usd: float | None = None, factors: Sequence[str] = ()) -> np.ndarray:
         """The joint draws of `ell` per configuration (parameter draws, aligned with success_draws)."""
-        out = self._predict_many(task, configs, rule, rescue_usd)
+        out = self._predict_many(task, configs, rule, rescue_usd, factors)
         return np.stack([d["ell"] for _, d in out]) if out else np.zeros((0, N_DRAWS))
 
     # ------------------------------------------------------------ look-ahead
@@ -948,6 +956,36 @@ class FitState:
                 idx.append(k)
             cur = parents.get(cur)
         return hs.draws[idx].sum(axis=0) if idx else np.zeros(N_DRAWS)
+
+    def factor_summary(self) -> list[dict]:
+        """Each harness factor's own effect (`spec/harness.md`): the factor's deviation alone, present against
+        absent with the harness label and everything else equal. `cost` is the multiplier on an attempt's
+        dollars; `success` is percentage points at the head's baseline, with the log-odds beside it. Ranges are
+        the 10/90 and 2.5/97.5 percentiles of the draws; the success ones carry `calibrated: False`, as their
+        coverage missed its nominal rates in simulation. Empty when the fit has no factor node."""
+        nodes = sorted({n for name in ("cost", "success") if name in self.heads
+                        for n in self.heads[name].nodes if level_of(n) == "hfactor"})
+        support = self.design.get("support") or {}
+        out = []
+        for node in nodes:
+            harness, factor = split_factor_node(node)
+            kind, _, name = factor.partition(":")
+            item: dict = {"factor": factor, "harness": harness, "kind": kind, "name": name, "node": node,
+                          "runs": max(int(((support.get(h) or {}).get(node) or [0])[0]) for h in ("cost", "success"))}
+            for head in ("cost", "success"):
+                hs = self.heads.get(head)
+                j = hs.index.get(node) if hs is not None and hs.fitted else None
+                if j is None:
+                    item[head] = None
+                    continue
+                d = hs.draws[j]
+                if head == "cost":
+                    item[head] = ranges(np.exp(d))
+                else:
+                    item[head] = {**ranges(100.0 * (expit(hs.baseline + d) - expit(hs.baseline))),
+                                  "log_odds": ranges(d), "calibrated": False}  # spec/harness.md section 9
+            out.append(item)
+        return sorted(out, key=lambda i: (i["harness"], i["factor"]))
 
     def _effect(self, hs: HeadState, eff: np.ndarray) -> tuple[Interval, Interval]:
         """cost: multiplier (x1.4); success and gate: log-odds shift, shown in pp at the baseline;

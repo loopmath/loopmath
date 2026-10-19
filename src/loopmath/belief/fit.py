@@ -226,6 +226,7 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
     labels: Counter = Counter()
     model_runs: dict[str, set[str]] = defaultdict(set)  # the price offset's inputs (spec 04 section 2)
     model_streams: dict[str, list[float]] = defaultdict(lambda: [0.0] * len(STREAMS))
+    variants: dict[str, dict] = {}  # the harness records read, by digest (`spec/harness.md`)
     for item in docs:
         origin, doc = item if isinstance(item, tuple) else (None, item)
         if origin is not None and _excluded(origin, without):
@@ -264,7 +265,9 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
         tally.add(pr.task, task_features(pr.task, features), pr.run_id, pr.source)
         chain = [n for n, _, _ in task_terms(pr.task, pr.source) if n.split(":", 1)[0] in TASK_LEVELS]
         config_support[pr.config.id].update(chain + ["all"])
-        st = structure(pr.config)
+        st = structure(pr.config, pr.factors)
+        if pr.harness is not None:
+            _add_variant(variants, pr, st)
         ttype = pr.task.type
         for a in pr.attempts:
             terms = cost_row(pr.task, pr.source, st, a.piece, a.round, a.setting, features)
@@ -315,7 +318,27 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
     heads["rate"].prices = heads["cost"].prices  # the price per token carries the same offset (spec 04 section 2)
     _price_rows(heads["rate"])
     return (heads, score_info, dict(dropped), dict(runs_by_source), {c: dict(n) for c, n in config_support.items()},
-            dict(checks), dict(overlap), dict(labels), tally)
+            dict(checks), dict(overlap), dict(labels), tally, harness_variants(variants))
+
+
+def _add_variant(variants: dict[str, dict], pr, st) -> None:
+    rec = pr.harness
+    key = str(rec.get("digest") or "") or "factors:" + "\n".join(pr.factors)
+    v = variants.setdefault(key, {"digest": rec.get("digest"), "source": str(rec.get("source") or "hand"),
+                                  "factors": list(pr.factors), "runs": 0, "harnesses": set(), "run_configs": {}})
+    v["runs"] += 1
+    v["harnesses"].update(s.harness or "unknown" for s in st.settings.values())
+    c = v["run_configs"].setdefault(pr.config.id, {"id": pr.config.id, "runs": 0, "run": pr.run_id})
+    c["runs"] += 1
+
+
+def harness_variants(variants: dict[str, dict]) -> list[dict]:
+    """The distinct harness records a fit read: most runs first, then by digest (`design.json`). Each lists the
+    configurations its runs used, most runs first, with one run to read each from (`recommend/variants.py`)."""
+    out = [{**v, "harnesses": sorted(v["harnesses"]),
+            "run_configs": sorted(v["run_configs"].values(), key=lambda c: (-c["runs"], c["id"]))}
+           for v in variants.values()]
+    return sorted(out, key=lambda v: (-v["runs"], str(v["digest"]), v["factors"]))
 
 
 def add_prices(hr: HeadRows, runs: dict[str, int], streams: dict[str, list[float]]) -> None:
@@ -615,7 +638,8 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
                 yield from prior_data.shared_docs(home)
 
         (heads_rows, score_info, dropped, runs_by_source, config_support, checks, overlap,
-         labels, tally) = collect_rows(all_docs(), without=without, now=now, features=features, q_by_tier=q_by_tier)
+         labels, tally, variants) = collect_rows(all_docs(), without=without, now=now, features=features,
+                                                 q_by_tier=q_by_tier)
         removed = {k[len("without "):] for k in dropped if k.startswith("without ")}
         unknown, known = unknown_sources(without, set(runs_by_source) | removed, bundle_dir)
         if unknown:
@@ -674,6 +698,8 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
                   "task_support": task_support, "score_support_by_type": score_types,
                   "config_support": config_support,
                   "task_features": tally.task_values(tally.report["admitted"])}
+        if variants:  # only with a harness record, so a store without one writes 0.2.8's design.json
+            design["harness_variants"] = variants
         _atomic_json(partial / "design.json", design)
         meta = {
             "fit": fit_id, "created_at": now.isoformat(timespec="seconds"), "code_version": _code_version(),

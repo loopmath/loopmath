@@ -414,6 +414,7 @@ def _one_run_lines(row: Mapping[str, Any], sel: Mapping[str, Any], limit: int) -
     lines = [f"run {row['run']}  {row.get('state')}  started {fmt_time(row.get('started_at'))}",
              f"task       {task.get('title') or 'n/a'}" + (f" ({where})" if where else ""),
              f"workflow   {cfg.get('label') or 'n/a'} [{cfg.get('id') or 'n/a'}]",
+             *_harness_lines(sel.get("doc") or {}),
              f"source     {row.get('source') or 'n/a'}" + (f"  slate {row['slate']}" if row.get("slate") else "")
              + _preferred_words(row),
              f"cost       {fmt_money(row['cost'].get('usd'), row['cost'].get('tokens'))} over "
@@ -436,6 +437,14 @@ def _one_run_lines(row: Mapping[str, Any], sel: Mapping[str, Any], limit: int) -
         lines.append(f"  {fmt_time(sig.get('observed_at'))}  {sig.get('kind')} {sig.get('name')} = "
                      f"{sig.get('value')}{unit} ({sig.get('tier')}){'  late' if sig.get('late') else ''}")
     return lines[:limit]
+
+
+def _harness_lines(doc: Mapping[str, Any]) -> list[str]:
+    """The run's harness record (`spec/harness.md`) in one line; none without a record."""
+    from ..harness import describe, run_record
+
+    rec = run_record(dict(doc))
+    return [f"harness    {describe(rec)}"] if rec is not None else []
 
 
 def _empty_lines(filters: Mapping[str, Any]) -> list[str]:

@@ -29,6 +29,13 @@ from .common import fmt_time, small_usd
 
 SCHEMA = "loopmath.view.posterior/1"
 SECTIONS = ("model", "effort", "role", "topology", "type", "repo", "feature")
+FACTOR_NOTE = ("Each factor is the change in cost and success when this named part is present, against the same "
+               "harness without it, pooled over its recorded versions. A part on every run of a harness cannot be "
+               "told apart from the harness itself; interactions are not modelled. Success effects are not "
+               "calibrated: in simulation they were pulled toward 0, and their 80 and 95% intervals held 60 and 79% "
+               "of nonzero effects; cost intervals met their stated coverage.")
+FACTOR_TEXT_NOTE = ("harness parts: success ranges are not calibrated (in simulation 80% ranges held 60% of nonzero "
+                    "success effects); cost ranges are: spec/harness.md section 9")
 HEADS = ("cost", "success", "gate")
 TERMINAL_LINES = 25
 
@@ -41,11 +48,12 @@ _LEVEL_SECTION = {
     "type": "type",
     "repo": "repo", "subtype": "repo",
     "psrc": "topology", "fsrc": "model",  # 0.2: position x source and family x source, cost and tokens only
+    "hfactor": "harness",  # a harness part, beside its harness label (`spec/harness.md`)
 }
 # The belief's interaction levels (belief.forest), keys joined with `|`, and how people read level names.
 _INTERACTIONS = {"family_effort": ["family", "effort"], "role_family": ["role", "family"]}
 _LEVEL_WORDS = {"family_effort": "family x effort", "role_family": "role x family", "model": "version",
-                "psrc": "position x source", "fsrc": "family x source"}
+                "psrc": "position x source", "fsrc": "family x source", "hfactor": "harness part"}
 UNTYPED = "untyped (no task type recorded)"  # the prior's `unknown` task type (E0 runs), view text only
 _MODEL_LEVELS = ("provider", "family", "version", "model")
 _TREE_RANK = {"provider": 0, "family": 1, "version": 2, "model": 2}
@@ -1311,6 +1319,10 @@ def build_view(state: Any, *, home: Path, level: str = "all", head: str | None =
         "score_name": score_name,
         "own_runs": own,
     }
+    factors = state.factor_summary() if hasattr(state, "factor_summary") else []
+    if factors:  # only a fit that read a harness record (`spec/harness.md`); else 0.2.8's object
+        data["factors"] = factors
+        data["factor_note"] = FACTOR_NOTE
     data["task"]["note"] = task_note(data["task"], ran, workflow)
     if ran:
         data["task"]["ran_on"] = [{"type": t, "repo": r, "runs": n} for t, r, n in ran]
@@ -1596,6 +1608,8 @@ def summary_lines(data: dict[str, Any], limit: int = TERMINAL_LINES, show_all: b
         what = [f"{not_run} row{'' if not_run == 1 else 's'} about providers and models you have not run"] if not_run else []
         what += [f"{unrun_models} model{'' if unrun_models == 1 else 's'} never run here"] if unrun_models else []
         notes.append(f"{' and '.join(what)} hidden: use --all")
+    if data.get("factors"):
+        notes.append(FACTOR_TEXT_NOTE)
     if show_all:
         limit = 10 ** 9
     room = limit - len(lines) - 1 - len(notes)

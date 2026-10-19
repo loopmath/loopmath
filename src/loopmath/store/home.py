@@ -373,6 +373,19 @@ class Store:
 
         return self._update(run, apply)
 
+    def tag_run(self, run: str, *, labels: dict[str, str] | None = None, ext: dict[str, Any] | None = None) -> None:
+        """Merge string labels into `run.labels` and namespaced entries into `run.ext`, on an open run."""
+
+        def apply(doc: dict[str, Any]) -> None:
+            self._require_open(doc)
+            meta = doc.setdefault("run", {})
+            if labels:
+                meta["labels"] = {**(meta.get("labels") or {}), **{str(k): str(v) for k, v in labels.items()}}
+            if ext:
+                meta["ext"] = {**(meta.get("ext") or {}), **ext}
+
+        self._update(run, apply)
+
     def add_signal(self, run: str, signal: Signal) -> str:
         """Record a signal. Open run: appended to `signals/<run>.jsonl`. Finished run: a late signal, written
         into the run file with a `signal_observed` event, and the run's receipts flagged `rescore: true`.

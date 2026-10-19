@@ -1,0 +1,416 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loopmath.dev/spec/harness-runs-0.1.schema.json",
+  "title": "loopmath.harness-runs/0.1: one row per rollout",
+  "description": "One JSON object per line. Only schema and task_id are required; unknown fields are kept. See spec/harness-runs.md.",
+  "type": "object",
+  "required": [
+    "schema",
+    "task_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "loopmath.harness-runs/0.1"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "task": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A loopmath task type (loopmath task-types).",
+          "enum": [
+            "bug_fix",
+            "feature",
+            "refactor",
+            "tests",
+            "docs",
+            "research",
+            "infra",
+            "data",
+            null
+          ]
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "arm": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pair": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "experiment": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "A stable name, never a path.",
+      "not": {
+        "type": "string",
+        "pattern": "[/\\\\]|^~|^\\.{1,2}$"
+      }
+    },
+    "status": {
+      "enum": [
+        "done",
+        "failed",
+        null
+      ]
+    },
+    "harness": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": [
+            "schema",
+            "digest",
+            "factors"
+          ],
+          "properties": {
+            "schema": {
+              "type": "string",
+              "pattern": "^loopmath\\.harness/"
+            },
+            "digest": {
+              "type": "string",
+              "minLength": 1
+            },
+            "factors": {
+              "type": "array"
+            }
+          }
+        }
+      ]
+    },
+    "agent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "effort": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "score"
+          ],
+          "not": {
+            "required": [
+              "accepted"
+            ]
+          },
+          "properties": {
+            "score": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "judge": {
+              "type": "string",
+              "minLength": 1
+            },
+            "scale": {
+              "enum": [
+                "linear",
+                "log",
+                "fraction"
+              ]
+            },
+            "better": {
+              "enum": [
+                "higher",
+                "lower"
+              ]
+            },
+            "observed_at": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+            }
+          },
+          "if": {
+            "properties": {
+              "scale": {
+                "const": "fraction"
+              }
+            },
+            "required": [
+              "scale"
+            ]
+          },
+          "then": {
+            "properties": {
+              "score": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "accepted"
+          ],
+          "not": {
+            "required": [
+              "score"
+            ]
+          },
+          "properties": {
+            "accepted": {
+              "type": "boolean"
+            },
+            "by": {
+              "type": "string"
+            },
+            "observed_at": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+            }
+          }
+        }
+      ]
+    },
+    "cost": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "tokens": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "input": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cache_read": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cache_write": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "recovered": {
+          "type": "boolean"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "partial_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "usd_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unpriced": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "incomplete": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped_lines": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "if": {
+        "type": "object",
+        "required": [
+          "complete"
+        ],
+        "properties": {
+          "complete": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "usd": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    "started_at": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+        }
+      ]
+    },
+    "ended_at": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+        }
+      ]
+    },
+    "tool": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ext": {
+      "type": "object"
+    }
+  }
+}

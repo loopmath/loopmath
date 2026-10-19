@@ -52,7 +52,7 @@ def test_reimport_counts_new_and_already_in_the_store(capsys, tmp_path, spawned)
     assert (out["imported"], out["new"], out["already_in_store"]) == (2, 0, 2)
     assert [f["already_in_store"] for f in out["files"]] == [True, True]
     code, out, err = cli(capsys, home, "run", "import", str(folder))
-    assert "2 runs imported (0 new, 2 already in the store and replaced), 0 failed" in out.splitlines()
+    assert "2 runs imported (0 new, 2 unchanged), 0 failed" in out.splitlines()   # the same content changes nothing
 
 
 def test_finish_of_already_finished_runs_refits_a_store_with_no_fit(capsys, tmp_path, spawned):
@@ -95,4 +95,4 @@ def test_one_file_already_in_the_store_says_so(capsys, tmp_path, spawned):
     cli(capsys, home, "run", "import", str(folder / "run-a.ocp.json"), "--no-fit")
     code, out, err = cli(capsys, home, "run", "import", str(folder / "run-a.ocp.json"), "--no-fit")
     assert code == 0, err
-    assert out.splitlines()[0] == "run-a  (already in the store; replaced by this file)"
+    assert out.splitlines()[0] == "run-a  (already in the store, unchanged)"
