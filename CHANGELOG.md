@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.3.1 (2026-10-19)
+
+Fixes for problems found in 0.3.0. Four features are marked experimental, and `scan`, `prior build` and `research` leave the help. Under `--json`, an error is one JSON object on stdout. An unknown cost no longer reads as $0. `check-change` says `not decided` when it stops before the evidence decides, shows the next pair's value and price without stopping on them unless asked, and judges a pair's arm order by when its runs started. Fits, predictions and recommendations are 0.3.0's.
+
+### Labels and help
+
+- `gate`, the harness-part estimates (`posterior --level harness`, `recommend --harness-variants` and `--harness`), `adapt harness2` and the ADE adapters (`loopmath adapt NAME`) say experimental in their help and the README. They work as in 0.3.0.
+- `check-change` is not marked experimental: the next pair's value is now advisory, and `--value-stop` gives 0.3.0's stop (see `check-change` below).
+- `scan`, `prior build` and `research` are off `loopmath --help`, `prior --help` and the README. They stay callable by name.
+
+### Errors and costs
+
+- Under `--json`, a command that fails, a usage error included, prints one `loopmath.error/1` object on stdout: `ok: false`, `command`, `error`, `hint` when the error has one, and `exit`. stderr and the exit code are as before, and a command that prints its own JSON error, as `gate` and `check-change` do, is left alone. This fixes the 0.3.0 known issues for `fit`, `posterior`, `recommend` and `runs` and for usage errors (#1).
+- `runs`, `status` and `budget` never show an unknown cost as $0. With no dollar cost on any run they say `cost unknown` (`unknown` in `status`), and with some, `$X known` and how many runs have none; tokens likewise. When every run has its cost, the lines are as before (#5).
+- A store path (`--home` or `LOOPMATH_HOME`) that is a file, or has a file on its path, gives one error line naming it and exits 1, with no traceback (#15).
+- `adapt atrium` writes its document. The adapter emits events only, and 0.3.0 refused such a document as empty.
+- `run attempt --piece P` takes the harness and the model from the run's configuration for the piece, as it already took the effort. `--harness`, `--model` and `--effort` still win, and a piece with no configuration names the flags it needs.
+- `verify-receipts --json` prints one `loopmath.verify-receipts/1` object, for the store's receipts and for a research ledger. The text output is unchanged.
+
+### `check-change`
+
+- A check that stops before P(better) decides, at its cap, with its budget spent or under one pair, or with `--value-stop` when the next pair is worth less than its price, says `not decided: ..., the base stays` and names the flag that goes on: `--n` or `--tasks` for a check, `--max-pairs` for `from-runs`. 0.3.0 said `verdict: reject`. `--json` keeps `verdict: reject` and `stop`, and adds `comparison.decided`, true only when P(better) decided (#2).
+- The next pair's value no longer stops a check by default. It is priced and shown at each look, with its price, and the check goes on to a decision, its cap or its budget. In 0.3.0 the value stop could end a check after one or two pairs, and at the default 50 future runs it ended most checks of a real cut before the evidence could decide. `--value-stop` on `start` and `from-runs` turns it back on, from 4 scored pairs on (`--min-pairs K` changes the number, and `--min-pairs 1` gives 0.3.0's stop); `--min-pairs` without `--value-stop` is refused. `comparison.value_stop` and `comparison.min_pairs` report them (#4).
+- `gate` decides as before: it keeps its own stop on the next pair's value. Its reason line for that stop reads `the next pair is not worth buying: worth $X, costs $Y`, where 0.3.0 said that compare stopped buying pairs (#4).
+- A pair is out of order only when the run of its planned second arm started first, by the runs' start times, so arms run at the same time are in order whichever is recorded first. A pair is judged once both its runs are recorded. When a start time is missing, the record order decides, as before. `out_of_order` entries carry `by`: `start` or `record` (#7).
+- Counts take the singular for 1: "1 pair", "1 candidate run". The reasons name only the arms that have runs, and a $0 cost is "counted as a tiny positive amount" (#16).
+
+### Upgrading from 0.3.0
+
+- Under `--json`, a failing command prints a JSON object on stdout where 0.3.0 printed nothing there. A script that took any stdout as success reads `ok` or the exit code.
+- `check-change` no longer stops on the next pair's value unless `--value-stop` is given: where 0.3.0 gave `reject` with `stop: value`, it gives `more` and goes on to a decision, its cap or its budget. Pass `--value-stop --min-pairs 1` for 0.3.0's stop.
+
+### Known issues
+
+- `posterior` shows the first score in its levels when no `--head score:NAME` is given. After an import that can be a score your own runs do not have; pass `--head score:NAME` for the one you want (#6).
+- `recommend` marks a reference on a retired model only with "(retired model)", and does not say plainly that the reference is not offered because its model is retired (#8).
+
 ## 0.3.0 (2026-10-19)
 
 Testing a harness change. A run can carry a record of its harness tree, and the fit learns each named part's effect on cost and success. Runs another tool made come in through two run importers. `check-change` decides whether a change beats what it replaces, on paired runs, and `gate` answers adopt, reject or replicate for a loop that adopts changes on its own. A store with no harness record anywhere gives 0.2.8's numbers exactly.

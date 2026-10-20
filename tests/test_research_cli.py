@@ -18,7 +18,8 @@ def _help(capsys, *argv) -> str:
 
 def test_research_verbs_are_under_research_help(capsys):
     top = _help(capsys)
-    assert "analyze-e0" not in top and "transfer-test" not in top and "loopmath research --help" in top
+    assert "analyze-e0" not in top and "transfer-test" not in top
+    assert "loopmath research --help" not in top and ",research}" not in top  # hidden in 0.3.1
     research = _help(capsys, "research")
     for verb in ("fit", "transfer-test", "analyze-e0"):
         assert verb in research, verb

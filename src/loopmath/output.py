@@ -74,6 +74,11 @@ def write_html(path: Path, page: str) -> Path:
     return path
 
 
+def counted(n: int, singular: str, plural: str | None = None) -> str:
+    """A count and its noun, singular for 1: '1 pair', '2 pairs', '0 runs'."""
+    return f"{n} {singular if n == 1 else (plural or singular + 's')}"
+
+
 def fmt_usd(value: Any) -> str:
     """Dollars for a terminal line. An exact zero is `$0`; a cost above zero and under a cent keeps one
     significant digit (`$0.002`, never `$0.00`); from a cent up, `$1,234.56`. None or a non-number is `n/a`."""

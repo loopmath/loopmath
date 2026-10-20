@@ -63,6 +63,8 @@ FLOOR_CPAR = 0.05  # the candidate must cut dollars per accepted result by 5% to
 FLOOR_GAIN = 0.05  # or raise the chance of acceptance by 5 points
 FLOOR_SCORE = 0.0  # a score's floor, in its units
 HORIZON_RUNS = 50  # future similar runs the decision applies to, for the next pair's value
+MIN_PAIRS_VALUE = 4  # with the value stop on, scored pairs before the next pair's value may stop a check: on
+#                      fewer, the value stop ended checks of a real cut after one or two pairs (0.3.1)
 SIGMA_RANGE = (0.05, 3.0)  # the log-cost sds' prior support
 COST_NU = 3.0  # inverse Wishart degrees of freedom: the weakest proper prior in two dimensions
 COST_SD = 0.5  # its scale: a log-cost sd of 0.5 (dollars within a factor of 1.6)

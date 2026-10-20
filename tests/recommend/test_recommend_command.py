@@ -338,7 +338,9 @@ def test_redo_usual_with_a_usual_that_never_succeeds_is_a_user_error(env, capsys
     state["belief"].nums[USUAL.id] = Num(0.0, 2.00, g_half=0.0)
     assert cli.main(["recommend", "--type", "feature", "--repo", "acme/app", "--json"]) == 1
     cap = capsys.readouterr()
-    assert cap.out == "" and "set rescue.kind to person or none" in cap.err
+    assert "set rescue.kind to person or none" in cap.err
+    obj = json.loads(cap.out)  # 0.3.1: under --json the error is one JSON object on stdout too
+    assert obj["ok"] is False and obj["exit"] == 1 and "set rescue.kind to person or none" in obj["error"]
 
 
 def test_the_same_question_on_the_same_fit_gets_the_same_answer(env, capsys, tmp_path):

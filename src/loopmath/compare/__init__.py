@@ -36,6 +36,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from ..output import counted
 from . import model as M
 
 SCHEMA = "loopmath.compare/1"
@@ -110,7 +111,11 @@ class Comparison:
     max_pairs: int | None = None  # the cap the threshold is calibrated for
     bound: dict | None = None  # the false adopt bound it carries, or None when none is stated
     stop: str | None = None  # why the check stops: decided (adopt or reject on P(better)), cap, budget or value
-    #                          (both keep the base, as verdict reject); None while the verdict is more
+    #                          (value only with value_stop; both keep the base, as verdict reject); None while
+    #                          the verdict is more
+    decided: bool = False  # P(better) decided (stop decided); a cap, budget or value stop keeps the base undecided
+    min_pairs: int = M.MIN_PAIRS_VALUE  # with value_stop, scored pairs before the next pair's value may stop the check
+    value_stop: bool = False  # the next pair's value stops the check; off (the default) it is priced and shown only
     outcomes_only: bool = False  # a cost is unknown, so the answer is on the outcomes alone (the gain, no lookahead)
 
     def to_dict(self) -> dict[str, Any]:
@@ -209,7 +214,7 @@ def _one_scale(base: list[Observation], cand: list[Observation]) -> None:
             if o.outcome is not None:
                 seen.setdefault(o.scale or "linear", [0, 0])[i] += 1
     if len(seen) > 1:
-        parts = "; ".join(f"{s}: {n[0]} base and {n[1]} candidate runs" for s, n in sorted(seen.items()))
+        parts = "; ".join(f"{s}: {arm_runs(*n)}" for s, n in sorted(seen.items()))
         raise ValueError(f"the scored runs mix score scales ({parts}); compare runs on one scale (a score "
                          f"that states no scale is linear)")
 
@@ -232,7 +237,7 @@ def _one_direction(base: list[Observation], cand: list[Observation], rule: str) 
             if o.outcome is not None and o.better is not None:
                 seen.setdefault(o.better, [0, 0])[i] += 1
     if len(seen) > 1:
-        parts = "; ".join(f"{w}: {n[0]} base and {n[1]} candidate runs" for w, n in sorted(seen.items()))
+        parts = "; ".join(f"{w}: {arm_runs(*n)}" for w, n in sorted(seen.items()))
         raise ValueError(f"the scored runs disagree on which way score {name} is better ({parts}); compare runs "
                          f"whose scores agree on it")
     if seen:
@@ -299,7 +304,7 @@ def _one_rule(base_runs: list[Any], cand_runs: list[Any], config: Any = None) ->
         return
     seen = own_rules(base_runs, cand_runs)
     if len(seen) == len(rules):
-        parts = "; ".join(f"{r}: {n[0]} base and {n[1]} candidate runs" for r, n in sorted(seen.items()))
+        parts = "; ".join(f"{r}: {arm_runs(*n)}" for r, n in sorted(seen.items()))
         raise ValueError(f"the runs are judged by different rules ({parts}); compare them under one rule: "
                          + " or ".join(f"--rule {r}" for r in sorted(seen)))
     for detail in range(3):
@@ -308,8 +313,7 @@ def _one_rule(base_runs: list[Any], cand_runs: list[Any], config: Any = None) ->
             break
     alike = sorted(name for name in seen if sum(str(r.name) == name for r, _ in rules) > 1)
     named = f" named {alike[0]}" if len(seen) == 1 else f", more than one named {' or '.join(alike)}"
-    parts = "; ".join(f"{w}: {n[0]} base and {n[1]} candidate runs"
-                      for w, (_, n) in sorted(zip(whats, rules), key=lambda t: t[0]))
+    parts = "; ".join(f"{w}: {arm_runs(*n)}" for w, (_, n) in sorted(zip(whats, rules), key=lambda t: t[0]))
     there = ", ".join(r for r in rule_choices(base_runs, cand_runs, config) if r != ACCEPT)
     raise ValueError(f"the runs are judged by {len(rules)} different rules{named} ({parts}); compare them under "
                      f"one rule: --rule with one of {there}")
@@ -575,7 +579,8 @@ def _all_or_none(base: list[Observation], cand: list[Observation], field_: str, 
     """True when every run has `field_`, False when none does; a mix raises."""
     nb, nc = sum(1 for r in base if getattr(r, field_)), sum(1 for r in cand if getattr(r, field_))
     if 0 < nb + nc < len(base) + len(cand):
-        raise ValueError(f"{what}s on {nb} of {len(base)} base runs and {nc} of {len(cand)} candidate runs: give "
+        raise ValueError(f"{what}s on {nb} of {counted(len(base), 'base run')} and {nc} of "
+                         f"{counted(len(cand), 'candidate run')}: give "
                          f"every run {'a' if what[0] not in 'aeiou' else 'an'} {what}, or none")
     return nb + nc > 0
 
@@ -659,13 +664,17 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
            objective: str | None = None, floor: float | None = None, confidence: float = M.CONFIDENCE,
            horizon_runs: float = M.HORIZON_RUNS, value_usd: float | None = None, spent_usd: float | None = None,
            seed: int = 0, now: datetime | None = None, config: Any = None, lookahead: bool = True,
-           max_pairs: int | None = None) -> Comparison:
+           max_pairs: int | None = None, min_pairs: int | None = None, value_stop: bool = False) -> Comparison:
     """Compare the candidate arm with the base arm on paired tasks. See the module docstring and
     `compare/model.py` for the models, and `compare/calibration.py` for the adopt threshold.
 
     `max_pairs` is the cap on pairs the check will look at, fixed before the first look (default
     `calibration.DEFAULT_CAP`); the threshold is calibrated for a look after every pair up to it. Every pair
-    counts toward the cap, scored or not, as in the calibration's simulations. `spent_usd`
+    counts toward the cap, scored or not, as in the calibration's simulations. The next pair's value and price
+    are priced and shown at each look, and stop nothing: the check goes on to a decision, the cap or the
+    budget. `value_stop=True` stops it (verdict reject, stop value) when the next pair is worth less than its
+    price, from `min_pairs` scored pairs on (default `model.MIN_PAIRS_VALUE`; 1 stops on value from the first
+    scored pair). `spent_usd`
     defaults to the known dollars of all the runs given. `lookahead=False` skips the next pair's value
     (simulations of the stopping rule): an undecided answer is then `more` while the budget allows.
 
@@ -687,6 +696,9 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     objective = objective or ("gain" if score else "cpar")
     if objective not in ("cpar", "gain"):
         raise ValueError("objective: cpar or gain")
+    min_pairs = M.MIN_PAIRS_VALUE if min_pairs is None else int(min_pairs)
+    if min_pairs < 1:
+        raise ValueError("min_pairs: at least 1")
     if score and objective == "cpar":
         raise ValueError("a score rule has no accepted result: use objective gain, or a target rule such as NAME>=X")
     if floor is None:
@@ -803,7 +815,7 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     n_lone = sum(sum(v) for v in lone.values())
     if cal["bound"] is not None and n_lone > n_pairs:  # the verdict is unchanged; only the claim goes
         cal = dict(cal, bound=None, why=f"no false adopt bound is stated: {n_lone} scored {'run has' if n_lone == 1 else 'runs have'} no scored "
-                                        f"partner against {n_pairs} scored pairs, and the calibrated families have "
+                                        f"partner against {counted(n_pairs, 'scored pair')}, and the calibrated families have "
                                         f"at most about one such run per pair")
     st = M.Settings(objective=objective, floor=floor, confidence=confidence, threshold=cal["threshold"],
                     horizon_runs=horizon_runs, value_usd=value_usd)
@@ -829,12 +841,15 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     if both_unscored:
         reasons.append(some(both_unscored).format("both runs unscored") + " left out")
     if lone_b or lone_c:
-        reasons.append(f"{len(lone_b)} base and {len(lone_c)} candidate runs have no partner")
+        reasons.append(f"{arm_runs(len(lone_b), len(lone_c), nonzero=True)} {_have(len(lone_b) + len(lone_c))} "
+                       "no partner")
     if any(no_cost.values()):
-        reasons.append(f"{no_cost['base']} base and {no_cost['cand']} candidate runs have no dollar cost; "
-                       f"the cost ranges leave them out")
+        n = no_cost["base"] + no_cost["cand"]
+        reasons.append(f"{arm_runs(no_cost['base'], no_cost['cand'], nonzero=True)} {_have(n)} no dollar cost; "
+                       f"the cost ranges leave {'it' if n == 1 else 'them'} out")
     if zero:
-        reasons.append(f"{zero} runs cost $0; they enter the cost model at {ZERO_USD} USD")
+        reasons.append(f"{counted(zero, 'run')} {'costs' if zero == 1 else 'cost'} $0; a $0 cost is counted as a "
+                       "tiny positive amount")
     if d.post.cost_refused:
         reasons.append(d.post.cost_refused)
     if alone:
@@ -842,7 +857,7 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
                        f"{'gain' if score else 'gain in the chance of acceptance'}, and nothing stops on the next "
                        f"pair's value; an unknown cost is never a reason to reject")
     if any(counts["failed"].values()):
-        reasons.append(f"{counts['failed']['base']} base and {counts['failed']['cand']} candidate runs failed; "
+        reasons.append(f"{arm_runs(counts['failed']['base'], counts['failed']['cand'], nonzero=True)} failed; "
                        f"a failed run counts as not accepted")
     cpar_b, cpar_c = (d.cpar_base, d.cpar_cand) if informed else (None, None)
     if not score:
@@ -885,8 +900,9 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
                 reasons.insert(1, unpaired)
         if looks >= cal["cap"]:
             verdict, stop = "reject", "cap"
-            reasons.append(f"the cap of {cal['cap']} pairs is reached: keep the base (the adopt threshold holds "
-                           f"its bound only up to the cap; plan a longer check with a larger max_pairs)")
+            reasons.append(f"the cap of {counted(cal['cap'], 'pair')} is reached before P(better) decides: keep "
+                           f"the base, undecided (the adopt threshold holds its bound only up to the cap; to go on, "
+                           f"run a longer check with a larger cap)")
         elif budget_left is not None and budget_left <= 0:  # spent, priced or not
             verdict, stop = "reject", "budget"
             reasons.append(f"the budget is spent ({spent_usd:.4f} of {budget_usd:.4f} USD): keep the base")
@@ -914,6 +930,16 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
                 verdict = "more"
                 reasons.append("the next pair's value is not priced (no dollar value for this outcome, or no "
                                "costed runs yet): run more pairs until the answer is clear or the budget ends")
+            elif value < price and not value_stop:
+                verdict = "more"
+                reasons.append(f"the next pair is worth {value:.4f} USD over {horizon_runs:g} future runs, under "
+                               f"its price of {price:.4f} USD; the value stop is off, so the check goes on to "
+                               f"a decision, the cap or the budget: run another pair")
+            elif value < price and n_pairs < min_pairs:
+                verdict = "more"
+                reasons.append(f"the next pair is worth {value:.4f} USD over {horizon_runs:g} future runs, under "
+                               f"its price of {price:.4f} USD, but the value stop waits for "
+                               f"{counted(min_pairs, 'scored pair')} ({n_pairs} so far): run another pair")
             elif value < price:
                 verdict, stop = "reject", "value"
                 reasons.append(f"the next pair is worth {value:.4f} USD over {horizon_runs:g} future runs, under "
@@ -943,7 +969,20 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
         budget_usd=budget_usd, spent_usd=spent_usd, counts=counts,
         pairs=[{"key": k, "base": b.run, "cand": c.run} for k, b, c in pairs],
         adopt_threshold=round(thr, 6), max_pairs=cal["cap"], bound=cal["bound"], stop=stop,
+        decided=stop == "decided", min_pairs=min_pairs, value_stop=bool(value_stop),
         outcomes_only=alone is not None)
+
+
+def arm_runs(nb: int, nc: int, *, nonzero: bool = False) -> str:
+    """'3 base and 1 candidate run', the noun agreeing with the nearer count; with nonzero, an arm with no runs is
+    left out: '1 candidate run', '2 base runs and 1 candidate run'."""
+    if not nonzero:
+        return f"{nb} base and {counted(nc, 'candidate run')}"
+    return " and ".join(counted(n, f"{arm} run") for n, arm in ((nb, "base"), (nc, "candidate")) if n)
+
+
+def _have(n: int) -> str:
+    return "has" if n == 1 else "have"
 
 
 def _has(xs: list[Any]) -> str:

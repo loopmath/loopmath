@@ -326,14 +326,14 @@ def test_replicates_of_one_task_pair_on_the_pair_key_through_rows_and_imported_r
 def test_a_pair_key_on_some_runs_only_is_refused():
     keyed = [Observation("t1", outcome=True, usd=1.0, run="run_b0", pair="t1#1")]
     plain = [Observation("t1", outcome=True, usd=1.0, run="run_c0")]
-    with pytest.raises(ValueError, match="pair keys on 1 of 1 base runs and 0 of 1 candidate runs"):
+    with pytest.raises(ValueError, match="pair keys on 1 of 1 base run and 0 of 1 candidate run"):
         paired(keyed, plain, rule="tests")
     again = [dataclasses.replace(keyed[0], run="run_b1")]
     with pytest.raises(ValueError, match="two base runs"):
         paired(keyed + again, [dataclasses.replace(plain[0], pair="t1#1")], rule="tests")
     with pytest.raises(ValueError, match="joins task"):
         paired(keyed, [Observation("t2", outcome=True, usd=1.0, run="run_c0", pair="t1#1")], rule="tests")
-    with pytest.raises(ValueError, match="experiments on 1 of 1 base runs and 0 of 1"):
+    with pytest.raises(ValueError, match="experiments on 1 of 1 base run and 0 of 1"):
         paired([dataclasses.replace(keyed[0], experiment="chk_A")], [dataclasses.replace(plain[0], pair="t1#1")],
                rule="tests")
 
@@ -489,7 +489,7 @@ def test_accept_refuses_runs_whose_own_rules_differ_and_names_the_rules():
     scored = [HR.to_ocp(dict(r, id="judge-cand", task_id="task-x", pair="px"))
               for r in scale_rows(1)[1]]  # a judge score: the default rule, tests
     with pytest.raises(ValueError, match=r"judged by different rules \(accepted: 3 base and 3 candidate runs; "
-                                         r"tests: 0 base and 1 candidate runs\).*--rule accepted.*--rule tests"):
+                                         r"tests: 0 base and 1 candidate run\).*--rule accepted.*--rule tests"):
         paired(docs_b, docs_c + scored, rule="accept", lookahead=False)
 
 
@@ -529,7 +529,7 @@ def test_accept_refuses_two_different_rules_of_one_name():
     mixed = judged(docs_c[:1], dict(strict, name="tests"))  # names differ too: each rule by name and requirement
     with pytest.raises(ValueError, match=r"judged by 3 different rules, more than one named strict \(strict, requires "
                                          r"accepted: 3 base and 0 candidate runs; strict, requires tests: 0 base and 2 "
-                                         r"candidate runs; tests, requires accepted: 0 base and 1 candidate runs\)"):
+                                         r"candidate runs; tests, requires accepted: 0 base and 1 candidate run\)"):
         paired(judged(docs_b, strict), mixed + judged(docs_c[1:], dict(strict, requires=["tests"])), rule="accept",
                lookahead=False)
 
@@ -642,8 +642,10 @@ def test_the_stop_field_says_why_a_check_stops():
     assert (c.verdict, c.stop) == ("reject", "budget")
     c = paired(base, cand, rule="tests", max_pairs=4)
     assert (c.verdict, c.stop) == ("reject", "cap")
-    c = paired(base, cand, rule="tests", horizon_runs=0.01)  # the tester's #184: worth less than its price
-    assert (c.verdict, c.stop) == ("reject", "value")
+    c = paired(base, cand, rule="tests", horizon_runs=0.01, value_stop=True)  # the tester's #184: worth less
+    assert (c.verdict, c.stop) == ("reject", "value")  # than its price
+    c = paired(base, cand, rule="tests", horizon_runs=0.01)  # without value_stop, the value stops nothing
+    assert (c.verdict, c.stop) == ("more", None) and c.next_pair_value_usd < c.pair_price_usd
     c = paired(base, cand, rule="tests", horizon_runs=1e6)  # worth its price: run another pair
     assert (c.verdict, c.stop) == ("more", None) and c.to_dict()["stop"] is None
 

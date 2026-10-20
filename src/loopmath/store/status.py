@@ -15,7 +15,7 @@ from ..belief.design import other_design
 from ..output import fmt_time, fmt_usd
 from . import run_names
 from . import runs as R
-from .budget import budget_state, history_line, spend_parts
+from .budget import budget_state, history_line, spend_amounts, spend_parts
 from .config import ConfigError
 from .fitjob import exclusions, fit_state
 from .home import Store
@@ -256,13 +256,14 @@ def status_lines(p: dict[str, Any]) -> list[str]:
     if b:
         spent = b["spent"]
         when = "in all" if b["period"] == "none" else f"this {b['period']}"
+        dollars, tokens = spend_amounts(spent)  # an unknown cost is never $0
         if b["cap_usd"] is None:
-            lines.append(f"spend {when}: {fmt_usd(spent['usd'])} ({spent['tokens']:,} tokens); no cap")
+            lines.append(f"spend {when}: {dollars} ({tokens}); no cap")
         else:
-            lines.append(f"spend {when}: {fmt_usd(spent['usd'])} of {fmt_usd(b['cap_usd'])} ({spent['tokens']:,} tokens)"
+            lines.append(f"spend {when}: {dollars} of {fmt_usd(b['cap_usd'])} ({tokens})"
                          + ("; cap reached" if b["reached"] else ""))
         lines.append(f"  {spend_parts(spent)}")
-        if spent.get("attempts_not_costed"):
+        if spent.get("attempts_not_costed") and dollars != "unknown":
             lines.append(f"  known dollars only: {spent['attempts_not_costed']} attempt(s) have no dollars")
         if spent.get("history_runs"):
             lines.append(f"  {history_line(spent)}")

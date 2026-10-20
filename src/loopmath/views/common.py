@@ -237,6 +237,20 @@ def fmt_money(usd: Any, tokens: Any) -> str:
     return f"{fmt_usd(usd)} ({fmt_tokens(tokens)} tokens)"
 
 
+def fmt_money_over(n: int, usd: Any, n_usd: int, tokens: Any, n_tokens: int) -> str:
+    """`fmt_money` summed over `n` runs, of which `n_usd` have dollars and `n_tokens` tokens: an unknown cost
+    never reads as $0. `cost unknown`, or `$1.20 known, 4 with no cost (351k tokens known)`."""
+    if n_usd >= n and n_tokens >= n:
+        return fmt_money(usd, tokens)
+    if n_usd == 0 and n_tokens == 0:
+        return "cost unknown"
+    dollars = fmt_usd(usd) if n_usd >= n else "cost unknown" if n_usd == 0 else \
+        f"{fmt_usd(usd)} known, {n - n_usd} with no cost"
+    toks = f"{fmt_tokens(tokens)} tokens" if n_tokens >= n else "tokens unknown" if n_tokens == 0 else \
+        f"{fmt_tokens(tokens)} tokens known"
+    return f"{dollars} ({toks})"
+
+
 def fmt_pct(value: Any, digits: int = 0) -> str:
     v = num(value)
     return "n/a" if v is None else f"{v * 100:.{digits}f}%"

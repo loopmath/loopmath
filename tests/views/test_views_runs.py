@@ -201,7 +201,9 @@ def test_since_is_read_by_the_store_and_minutes_or_months_is_refused(store, caps
     for ambiguous in ("3m", "90M", "1.5 m"):
         for extra in ([], ["--json"]):
             code, _, captured = _json(capsys, ["runs", "--home", str(store), *extra, "--since", ambiguous])
-            assert code == 2 and "ambiguous" in captured.err and captured.out == ""
+            assert code == 2 and "ambiguous" in captured.err
+            # 0.3.1: under --json the error is one JSON object on stdout; without it stdout stays empty
+            assert (json.loads(captured.out)["exit"] == 2) if extra else captured.out == ""
     data = runs.build_view(store, {"since": "36H"}, now=NOW)  # any case and a decimal, as the store reads it
     assert data["filters"]["since_at"] == (NOW - timedelta(hours=36)).isoformat(timespec="seconds")
     assert runs.build_view(store, {"since": "1.5d"}, now=NOW)["filters"]["since_at"] == data["filters"]["since_at"]

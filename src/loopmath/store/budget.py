@@ -81,6 +81,7 @@ def spend(store, period: str, now: datetime | None = None) -> dict[str, Any]:
     n = 0
     exploration = history = 0.0
     open_runs = not_costed = runs_not_costed = history_runs = 0
+    with_usd = with_tokens = 0  # runs with any known dollars, any known tokens
     for row in store.runs():
         started = parse_ts(row.get("started_at"))
         if since is not None and (started is None or started < since):
@@ -89,15 +90,15 @@ def spend(store, period: str, now: datetime | None = None) -> dict[str, Any]:
             open_runs += 1
             continue
         if "cost_usd_known" in row and "attempts_not_costed" in row:
-            u = float(row.get("cost_usd_known") or 0.0)
-            t = float(row.get("tokens") or 0)
+            u_raw, t_raw = row.get("cost_usd_known"), row.get("tokens")
             missing = int(row.get("attempts_not_costed") or 0)
         else:  # an index row written before these fields: read the run
             try:
                 cost = R.run_cost(store._read(row["run"]))
             except Exception:
                 continue
-            u, t, missing = cost["usd_known"], float(cost["tokens"] or 0), cost["unpriced"]
+            u_raw, t_raw, missing = cost["usd_known"], cost["tokens"], cost["unpriced"]
+        u, t = float(u_raw or 0.0), float(t_raw or 0)
         if is_history_row(store, row):
             history += u
             history_runs += 1
@@ -105,6 +106,8 @@ def spend(store, period: str, now: datetime | None = None) -> dict[str, Any]:
         usd += u
         tokens += t
         n += 1
+        with_usd += u_raw is not None
+        with_tokens += t_raw is not None
         not_costed += missing
         runs_not_costed += 1 if missing else 0
         if row.get("source") in ("exploration", "designed"):
@@ -113,7 +116,7 @@ def spend(store, period: str, now: datetime | None = None) -> dict[str, Any]:
     return {"usd": round(usd + lab["usd"], 6), "tokens": int(tokens) + lab["tokens"], "runs": n,
             "runs_usd": round(usd, 6), "labeling": lab, "exploration_usd": round(exploration, 6),
             "history_usd": round(history, 6), "history_runs": history_runs, "attempts_not_costed": not_costed, "runs_not_costed": runs_not_costed,
-            "open_runs": open_runs, "since": utc_iso(since) if since else None}
+            "runs_with_usd": with_usd, "runs_with_tokens": with_tokens, "open_runs": open_runs, "since": utc_iso(since) if since else None}
 
 
 def budget_state(store, now: datetime | None = None) -> dict[str, Any]:
@@ -134,10 +137,41 @@ def since_text(since: str | None) -> str:
     return f" since {at.astimezone().date().isoformat()}" if at is not None else " in all"
 
 
-def spend_parts(s: dict[str, Any]) -> str:
-    """`runs $2.74 over 3 runs, onboard labelling $0.17`: what the period's spend is made of."""
+def spend_amounts(s: dict[str, Any]) -> tuple[str, str]:
+    """The period's dollars and tokens as text: `$2.74` and `351,000 tokens` when every run has them, `$1.20 known`
+    and `1,000 tokens known` when some do not, `unknown` and `tokens unknown` when none do. An unknown cost is
+    never $0."""
     lab = s.get("labeling") or {}
-    text = f"runs {fmt_usd(s.get('runs_usd', s['usd']))} over {_count(s['runs'], 'run')}"
+    runs = int(s.get("runs") or 0)
+    lab_usd = int(lab.get("records") or 0) > int(lab.get("not_costed") or 0)
+    if not s.get("attempts_not_costed"):
+        dollars = fmt_usd(s["usd"])
+    elif s.get("runs_with_usd", runs) or lab_usd:
+        dollars = f"{fmt_usd(s['usd'])} known"
+    else:
+        dollars = "unknown"
+    with_tokens = s.get("runs_with_tokens", runs)
+    if with_tokens >= runs:
+        tokens = f"{int(s['tokens']):,} tokens"
+    elif with_tokens or lab.get("tokens"):
+        tokens = f"{int(s['tokens']):,} tokens known"
+    else:
+        tokens = "tokens unknown"
+    return dollars, tokens
+
+
+def spend_parts(s: dict[str, Any]) -> str:
+    """`runs $2.74 over 3 runs, onboard labelling $0.17`: what the period's spend is made of. Runs with no known
+    dollars read `6 runs, cost unknown`, and some without, `runs $1.20 known over 6 runs, 4 with no full cost`."""
+    lab = s.get("labeling") or {}
+    runs = int(s.get("runs") or 0)
+    if not s.get("runs_not_costed"):
+        text = f"runs {fmt_usd(s.get('runs_usd', s['usd']))} over {_count(runs, 'run')}"
+    elif s.get("runs_with_usd", runs):
+        text = (f"runs {fmt_usd(s.get('runs_usd', s['usd']))} known over {_count(runs, 'run')}, "
+                f"{s['runs_not_costed']} with no full cost")
+    else:
+        text = f"{_count(runs, 'run')}, cost unknown"
     if lab.get("records"):
         text += f", onboard labelling {fmt_usd(lab['usd'])}"
     return text

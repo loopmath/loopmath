@@ -10,20 +10,25 @@ import argparse
 import math
 from typing import Any
 
-from ..output import EXIT_USER
+from ..output import EXIT_USER, counted
 from ..store.commands import UserError, _error, _out, _store, handler
 from ..store.home import Store
-from . import (ACCEPT, CHECK_EXT, Comparison, _harness_digest, check_floor, check_rule, checks, own_rules, paired,
-               resolve_rule, score_rule)
+from . import (ACCEPT, CHECK_EXT, Comparison, _harness_digest, arm_runs, check_floor, check_rule, checks, own_rules,
+               paired, resolve_rule, score_rule)
 
 SCHEMA = "check-change"
-SETTINGS = ("budget_usd", "objective", "floor", "confidence", "horizon_runs", "value_usd")
+SETTINGS = ("budget_usd", "objective", "floor", "confidence", "horizon_runs", "value_usd", "min_pairs",
+            "value_stop")
 
 
 def _settings(args: argparse.Namespace) -> dict[str, Any]:
     out = {k: getattr(args, k) for k in SETTINGS if getattr(args, k, None) is not None}
     if out.get("horizon_runs") is not None and not out["horizon_runs"] > 0:
         raise UserError("--horizon-runs: the number of future runs the change will serve, more than 0")
+    if out.get("min_pairs") is not None and out["min_pairs"] < 1:
+        raise UserError(f"--min-pairs {out['min_pairs']}: the scored pairs before the value stop, at least 1")
+    if out.get("min_pairs") is not None and not out.get("value_stop"):
+        raise UserError("--min-pairs goes with --value-stop: without it the next pair's value stops nothing")
     if out.get("budget_usd") is not None and not (math.isfinite(out["budget_usd"]) and out["budget_usd"] >= 0):
         raise UserError(f"--budget-usd {out['budget_usd']:g}: the dollars the check may spend, 0 or more")
     out["seed"] = getattr(args, "seed", 0) or 0
@@ -74,25 +79,31 @@ def _iv(iv: dict[str, Any] | None, money: bool = False, unknown: bool = False) -
     return f"{mean}median {f(iv.get('median'))}, 80% {f(iv.get('lo'))} to {f(iv.get('hi'))}"
 
 
-def stop_text(c: dict[str, Any]) -> str:
+LONGER_CHECK = "to go on, start a longer check with --n or --tasks"  # status: the cap is the pairs planned
+LONGER_RUNS = "to go on, record more pairs and raise --max-pairs"  # from-runs: the cap is --max-pairs
+
+
+def stop_text(c: dict[str, Any], longer: str = LONGER_CHECK) -> str:
     """`verdict: adopt|reject|more` when P(better) decides or nothing stops yet, else the stop that keeps the
-    base: the cap, the budget or the next pair's value (`comparison.stop`)."""
+    base without a decision: the cap, the budget or the next pair's value (`comparison.stop`, and
+    `comparison.decided` false). `longer` names the flag that raises the cap."""
     stop = c.get("stop")
     if stop == "cap":
-        return f"stop: cap of {c['max_pairs']} pairs reached, keep the base"
+        return f"not decided: the cap of {counted(c['max_pairs'], 'pair')} came first, the base stays ({longer})"
     if stop == "budget":
         spent = c.get("budget_usd") is not None and (c.get("spent_usd") or 0.0) >= c["budget_usd"]
-        return "stop: budget spent, keep the base" if spent else "stop: budget left is under one pair, keep the base"
+        return ("not decided: the budget is spent, the base stays" if spent
+                else "not decided: the budget left is under one pair, the base stays")
     if stop == "value":
-        return "stop: next pair worth less than its price, keep the base"
+        return "not decided: the next pair is worth less than its price, the base stays"
     return f"verdict: {c['verdict']}"
 
 
-def comparison_lines(c: dict[str, Any]) -> list[str]:
+def comparison_lines(c: dict[str, Any], longer: str = LONGER_CHECK) -> list[str]:
     pb = "?" if c["p_better"] is None else f"{c['p_better']:.3f}"
     n = c["n_pairs"]
     unknown = bool(c.get("outcomes_only"))  # a cost is unknown: the answer is on the outcomes alone
-    lines = [f"{stop_text(c)}  P(better) {pb} (adopt at {c['adopt_threshold']:.3f} or above, reject at "
+    lines = [f"{stop_text(c, longer)}  P(better) {pb} (adopt at {c['adopt_threshold']:.3f} or above, reject at "
              f"{1 - c['confidence']:.3f} or below), {n} scored {'pair' if n == 1 else 'pairs'}",
              f"gain: {_iv(c['gain'])}",
              f"cost per run: base {_iv(c['cost_base'], True, unknown)}; candidate "
@@ -142,7 +153,7 @@ def check_start(args: argparse.Namespace) -> int:
     payload = {"check": chk, "path": str(checks.check_path(store, chk)), "base": check["base"],
                "cand": check["cand"], "rule": rule, "pairs": len(check["pairs"]), "settings": settings, "next": nxt}
     lines = [f"check {chk}: {check['cand']['label']} (cand) against {check['base']['label']} (base), "
-             f"{len(check['pairs'])} pairs, {_rule_text(rule)}"] + next_lines(nxt)
+             f"{counted(len(check['pairs']), 'pair')}, {_rule_text(rule)}"] + next_lines(nxt)
     return _out(args, SCHEMA, payload, lines)
 
 
@@ -154,8 +165,8 @@ def check_status(args: argparse.Namespace) -> int:
     check = checks.load(store, chk)
     base, cand, still_open = checks.docs(store, check)
     head = (f"check {chk}: {check['cand']['label']} (cand) against {check['base']['label']} (base), "
-            f"{_rule_text(check['rule'], base + cand)}, {len(base)} base and {len(cand)} candidate runs of "
-            f"{len(check['pairs'])} pairs")
+            f"{_rule_text(check['rule'], base + cand)}, {arm_runs(len(base), len(cand))} of "
+            f"{counted(len(check['pairs']), 'pair')}")
     try:
         c = _compare(store, base, cand, check["rule"], check.get("settings") or {}, max_pairs=len(check["pairs"]))
     except ValueError as exc:  # no answer on these runs (a budget with a run that has no dollar cost): the check
@@ -167,7 +178,7 @@ def check_status(args: argparse.Namespace) -> int:
     cmp = c.to_dict()
     nxt_pair = checks.next_pair(check)
     nxt = checks.next_view(check, nxt_pair) if c.verdict == "more" and nxt_pair is not None else None
-    swapped = checks.out_of_order(check)
+    swapped = checks.out_of_order(check, checks.run_starts(store, check))
     payload = {"check": chk, "base": check["base"], "cand": check["cand"], "rule": check["rule"],
                "pairs": len(check["pairs"]), "recorded": {"base": len(base), "cand": len(cand)}, "open": still_open,
                "preferences": checks.preferences(check, base + cand), "comparison": cmp, "next": nxt,
@@ -179,8 +190,8 @@ def check_status(args: argparse.Namespace) -> int:
         lines.append(f"open runs, not counted yet: {', '.join(still_open)}")
     if swapped:
         lines.append("run out of the planned order: " + "; ".join(
-            f"{x['pair']} (planned {' then '.join(x['planned'])}, ran {' then '.join(x['ran'])}"
-            + (" first" if len(x["ran"]) < len(x["planned"]) else "") + ")" for x in swapped))
+            f"{x['pair']} (planned {' then '.join(x['planned'])}, "
+            f"{'started' if x['by'] == 'start' else 'recorded'} {' then '.join(x['ran'])})" for x in swapped))
     if nxt is not None:
         lines += next_lines(nxt)
     return _out(args, SCHEMA, payload, lines)
@@ -277,7 +288,7 @@ def check_from_runs(args: argparse.Namespace) -> int:
     cand = [d for d in docs if pick_c(d)]
     both = {(d.get("run") or {}).get("id") for d in base} & {(d.get("run") or {}).get("id") for d in cand}
     if both:
-        raise UserError(f"{len(both)} runs match both --base-label {args.base_label} and --cand-label "
+        raise UserError(f"{counted(len(both), 'run')} {'matches' if len(both) == 1 else 'match'} both --base-label {args.base_label} and --cand-label "
                         f"{args.cand_label}; a run is evidence for one arm only")
     empty = [f"{flag} {value}" for flag, value, found in (("--base-label", args.base_label, base),
                                                            ("--cand-label", args.cand_label, cand)) if not found]
@@ -301,7 +312,7 @@ def check_from_runs(args: argparse.Namespace) -> int:
     if args.json:
         return _out(args, SCHEMA, payload, [])
     shown_b, shown_c = (payload[s].get("digest") or payload[s]["label"] for s in ("base", "cand"))
-    lines = [f"{shown_c} ({len(cand)} runs) against {shown_b} ({len(base)} runs), "
+    lines = [f"{shown_c} ({counted(len(cand), 'run')}) against {shown_b} ({counted(len(base), 'run')}), "
              f"{_rule_text(rule, base + cand)}"]
-    lines += comparison_lines(cmp)
+    lines += comparison_lines(cmp, LONGER_RUNS)
     return _out(args, SCHEMA, payload, lines)

@@ -332,7 +332,7 @@ def upgraded(tmp_path_factory):
 
 def test_upgrade_recommend_names_the_old_fit_and_the_command(upgraded):
     code, out, err = upgraded["recommend_old"]
-    assert code == 5 and out == "" and "Traceback" not in err
+    assert code == 5 and json.loads(out)["exit"] == 5 and "Traceback" not in err
     assert f"fit {upgraded['old']} is from design version 1" in err and "run `loopmath fit`" in err
     assert len(err.strip().splitlines()) == 1
 

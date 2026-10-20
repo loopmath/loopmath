@@ -386,7 +386,7 @@ def test_plan_text_summary_and_grid_without_a_fit(cli_env, capsys):
     assert len(obj["_text"].splitlines()) <= 25
     state["belief"] = None
     code, obj = run_json(capsys, ["plan", "--backlog", str(path), "--budget-usd", "20", "--json"])
-    assert code == 5 and "--members grid" in obj["_err"]
+    assert code == 5 and obj["ok"] is False and "--members grid" in obj["hint"]  # 0.3.1: the error is JSON too
     code, obj = run_json(capsys, ["plan", "--backlog", str(path), "--budget-usd", "50", "--members", "grid",
                                   "--models", "claude-opus-5-5,gpt-6-astra", "--json"])
     assert code == 0 and obj["members"] == "grid" and obj["spent_usd"] <= 50.0

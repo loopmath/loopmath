@@ -66,7 +66,9 @@ def test_the_compilers_stdout_line_stays_off_json(tmp_path, capsys, monkeypatch)
                              f"raise CompileError({LD_ERROR!r})\n")
     assert cli.main(["fit", "--home", str(tmp_path), "--no-prior", "--full", "--json"]) == 1
     captured = capsys.readouterr()
-    assert captured.out == "" and "You can find the C code" in captured.err
+    obj = json.loads(captured.out)  # 0.3.1: one error object on stdout, and nothing else
+    assert obj["ok"] is False and obj["exit"] == 1 and obj["error"].startswith("fit --full: the PyMC check could")
+    assert "You can find the C code" not in captured.out and "You can find the C code" in captured.err
     assert captured.err.strip().splitlines()[-1].startswith("error: fit --full: the PyMC check could not compile")
 
 

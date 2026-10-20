@@ -32,7 +32,7 @@ from ..store.ids import parse_since  # the one `--since` reader: `m` is ambiguou
 from ..store.lock import read_json
 from ..store.runs import is_history, run_cost as store_run_cost
 from . import common
-from .common import as_dict, config_label, fmt_money, fmt_pct, fmt_time, fmt_usd, num
+from .common import as_dict, config_label, fmt_money, fmt_money_over, fmt_pct, fmt_time, fmt_usd, num
 
 SCHEMA = "loopmath.view.runs/1"
 DETAIL_CAP = 300  # Full detail for the newest 300 runs in the filtered set
@@ -500,13 +500,16 @@ def summary_lines(data: Mapping[str, Any], limit: int = 25, *, wide: bool = Fals
     if data.get("selected"):
         return _one_run_lines(rows[0], data["selected"], limit)
     history = [r for r in rows if r.get("history")]  # shown apart, as `status` and `budget` show it
-    usd = sum(r["cost"]["usd"] or 0 for r in rows if not r.get("history"))
-    tok = sum(r["cost"]["tokens"] or 0 for r in rows if not r.get("history"))
+    counted = [r for r in rows if not r.get("history")]
+    usd = sum(r["cost"]["usd"] or 0 for r in counted)
+    tok = sum(r["cost"]["tokens"] or 0 for r in counted)
+    n_usd = sum(1 for r in counted if r["cost"]["usd"] is not None)  # an unknown cost is not $0
+    n_tok = sum(1 for r in counted if r["cost"]["tokens"] is not None)
     known = [r for r in rows if r.get("z") in (0, 1)]
     acc = sum(1 for r in known if r["z"] == 1)
     with_rc = [r for r in rows if (r.get("receipt") or {}).get("predicted")]
     inside = sum(1 for r in with_rc if r["receipt"].get("cost_in_interval") is True)
-    head = f"{_count(len(rows), 'run')}, {fmt_money(usd, tok)}; "
+    head = f"{_count(len(rows), 'run')}, {fmt_money_over(len(counted), usd, n_usd, tok, n_tok)}; "
     head += f"{acc} of {len(known)} with a known outcome accepted ({fmt_pct(acc / len(known))})" if known else "no known outcomes"
     head += f"; cost inside its range for {inside} of {_count(len(with_rc), 'receipt')}" if with_rc else "; no receipts"
     notes = _slate_lines(rows, (data.get("filters") or {}).get("slate")) + _review_rule_lines(data) + list(data.get("notes") or [])

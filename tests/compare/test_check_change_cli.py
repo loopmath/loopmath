@@ -145,7 +145,10 @@ def test_status_text_lists_the_next_pairs_steps(home, tmp_path, capsys):
 
 
 def test_a_run_out_of_the_planned_order_is_kept_with_a_warning_and_status_marks_its_pair(home, tmp_path, capsys):
-    """The tester's #352 and #353: p03 was planned cand then base, and base was recorded first in silence."""
+    """The tester's #352 and #353: p03 was planned cand then base, and base was recorded first in silence. Since
+    0.3.1 the pair is judged on its runs' start times once both are recorded (`--since` gives each its start)."""
+    from datetime import datetime, timedelta
+
     from loopmath.compare import checks
 
     _, out, _ = lm(capsys, "check-change", "start", "--base", "A", "--cand", "B", "--tasks",
@@ -155,32 +158,31 @@ def test_a_run_out_of_the_planned_order_is_kept_with_a_warning_and_status_marks_
     check = checks.load(store, chk)
     check["pairs"][0]["order"], check["pairs"][1]["order"] = ["base", "cand"], ["cand", "base"]
     checks.save(store, check)
+    hour = datetime.now().astimezone().replace(microsecond=0) - timedelta(hours=1)
 
-    def rec(arm, pair):
+    def rec(arm, pair, since):
         return lm(capsys, "run", "record", "--check", chk, "--arm", arm, "--pair", pair, *SOLO, "--cwd",
-                  f"implement={home.parent / 'wt'}", "--since", "1h", "--verified", "tests=pass", "--no-commits",
-                  "--no-fit", "--json")
+                  f"implement={home.parent / 'wt'}", "--since", since.isoformat(), "--verified", "tests=pass",
+                  "--no-commits", "--no-fit", "--json")
 
-    code, run, err = rec("base", "p01")  # as planned
+    code, run, err = rec("base", "p01", hour)  # as planned
     assert code == 0 and "warning" not in err, err
-    code, run, err = rec("base", "p02")  # planned second
-    assert code == 0 and run["run"], err
-    assert (f"warning: pair p02 of {chk} is planned cand then base, which balances which arm runs first; this base "
-            f"run comes first, out of that order. It is recorded and counts, and status marks the pair") in err, err
+    code, run, err = rec("base", "p02", hour)  # planned second, and alone: not judged yet
+    assert code == 0 and run["run"] and "warning" not in err, err
     pair = checks.load(store, chk)["pairs"][1]
     assert pair["runs"]["base"] == run["run"] and pair["ran"] == ["base"]
     code, st, err = lm(capsys, "check-change", "status", chk, "--json")
-    assert code == 0 and st["recorded"]["base"] == 2, err
-    assert st["out_of_order"] == [{"pair": "p02", "planned": ["cand", "base"], "ran": ["base"]}]
-    code, text, _ = lm(capsys, "check-change", "status", chk)
-    assert "run out of the planned order: p02 (planned cand then base, ran base first)" in text.splitlines(), text
-    code, _, err = rec("cand", "p02")
-    assert code == 0 and "warning" not in err, err
+    assert code == 0 and st["recorded"]["base"] == 2 and st["out_of_order"] == [], err
+    code, err = rec("cand", "p02", hour + timedelta(minutes=5))[::2]  # cand started five minutes after base
+    assert code == 0 and (f"warning: pair p02 of {chk} is planned cand then base, which balances which arm runs "
+                          f"first; its base run started first, out of that order. Both runs are recorded and count, "
+                          f"and status marks the pair") in err, err
     assert checks.load(store, chk)["pairs"][1]["ran"] == ["base", "cand"]
     code, text, _ = lm(capsys, "check-change", "status", chk)
-    assert "run out of the planned order: p02 (planned cand then base, ran base then cand)" in text.splitlines()
+    assert "run out of the planned order: p02 (planned cand then base, started base then cand)" in text.splitlines()
     code, st, _ = lm(capsys, "check-change", "status", chk, "--json")
-    assert st["recorded"] == {"base": 2, "cand": 1} and len(st["out_of_order"]) == 1
+    assert st["recorded"] == {"base": 2, "cand": 1}
+    assert st["out_of_order"] == [{"pair": "p02", "planned": ["cand", "base"], "ran": ["base", "cand"], "by": "start"}]
 
 
 def test_status_equals_compare_paired_on_the_same_runs(home, tmp_path, capsys):
@@ -470,7 +472,7 @@ def test_from_runs_refuses_runs_judged_by_different_rules(home, tmp_path, capsys
     import_rows(capsys, tmp_path, *verdict_rows(3), judged)
     code, _, err = lm(capsys, "check-change", "from-runs", *ARMS)
     assert code == 1 and "judged by different rules (accepted: 3 base and 3 candidate runs; tests: 0 base and 1 " \
-                          "candidate runs)" in err and "--rule accepted" in err and "--rule tests" in err, err
+                          "candidate run)" in err and "--rule accepted" in err and "--rule tests" in err, err
     code, _, err = lm(capsys, "check-change", "from-runs", *ARMS, "--rule", "accepted")
     assert code == 0, err
 
@@ -576,12 +578,12 @@ def test_a_stop_that_keeps_the_base_says_why_in_text_and_json(home, tmp_path, ca
     code, out, err = lm(capsys, "check-change", "from-runs", *sel, "--json")
     assert code == 0 and (out["comparison"]["verdict"], out["comparison"]["stop"]) == ("reject", "budget"), err
     code, text, err = lm(capsys, "check-change", "from-runs", *sel)
-    assert text.splitlines()[1].startswith("stop: budget spent, keep the base  P(better)"), text
+    assert text.splitlines()[1].startswith("not decided: the budget is spent, the base stays  P(better)"), text
     assert "verdict: reject" not in text
     _, out, _ = lm(capsys, "check-change", "start", "--base", "a", "--cand", "b", "--n", "2", "--budget-usd", "0",
                    "--json")  # the tester's #107 and #113: a zero budget is spent before the first run
     st, text = status_both_ways(capsys, out["check"])
-    assert st["comparison"]["stop"] == "budget" and "stop: budget spent, keep the base" in text
+    assert st["comparison"]["stop"] == "budget" and "not decided: the budget is spent, the base stays" in text
 
 
 def test_start_refuses_a_missing_path_the_same_arm_a_negative_budget_and_a_floor_out_of_range(home, tmp_path,

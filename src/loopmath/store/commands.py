@@ -73,7 +73,15 @@ def _error(args: argparse.Namespace, schema: str, message: str, code: int, **ext
 
 
 def _store(args: argparse.Namespace) -> Store:
-    return Store(getattr(args, "home", None))
+    store = Store(getattr(args, "home", None))
+    for path in (store.home, *store.home.parents):  # the nearest existing folder on the way must be a folder
+        if path.exists():
+            if not path.is_dir():
+                where = "it" if path == store.home else f"{path} on its path"
+                raise UserError(f"the store path {store.home} is not a folder: {where} is a file; point --home or "
+                                "LOOPMATH_HOME at a folder")
+            break
+    return store
 
 
 def _out(args: argparse.Namespace, schema: str, payload: dict[str, Any], lines: list[str]) -> int:
@@ -577,9 +585,17 @@ def run_attempt(args: argparse.Namespace) -> int:
         ended = store.end_attempt(args.run, args.end, status, normalize_ts(args.ended_at))
         return _out(args, "run.attempt", {"run": args.run, "attempt": args.end, "status": status,
                                           "ended_at": ended}, [args.end])
-    missing = [f for f, v in (("--piece", args.piece), ("--harness", args.harness), ("--model", args.model)) if not v]
+    if not args.piece:
+        raise UserError("a new attempt needs --piece (or --end ATT to settle one)")
+    setting = R.piece_setting(store.run_doc(args.run), args.piece) or {}  # the run's configuration for the piece
+    model = setting.get("model")
+    model = (model.get("raw") or model.get("id")) if isinstance(model, dict) else model  # as typed at run start
+    harness, model = args.harness or setting.get("harness"), args.model or model
+    missing = [f for f, v in (("--harness", harness), ("--model", model)) if not v]
     if missing:
-        raise UserError(f"a new attempt needs {', '.join(missing)} (or --end ATT to settle one)")
+        raise UserError(f"a new attempt needs {', '.join(missing)}: the run's configuration gives no "
+                        f"{' or '.join(m[2:] for m in missing)} for piece {args.piece} (or --end ATT to settle one)")
+    args.harness, args.model = harness, model
     if args.status or args.ended_at:
         raise UserError("--status and --ended-at settle an attempt; use them with --end ATT")
     session, session_from = args.session, None
@@ -588,10 +604,7 @@ def run_attempt(args: argparse.Namespace) -> int:
     if not args.cwd and not session:
         raise UserError("give --cwd (the agent's working folder) or --session, so the attempt can be matched to its log")
     cwd = str(Path(args.cwd).expanduser().resolve()) if args.cwd else None
-    effort = args.effort
-    if not effort:
-        setting = R.piece_setting(store.run_doc(args.run), args.piece) or {}
-        effort = setting.get("effort")
+    effort = args.effort or setting.get("effort")
     att = store.add_attempt(args.run, {
         "piece": args.piece, "harness": args.harness, "model": args.model, "effort": effort, "cwd": cwd,
         "session": session, "round": args.round, "cause": args.cause,
@@ -1406,7 +1419,7 @@ def outcome(args: argparse.Namespace) -> int:
 # ================================================================ budget, config
 @handler("budget")
 def budget(args: argparse.Namespace) -> int:
-    from .budget import budget_state, history_line, since_text, spend_parts
+    from .budget import budget_state, history_line, since_text, spend_amounts, spend_parts
 
     store = _store(args)
     if args.usd is not None or args.period is not None:
@@ -1428,7 +1441,8 @@ def budget(args: argparse.Namespace) -> int:
         lines.append("budget: no cap set (loopmath budget --usd X --period week|month|none)")
     else:
         lines.append(f"budget: {fmt_usd(state['cap_usd'])} per {period}" if period != "none" else f"budget: {fmt_usd(state['cap_usd'])} in total")
-    lines.append(f"spent{since}: {_money(s['usd'], s['tokens'])}; {spend_parts(s)}; exploration {fmt_usd(s['exploration_usd'])}")
+    dollars, tokens = spend_amounts(s)  # an unknown cost is never $0
+    lines.append(f"spent{since}: {dollars}, {tokens}; {spend_parts(s)}; exploration {fmt_usd(s['exploration_usd'])}")
     if state["remaining_usd"] is not None:
         lines.append("cap reached: exploration picks are paused" if state["reached"]
                      else f"remaining: {fmt_usd(state['remaining_usd'])}")

@@ -245,11 +245,8 @@ def _add_prices(sub) -> None:
 
 
 def _add_scan(sub) -> None:
-    p = sub.add_parser(
-        "scan",
-        help="explain the implicit scan used by graph and analyze",
-        description="Scanning is implicit in loopmath graph and loopmath analyze.",
-    )
+    # Hidden: no help= keeps it off `loopmath --help`, and HIDDEN keeps it off the usage line.
+    p = sub.add_parser("scan", description="Scanning is implicit in loopmath graph and loopmath analyze.")
     p.set_defaults(func=_cli_support.scan_verb)
 
 
@@ -328,7 +325,7 @@ def adapt_verb(args: argparse.Namespace) -> int:
         return 1
     if not isinstance(doc, dict):
         raise TypeError(f"adapter {args.name!r} emit() must return a dict")
-    if not doc.get("nodes") and not doc.get("attempts"):
+    if not doc.get("nodes") and not doc.get("attempts") and not doc.get("events"):  # atrium emits events only
         where = ", ".join(str(p) for p in selection.stores) if selection.stores else "its default location"
         print(f"error: adapt {args.name} found no sessions in {where}; nothing written. Point --store at the "
               f"{args.name} data, or widen --since, --until, --session and --workspace", file=sys.stderr)
@@ -350,12 +347,16 @@ def adapt_verb(args: argparse.Namespace) -> int:
 
 def _add_adapt(sub) -> None:
     p = sub.add_parser(
-        "adapt", help="emit OCP v0.2 from an ADE store (loopmath ocp migrate converts it to v0.3), or import runs",
+        "adapt", help="emit OCP v0.2 from an ADE store (experimental; loopmath ocp migrate converts it to v0.3), "
+                      "or import runs",
         description="Emit OCP v0.2 from an ADE store, or import rollouts as OCP v0.3 runs with a run importer: "
                     "`loopmath adapt harness2 RUNS --out DIR` reads a harness2 runs folder, and "
                     "`loopmath adapt harness-runs FILE --out DIR` reads a loopmath.harness-runs/0.1 file "
-                    "(spec/harness-runs.md). Then `loopmath run import DIR --finish` stores them.")
-    p.add_argument("name", metavar="NAME", help="registered adapter name, or a run importer: harness2, harness-runs")
+                    "(spec/harness-runs.md). Then `loopmath run import DIR --finish` stores them. "
+                    "Experimental: the ADE adapters and the harness2 importer, which are tested on synthetic "
+                    "fixtures written from each tool's format, not yet on real data.")
+    p.add_argument("name", metavar="NAME", help="registered adapter name (experimental), or a run importer: "
+                   "harness2 (experimental), harness-runs")
     p.add_argument("path", nargs="?", default=None, metavar="PATH",
                    help="the input: the same as --store PATH for an adapter; the runs folder (harness2) or rows file (harness-runs) for a run importer")
     p.add_argument("--out", default=None, help="write here instead of stdout (any path; missing folders are created; an existing file is replaced). Run importers: a folder, one <run id>.ocp.json per rollout")
@@ -429,9 +430,9 @@ def _add_validate_prices(sub) -> None:
 def _add_fit(sub) -> None:
     from .research_defaults import E1A_OBSERVE, SEED
 
+    # Hidden: no help= keeps it off `loopmath --help`, and HIDDEN keeps it off the usage line.
     research = sub.add_parser(
         "research",
-        help="verbs for research data folders that are not part of the package (loopmath research --help)",
         description="Verbs for research data folders that are not part of the package: sweep run records "
                     "(research fit, research transfer-test; they need the bayes extra) and a session corpus "
                     "(research analyze-e0; it needs the e0 extra). Name a folder with --sweep-dir or --corpus, "
@@ -463,21 +464,38 @@ def _add_fit(sub) -> None:
 
 def verify_receipts_verb(args: argparse.Namespace) -> int:
     """No ledger: check the store's receipts. A ledger path: verify that research receipt ledger."""
+    from .output import emit_json
+
+    schema = "loopmath.verify-receipts/1"
     if args.ledger is None:
         from .store.home import Store
         from .store.verify import verify_lines, verify_store
 
         res = verify_store(Store(args.home))
-        print("\n".join(verify_lines(res)))
-        return 1 if res["failed"] else 0
+        lines = verify_lines(res)
+        code = 1 if res["failed"] else 0
+        if args.json:
+            emit_json(schema, {"ok": not code, **res, "message": "\n".join(lines), **({"exit": code} if code else {})})
+        else:
+            print("\n".join(lines))
+        return code
     from .receipts import ReceiptViolation, verify_receipts
 
     try:
         result = verify_receipts(args.ledger, args.frozen)
     except ReceiptViolation as exc:
-        print(f"FAIL: {exc}")
+        if args.json:
+            emit_json(schema, {"ok": False, "ledger_path": str(args.ledger), "message": f"FAIL: {exc}",
+                               "error": str(exc), "exit": 1})
+        else:
+            print(f"FAIL: {exc}")
         return 1
-    print(result.message())
+    if args.json:
+        emit_json(schema, {"ok": True, "ledger_path": str(args.ledger), "message": result.message(),
+                           "ledger": {"receipts": result.receipts, "task_arms": result.task_arms,
+                                      "spend_usd": float(result.spend_usd), "prereg": str(result.prereg)}})
+    else:
+        print(result.message())
     return 0
 
 
@@ -496,11 +514,17 @@ def _add_verify_receipts(sub) -> None:
         help="with a ledger: its checksum file (default: FROZEN.txt beside the ledger)",
     )
     p.add_argument("--home", default=None, metavar="PATH", help="the store (default: $LOOPMATH_HOME or ~/.loopmath)")
+    p.add_argument("--json", action="store_true", help="print one JSON object on stdout")
     p.set_defaults(func=verify_receipts_verb)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    from .cli_errors import JsonErrorParser, run_guarded, wants_json
+
+    raw_args = sys.argv[1:] if argv is None else argv
+    JsonErrorParser.json_mode = wants_json(raw_args)  # under --json a usage error is a JSON object on stdout too
+    JsonErrorParser.argv = list(raw_args)
+    parser = JsonErrorParser(
         prog="loopmath", description="loopmath: which agent workflow to run next, priced from your own logs"
     )
     parser.add_argument("--version", action="version", version=f"loopmath {__version__}")
@@ -537,7 +561,6 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.metavar = _registry.command_metavar(sub)  # hidden commands stay callable, off the usage line
 
-    raw_args = sys.argv[1:] if argv is None else argv
     if raw_args and raw_args[0] == "view":
         parser.error(
             "loopmath view is unavailable; use 'loopmath graph --format dot' with "
@@ -550,6 +573,9 @@ def main(argv: list[str] | None = None) -> int:
     from .ingest.base import use_home
 
     use_home(getattr(args, "home", None))  # the caches follow --home as the store does
+    if getattr(args, "json", False) is True:
+        words = [args.command] + [str(v) for k, v in vars(args).items() if k.endswith("_command") and v]
+        return run_guarded(args.func, args, " ".join(words))
     return args.func(args)
 
 

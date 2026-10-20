@@ -3,9 +3,11 @@
 `loopmath check-change start` writes it with its pairs: a task each (from `--tasks`, or from the pair's first
 run with `--n`) and a random arm order. `run record --check CHK --arm base|cand` (and `run start`) claims the
 earliest pair without that arm (`claim`), so the run gets the pair's task and opens or joins the pair's slate,
-then tags the run and records it in the check (`commit`). The planned arm order balances which arm runs first;
-a run recorded out of it is kept, with a warning, and the pair keeps the order its runs came in (`ran`), which
-`status` marks (`out_of_order`). `status` reads the pairs' runs back.
+then tags the run and records it in the check (`commit`). The planned arm order balances which arm runs first.
+The pair keeps the order its runs were recorded in (`ran`), and its runs' start times say which arm started
+first: when the planned second arm did, the pair is kept with a warning, and `status` marks it
+(`out_of_order`). Two arms run at the same time, the planned first a little earlier, are in order whichever
+finishes and is recorded first. `status` reads the pairs' runs back.
 
 loopmath never creates the worktrees or starts the agents: `next_view` prints those steps, and the blinded
 referee's, as the record-run skill describes them.
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import json
 import random
+from datetime import datetime, timezone
 import re
 import shlex
 from pathlib import Path
@@ -219,11 +222,13 @@ def commit(store: Store, claimed: dict[str, Any], run: str) -> str | None:
         if pair["task"] is None:  # --n: the first run's task is the pair's
             pair["task"] = (doc.get("run") or {}).get("task")
         save(store, check)
-    order = pair["order"]
-    if ran == [arm] and order[0] != arm:
-        return (f"pair {key} of {chk} is planned {' then '.join(order)}, which balances which arm runs first; "
-                f"this {arm} run comes first, out of that order. It is recorded and counts, and status marks the "
-                f"pair")
+    swapped = out_of_order({"pairs": [pair]}, run_starts(store, {"pairs": [pair]}))
+    if swapped:
+        first = swapped[0]["ran"][0]
+        how = "started first" if swapped[0]["by"] == "start" else "was recorded first, and a start time is missing"
+        return (f"pair {key} of {chk} is planned {' then '.join(pair['order'])}, which balances which arm runs "
+                f"first; its {first} run {how}, out of that order. Both runs are recorded and count, and status "
+                f"marks the pair")
     return None
 
 
@@ -247,11 +252,49 @@ def docs(store: Store, check: dict[str, Any]) -> tuple[list[dict], list[dict], l
     return base, cand, still_open
 
 
-def out_of_order(check: dict[str, Any]) -> list[dict[str, Any]]:
-    """The pairs whose runs came in another order than planned: [{"pair", "planned", "ran"}]. A check written
-    before `ran` was kept has no such mark."""
-    return [{"pair": p["pair"], "planned": list(p["order"]), "ran": list(p["ran"])} for p in check["pairs"]
-            if p.get("ran") and list(p["ran"]) != list(p["order"])[:len(p["ran"])]]
+def _start(ts: Any) -> float | None:
+    """A run's start time in seconds, or None when it is not a time."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def run_starts(store: Store, check: dict[str, Any]) -> dict[str, Any]:
+    """Each recorded run's start time (`run.started_at`), finished or open, by run id."""
+    out: dict[str, Any] = {}
+    for p in check["pairs"]:
+        for arm in ARMS:
+            run = p["runs"][arm]
+            if run:
+                try:
+                    out[run] = (store.run_doc(run).get("run") or {}).get("started_at")
+                except NotFound:
+                    continue
+    return out
+
+
+def out_of_order(check: dict[str, Any], starts: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """The pairs whose planned second arm started first: [{"pair", "planned", "ran", "by"}], `ran` the arms in
+    the order their runs started (`by` "start"; a tie keeps the plan). A pair is judged once both its runs are
+    recorded. When a start time is missing (or no `starts` is given), the order the runs were recorded in stands
+    in (`by` "record"), as before 0.3.1. A check written before `ran` was kept is judged on start times only."""
+    out = []
+    for p in check["pairs"]:
+        if not all(p["runs"][a] for a in ARMS):
+            continue
+        plan = list(p["order"])
+        times = {a: _start((starts or {}).get(p["runs"][a])) for a in ARMS}
+        if None not in times.values():
+            began = sorted(plan, key=lambda a: (times[a], plan.index(a)))
+            if began != plan:
+                out.append({"pair": p["pair"], "planned": plan, "ran": began, "by": "start"})
+        elif p.get("ran") and list(p["ran"]) != plan:
+            out.append({"pair": p["pair"], "planned": plan, "ran": list(p["ran"]), "by": "record"})
+    return out
 
 
 def preferences(check: dict[str, Any], docs_: list[dict]) -> dict[str, int]:

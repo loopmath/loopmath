@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..output import counted
 from . import model as M
 
 DEFAULT_CAP = 24  # the cap for calls that give none
@@ -70,8 +71,8 @@ def threshold(mode: str, *, confidence: float, floor: float, cap: int | None, n_
              "held_out": dict(held), "tune_seed": entry["tune_seed"], "check_seed": entry["check_seed"],
              "sims": entry["sims"]}
     span = (f"{LOOKS} of {tcap} pairs" if cap == tcap else  # fewer looks than the table's cap keep its bound
-            f"after every pair, from the first, up to this check's cap of {cap} pairs (the threshold calibrated "
-            f"for {tcap} pairs, which covers fewer)")
+            f"after every pair, from the first, up to this check's cap of {counted(cap, 'pair')} (the threshold "
+            f"calibrated for {tcap} pairs, which covers fewer)")
     return {"threshold": thr, "cap": cap, "bound": bound,
             "why": f"adopt threshold {thr:.3f} keeps false adopts at or under {float(use):g} for looks {span}, "
                    f"for the {len(entry['families'])} simulated null families in bound.families; held out: "

@@ -66,7 +66,9 @@ def _check_args(p: argparse.ArgumentParser) -> None:
 
 
 def _add_compare(sub) -> None:
-    p = sub.add_parser("check-change", help="paired A/B check of a change: start, status, from-runs")
+    p = sub.add_parser("check-change", help="paired A/B check of a change: start, status, from-runs",
+                       description="A paired A/B check of a change. Start a check, record its pairs, and read its "
+                                   "comparison and verdict.")
     cs = p.add_subparsers(dest="check_command", required=True, metavar="{start,status,from-runs}")
 
     def decision(q: argparse.ArgumentParser) -> None:
@@ -85,6 +87,11 @@ def _add_compare(sub) -> None:
                        "long-lived change)")
         q.add_argument("--value-usd", type=float, default=None, metavar="USD", help="dollars per point of gain "
                        "(default: the base's cost per accepted result)")
+        q.add_argument("--value-stop", action="store_true", default=None, help="stop the check, keeping the base, "
+                       "when the next pair is worth less than its price (by default the value and the price are "
+                       "shown at each look and the check goes on to a decision, its cap or its budget)")
+        q.add_argument("--min-pairs", type=int, default=None, metavar="K", help="with --value-stop, the scored "
+                       "pairs before the value may stop the check (default 4; 1 stops from the first pair)")
 
     q = cs.add_parser("start", help="start a check: its pairs, each pair's arm order, and the next pair to run")
     q.add_argument("--base", required=True, metavar="LABEL|PATH", help="the base arm: a label, or its harness tree")
@@ -186,10 +193,10 @@ def _add_planning(sub) -> None:
     p.add_argument("--brief", action="store_true", help="with --json: a short object for agents (task, reference, "
                    "goal, rescue, choices, message, rec, and page with --html); the stored recommendation keeps everything")
     p.add_argument("--harness-variants", nargs="?", const=5, type=int, default=None, metavar="N",
-                   help="also price the N harness trees recorded on your runs that the fit saw most (default 5), for the "
-                   "default pick and the goal, against the bare harness label on the same draws")
-    p.add_argument("--harness", default=None, metavar="PATH|auto", help="also price this harness tree as the first "
-                   "variant (auto: the git working tree of this folder), even when no run recorded it")
+                   help="experimental: also price the N harness trees recorded on your runs that the fit saw most "
+                   "(default 5), for the default pick and the goal, against the bare harness label on the same draws")
+    p.add_argument("--harness", default=None, metavar="PATH|auto", help="experimental: also price this harness tree "
+                   "as the first variant (auto: the git working tree of this folder), even when no run recorded it")
     _common(p, html=True)
     p.set_defaults(func=_lazy("loopmath.recommend.commands:recommend"))
 
@@ -445,9 +452,11 @@ def _add_learning(sub) -> None:
     _common(p)
     p.set_defaults(func=_lazy("loopmath.share.commands:share"))
 
-    p = sub.add_parser("prior", help="the shipped prior bundle: show, build, import-shared, remove-shared")
-    ps = p.add_subparsers(dest="prior_command", required=True)
-    q = ps.add_parser("build", help="rebuild the packaged prior bundle from the sweep, E0 and RQ1 inputs")
+    p = sub.add_parser("prior", help="the shipped prior bundle: show, import-shared, remove-shared")
+    ps = p.add_subparsers(dest="prior_command", required=True, metavar="{show,import-shared,remove-shared}")
+    # Hidden, as `plan` is: no help= keeps `build` out of `loopmath prior --help`; it stays callable by name.
+    q = ps.add_parser("build", description="Rebuild the packaged prior bundle from the sweep, E0 and RQ1 inputs. "
+                                           "It needs research data folders that do not ship with the package.")
     q.add_argument("--out", default=None, metavar="DIR", help="where to write the bundle (required)")
     q.add_argument("--sweep-dir", action="append", default=None, metavar="PATH", help="sweep results, one folder per batch; repeatable (default: LOOPMATH_SWEEP_DIR, one folder)")
     q.add_argument("--e0-corpus", default=None, metavar="PATH", help="E0 corpus (default: LOOPMATH_E0_CORPUS)")
@@ -483,7 +492,7 @@ def _add_viewing(sub) -> None:
 
     p = sub.add_parser("posterior", help="current estimates by level and by workflow graph")
     p.add_argument("--level", default="all",
-                   choices=["model", "effort", "role", "topology", "type", "repo", "feature", "harness", "all"], help="which level of estimates (default all; harness: the harness labels and their parts)")
+                   choices=["model", "effort", "role", "topology", "type", "repo", "feature", "harness", "all"], help="which level of estimates (default all; harness: the harness labels and their parts, experimental)")
     p.add_argument("--head", default=None, metavar="cost|tokens|success|gate|score:NAME", help="which quantity to show")
     p.add_argument("--target", default=None, metavar="NAME>=X", help="score target for the chance to reach and the cost per accepted result, as for recommend (default: the latest recommendation's target for this type and repo)")
     p.add_argument("--workflow", default=None, metavar="CFG|FILE.toml", help="also draw this configuration with each piece's estimate: a cfg_ id from loopmath recommend --json or your runs, or FILE.toml with settings")
@@ -546,7 +555,7 @@ def _add_viewing(sub) -> None:
     q.set_defaults(func=_lazy("loopmath.ocp.commands:migrate"))
 
 
-HIDDEN = frozenset({"plan", "analyze-e0"})  # callable, but not listed by `loopmath --help`
+HIDDEN = frozenset({"plan", "analyze-e0", "scan", "research"})  # callable, but not listed by `loopmath --help`
 
 
 def command_metavar(sub) -> str:
@@ -555,7 +564,9 @@ def command_metavar(sub) -> str:
 
 
 def _add_gate(sub) -> None:
-    p = sub.add_parser("gate", help="adopt or reject a harness change: compare base and candidate runs")
+    p = sub.add_parser("gate", help="experimental: adopt or reject a harness change: compare base and candidate runs",
+                       description="Experimental: adopt or reject a harness change, comparing base and candidate "
+                                   "runs, for a loop that adopts changes on its own.")
     p.add_argument("--base", required=True, metavar="SEL",
                    help="the base arm: digest:sha256:<hex> or sha256:<hex> (the harness record's digest; a prefix of "
                         "one digest will do), a cfg_ configuration id, or arm:<name> or arm=<name>")

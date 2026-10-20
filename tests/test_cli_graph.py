@@ -509,7 +509,7 @@ def test_scan_help_html_and_unsupported_view_are_truthful(capsys):
         main(["--help"])
     assert help_exit.value.code == 0
     top_help = capsys.readouterr().out
-    assert "scan" in top_help
+    assert "scan" not in top_help  # hidden in 0.3.1, still callable by name
     assert "view" not in top_help
 
     with pytest.raises(SystemExit) as graph_help_exit:

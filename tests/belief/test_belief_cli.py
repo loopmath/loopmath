@@ -83,7 +83,7 @@ def test_fit_with_nothing_to_fit_keeps_latest_and_exits_1(tmp_path, capsys):
     empty = tmp_path / "empty"
     assert cli.main(["fit", "--home", str(empty), "--no-prior", "--json"]) == 1
     captured = capsys.readouterr()
-    assert captured.out == "" and "no fit written, fits/latest unchanged" in captured.err
+    assert json.loads(captured.out)["exit"] == 1 and "no fit written, fits/latest unchanged" in captured.err
     assert not (empty / "fits" / "latest").exists()
 
 
