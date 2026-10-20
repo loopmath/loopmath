@@ -803,7 +803,7 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     n_lone = sum(sum(v) for v in lone.values())
     if cal["bound"] is not None and n_lone > n_pairs:  # the verdict is unchanged; only the claim goes
         cal = dict(cal, bound=None, why=f"no false adopt bound is stated: {n_lone} scored {'run has' if n_lone == 1 else 'runs have'} no scored "
-                                        f"partner against {n_pairs} scored pairs, and the calibrated families have "
+                                        f"partner against {n_pairs} scored {'pair' if n_pairs == 1 else 'pairs'}, and the calibrated families have "
                                         f"at most about one such run per pair")
     st = M.Settings(objective=objective, floor=floor, confidence=confidence, threshold=cal["threshold"],
                     horizon_runs=horizon_runs, value_usd=value_usd)

@@ -142,7 +142,7 @@ def check_start(args: argparse.Namespace) -> int:
     payload = {"check": chk, "path": str(checks.check_path(store, chk)), "base": check["base"],
                "cand": check["cand"], "rule": rule, "pairs": len(check["pairs"]), "settings": settings, "next": nxt}
     lines = [f"check {chk}: {check['cand']['label']} (cand) against {check['base']['label']} (base), "
-             f"{len(check['pairs'])} pairs, {_rule_text(rule)}"] + next_lines(nxt)
+             f"{len(check['pairs'])} {'pair' if len(check['pairs']) == 1 else 'pairs'}, {_rule_text(rule)}"] + next_lines(nxt)
     return _out(args, SCHEMA, payload, lines)
 
 
@@ -155,7 +155,7 @@ def check_status(args: argparse.Namespace) -> int:
     base, cand, still_open = checks.docs(store, check)
     head = (f"check {chk}: {check['cand']['label']} (cand) against {check['base']['label']} (base), "
             f"{_rule_text(check['rule'], base + cand)}, {len(base)} base and {len(cand)} candidate runs of "
-            f"{len(check['pairs'])} pairs")
+            f"{len(check['pairs'])} {'pair' if len(check['pairs']) == 1 else 'pairs'}")
     try:
         c = _compare(store, base, cand, check["rule"], check.get("settings") or {}, max_pairs=len(check["pairs"]))
     except ValueError as exc:  # no answer on these runs (a budget with a run that has no dollar cost): the check
@@ -301,7 +301,9 @@ def check_from_runs(args: argparse.Namespace) -> int:
     if args.json:
         return _out(args, SCHEMA, payload, [])
     shown_b, shown_c = (payload[s].get("digest") or payload[s]["label"] for s in ("base", "cand"))
-    lines = [f"{shown_c} ({len(cand)} runs) against {shown_b} ({len(base)} runs), "
+    cand_txt = f"{len(cand)} {'run' if len(cand) == 1 else 'runs'}"
+    base_txt = f"{len(base)} {'run' if len(base) == 1 else 'runs'}"
+    lines = [f"{shown_c} ({cand_txt}) against {shown_b} ({base_txt}), "
              f"{_rule_text(rule, base + cand)}"]
     lines += comparison_lines(cmp)
     return _out(args, SCHEMA, payload, lines)
