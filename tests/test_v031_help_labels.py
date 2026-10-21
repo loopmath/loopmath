@@ -109,14 +109,15 @@ def _section(text: str, heading: str) -> str:
 def test_readme_marks_the_four_experimental_and_drops_the_hidden():
     text = README.read_text(encoding="utf-8")
     table = _section(text, "## Commands")
-    assert re.search(r"\| Harness testing \| `check-change`, `gate` \(experimental\) \|", table)
+    assert re.search(r"\| Harness testing \| `check-change`, `gate` \(experimental\), `screen` \(experimental\) \|",
+                     table)
     assert "`scan`" not in table
     testing = _section(text, "## Testing a harness change")
     assert "**`check-change`.**" in testing and "**`gate` (experimental).**" in testing
     assert "`check-change` (experimental)" not in text
     listed = text.split("These are experimental: ", 1)[1].split(". ", 1)[0]
-    assert "`gate`" in listed and "check-change" not in listed
-    for marked in ("`gate`", "`adapt harness2`", "harness-part estimates", "ADE adapters"):
+    assert "`gate`" in listed and "`screen`" in listed and "check-change" not in listed
+    for marked in ("`gate`", "`screen`", "`adapt harness2`", "harness-part estimates", "ADE adapters"):
         assert re.search(re.escape(marked) + r"[^.\n]*experimental|experimental[^.\n]*" + re.escape(marked),
                          text), marked
     assert "## Research data" not in text

@@ -458,9 +458,10 @@ def start_choice(args: argparse.Namespace, store: Store, conf: Any, *, single: s
 
 def start_plain(args: argparse.Namespace, store: Store, conf: Any, *, started_at: str | None = None) -> dict[str, Any]:
     """`run start` from task flags or a task file, and --config or --workflow with --source."""
-    if getattr(args, "check", None) or getattr(args, "arm", None) or getattr(args, "pair", None):
-        # Into a check: from the claim to the commit under one store lock, so a pair's second arm sees the
-        # first arm's slate and joins it, and a second start of one arm takes the next pair or is refused.
+    if (getattr(args, "check", None) or getattr(args, "screen", None) or getattr(args, "arm", None)
+            or getattr(args, "pair", None)):
+        # Into a check or a screen: from the claim to the commit under one store lock, so a pair's second arm
+        # sees the first arm's slate and joins it, and a second start of one arm takes the next pair or is refused.
         with store.lock():
             return _start_plain(args, store, conf, started_at=started_at)
     return _start_plain(args, store, conf, started_at=started_at)
@@ -471,12 +472,17 @@ def _start_plain(args: argparse.Namespace, store: Store, conf: Any, *, started_a
         raise UserError("give --source (usual, alternative, exploration, user_edit, habit or designed), "
                         "or --rec REC --choice KEY")
     labels = parse_labels(getattr(args, "label", None))
-    claimed = None
-    if getattr(args, "check", None) or getattr(args, "arm", None) or getattr(args, "pair", None):
+    claimed = screened = None
+    if getattr(args, "screen", None):
+        from ..screen import record as screens
+
+        screened = screens.claim(store, args)  # points the task file and the slate at the screen's pair
+    elif getattr(args, "check", None) or getattr(args, "arm", None) or getattr(args, "pair", None):
         from ..compare import checks
 
         if not getattr(args, "check", None):
-            raise UserError("--arm and --pair record into a check: give --check CHK too")
+            raise UserError("--arm and --pair record into a check or a screen: give --check CHK or --screen SCR too")
+        checks.arm_settings(store, args)  # before the claim writes the pair's task file
         claimed = checks.claim(store, args)  # points the task file and the slate at the check's pair
     payload = store.rec(args.rec) if args.rec else None
     task = task_from_args(args, conf.get("org") or None, features=conf.features_or_builtin(), rec=payload)
@@ -506,12 +512,17 @@ def _start_plain(args: argparse.Namespace, store: Store, conf: Any, *, started_a
         if warning:
             print(f"warning: {warning}", file=sys.stderr)
         out["check"] = claimed
+    if screened is not None:
+        warning = screens.commit(store, screened, out["run"])
+        if warning:
+            print(f"warning: {warning}", file=sys.stderr)
+        out["screen"] = screened
     return out
 
 
 def check_flags_refused(args: argparse.Namespace, why: str) -> None:
-    given = [flag for flag, attr in (("--check", "check"), ("--arm", "arm"), ("--pair", "pair"), ("--label", "label"))
-             if getattr(args, attr, None)]
+    given = [flag for flag, attr in (("--check", "check"), ("--screen", "screen"), ("--arm", "arm"), ("--pair", "pair"),
+                                     ("--label", "label")) if getattr(args, attr, None)]
     if given:
         raise UserError(f"{why}; {', '.join(given)} apply to a run that opens from task flags or a task file")
 

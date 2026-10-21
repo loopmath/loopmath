@@ -12,6 +12,7 @@ A term is `(node_id, parent_id, value)`. Rows:
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -33,6 +34,13 @@ Term = tuple[str, "str | None", float]
 # 3 (0.2): `horizon:log2h` is relative to the fit's reference horizon. 4 (0.2.8): a `rate` head on the price
 # per token replaces the tokens head. A fit of another version is not read.
 DESIGN_VERSION = 4
+# 5: a fit with a model opt-in set, its options in the meta block `model_options` (config key to value). 0.3.1
+# refuses it, rather than predict without its nodes; this loopmath reads 4, and 5 with the options it knows.
+OPT_IN_DESIGN_VERSION = 5
+# The model options this loopmath's `fit` writes, each with the values it writes there (unset or `eb` writes
+# version 4, with no options). A version 5 fit with any other key or value was made by a loopmath with an option
+# this one has no nodes for: it is refused, as 0.3.1 refuses version 5, rather than read without them.
+MODEL_OPTIONS: dict[str, tuple[Any, ...]] = {"belief.success_head": ("sampled",)}
 # The version the seed key hashes (spec 04 section 3). It stays 3 from 0.2.8: the same data seeds the same
 # draws as in 0.2.7, so every number that is not a token count is 0.2.7's.
 SEED_VERSION = 3
@@ -49,13 +57,35 @@ TIMEBOX_LEVELS = ("effort:", "family_effort:", "topology:", "position:")
 
 def other_design(meta: dict) -> str | None:
     """Why a fit cannot be read: it was written by another design version (fits before 0.2 have none,
-    version 1). None when it can. Light on purpose: `status` and `doctor` call it without the engine."""
+    version 1), or with a model option this loopmath does not know. None when it can. Light on purpose: `status`
+    and `doctor` call it without the engine."""
     version = meta.get("design_version", 1)
+    options = meta.get("model_options")
+    if version == OPT_IN_DESIGN_VERSION and isinstance(options, dict):
+        return _unknown_options(meta.get("fit"), options)
     if version == DESIGN_VERSION:
         return None
     by = "an older" if isinstance(version, int) and version < DESIGN_VERSION else "another"
     return (f"fit {meta.get('fit') or '?'} is from design version {version} (made by {by} loopmath) and this "
             f"loopmath reads version {DESIGN_VERSION}; run `loopmath fit` for a new fit")
+
+
+def _unknown_options(fit_id: Any, options: dict) -> str | None:
+    """Why a version 5 fit cannot be read (`other_design`): an empty `model_options` (`fit` writes version 5 only
+    with an option set), the keys in it that are not in MODEL_OPTIONS, all by name, or else the first value not
+    listed there. None when it has options and every one is known."""
+    head = f"fit {fit_id or '?'} is from design version {OPT_IN_DESIGN_VERSION} (made by another loopmath)"
+    if not options:
+        return f"{head} with no model options, which this loopmath does not write; run `loopmath fit` for a new fit"
+    keys = sorted(str(k) for k in options if k not in MODEL_OPTIONS)
+    if keys:
+        return (f"{head} with the model option{'s' if len(keys) > 1 else ''} {', '.join(f'`{k}`' for k in keys)}, "
+                "which this loopmath does not know; run `loopmath fit` for a new fit")
+    for key, value in options.items():
+        if value not in MODEL_OPTIONS[key]:
+            return (f"{head} with the model option `{key}` = {json.dumps(value, default=str)}, a value this "
+                    "loopmath does not know; run `loopmath fit` for a new fit")
+    return None
 
 
 # ---------------------------------------------------------------- terms

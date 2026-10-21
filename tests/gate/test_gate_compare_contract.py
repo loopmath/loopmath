@@ -150,13 +150,20 @@ def test_a_pair_with_one_side_unscored_is_no_new_look_under_a_score_rule():
 @needs_compare
 @pytest.mark.parametrize("policy", [{}, {"max_cost_ratio": 2.0}, {"rule": "accept"}],
                          ids=["score", "cost-ratio", "acceptance"])
-def test_a_cost_range_compare_refuses_is_unknown_and_never_a_reason_to_reject(policy):
-    """D2 R2-B5: log costs spread far outside compare's cost model, so compare states no cost range. The
+def test_a_cost_range_compare_refuses_is_unknown_and_never_a_reason_to_reject(policy, monkeypatch):
+    """Log costs spread far outside compare's cost model, so compare states no cost range. The
     gate does not crash and says the cost per run is unknown with compare's reason. A cost ratio needs that
     cost, so it refuses; under an acceptance rule the cost per accepted result is unknown too, so the gate asks
     compare again on the outcomes alone (the gain in the chance of acceptance, no next pair's value) and
-    replicates on it, where a plain score rule adopts on its gain: never a reject for want of a cost."""
+    replicates on it, where a plain score rule adopts on its gain: never a reject for want of a cost.
+
+    Every run here has a cost, and 0.3.1's cost model ("ln"), the default, refuses these costs. The switched
+    cost model, an experimental setting, states a range for them and refuses only costs near the float limit
+    (the tests below). The test pins 0.3.1's model by name, so it holds whichever model is the default."""
+    from loopmath.compare import model
     from loopmath.gate import GatePolicy, decide
+
+    monkeypatch.setattr(model, "COST_MODEL", "ln")
 
     def row(arm, j, score):
         r = dict(_row(arm, j, score), cost={"usd": 1e-6 if j % 2 else 1e6})
@@ -187,14 +194,82 @@ def test_a_cost_range_compare_refuses_is_unknown_and_never_a_reason_to_reject(po
 
 
 @needs_compare
+@pytest.mark.parametrize("policy", [{}, {"max_cost_ratio": 2.0}, {"rule": "accept"}],
+                         ids=["score", "cost-ratio", "acceptance"])
+def test_the_switched_cost_model_prices_costs_that_0_3_1_refused(policy, monkeypatch):
+    """The data of the refused-range test above, $0.000001 and $1e6 on alternate runs, under the switched cost
+    model (`model.COST_MODEL = "sw"`, an experimental setting, not the default): it states a cost range for
+    both arms, so the gate states the cost per run and a pair's price, a cost ratio is checked, and the cost
+    is never called unknown."""
+    from loopmath.compare import model
+    from loopmath.gate import GatePolicy, decide
+
+    monkeypatch.setattr(model, "COST_MODEL", "sw")
+
+    def row(arm, j, score):
+        r = dict(_row(arm, j, score), cost={"usd": 1e-6 if j % 2 else 1e6})
+        if policy.get("rule") == "accept":
+            r["outcome"] = {"name": "judge", "accepted": score >= 55}
+        return r
+
+    base = [row("base", j, s) for j, s in zip(range(1, 5), (50.0, 52.0, 51.0, 50.0))]
+    cand = [row("candidate", j, s) for j, s in zip(range(1, 5), (70.0, 71.0, 69.0, 72.0))]
+    d = decide(base, cand, GatePolicy(**policy))
+    assert d.cost["base_usd_per_run"] > 0 and d.cost["cand_usd_per_run"] > 0 and d.cost["pair_usd"] > 0
+    assert not d.cost.get("unknown")
+    assert not any(r.startswith("cost: the cost per run is unknown") for r in d.reasons)
+    assert d.action != "reject"
+
+
+@needs_compare
+@pytest.mark.filterwarnings("ignore:overflow encountered:RuntimeWarning")  # the means overflow, by design
+@pytest.mark.parametrize("policy", [{}, {"max_cost_ratio": 2.0}], ids=["score", "cost-ratio"])
+def test_costs_near_the_float_limit_reach_compare_s_no_range_reason(policy, monkeypatch):
+    """Every run costs $1e308, under the switched cost model (`model.COST_MODEL = "sw"`, an experimental
+    setting, not the default). Its means overflow, so compare states no cost range: with every run costed,
+    that model gives this reason only near the float limit. The gate says the cost per run is unknown with
+    compare's reason; a cost ratio needs that cost, so it refuses; a score rule adopts on its gain, never a
+    reject for want of a cost. Under an acceptance rule a pair's price overflows too; that case is the value
+    stop's and is not checked here."""
+    from loopmath.compare import model
+    from loopmath.gate import GatePolicy, decide
+
+    monkeypatch.setattr(model, "COST_MODEL", "sw")
+
+    def row(arm, j, score):
+        return dict(_row(arm, j, score), cost={"usd": 1e308})
+
+    base = [row("base", j, s) for j, s in zip(range(1, 5), (50.0, 52.0, 51.0, 50.0))]
+    cand = [row("candidate", j, s) for j, s in zip(range(1, 5), (70.0, 71.0, 69.0, 72.0))]
+    if "max_cost_ratio" in policy:
+        with pytest.raises(ValueError) as exc:
+            decide(base, cand, GatePolicy(**policy))
+        assert "max_cost_ratio needs the cost per run, which is unknown" in str(exc.value)
+        assert "no cost range for the base and candidate" in str(exc.value)
+        return
+    d = decide(base, cand, GatePolicy(**policy))
+    assert d.cost["base_usd_per_run"] is None and d.cost["cand_usd_per_run"] is None
+    assert "no cost range for the base and candidate" in d.cost["unknown"]
+    assert d.comparison["objective"] == "gain" and d.action == "adopt" and d.stop == "adopt"
+
+
+@needs_compare
 @pytest.mark.parametrize("priced", [True, False], ids=["priced", "unpriced"])
 @pytest.mark.parametrize("left", [0.0, -0.25], ids=["left-0", "left-below-0"])
-def test_the_gate_and_compare_stop_buying_at_the_same_spent_budget(priced, left):
-    """D4 R4-B2: the gate states compare's budget stop (in `loopmath.compare.paired`) in a line of its
+def test_the_gate_and_compare_stop_buying_at_the_same_spent_budget(priced, left, monkeypatch):
+    """The gate states compare's budget stop (in `loopmath.compare.paired`) in a line of its
     own. Both are driven at the boundary, the budget left exactly 0 and below 0, with a pair price and with
-    none (compare refuses the cost range), so a drift in either rule fails here."""
+    none (compare refuses the cost range), so a drift in either rule fails here.
+
+    A budget needs every run's cost, so the case with no price has costs that 0.3.1's cost model ("ln"), the
+    default, refuses. The switched cost model states a range for them, so that case pins 0.3.1's model by
+    name."""
+    from loopmath.compare import model
     from loopmath.gate import GatePolicy, decide
     from loopmath.gate.core import default_compare
+
+    if not priced:
+        monkeypatch.setattr(model, "COST_MODEL", "ln")
 
     def row(arm, j, score):
         return dict(_row(arm, j, score), cost={"usd": 0.25 if priced else (1e-6 if j % 2 else 1e6)})
@@ -291,7 +366,7 @@ OLD, MID, NEW = "2026-10-17T10:00:00-07:00", "2026-10-17T22:00:00-07:00", "2026-
 
 @needs_compare
 def test_the_unit_guard_reads_the_score_compare_reads_after_a_change_of_scale():
-    """D4 review round 4 (a mixed-history probe): both arms once scored in points, then the base in
+    """A mixed history: both arms once scored in points, then the base in
     fractions. Compare reads each run's last finite score by observed time, so the gate's unit guard
     must read that score's scale too, and refuse the mix rather than adopt a gain of 54.5 over it."""
     from types import SimpleNamespace

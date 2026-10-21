@@ -15,6 +15,9 @@ was chosen by simulation (`calibrate.py`) for this look schedule:
 
 A cap past the table, a floor under the default, or a confidence stricter than the table's alphas gets the
 strictest threshold the table has and no stated bound.
+
+The switched cost model (`model.COST_MODEL = "sw"`, an experimental setting, not the default) has its own table,
+`_thresholds_sw.py`, calibrated for it; the default reads `_thresholds.py`.
 """
 
 from __future__ import annotations
@@ -32,6 +35,15 @@ try:
     from ._thresholds import TABLE
 except ImportError:  # pragma: no cover - the generated table ships with the package
     TABLE: dict[str, Any] = {}
+try:
+    from ._thresholds_sw import TABLE as TABLE_SW
+except ImportError:  # pragma: no cover - the generated table ships with the package
+    TABLE_SW: dict[str, Any] = {}
+
+
+def table_in_use() -> dict[str, Any]:
+    """The table calibrated for the cost model in use."""
+    return TABLE_SW if M.COST_MODEL == "sw" else TABLE
 
 
 def threshold(mode: str, *, confidence: float, floor: float, cap: int | None, n_pairs: int) -> dict[str, Any]:
@@ -39,7 +51,7 @@ def threshold(mode: str, *, confidence: float, floor: float, cap: int | None, n_
     the alpha and the cap, never on the pairs seen so far, which is what keeps the bound."""
     alpha = 1.0 - confidence
     cap = int(cap) if cap is not None else DEFAULT_CAP
-    entry = TABLE.get(mode)
+    entry = table_in_use().get(mode)
     if not entry:
         return {"threshold": confidence, "cap": cap, "bound": None,
                 "why": f"no false adopt bound is stated: there is no calibration for {mode}"}

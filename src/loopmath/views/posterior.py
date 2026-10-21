@@ -1487,7 +1487,11 @@ def _support_text(n: dict[str, Any]) -> str:
         key = key_text({"level": level or "", "key": key})
         return f"no runs here: the parent's estimate ({_LEVEL_WORDS.get(level, level) + ' ' if level else ''}{key}), widened"
     shared = "" if (n.get("source_mix") or {}).get("user") else ", shared data"
-    return f"{support} run{'' if support == 1 else 's'}{shared}"
+    # `belief.success_head = "sampled"` only: a node no contrast in the runs can separate from
+    # the terms it always comes with (a role from its shape, mostly)
+    alone = "; not identified: your runs cannot tell it from the terms it comes with, the prior splits them" \
+        if n.get("identified") == 0 else ""
+    return f"{support} run{'' if support == 1 else 's'}{shared}{alone}"
 
 
 # 0.2.1: rows about providers and models with none of your runs behind them are hidden unless --all.

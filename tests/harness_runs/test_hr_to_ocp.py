@@ -1,4 +1,4 @@
-"""One `loopmath.harness-runs/0.1` row becomes one strict-valid OCP v0.3 run (plan section 3)."""
+"""One `loopmath.harness-runs/0.1` row becomes one strict-valid OCP v0.3 run."""
 
 from __future__ import annotations
 
@@ -122,6 +122,16 @@ def test_a_verdict_becomes_the_accepted_signal_and_rule():
     [sig] = doc["run"]["signals"]
     assert (sig["kind"], sig["name"], sig["value"]) == ("verdict", "accepted", "reject")
     assert doc["run"]["acceptance_rule"]["requires"] == ["accepted"]
+
+
+def test_an_unscored_row_takes_the_rule_its_importer_names_and_stays_unscored():
+    default = HR.to_ocp(_row())
+    doc = HR.to_ocp(_row(), unscored_rule={"accepted": True})
+    assert default["run"]["acceptance_rule"]["requires"] != ["accepted"]
+    assert doc["run"]["acceptance_rule"]["requires"] == ["accepted"] and doc["run"].get("signals") in (None, [])
+    scored = HR.to_ocp(_row(outcome={"score": 0.5, "judge": "j", "scale": "fraction"}), unscored_rule={"accepted": True})
+    assert scored["run"]["acceptance_rule"] == default["run"]["acceptance_rule"]   # a row's own outcome rules
+    assert _errors(doc) == []
 
 
 def test_accept_at_writes_a_score_rule():

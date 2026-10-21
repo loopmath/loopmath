@@ -1,0 +1,113 @@
+{
+ "schema": "loopmath.gate-winner-scores/0.1",
+ "better": "higher",
+ "scale": "fraction",
+ "spread": [
+  0.02411,
+  0.04823
+ ],
+ "parent": {
+  "id": "terminus_kira",
+  "score": 0.285
+ },
+ "candidates": [
+  {
+   "id": "context_budget_guard",
+   "score": 0.285,
+   "order": 1
+  },
+  {
+   "id": "adversarial_self_test",
+   "score": 0.263,
+   "order": 1
+  },
+  {
+   "id": "lean_completion",
+   "score": 0.325,
+   "order": 2
+  },
+  {
+   "id": "output_truncation",
+   "score": 0.263,
+   "order": 2
+  },
+  {
+   "id": "turncount_aware",
+   "score": 0.193,
+   "order": 3
+  },
+  {
+   "id": "safe_file_inspection",
+   "score": 0.404,
+   "order": 3
+  },
+  {
+   "id": "no_cleanup_mandate",
+   "score": 0.351,
+   "order": 4
+  },
+  {
+   "id": "elapsed_time_warning",
+   "score": 0.316,
+   "order": 4
+  },
+  {
+   "id": "safe_inspect_textfix",
+   "score": 0.281,
+   "order": 5
+  },
+  {
+   "id": "db_tmp_copy",
+   "score": 0.399,
+   "order": 5
+  },
+  {
+   "id": "solution_preservation",
+   "score": 0.386,
+   "order": 6
+  },
+  {
+   "id": "empirical_discovery",
+   "score": 0.351,
+   "order": 6
+  },
+  {
+   "id": "plot_then_analyze",
+   "score": 0.342,
+   "order": 7
+  },
+  {
+   "id": "end_to_end_as_user",
+   "score": 0.465,
+   "order": 7
+  },
+  {
+   "id": "keep_service_artifacts",
+   "score": 0.412,
+   "order": 9
+  },
+  {
+   "id": "single_pass_completion",
+   "score": 0.404,
+   "order": 9
+  },
+  {
+   "id": "grader_runs_your_test",
+   "score": 0.325,
+   "order": 10
+  },
+  {
+   "id": "commit_on_fast_verify",
+   "score": 0.211,
+   "order": 10
+  }
+ ],
+ "source": {
+  "cite": "arXiv 2603.28052v1",
+  "url": "https://arxiv.org/abs/2603.28052v1",
+  "where": "the project page's search log (static/data/evo.js): an earlier search run on a 19-task subset of TerminalBench-2, every candidate with its rate and parent; the paper's final harness comes from a separate run",
+  "spread_basis": "assumed, not measured: trials per task in this run are not stated; the range takes the page's 5 trials per task (95 trials) and runs from half the binomial standard error to that standard error, at the scores' mean",
+  "held_out": null,
+  "note": "the parent is the seed (terminus_kira); the winner end_to_end_as_user (.465) descends from db_tmp_copy (.399); two candidates of iteration 8 failed to load and have no score, so they are left out"
+ }
+}

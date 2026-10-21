@@ -331,6 +331,13 @@ class NodeSummary(Record):
     support: int
     parent: str | None
     source_mix: dict[str, int] = field(default_factory=dict)  # runs by source
+    # the integrated success head only (config `belief.success_head`): `baseline_p`, the chance the display is
+    # read at, and `identified` on the levels it checks (belief/integrated.py); empty for every other fit
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def identified(self) -> bool | None:
+        return self.extra.get("identified")
 
 
 @_frozen

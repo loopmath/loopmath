@@ -2,6 +2,8 @@
 
 The spelling is spec/harness-runs.md (and spec/harness-runs-0.1.schema.json). Only `schema` and
 `task_id` are required. Unknown fields are kept. A reader refuses a whole file on its first bad line.
+Optional `stages` split one rollout into its roles: a planner, a developer, a reviewer, each with its
+own model and cost.
 """
 
 from __future__ import annotations
@@ -20,11 +22,18 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..types import TASK_TYPE_IDS
+from ..workflows.format import ID_RE
+from ..workflows.models import normalize_role
 
 SCHEMA = "loopmath.harness-runs/0.1"
 STREAMS = ("input", "cache_read", "cache_write", "output")
 KNOWN = ("schema", "id", "task_id", "task", "arm", "pair", "experiment", "status", "harness", "agent", "model",
-         "effort", "outcome", "cost", "started_at", "ended_at", "tool", "ext")
+         "effort", "outcome", "cost", "started_at", "ended_at", "tool", "ext", "stages", "workflow")
+STAGE_KNOWN = ("role", "piece", "agent", "model", "effort", "round", "cost", "started_at", "ended_at", "status",
+               "ext")
+# The piece a stage of each role runs by default: the catalog workflows' piece ids. Any other role word is its own
+PIECE_OF_ROLE = {"planner": "plan", "implementer": "implement", "reviewer": "review", "tester": "test",
+                 "referee": "select", "worker": "work"}
 STATUSES = ("done", "failed")
 SCALES = ("linear", "log", "fraction")
 BETTER = ("higher", "lower")
@@ -73,36 +82,95 @@ def _check_outcome(out: Any, problems: list[str]) -> None:
         problems.append("outcome.observed_at: an RFC 3339 time with an offset")
 
 
-def _check_cost(cost: Any, problems: list[str]) -> None:
+def _check_cost(cost: Any, problems: list[str], at: str = "cost") -> None:
     if cost is None:
         return
     if not isinstance(cost, dict):
-        problems.append("cost: an object or null")
+        problems.append(f"{at}: an object or null")
         return
     if cost.get("usd") is not None and not (_number(cost["usd"]) and cost["usd"] >= 0):
-        problems.append("cost.usd: a number >= 0 or null")
+        problems.append(f"{at}.usd: a number >= 0 or null")
     tokens = cost.get("tokens")
     if tokens is not None:
         if not isinstance(tokens, dict):
-            problems.append("cost.tokens: an object {input, cache_read, cache_write, output} or null")
+            problems.append(f"{at}.tokens: an object {{input, cache_read, cache_write, output}} or null")
         else:
             for key, value in tokens.items():
                 if key not in STREAMS:
-                    problems.append(f"cost.tokens.{key}: not a stream (known: {', '.join(STREAMS)})")
+                    problems.append(f"{at}.tokens.{key}: not a stream (known: {', '.join(STREAMS)})")
                 elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                    problems.append(f"cost.tokens.{key}: an integer >= 0")
+                    problems.append(f"{at}.tokens.{key}: an integer >= 0")
     for key in ("recovered", "complete"):
         if key in cost and not isinstance(cost[key], bool):
-            problems.append(f"cost.{key}: true or false")
+            problems.append(f"{at}.{key}: true or false")
     if cost.get("complete") is False and cost.get("usd") is not None:
-        problems.append("cost.usd: must be null when cost.complete is false (a partial sum goes in cost.partial_usd)")
+        problems.append(f"{at}.usd: must be null when {at}.complete is false (a partial sum goes in {at}.partial_usd)")
     if cost.get("partial_usd") is not None and not (_number(cost["partial_usd"]) and cost["partial_usd"] >= 0):
-        problems.append("cost.partial_usd: a number >= 0 or null")
+        problems.append(f"{at}.partial_usd: a number >= 0 or null")
     for key in ("usd_source", "unpriced", "incomplete"):
-        _opt_str(cost, key, problems, "cost.")
+        _opt_str(cost, key, problems, f"{at}.")
     for key in ("files", "skipped_lines"):
         if key in cost and (isinstance(cost[key], bool) or not isinstance(cost[key], int) or cost[key] < 0):
-            problems.append(f"cost.{key}: an integer >= 0")
+            problems.append(f"{at}.{key}: an integer >= 0")
+
+
+def _time_problem(value: Any) -> bool:
+    return value is not None and not (isinstance(value, str) and TIMESTAMP.match(value))
+
+
+def stage_piece(stage: dict[str, Any]) -> tuple[str, str]:
+    """(piece id, folded role) of a checked stage: its `piece`, else the catalog piece of its role."""
+    role = normalize_role(stage["role"]) or ""
+    return stage.get("piece") or PIECE_OF_ROLE.get(role, role), role
+
+
+def _check_stages(row: dict, problems: list[str]) -> None:
+    stages, workflow = row.get("stages"), row.get("workflow")
+    if workflow is not None and not (isinstance(workflow, str) and ID_RE.match(workflow)):
+        problems.append("workflow: a workflow id (letters, digits, '_', '.' and '-', at most 200 characters) or null")
+    if stages is None:
+        if workflow is not None:
+            problems.append("workflow: needs stages (it names the shape the stages ran)")
+        return
+    if not isinstance(stages, list) or not stages:
+        problems.append("stages: a non-empty list of stage objects, in time order, or null")
+        return
+    if row.get("cost") is not None:
+        problems.append("cost: goes on each stage when the row has stages (stages.N.cost), not on the row")
+    roles: dict[str, tuple[int, str]] = {}
+    for i, stage in enumerate(stages):
+        at = f"stages.{i}"
+        if not isinstance(stage, dict):
+            problems.append(f"{at}: an object")
+            continue
+        role, piece = stage.get("role"), stage.get("piece")
+        if not (isinstance(role, str) and role.strip()):
+            problems.append(f"{at}.role: a non-empty string is required")
+        if piece is not None and not (isinstance(piece, str) and ID_RE.match(piece)):
+            problems.append(f"{at}.piece: a piece id (letters, digits, '_', '.' and '-') or null")
+        for key in ("agent", "model", "effort"):
+            _opt_str(stage, key, problems, f"{at}.")
+        k = stage.get("round")
+        if k is not None and (isinstance(k, bool) or not isinstance(k, int) or k < 1):
+            problems.append(f"{at}.round: an integer >= 1 or null")
+        if stage.get("status") is not None and stage["status"] not in STATUSES:
+            problems.append(f"{at}.status: one of {', '.join(STATUSES)}, got {stage['status']!r}")
+        _check_cost(stage.get("cost"), problems, f"{at}.cost")
+        for key in ("started_at", "ended_at"):
+            if _time_problem(stage.get(key)):
+                problems.append(f"{at}.{key}: an RFC 3339 time with an offset, or null")
+        if "ext" in stage and not isinstance(stage["ext"], dict):
+            problems.append(f"{at}.ext: an object")
+        if not (isinstance(role, str) and role.strip()) or (piece is not None and not isinstance(piece, str)):
+            continue
+        pid, folded = stage_piece(stage)
+        if piece is None and not ID_RE.match(pid):
+            problems.append(f"{at}.role: {role!r} is not a piece id; give the stage a piece")
+        elif pid in roles and roles[pid][1] != folded:
+            first, had = roles[pid]
+            problems.append(f"{at}.role: piece {pid!r} has role {had!r} at stages.{first}, not {folded!r}; "
+                            "one piece runs one role")
+        roles.setdefault(pid, (i, folded))
 
 
 def _check_harness(value: Any, problems: list[str]) -> None:
@@ -168,9 +236,9 @@ def check_row(row: Any) -> list[str]:
     _check_harness(row.get("harness"), problems)
     _check_outcome(row.get("outcome"), problems)
     _check_cost(row.get("cost"), problems)
+    _check_stages(row, problems)
     for key in ("started_at", "ended_at"):
-        value = row.get(key)
-        if value is not None and not (isinstance(value, str) and TIMESTAMP.match(value)):
+        if _time_problem(row.get(key)):
             problems.append(f"{key}: an RFC 3339 time with an offset, or null")
     tool = row.get("tool")
     if tool is not None:

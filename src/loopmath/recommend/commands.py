@@ -674,7 +674,20 @@ def delta_words(d: dict[str, Any], baseline: str = "the usual") -> str:
 
 
 # ---------------------------------------------------------------- handlers
+ROLE_TAKES_NOT = (("goal", "--goal"), ("usual", "--usual"), ("workflow", "--workflow"), ("brief", "--brief"),
+                  ("harness_variants", "--harness-variants"), ("harness", "--harness"), ("html", "--html"))
+
+
 def recommend(args: argparse.Namespace) -> int:
+    if getattr(args, "role", None):
+        given = [flag for attr, flag in ROLE_TAKES_NOT if getattr(args, attr, None)]
+        if given:
+            return fail(f"--role does not take {', '.join(given)}", 2)
+        from ..recommend_role import recommend_role
+
+        return recommend_role(args)
+    if getattr(args, "unit", None):
+        return fail("--unit goes with --role", 2)
     home = home_dir(getattr(args, "home", None))
     now = storeread.now_local()
     try:

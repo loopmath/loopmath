@@ -49,6 +49,8 @@ The JSON Schema is [`harness-runs-0.1.schema.json`](harness-runs-0.1.schema.json
 | `started_at`, `ended_at` | no | RFC 3339 time with an offset, or null | Times as the source recorded them. Never invented. |
 | `tool` | no | object | The producing tool's ids, all strings, each optional: `name`, `version`, `run_id`, `task_id`, `stage`. |
 | `ext` | no | object | Producer data, keyed by reverse-domain namespace. Kept whole. |
+| `stages` | no | non-empty array or null | The rollout's role sessions in time order (a planner, a developer, a reviewer), each with its own setting and cost. Section 9. A row with stages has no top-level `cost`. |
+| `workflow` | no | workflow id or null | The id of the shape the stages ran, for example `plan-dev-review`. Needs `stages`. Section 9. |
 
 Unknown top-level fields are kept, not refused: they land in the run's ext with the rest of the row.
 
@@ -126,13 +128,13 @@ loopmath run import ocp/ --finish                      # store them; the same do
   - An open run that `loopmath run start` made and `run import` never stored takes its first import as it is (an orchestrator writing the document for a run loopmath started). That import records its content even when the document is the one the run holds. From then on it holds imported content like any other.
   - A second harness2 runs folder with the same config makes the same run ids: adapt it with `--experiment` to keep both.
   - `--replace` takes the new copy and keeps the outcomes added after the import. It never overwrites one: a new copy that holds an outcome's id with another value is refused, naming the id. The record keeps the ids of the outcomes added after the import (`later`), so each stays kept through every later replace, even after a copy that carried it equal. A run stored before loopmath kept that record cannot tell them from imported ones; the outcomes it drops are counted.
-- Each row becomes one OCP v0.3 run with one attempt, configured as the catalog `solo` workflow with the row's `agent`, `model` and `effort`, so the run lands in the same configuration a `loopmath run start` with those settings would.
+- Each row becomes one OCP v0.3 run with one attempt, configured as the catalog `solo` workflow with the row's `agent`, `model` and `effort`, so the run lands in the same configuration a `loopmath run start` with those settings would. A row with `stages` becomes one attempt per stage instead (section 9).
   - The harness record goes to `run.ext["dev.loopmath.harness"]`.
   - `arm` goes to `run.labels.arm`.
   - `pair` and `experiment` go to `run.ext["dev.loopmath.pair"]` as `{"pair": <pair or null>, "arm": <arm or null>, "experiment": <experiment or null>}`, written when the row has either. A null `pair` there means no pair key: runs pair on the task within the experiment.
   - `status: failed` gives a failed attempt.
   - The rest of the row is kept at `run.ext["dev.loopmath.adapter.harness-runs"]`.
-  - The document's `privacy.profile` is `metadata_only` unless the run keeps text the row's writer chose: a string in an unknown row field, in an `ext` namespace not under `dev.loopmath.`, or in an `outcome` field this spec does not define. Then it is `full`, and `retained_text` in the kept row lists where. loopmath cannot tell a label from a prompt, so it never promises that such text is not one.
+  - The document's `privacy.profile` is `metadata_only` unless the run keeps text the row's writer chose: a string in an unknown row or stage field, in an `ext` namespace (the row's or a stage's) not under `dev.loopmath.`, or in an `outcome` field this spec does not define. Then it is `full`, and `retained_text` in the kept row lists where. loopmath cannot tell a label from a prompt, so it never promises that such text is not one.
 
 `loopmath adapt harness2 RUNS --out DIR` reads a harness2 runs folder into these rows first (`--rows FILE` keeps them), then imports them the same way; see `docs/adapters.md`.
 
@@ -148,3 +150,35 @@ Each file in [`examples/harness-runs/`](examples/harness-runs/) imports with `lo
 
 - A reader refuses any `schema` other than `loopmath.harness-runs/0.1`, by name.
 - Changes inside 0.1 are additive only: a new optional field or a new value. Readers keep unknown fields.
+
+## 9. Stages
+
+A rollout that ran as several role sessions (a planner, then a developer, then a reviewer that sent the diff back once) can say so. Each stage is one session:
+
+```json
+"stages": [
+  {"role": "planner", "agent": "codex", "model": "gpt-6-astra", "effort": "xhigh",
+   "cost": {"tokens": {"input": 1000, "cache_read": 800, "output": 200}}},
+  {"role": "developer", "model": "gpt-6-sol", "effort": "high", "cost": {"usd": 0.31}},
+  {"role": "reviewer", "model": "gpt-6-luna", "effort": "low", "round": 1, "cost": {"usd": 0.01}},
+  {"role": "developer", "model": "gpt-6-sol", "effort": "high", "round": 2, "cost": {"usd": 0.05}},
+  {"role": "reviewer", "model": "gpt-6-luna", "effort": "low", "round": 2, "cost": {"usd": 0.02}}],
+"workflow": "plan-dev-review"
+```
+
+| stage field | required | type | meaning |
+|---|---|---|---|
+| `role` | yes | non-empty string | The session's role, folded onto loopmath's roles: `developer` and `implement` are `implementer`, `review` is `reviewer`, and so on. Any other word is kept as given, lowercased. |
+| `piece` | no | piece id or null | The workflow piece the stage ran. Default: `plan`, `implement`, `review`, `test`, `select` or `work` for a planner, implementer, reviewer, tester, referee or worker, else the folded role word. One piece runs one role: a second role on the same piece is refused by name. |
+| `agent`, `model`, `effort` | no | string or null | The stage's setting. Each defaults to the row's. |
+| `round` | no | integer from 1, or null | The repair round: a developer's second pass after a review is round 2, and so is the review of it. Default 1. |
+| `cost` | no | object or null | Section 4, for this stage alone. Tokens without dollars are priced with the stage's model. |
+| `started_at`, `ended_at` | no | RFC 3339 time with an offset, or null | The stage's own times. |
+| `status` | no | `done` or `failed` | Default `done`, except the last stage, which takes the row's `status`. |
+| `ext` | no | object | Producer data for the stage, as the row's `ext`. |
+
+- **The run.** One piece per piece id, in the order the stages first reach it, with its role. A piece is as wide as its most stages in one round (two reviewers in round 1 make a `review` piece of width 2). Its setting is its first stage's.
+- **The workflow.** When the pieces and roles are those of a catalog workflow (`solo`, `plan_implement`, `implement_review`, `plan_implement_review`, `best_of_n`, `swarm`), the run uses that workflow's artifacts, edges and gates, with the stages' widths and a round budget of at least the stages' rounds. Otherwise the pieces form a chain: the issue and the repo feed every piece, each piece's output feeds the next, and a reviewer gates the nearest developer before it. The budget is the stages' rounds, and at least 3 when a reviewer gates. The workflow id is `workflow` when given, else the catalog id, else a derived id: `stages-` and the piece ids joined by `-` (for example `stages-plan-split-implement-review`), or, when that would pass 200 characters or a piece id has a `-`, the joined piece ids cut to fit, then `--` and the first 12 hex digits of the SHA-256 of the JSON list of piece ids (a plain join never has `--`, so it cannot spell a hashed id). A derived id is at most 200 characters, and two different lists of pieces get different ids. It names the pieces, not their roles: give `workflow` to tell apart shapes whose pieces share names. The topology level of `posterior` reads the workflow id. The chain's own artifacts (`issue`, `repo` and `<piece>.out`) and gates never take a piece's id: a name that a piece already has, or that would pass 200 characters, is cut to fit and takes `-` and 12 hex digits of its SHA-256, so any valid piece id converts.
+- **The attempts.** One per stage, in stage order, each with its piece, round, setting, status, times and cost. The outcome signal sits on the last stage's attempt. The attempt's ext keeps the stage's index, its role word as given, its `ext` (`stage_ext`) and its unknown fields (`extra`).
+- **Cost.** Each stage's cost is its own attempt's cost. A stage whose cost is unknown or incomplete leaves the run's cost unknown, never smaller. A top-level `cost` with `stages` is refused: it would count the stages twice or hide which stage spent it.
+- **Unchanged.** A row without `stages` gives the same document as before stages existed, byte for byte.

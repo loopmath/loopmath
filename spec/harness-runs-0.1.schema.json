@@ -411,6 +411,136 @@
     },
     "ext": {
       "type": "object"
+    },
+    "stages": {
+      "description": "The rollout's stages in time order (section 9): one per role session, each with its own setting and cost.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "piece": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$"
+              }
+            ]
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "round": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "cost": {
+            "$ref": "#/properties/cost"
+          },
+          "status": {
+            "enum": [
+              "done",
+              "failed",
+              null
+            ]
+          },
+          "started_at": {
+            "$ref": "#/properties/started_at"
+          },
+          "ended_at": {
+            "$ref": "#/properties/ended_at"
+          },
+          "ext": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "workflow": {
+      "description": "The workflow id the stages ran (section 9); needs stages.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$"
+        }
+      ]
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "workflow"
+        ],
+        "properties": {
+          "workflow": {
+            "type": "string"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "stages"
+        ],
+        "properties": {
+          "stages": {
+            "type": "array"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "stages"
+        ],
+        "properties": {
+          "stages": {
+            "type": "array"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "cost": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
 }

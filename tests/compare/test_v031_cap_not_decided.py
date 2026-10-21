@@ -74,7 +74,7 @@ def test_budget_stops_say_not_decided(home, tmp_path, capsys):
 def test_stop_text_for_each_stop():
     from loopmath.compare.commands import stop_text
 
-    assert stop_text({"stop": "value"}) == "not decided: the next pair is worth less than its price, the base stays"
+    assert stop_text({"stop": "value"}) == "not decided: the next pairs are certified not worth their price, the base stays"
     assert (stop_text({"stop": "budget", "budget_usd": 2.0, "spent_usd": 1.0})
             == "not decided: the budget left is under one pair, the base stays")
     assert stop_text({"stop": "decided", "verdict": "reject"}) == "verdict: reject"

@@ -3,6 +3,9 @@
 `decide(base_runs, cand_runs, policy)` answers adopt, reject (keep the base) or replicate N more
 pairs, with the reasons and the cost, on top of `loopmath.compare.paired`. It reads OCP run
 documents, `loopmath.harness-runs/0.1` rows or compare's observations, and never writes anything.
+
+`loopmath.gate.winner` (imported on its own, as it needs numpy and scipy) gives a search loop's winner its
+selection-adjusted gain and asks `decide` what to run before adopting it.
 """
 
 from __future__ import annotations

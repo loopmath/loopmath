@@ -13,7 +13,8 @@ from ..store.home import NotFound
 from . import core, inputs
 
 FLAGS = (("r_min", "--r-min"), ("r_max", "--r-max"), ("budget_usd", "--budget-usd"),
-         ("max_cost_ratio", "--max-cost-ratio"))
+         ("max_cost_ratio", "--max-cost-ratio"), ("value_stop", "--value-stop"), ("min_pairs", "--min-pairs"),
+         ("pair_price", "--pair-price"), ("horizon_runs", "--horizon-runs"), ("value_usd", "--value-usd"))
 
 
 def _flags(message: str) -> str:
@@ -75,6 +76,11 @@ def _text(d: core.Decision) -> str:
     if k.get("unrecorded"):
         line2 += f"; {k['unrecorded']} {'run' if k['unrecorded'] == 1 else 'runs'} with no recorded cost"
     lines = [_headline(d), line1, line2]
+    if c and c.get("next_pair_value_usd") is not None and c.get("pair_price_usd") is not None:
+        from ..compare import value as V
+
+        stops = "--value-stop is on" if d.policy.get("value_stop") else "it stops nothing with --no-value-stop"
+        lines.append(f"{V.value_line(c)}; {stops}")
     lines += [f"  {r}" for r in d.reasons]
     return "\n".join(lines) + "\n"
 
@@ -101,6 +107,9 @@ def _no_pair(policy: core.GatePolicy, base: list, cand: list, d: core.Decision, 
 
 @handler("gate")
 def gate(args: argparse.Namespace) -> int:
+    missing = [flag for flag, sel in (("--base", args.base), ("--cand", args.cand)) if sel is None]
+    if missing:
+        args.usage_error(f"the following arguments are required: {', '.join(missing)}")
     for flag, sel in (("--base", args.base), ("--cand", args.cand)):
         try:
             inputs.parse_selector(sel)
@@ -114,6 +123,11 @@ def gate(args: argparse.Namespace) -> int:
             r_max=args.r_max,
             budget_usd=args.budget_usd,
             max_cost_ratio=args.max_cost_ratio,
+            value_stop=bool(args.value_stop),
+            min_pairs=args.min_pairs,
+            pair_price=args.pair_price,
+            horizon_runs=args.horizon_runs,
+            value_usd=args.value_usd,
         )
     except ValueError as exc:
         raise UserError(_flags(str(exc))) from None

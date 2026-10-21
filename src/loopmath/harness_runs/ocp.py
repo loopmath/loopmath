@@ -5,22 +5,28 @@ The run is built with loopmath's own skeleton (`ocp.emit.new_run_doc`, `attempt_
 sits at `run.ext[harness.EXT_KEY]`, the replicate pair and experiment at `run.ext["dev.loopmath.pair"]`, and
 the rest of the row at `run.ext["dev.loopmath.adapter.harness-runs"]`. The same row always gives the same
 document.
+
+A row with `stages` becomes one piece per stage piece and one attempt per stage, each with its own
+setting, round and cost, under the catalog workflow its pieces and roles match, else a chain of its pieces.
+A row without them gives the same document as before.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
 from .. import __version__, harness
 from ..ocp import emit
-from ..types import DEFAULT_RULE, AcceptanceRule, ScoreTarget, Setting
+from ..types import DEFAULT_RULE, AcceptanceRule, Control, Gate, Piece, ScoreTarget, Setting, Workflow
 from ..workflows.format import catalog
 from ..workflows.ids import make_config
 from .costs import price_tokens
-from .rows import KNOWN, SCHEMA, STREAMS, check_row, row_id
+from .rows import KNOWN, SCHEMA, STAGE_KNOWN, STREAMS, check_row, row_id, stage_piece
 
 NS = "dev.loopmath.adapter.harness-runs"
 PAIR_KEY = "dev.loopmath.pair"
@@ -63,15 +69,24 @@ def _text_paths(value: Any, path: str) -> list[str]:
     return []
 
 
+def _foreign_text(obj: dict[str, Any], known: tuple[str, ...], at: str) -> list[str]:
+    """Text paths in `obj`'s unknown fields and in its ext namespaces other than loopmath's own."""
+    out = [p for k, v in obj.items() if k not in known for p in _text_paths(v, f"{at}{k}")]
+    if isinstance(obj.get("ext"), dict):
+        out += [p for k, v in obj["ext"].items() if not str(k).startswith("dev.loopmath.")
+                for p in _text_paths(v, f"{at}ext.{k}")]
+    return out
+
+
 def retained_text(row: dict[str, Any]) -> list[str]:
     """Where the document keeps text the row's writer chose, not a label loopmath defines: strings in unknown
-    row fields, in ext namespaces other than loopmath's own, and in outcome fields beyond the known ones.
-    Any of it makes the document's privacy profile `full` (spec/OCP.md section 5: `metadata_only` promises no
-    prompt, completion or transcript text anywhere, and loopmath cannot tell what such text is)."""
-    out = [p for k, v in row.items() if k not in KNOWN for p in _text_paths(v, k)]
-    if isinstance(row.get("ext"), dict):
-        out += [p for k, v in row["ext"].items() if not str(k).startswith("dev.loopmath.")
-                for p in _text_paths(v, f"ext.{k}")]
+    row or stage fields, in ext namespaces other than loopmath's own, and in outcome fields beyond the known
+    ones. Any of it makes the document's privacy profile `full` (spec/OCP.md section 5: `metadata_only`
+    promises no prompt, completion or transcript text anywhere, and loopmath cannot tell what such text is)."""
+    out = _foreign_text(row, KNOWN, "")
+    for i, stage in enumerate(row.get("stages") or []):
+        if isinstance(stage, dict):
+            out += _foreign_text(stage, STAGE_KNOWN, f"stages.{i}.")
     if isinstance(row.get("outcome"), dict):
         out += [p for k, v in row["outcome"].items() if k not in OUTCOME_LABELS
                 for p in _text_paths(v, f"outcome.{k}")]
@@ -161,6 +176,115 @@ def _first_time(*values: Any) -> str | None:
     return next((v for v in values if isinstance(v, str) and v), None)
 
 
+MAX_ID = 200  # the longest id the workflow and OCP formats take
+
+
+def _free_id(want: str, taken: set[str]) -> str:
+    """`want` when it is short enough and not yet taken, else `want` cut to fit with a stable suffix from its
+    sha256 (and a counter if even that is taken). The id is added to `taken`."""
+    tag = hashlib.sha256(want.encode()).hexdigest()[:12]
+    n = 0
+    got = want
+    while len(got) > MAX_ID or got in taken:
+        tail = f"-{tag}" + (f"-{n}" if n else "")
+        got, n = want[:MAX_ID - len(tail)] + tail, n + 1
+    taken.add(got)
+    return got
+
+
+def _stages_id(order: list[str]) -> str:
+    """The derived workflow id, one per list of pieces: `stages-<piece>-<piece>...` when it fits and no piece id
+    has a `-` (so the words give the list back, and the id has no `--`), else those words cut to fit, then `--`
+    and a suffix from the sha256 of the list (an id no plain join can spell)."""
+    words = "-".join(order)
+    if len("stages-" + words) <= MAX_ID and not any("-" in pid for pid in order):
+        return f"stages-{words}"
+    tag = hashlib.sha256(json.dumps(order).encode()).hexdigest()[:12]
+    return f"stages-{words[:MAX_ID - len('stages---') - len(tag)]}--{tag}"
+
+
+def _stage_workflow(row: dict[str, Any], stages: list[tuple[dict[str, Any], str, str]]) -> Workflow:
+    """The workflow the stages ran: one piece per piece id in first-appearance order, as wide as its most
+    stages in one round, under the catalog workflow whose pieces and roles these are, else a chain (issue and
+    repo feed every piece, each piece's output feeds the next, a reviewer gates the developer before it). Its
+    id is the row's `workflow`, else the catalog id, else a derived one (`_stages_id`). Artifact and gate ids
+    are kept apart from the piece ids and within the id length (`_free_id`)."""
+    order: list[str] = []
+    roles: dict[str, str] = {}
+    per_round: dict[tuple[str, int], int] = {}
+    for stage, pid, role in stages:
+        if pid not in roles:
+            order.append(pid)
+            roles[pid] = role
+        key = (pid, stage.get("round") or 1)
+        per_round[key] = per_round.get(key, 0) + 1
+    width = {pid: max(n for (q, _), n in per_round.items() if q == pid) for pid in order}
+    rounds = max(k for _, k in per_round)
+    shape = [(pid, roles[pid]) for pid in order]
+    base = next((w for w in catalog().values() if [(p.id, p.role) for p in w.pieces] == shape), None)
+    if base is not None:
+        pieces = tuple(dataclasses.replace(p, width=width[p.id]) for p in base.pieces)
+        control = base.control if base.control.budget_rounds >= rounds else \
+            dataclasses.replace(base.control, budget_rounds=rounds)
+        return dataclasses.replace(base, id=row.get("workflow") or base.id, pieces=pieces, control=control)
+    taken = set(order)
+    issue, repo = _free_id("issue", taken), _free_id("repo", taken)
+    outs = [_free_id(f"{pid}.out", taken) for pid in order]
+    edges = [(a, pid) for pid in order for a in (issue, repo)]
+    for i, pid in enumerate(order):
+        edges.append((pid, outs[i]))
+        if i:
+            edges.append((outs[i - 1], pid))
+    gates = []
+    for i, pid in enumerate(order):
+        back = next((q for q in reversed(order[:i]) if roles[q] == "implementer"), None)
+        if roles[pid] == "reviewer" and back is not None:
+            gates.append(Gate(id=_free_id(f"g_{pid}", taken), after=pid, rule="review_approve", on_fail=back))
+    budget = max(3 if gates else 1, rounds)
+    return Workflow(id=row.get("workflow") or _stages_id(order), version=1,
+                    title="the stages of a harness-runs row", pieces=tuple(Piece(id=pid, role=roles[pid],
+                                                                                 width=width[pid]) for pid in order),
+                    artifacts=(issue, repo, *outs), edges=tuple(edges),
+                    control=Control(gates=tuple(gates), budget_rounds=budget))
+
+
+def _stage_attempts(doc: dict[str, Any], row: dict[str, Any], stages: list[tuple[dict[str, Any], str, str]],
+                    run_id: str, setting: tuple[str, str, str], at: str) -> list[dict[str, Any]]:
+    """One attempt per stage, in stage order: its piece, round, setting and cost. A stage with no status is
+    done, except the last, which takes the row's."""
+    agent, model, effort = setting
+    attempts, seen = [], {}
+    for i, (stage, pid, _) in enumerate(stages, 1):
+        seen[pid] = seen.get(pid, 0) + 1
+        status = stage.get("status") or (row.get("status") if i == len(stages) else None) or "done"
+        started = _first_time(stage.get("started_at"))
+        att = emit.attempt_record(attempt_id=f"att_{run_id[len('run_'):]}_{i}", node=pid,
+                                  harness=stage.get("agent") or agent, model=stage.get("model") or model,
+                                  effort=stage.get("effort") or effort, n=seen[pid], round=stage.get("round") or 1,
+                                  started_at=started or at, status=status)
+        if started is None:
+            del att["started_at"]
+        if stage.get("ended_at"):
+            att["ended_at"] = stage["ended_at"]
+        att["outcome"] = {"result": status, "evidence": "reported"}
+        cost, marks = _cost(stage, stage.get("model") or row.get("model"))
+        if cost:
+            att["cost"] = cost
+        kept: dict[str, Any] = {**marks, "stage": i - 1, "role": stage["role"]}
+        if isinstance(stage.get("ext"), dict) and stage["ext"]:
+            kept["stage_ext"] = stage["ext"]
+        extra = {k: v for k, v in stage.items() if k not in STAGE_KNOWN}
+        if extra:
+            kept["extra"] = extra
+        att["ext"] = {NS: kept}
+        attempts.append(att)
+    last = {a["node"]: a["status"] for a in attempts}
+    for node in doc["nodes"]:
+        if node["id"] in last:
+            node["state"] = last[node["id"]]
+    return attempts
+
+
 def _producer(tool_name: str | None, at: str) -> dict[str, Any]:
     out = {"name": PRODUCER, "version": __version__, "source_contract": SCHEMA, "emitted_at": at,
            "capabilities": {"task": True, "configuration": True, "signals": True, "slate": False, "receipt": False,
@@ -173,13 +297,15 @@ def _producer(tool_name: str | None, at: str) -> dict[str, Any]:
 
 def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at: float | None = None,
            observed_default: str | None = None, task_type: str | None = None,
-           repo: str | None = None) -> dict[str, Any]:
+           repo: str | None = None, unscored_rule: dict[str, Any] | None = None) -> dict[str, Any]:
     """The OCP v0.3 run of one row. Raises ValueError naming the field for a bad row or tree path.
 
     Execution times come only from the row: a run or attempt with no `started_at` has none, and no
     `ended_at` is made up. `observed_default` is the signal's `observed_at` (and the producer's
     `emitted_at`) when the row has neither time (the CLI passes the rows file's modification time); without
-    it, the time of the call. `task_type` and `repo` fill a row's missing task fields.
+    it, the time of the call. `task_type` and `repo` fill a row's missing task fields. `unscored_rule`, an
+    outcome such as `{"accepted": True}`, gives a row with no outcome the acceptance rule that outcome's rows
+    have, for an importer whose unscored runs sit beside runs judged by that rule; the run stays unscored.
     """
     problems = check_row(row)
     if problems:
@@ -188,13 +314,23 @@ def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at
     tool = dict(row["tool"]) if isinstance(row.get("tool"), dict) else {}
     task_in = row.get("task") if isinstance(row.get("task"), dict) else {}
     agent, model, effort = row.get("agent") or UNKNOWN, row.get("model") or UNKNOWN, row.get("effort") or "default"
-    started = _first_time(row.get("started_at"))
-    ended = _first_time(row.get("ended_at"))
-    at = _first_time(row.get("ended_at"), row.get("started_at"), observed_default) or emit.now()
+    stages = [(s, *stage_piece(s)) for s in row.get("stages") or []]
+    first, last = (stages[0][0], stages[-1][0]) if stages else ({}, {})
+    started = _first_time(row.get("started_at"), first.get("started_at"))
+    ended = _first_time(row.get("ended_at"), last.get("ended_at"))
+    at = _first_time(ended, started, observed_default) or emit.now()
 
-    solo = catalog()["solo"]
-    piece = solo.pieces[0].id
-    cfg = make_config(solo, {piece: Setting(harness=agent, model=model, effort=effort)})
+    if stages:
+        workflow = _stage_workflow(row, stages)
+        settings: dict[str, Setting] = {}
+        for stage, pid, _ in stages:
+            settings.setdefault(pid, Setting(harness=stage.get("agent") or agent, model=stage.get("model") or model,
+                                             effort=stage.get("effort") or effort))
+        cfg = make_config(workflow, settings)
+    else:
+        solo = catalog()["solo"]
+        piece = solo.pieces[0].id
+        cfg = make_config(solo, {piece: Setting(harness=agent, model=model, effort=effort)})
     given_type = task_in.get("type") or task_type
     task = {"id": row["task_id"], "type": given_type or DEFAULT_TYPE,
             "repo": task_in.get("repo") or repo or tool.get("name") or UNKNOWN,
@@ -205,7 +341,7 @@ def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at
     if "source" not in task:
         task["source"] = "orchestrator"
 
-    doc = emit.new_run_doc(run_id=run_id, task=task, configuration=cfg, acceptance_rule=_rule(row.get("outcome"), accept_at),
+    doc = emit.new_run_doc(run_id=run_id, task=task, configuration=cfg, acceptance_rule=_rule(row.get("outcome") or unscored_rule, accept_at),
                            provenance={"kind": "logged", "chooser": "user"}, source="habit", started_at=started or at)
     doc["producer"] = _producer(tool.get("name"), at)
     run = doc["run"]
@@ -218,24 +354,28 @@ def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at
     if row.get("arm"):
         run["labels"] = {"arm": row["arm"]}
 
-    att_id = f"att_{run_id[len('run_'):]}_1"
-    failed = row.get("status") == "failed"
-    att = emit.attempt_record(attempt_id=att_id, node=piece, harness=agent, model=model, effort=effort,
-                              n=1, round=1, started_at=started or at, status="failed" if failed else "done")
-    if started is None:
-        del att["started_at"]
-    if ended:
-        att["ended_at"] = ended
-    att["outcome"] = {"result": "failed" if failed else "done", "evidence": "reported"}
-    cost, marks = _cost(row, row.get("model"))
-    if cost:
-        att["cost"] = cost
-    if marks:
-        att["ext"] = {NS: marks}
-    doc["attempts"] = [att]
-    for node in doc["nodes"]:
-        if node["id"] == piece:
-            node["state"] = att["status"]
+    if stages:
+        doc["attempts"] = _stage_attempts(doc, row, stages, run_id, (agent, model, effort), at)
+        att_id = doc["attempts"][-1]["id"]
+    else:
+        att_id = f"att_{run_id[len('run_'):]}_1"
+        failed = row.get("status") == "failed"
+        att = emit.attempt_record(attempt_id=att_id, node=piece, harness=agent, model=model, effort=effort,
+                                  n=1, round=1, started_at=started or at, status="failed" if failed else "done")
+        if started is None:
+            del att["started_at"]
+        if ended:
+            att["ended_at"] = ended
+        att["outcome"] = {"result": "failed" if failed else "done", "evidence": "reported"}
+        cost, marks = _cost(row, row.get("model"))
+        if cost:
+            att["cost"] = cost
+        if marks:
+            att["ext"] = {NS: marks}
+        doc["attempts"] = [att]
+        for node in doc["nodes"]:
+            if node["id"] == piece:
+                node["state"] = att["status"]
 
     sig = _signal(row, run_id, att_id, at)
     run["signals"] = [sig] if sig else []

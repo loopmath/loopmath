@@ -11,6 +11,7 @@ the local reading below follows the same rules.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -103,19 +104,22 @@ def config_of(x: Any) -> str | None:
 
 
 def usd_of(x: Any) -> float | None:
-    """The run's dollars, or None when not known (never 0 for unknown)."""
+    """The run's dollars, or None when not known (never 0 for unknown). A NaN or infinite figure is not known,
+    as compare reads it."""
     if is_row(x):
         cost = x.get("cost") if isinstance(x.get("cost"), dict) else {}
         if cost.get("complete") is False:
             return None  # a partial sum is not the run's cost
         usd = cost.get("usd")
-        return float(usd) if isinstance(usd, (int, float)) and not isinstance(usd, bool) else None
-    if is_doc(x):
+        usd = float(usd) if isinstance(usd, (int, float)) and not isinstance(usd, bool) else None
+    elif is_doc(x):
         from ..store.runs import run_cost
 
-        return run_cost(x)["usd"]
-    usd = getattr(x, "usd", None)
-    return float(usd) if isinstance(usd, (int, float)) else None
+        usd = run_cost(x)["usd"]
+    else:
+        usd = getattr(x, "usd", None)
+        usd = float(usd) if isinstance(usd, (int, float)) else None
+    return usd if usd is None or math.isfinite(usd) else None
 
 
 def _score_name(rule: str) -> str | None:

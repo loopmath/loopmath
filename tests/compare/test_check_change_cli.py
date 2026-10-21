@@ -425,7 +425,7 @@ def test_status_names_the_calibrated_threshold_and_from_runs_reads_a_check_arm(h
     assert fr["comparison"]["p_better"] == cmp["p_better"] and fr["base"]["runs"] == 2, err
 
 
-# ---------------------------------------------------------------- the CLI tester's round 1 (h19-cli-r1)
+# ---------------------------------------------------------------- rules, stops, refusals and costs
 def import_rows(capsys, tmp_path, *arms, name="ocp"):
     """Rows through `adapt harness-runs` and a no-fit `run import`, as the tester stored them."""
     from loopmath import harness_runs as HR
@@ -561,7 +561,7 @@ def test_from_runs_refuses_an_unknown_rule_or_score_name_and_names_what_is_there
 
     import_rows(capsys, tmp_path, *verdict_rows(3))
     code, _, err = lm(capsys, "check-change", "from-runs", *ARMS, "--rule", "nosuchrule")  # the tester's #186
-    assert code == 1 and "nosuchrule" in err, err  # one name per rule, and only those that score a run (CLI r3 N3)
+    assert code == 1 and "nosuchrule" in err, err  # one name per rule, and only those that score a run
     assert "the rules that score these runs: accepted (the runs' own rule, also accept), review;" in err, err
     code, _, err = lm(capsys, "check-change", "from-runs", *ARMS, "--rule", "score:nosuch")  # the tester's #187
     assert code == 1 and "no selected run has a score named nosuch" in err and "score names present: none" in err, err
@@ -592,7 +592,7 @@ def test_start_refuses_a_missing_path_the_same_arm_a_negative_budget_and_a_floor
 
     (tmp_path / "a-file").write_text("x")
     code, _, err = lm(capsys, "check-change", "start", "--base", str(tmp_path / "nope"), "--cand", "b", "--n", "2")
-    assert code == 2 and "no folder" in err, err  # the tester's #104: a missing path exits 2 (CLI r3 N2)
+    assert code == 2 and "no folder" in err, err  # the tester's #104: a missing path exits 2
     bad = ((["--base", str(tmp_path / "a-file"), "--cand", "b"], "not a folder"),
            (["--base", "x", "--cand", "x"], "the same arm"),  # #105
            (["--base", "a", "--cand", "b", "--budget-usd", "-5"], "--budget-usd"),  # #108

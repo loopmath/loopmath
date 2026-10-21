@@ -100,6 +100,25 @@ def test_an_unverified_entry_states_no_bound(monkeypatch):
     assert cal["bound"] is None and "0.070" in cal["why"]
 
 
+def test_each_cost_model_reads_the_table_calibrated_for_it(monkeypatch):
+    """The default reads `_thresholds.py`. The switched cost model, an experimental setting, reads
+    `_thresholds_sw.py`: its cpar entry was calibrated for that model with the mixed-model cost nulls, and its
+    gain and score entries, which read no costs, are the default's."""
+    from loopmath.compare import _thresholds, _thresholds_sw
+
+    args = dict(confidence=0.95, floor=calibration.DEFAULT_FLOORS["cpar"], cap=24, n_pairs=4)
+    assert M.COST_MODEL == "ln" and calibration.table_in_use() is _thresholds.TABLE
+    ln = calibration.threshold("cpar", **args)
+    assert ln["threshold"] == max(_thresholds.TABLE["cpar"]["thresholds"]["0.05"]["24"], 0.95)
+    monkeypatch.setattr(M, "COST_MODEL", "sw")
+    sw = _thresholds_sw.TABLE
+    assert calibration.table_in_use() is sw
+    assert calibration.threshold("cpar", **args)["threshold"] == max(sw["cpar"]["thresholds"]["0.05"]["24"], 0.95)
+    assert {f.name for f in C.MIXED_COST_NULLS} <= set(sw["cpar"]["families"])
+    assert {f.name for f in C.MIXED_COST_NULLS}.isdisjoint(_thresholds.TABLE["cpar"]["families"])
+    assert sw["gain"] == _thresholds.TABLE["gain"] and sw["score"] == _thresholds.TABLE["score"]
+
+
 def test_more_lone_runs_than_pairs_states_no_bound_and_keeps_the_verdict():
     from loopmath.compare import Observation
 

@@ -13,12 +13,13 @@ from typing import Any
 from ..output import EXIT_USER, counted
 from ..store.commands import UserError, _error, _out, _store, handler
 from ..store.home import Store
-from . import (ACCEPT, CHECK_EXT, Comparison, _harness_digest, arm_runs, check_floor, check_rule, checks, own_rules,
-               paired, resolve_rule, score_rule)
+from . import value as V
+from . import (ACCEPT, CHECK_EXT, Comparison, _harness_digest, _observations, arm_runs, check_floor, check_rule, checks,
+               own_rules, pair_up, paired, resolve_rule, score_rule, units)
 
 SCHEMA = "check-change"
 SETTINGS = ("budget_usd", "objective", "floor", "confidence", "horizon_runs", "value_usd", "min_pairs",
-            "value_stop")
+            "value_stop", "pair_price")
 
 
 def _settings(args: argparse.Namespace) -> dict[str, Any]:
@@ -29,6 +30,9 @@ def _settings(args: argparse.Namespace) -> dict[str, Any]:
         raise UserError(f"--min-pairs {out['min_pairs']}: the scored pairs before the value stop, at least 1")
     if out.get("min_pairs") is not None and not out.get("value_stop"):
         raise UserError("--min-pairs goes with --value-stop: without it the next pair's value stops nothing")
+    if out.get("pair_price") is not None and not (math.isfinite(out["pair_price"]) and out["pair_price"] >= 0):
+        raise UserError(f"--pair-price {out['pair_price']:g}: the price of one pair the next pairs' value is "
+                        "compared with, 0 or more (0 for runs on a subscription)")
     if out.get("budget_usd") is not None and not (math.isfinite(out["budget_usd"]) and out["budget_usd"] >= 0):
         raise UserError(f"--budget-usd {out['budget_usd']:g}: the dollars the check may spend, 0 or more")
     out["seed"] = getattr(args, "seed", 0) or 0
@@ -51,6 +55,12 @@ def _rule_text(rule: str, docs: list | None = None) -> str:
     if not names:
         return "mode accept (each run's own rule)"
     return f"mode accept (the runs' rule{'s' if len(names) > 1 else ''}: {', '.join(names)})"
+
+
+def _arm_text(arm: dict[str, Any], role: str) -> str:
+    """`LABEL (role)`, with the arm's set when it has one."""
+    spec = " ".join(f"{piece}={s}" for piece, s in (arm.get("set") or {}).items())
+    return f"{arm['label']} ({role}{', ' + spec if spec else ''})"
 
 
 def _compare(store: Store, base: list, cand: list, rule: str, settings: dict[str, Any],
@@ -83,6 +93,28 @@ LONGER_CHECK = "to go on, start a longer check with --n or --tasks"  # status: t
 LONGER_RUNS = "to go on, record more pairs and raise --max-pairs"  # from-runs: the cap is --max-pairs
 
 
+def auto_cap(pairs: int) -> dict[str, Any]:
+    """from-runs' cap when no --max-pairs is given: the runs exist, so the cap buys nothing. It is the smallest
+    calibrated cap above the pairs (so a batch still undecided reads `more`, not `the base stays`), doubling
+    past the table's largest, where compare states no false adopt bound and adopts only at the strictest
+    calibrated threshold."""
+    from .calibration import TABLE
+
+    caps = sorted({int(c) for entry in TABLE.values() for by_cap in entry["thresholds"].values() for c in by_cap})
+    cap = next((c for c in caps if c > pairs), None)
+    if cap is not None:
+        why = (f"the smallest calibrated cap above the {counted(pairs, 'pair')} recorded "
+               f"({', '.join(map(str, caps))}); --max-pairs sets another")
+        return {"max_pairs": cap, "from": "auto", "pairs": pairs, "why": why}
+    cap = caps[-1] if caps else 1
+    while cap <= pairs:
+        cap *= 2
+    why = (f"{counted(pairs, 'pair')} recorded, past the calibrated caps (largest {caps[-1] if caps else 0}): no "
+           f"false adopt bound is stated, and adopting needs the strictest calibrated threshold; --max-pairs sets "
+           f"another")
+    return {"max_pairs": cap, "from": "auto", "pairs": pairs, "why": why}
+
+
 def stop_text(c: dict[str, Any], longer: str = LONGER_CHECK) -> str:
     """`verdict: adopt|reject|more` when P(better) decides or nothing stops yet, else the stop that keeps the
     base without a decision: the cap, the budget or the next pair's value (`comparison.stop`, and
@@ -95,7 +127,7 @@ def stop_text(c: dict[str, Any], longer: str = LONGER_CHECK) -> str:
         return ("not decided: the budget is spent, the base stays" if spent
                 else "not decided: the budget left is under one pair, the base stays")
     if stop == "value":
-        return "not decided: the next pair is worth less than its price, the base stays"
+        return "not decided: the next pairs are certified not worth their price, the base stays"
     return f"verdict: {c['verdict']}"
 
 
@@ -112,8 +144,7 @@ def comparison_lines(c: dict[str, Any], longer: str = LONGER_CHECK) -> list[str]
         lines.append(f"cost per accepted result: base {_iv(c['cpar_base'], True, unknown)}; "
                      f"candidate {_iv(c['cpar_cand'], True, unknown)}")
     if c["next_pair_value_usd"] is not None and c["pair_price_usd"] is not None:
-        lines.append(f"next pair worth ${c['next_pair_value_usd']:.4f} over {c['horizon_runs']:g} runs; price "
-                     f"${c['pair_price_usd']:.4f}")
+        lines.append(V.value_line(c))
     if c["budget_usd"] is not None:
         lines.append(f"spent ${c['spent_usd']:.4f} of ${c['budget_usd']:.4f}")
     lines += [f"- {r}" for r in c["reasons"][:6]]
@@ -143,6 +174,11 @@ def check_start(args: argparse.Namespace) -> int:
         except ValueError as exc:
             raise UserError(f"--floor: {exc}") from None
     base, cand = checks.arm_spec(args.base, "--base"), checks.arm_spec(args.cand, "--cand")
+    for arm, flag, items in ((base, "--base-set", getattr(args, "base_set", None)),
+                             (cand, "--cand-set", getattr(args, "cand_set", None))):
+        spec = checks.arm_set(items, flag)
+        if spec:
+            arm["set"] = spec
     if base["label"] == cand["label"] or (base.get("path") and base.get("path") == cand.get("path")):
         raise UserError(f"--base and --cand are the same arm ({base.get('path') or base['label']}); a check "
                         f"compares two different arms")
@@ -152,7 +188,7 @@ def check_start(args: argparse.Namespace) -> int:
     nxt = checks.next_view(check, checks.next_pair(check))
     payload = {"check": chk, "path": str(checks.check_path(store, chk)), "base": check["base"],
                "cand": check["cand"], "rule": rule, "pairs": len(check["pairs"]), "settings": settings, "next": nxt}
-    lines = [f"check {chk}: {check['cand']['label']} (cand) against {check['base']['label']} (base), "
+    lines = [f"check {chk}: {_arm_text(check['cand'], 'cand')} against {_arm_text(check['base'], 'base')}, "
              f"{counted(len(check['pairs']), 'pair')}, {_rule_text(rule)}"] + next_lines(nxt)
     return _out(args, SCHEMA, payload, lines)
 
@@ -164,7 +200,7 @@ def check_status(args: argparse.Namespace) -> int:
     chk = args.check or checks.latest(store)
     check = checks.load(store, chk)
     base, cand, still_open = checks.docs(store, check)
-    head = (f"check {chk}: {check['cand']['label']} (cand) against {check['base']['label']} (base), "
+    head = (f"check {chk}: {_arm_text(check['cand'], 'cand')} against {_arm_text(check['base'], 'base')}, "
             f"{_rule_text(check['rule'], base + cand)}, {arm_runs(len(base), len(cand))} of "
             f"{counted(len(check['pairs']), 'pair')}")
     try:
@@ -183,11 +219,18 @@ def check_status(args: argparse.Namespace) -> int:
                "pairs": len(check["pairs"]), "recorded": {"base": len(base), "cand": len(cand)}, "open": still_open,
                "preferences": checks.preferences(check, base + cand), "comparison": cmp, "next": nxt,
                "out_of_order": swapped}
+    mismatch: list[dict[str, Any]] = []
+    if check["base"].get("set") or check["cand"].get("set"):  # what each arm ran, against its set
+        payload["models"], mismatch = checks.arm_models(check, base + cand)
+        payload["model_mismatch"] = mismatch
     if args.json:  # the text lines are not built for JSON
         return _out(args, SCHEMA, payload, [])
     lines = [head] + comparison_lines(cmp)
     if still_open:
         lines.append(f"open runs, not counted yet: {', '.join(still_open)}")
+    for x in mismatch:
+        lines.append(f"warning: pair {x['pair']} {x['arm']} ran {x['piece']}={x['ran']}, not its arm's "
+                     f"{x['declared']}; the comparison counts the run, so this is not a clean switch of setting")
     if swapped:
         lines.append("run out of the planned order: " + "; ".join(
             f"{x['pair']} (planned {' then '.join(x['planned'])}, "
@@ -298,14 +341,26 @@ def check_from_runs(args: argparse.Namespace) -> int:
     if args.max_pairs is not None and args.max_pairs < 1:
         raise UserError("--max-pairs: at least 1")
     settings = _settings(args)
-    check_rule(rule, base, cand, store.config())  # a rule these runs cannot be read under names what is there
+    config = store.config()
+    check_rule(rule, base, cand, config)  # a rule these runs cannot be read under names what is there
     try:
-        c = _compare(store, base, cand, rule, settings, max_pairs=args.max_pairs)
+        obs_b, obs_c = _observations(base, rule, None, config), _observations(cand, rule, None, config)
+        pairs = len(pair_up(obs_b, obs_c)[0])  # the runs pair as they are first: a bad pairing is refused here
+        unit = units.choose(rule, obs_b, obs_c, getattr(args, "unit", None))
+        if unit["unit"] == "case":  # one pair per case, each arm's mean score (compare/units.py)
+            obs_b, obs_c = units.by_case(obs_b, obs_c, rule=rule, config=config)
+            pairs = len(pair_up(obs_b, obs_c)[0])
+        # every pair counts toward the cap, scored or not, as compare counts it
+        cap = (auto_cap(pairs) if args.max_pairs is None else
+               {"max_pairs": args.max_pairs, "from": "--max-pairs", "pairs": pairs, "why": "given"})
+        c = (_compare(store, obs_b, obs_c, rule, settings, max_pairs=cap["max_pairs"]) if unit["unit"] == "case"
+             else _compare(store, base, cand, rule, settings, max_pairs=cap["max_pairs"]))
     except ValueError as exc:
         raise UserError(_named_settings(str(exc))) from None
     cmp = c.to_dict()
     payload = {"base": {"label": args.base_label, "runs": len(base)},
-               "cand": {"label": args.cand_label, "runs": len(cand)}, "rule": rule, "comparison": cmp}
+               "cand": {"label": args.cand_label, "runs": len(cand)}, "rule": rule, "comparison": cmp, "cap": cap,
+               "unit": unit}
     for side, sel in (("base", sel_b), ("cand", sel_c)):
         if sel.startswith("sha256:"):  # the digest a prefix resolved to
             payload[side]["digest"] = sel
@@ -315,4 +370,8 @@ def check_from_runs(args: argparse.Namespace) -> int:
     lines = [f"{shown_c} ({counted(len(cand), 'run')}) against {shown_b} ({counted(len(base), 'run')}), "
              f"{_rule_text(rule, base + cand)}"]
     lines += comparison_lines(cmp, LONGER_RUNS)
+    lines.append(f"unit: {unit['unit']}, " + (unit["why"] if unit["from"] == "auto" else "from --unit"))
+    lines.append(f"cap: {counted(cap['max_pairs'], 'pair')}, " + (
+        f"chosen for the {counted(pairs, 'pair')} recorded ({cap['why']})" if cap["from"] == "auto"
+        else f"from --max-pairs ({counted(pairs, 'pair')} recorded)"))
     return _out(args, SCHEMA, payload, lines)

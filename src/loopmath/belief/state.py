@@ -112,16 +112,19 @@ def inverse_transform(t, scale: str):
 
 class Row(NamedTuple):
     """One row's linear predictor: posterior mean, joint draws, the draws of its known nodes
-    only, and the variance of its unseen nodes' effect (normal with mean 0)."""
+    only, and the variance of its unseen nodes' effect (normal with mean 0): one number, or one per
+    draw (N_DRAWS,) when the head integrated its scales, each draw's effect normal at that draw's scales."""
 
     mu: float
     draws: np.ndarray
     known: np.ndarray
-    s2: float
+    s2: float | np.ndarray
 
 
-def normal_mean(f: Callable[[np.ndarray], np.ndarray], eta: np.ndarray, s2: float) -> np.ndarray:
-    """`E f(eta + e)` per draw for `e ~ N(0, s2)`, by Gauss-Hermite."""
+def normal_mean(f: Callable[[np.ndarray], np.ndarray], eta: np.ndarray, s2: float | np.ndarray) -> np.ndarray:
+    """`E f(eta + e)` per draw for `e ~ N(0, s2)`, by Gauss-Hermite; `s2` one variance or one per draw."""
+    if np.ndim(s2):
+        return _GW @ f(eta[None, :] + np.sqrt(s2)[None, :] * _GX[:, None])
     if s2 <= 0:
         return f(eta)
     return _GW @ f(eta[None, :] + math.sqrt(s2) * _GX[:, None])
@@ -205,6 +208,7 @@ class HeadState:
         self._mean, self._U, self._draws, self._unit = mean, U, draws, unit
         self._chol: np.ndarray | None = None
         self._virtual: dict[str, np.ndarray] = {}
+        self._extra: dict[str, np.ndarray | None] = {}
         self.fitted = bool(meta)
 
     def _load(self, part: str) -> np.ndarray | None:
@@ -282,6 +286,43 @@ class HeadState:
             return 0.0
         return float(self.phi.get(group, default_scale(group, self.kind)))
 
+    # the opt-in success head (`belief.success_head`, integrated.py): each draw's scales and the display arrays;
+    # a fit without them reads as 0.3.1's
+
+    @property
+    def scale_rows(self) -> np.ndarray | None:
+        """(groups, N_DRAWS): the scales each draw came from, groups in the order of `phi`; None for a head
+        whose scales were plugged in."""
+        return self._stored("scale_draws")
+
+    def scale_draws(self, group: str) -> np.ndarray:
+        """The scale of `group` on each draw: phi on every draw unless the fit integrated the scales."""
+        rows = self.scale_rows
+        if rows is not None and group in self.phi:
+            return rows[list(self.phi).index(group)]
+        return np.full(N_DRAWS, float(self.phi.get(group, default_scale(group, self.kind))))
+
+    def _stored(self, part: str) -> np.ndarray | None:
+        """A part only some fits store, or None (no zeros for a head without a loader)."""
+        if part not in self._extra:
+            self._extra[part] = self._load(part) if self._loader is not None else None
+        return self._extra[part]
+
+    def node_baseline(self, node: str, *, chain: bool) -> float:
+        """The linear predictor a node's effect is shown at: its own rows' (integrated.node_baselines) when the
+        fit stored them, else the head's."""
+        base = self._stored("base_chain" if chain else "base_own")
+        j = self.index.get(node)
+        return float(base[j]) if base is not None and j is not None else self.baseline
+
+    def identified(self, node: str) -> bool | None:
+        """integrated.identified for the node, when the fit stored it and checked the node's level."""
+        flags = self._stored("identified")
+        j = self.index.get(node)
+        if flags is None or j is None or flags[j] < 0:
+            return None
+        return bool(flags[j])
+
     def virtual_unit(self, node: str) -> np.ndarray:
         """Standard normal draws of an unseen node, fixed by the fit, the head and the node id."""
         z = self._virtual.get(node)
@@ -329,7 +370,8 @@ class HeadState:
 
     def eval_parts(self, rows: Sequence[Sequence[tuple]]):
         """`eval_rows`, plus the draws of the known nodes only (n, N_DRAWS) and the variance of
-        the unseen nodes' effect (n,)."""
+        the unseen nodes' effect: (n,), or (n, N_DRAWS) when the head integrated its scales (each
+        draw's, at its own scales: the draws' mixture over the scales, not one normal at their mean)."""
         Xk, Xv, vnodes, vphi = self.matrices(rows)
         n = len(rows)
         mu = np.zeros(n)
@@ -339,7 +381,12 @@ class HeadState:
             mu = np.asarray(Xk @ self.mean).ravel()
             D = np.asarray(Xk @ self.draws)
         known = D
-        if vnodes:
+        if vnodes and self.scale_rows is not None:  # integrated scales: each draw at its own scale
+            S = np.stack([self.scale_draws(scale_group(v)) for v in vnodes])
+            V = np.stack([self.virtual_unit(v) for v in vnodes]) * S
+            D = D + np.asarray(Xv @ V)
+            s2 = np.asarray(Xv.multiply(Xv) @ S ** 2)
+        elif vnodes:
             V = np.stack([self.virtual_unit(v) for v in vnodes]) * vphi[:, None]
             D = D + np.asarray(Xv @ V)
             s2 = np.asarray(Xv.multiply(Xv) @ (vphi ** 2)).ravel()
@@ -434,7 +481,7 @@ class FitState:
                 cache.clear()
             mu, D, known, s2 = head.eval_parts(missing)
             for i, k in enumerate(missing):
-                cache[(head.name, k)] = Row(float(mu[i]), D[i], known[i], float(s2[i]))
+                cache[(head.name, k)] = Row(float(mu[i]), D[i], known[i], s2[i] if s2.ndim == 2 else float(s2[i]))
         return [cache[(head.name, k)] for k in keys]
 
     def _row(self, head: HeadState, rest: tuple) -> Row:
@@ -603,8 +650,9 @@ class FitState:
         r = self._row(head, rest)
         return task_part.mu + r.mu, task_part.draws + r.draws
 
-    def _known(self, head: HeadState, task_part: Row, rest: tuple) -> tuple[np.ndarray, float]:
-        """A row's known-node draws and its unseen nodes' variance (task and configuration parts)."""
+    def _known(self, head: HeadState, task_part: Row, rest: tuple) -> tuple[np.ndarray, float | np.ndarray]:
+        """A row's known-node draws and its unseen nodes' variance (task and configuration parts), per draw
+        when the head integrated its scales (`Row.s2`)."""
         r = self._row(head, rest)
         return task_part.known + r.known, task_part.s2 + r.s2
 
@@ -769,7 +817,7 @@ class FitState:
         _, s_eta = self._eta(heads["success"], tparts["success"], plan["run"])
         g = expit(s_eta)
         s_known, s_s2 = self._known(heads["success"], tparts["success"], plan["run"])
-        g_mean = normal_mean(expit, s_known, s_s2)  # per known draw
+        g_mean = normal_mean(expit, s_known, s_s2)  # per known draw, at the draw's own scales when integrated
         success_from = "success_head"
         scores, reach, reach_mean = self._scores(task, plan, rule, tparts, rng)
         if rule is not None and rule.score is not None and rule.score.name in reach:
@@ -939,11 +987,19 @@ class FitState:
                 eff = draws[chain].sum(axis=0)
                 if cost is not None:  # tokens: the cost chain's draws less the rate chain's
                     eff = self._chain(cost, node, parents) - eff
-                effect, display = self._effect(hs, eff)
+                opt_in = cost is None and hs.scale_rows is not None  # the integrated success head
+                base = hs.node_baseline(node, chain=True) if opt_in else None
+                effect, display = self._effect(hs, eff, base)
                 n_runs, mix = hsup.get(node) or [0, {}]
+                extra = {}
+                if opt_in:
+                    extra = {"baseline_p": round(float(expit(base)), 4)}
+                    flag = hs.identified(node)
+                    if flag is not None:
+                        extra["identified"] = flag
                 out.append(NodeSummary(level=lvl, key=node_key(node), head=shown, effect=effect, display=display,
                                        support=int(n_runs), parent=parents.get(node),
-                                       source_mix={str(k): int(v) for k, v in (mix or {}).items()}))
+                                       source_mix={str(k): int(v) for k, v in (mix or {}).items()}, extra=extra))
         return out
 
     @staticmethod
@@ -981,20 +1037,27 @@ class FitState:
                 d = hs.draws[j]
                 if head == "cost":
                     item[head] = ranges(np.exp(d))
+                elif hs.scale_rows is not None:  # the integrated success head: at the part's own rows
+                    base = hs.node_baseline(node, chain=False)
+                    item[head] = {**ranges(100.0 * (expit(base + d) - expit(base))), "log_odds": ranges(d),
+                                  "calibrated": False, "baseline_p": round(float(expit(base)), 4),
+                                  "identified": hs.identified(node)}
                 else:
                     item[head] = {**ranges(100.0 * (expit(hs.baseline + d) - expit(hs.baseline))),
                                   "log_odds": ranges(d), "calibrated": False}  # spec/harness.md section 9
             out.append(item)
         return sorted(out, key=lambda i: (i["harness"], i["factor"]))
 
-    def _effect(self, hs: HeadState, eff: np.ndarray) -> tuple[Interval, Interval]:
-        """cost: multiplier (x1.4); success and gate: log-odds shift, shown in pp at the baseline;
-        score: shift on the modelled scale, shown in raw units (log: ratio; fraction: pp)."""
+    def _effect(self, hs: HeadState, eff: np.ndarray, base: float | None = None) -> tuple[Interval, Interval]:
+        """cost: multiplier (x1.4); success and gate: log-odds shift, shown in pp at the baseline (`base`, a
+        node's own rows' under the integrated success head, else the head's); score: shift on the modelled
+        scale, shown in raw units (log: ratio; fraction: pp)."""
         if hs.kind == "cost":
             iv = _iv(interval(np.exp(eff)))
             return iv, iv
         if hs.kind == "logit":
-            pp = 100.0 * (expit(hs.baseline + eff) - expit(hs.baseline))
+            b = hs.baseline if base is None else base
+            pp = 100.0 * (expit(b + eff) - expit(b))
             return _iv(interval(eff)), _iv(interval(pp))
         shift = hs.scale * eff
         scale = self.score_info(hs.name[len("score:"):]).get("scale") or "linear"

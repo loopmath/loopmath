@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,6 +32,15 @@ MARK = ".adapt_complete"    # core/runmark.py:30
 TOOL = "harness2"
 TOOL_VERSION = "0.1.0"      # pyproject.toml:7
 NS = "dev.loopmath.adapter.harness2"
+# harness2's own records, copied as it wrote them (the stage, the selection, a crashed mode's record). They hold
+# text a model or harness2 wrote (editor notes, the selector's reason, the lesson, error text), so they sit
+# outside loopmath's namespaces and a run that keeps them is `full`, never `metadata_only` (spec/harness-runs.md
+# section 6, the privacy profile). They are kept only under privacy "full"; by default a row keeps their
+# text-free part under NS (`stage`, `selection`, `crash_kind`) and the summary counts what was withheld.
+RECORDS = "com.github.google-research.harness2"
+PRIVACY = ("metadata_only", "full")
+ERROR_KIND = re.compile(r"^([A-Z][A-Za-z0-9_]*): ")
+TEXT_KEYS = ("error", "errors", "traceback")   # summary members holding error text (core/schedule.py:654-659)
 BENCHES = ("jb", "lab")     # <runs>/<bench>/adapt (benchmarks/jobbench.py:512-513, lab.py:484-485)
 WB_SUBSETS = ("code", "web", "office")   # benchmarks/workbuddy.py:84-110; bench wb-<subset> at <runs>/wb/<subset> (653-658)
 WB_STREAMS = {"oc": "agent/oc-output.txt", "cx": "agent/codex-output.jsonl"}   # benchmarks/workbuddy.py:863-864
@@ -42,6 +52,10 @@ LABEL = re.compile(r"^(?P<kind>base|inv|dom|agg|c)(?P<n>\d+)$")
 EXPERIMENT_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 TRIAL = re.compile(r"^(?P<task>.+)__[A-Za-z0-9]+$")   # a Harbor trial folder (benchmarks/workbuddy.py:451)
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
+# LAB metrics.json numbers and flags kept on the row (run_codex_lab.py:339-353; run_opencode.py:320-331); the
+# token totals are not, since the row's cost is read from the session stream they sum
+METRICS = ("turn_count", "tool_calls", "stream_errors", "wall_clock_seconds", "finished_cleanly", "exit_code",
+           "documents_read", "total_documents")
 
 
 class FormatError(ValueError):
@@ -344,6 +358,22 @@ def _runner_record(lay: _Layout, sub: str, out: Path, traj: Path) -> dict[str, A
                 got["effort"] = cfg["reasoning_effort"]
             if isinstance(cfg.get("started_at"), str) and TIMESTAMP.match(cfg["started_at"]):
                 got["started_at"] = cfg["started_at"]
+            note = {key: cfg[key] for key in ("codex_version", "doc_parser") if isinstance(cfg.get(key), str) and cfg[key]}
+            if _int(cfg.get("timeout")):
+                note["timeout_s"] = cfg["timeout"]
+            got["note"] = note
+        if lay.bench == "lab" and (out / "metrics.json").is_file():   # run_codex_lab.py:335-359, run_opencode.py:316-336
+            _confine(out / "metrics.json", lay.root, "file")
+            try:
+                met = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                met = {}
+            if isinstance(met, dict):
+                kept = {key: met[key] for key in METRICS if isinstance(met.get(key), (int, float))}
+                if kept:
+                    got.setdefault("note", {})["runner_metrics"] = kept
+                if isinstance(met.get("completed_at"), str) and TIMESTAMP.match(met["completed_at"]):
+                    got["ended_at"] = met["completed_at"]
     if lay.bench == "jb" and sub == "cx":
         got["effort"] = "high"
         index = traj / "attempt_index.tsv"
@@ -362,6 +392,10 @@ def _runner_record(lay: _Layout, sub: str, out: Path, traj: Path) -> dict[str, A
             if ends:
                 got["ended_at"] = ends[-1]
     return got
+
+
+def _int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _experiment(lay: _Layout, agg_ns: str, config: Any, label: str | None) -> str:
@@ -397,9 +431,11 @@ def experiment_id(runs_root: str | Path, agg_namespace: str, label: str | None =
 def _score(n_passed: Any, n_criteria: Any, raw_score: Any = None) -> float | None:
     """core/judge.py:32-53: the fraction of criteria passed, when there are criteria. WorkBuddy's judge also
     gives the verifier's own score, which n_passed rounds to hundredths (benchmarks/workbuddy.py:986-1004);
-    that score is used when it is a number in [0, 1]."""
-    if isinstance(n_criteria, int) and not isinstance(n_criteria, bool) and n_criteria > 0 \
-            and isinstance(n_passed, (int, float)) and not isinstance(n_passed, bool):
+    that score is used when it is a number in [0, 1]. JobBench's weighted score gives both as floats (total and
+    max score, benchmarks/jobbench.py:598-599, 611-613), so a count need not be an int."""
+    if isinstance(n_criteria, (int, float)) and not isinstance(n_criteria, bool) and math.isfinite(n_criteria) \
+            and n_criteria > 0 and isinstance(n_passed, (int, float)) and not isinstance(n_passed, bool) \
+            and math.isfinite(n_passed):
         if isinstance(raw_score, (int, float)) and not isinstance(raw_score, bool) and 0 <= raw_score <= 1:
             return float(raw_score)
         return float(n_passed) / n_criteria
@@ -407,10 +443,18 @@ def _score(n_passed: Any, n_criteria: Any, raw_score: Any = None) -> float | Non
 
 
 def _outcome(score: float | None, judge: str, raw: dict[str, Any]) -> dict[str, Any]:
+    """The judge's score dict as the row's outcome: the members the spec names, and the rest of what harness2's
+    score() returned (JobBench's criteria_passed, criteria_count and no_output, benchmarks/jobbench.py:611-619,
+    1060-1068) in `detail`, so nothing it recorded is dropped. `judge_model` is the outcome's judge and WorkBuddy's
+    `raw_score` its score (benchmarks/workbuddy.py:999-1004)."""
     out: dict[str, Any] = {"name": "judge", "score": score, "judge": judge, "scale": "fraction", "better": "higher"}
     for key in ("n_passed", "n_criteria", "all_pass", "metric"):
         if raw.get(key) is not None:
             out[key] = raw[key]
+    detail = {key: value for key, value in raw.items()
+              if key not in ("n_passed", "n_criteria", "all_pass", "metric", "judge_model", "raw_score")}
+    if detail:
+        out["detail"] = detail
     return out
 
 
@@ -561,17 +605,132 @@ def _parent_label(mode: str, label: str) -> str | None:
     return "base" if t == 1 else f"c{t - 1}"
 
 
-def read(path: str | Path, *, experiment: str | None = None) -> Result:
+def _no_path(sel: dict) -> dict:
+    """A selection record as kept on the adopted row: without `chosen_run_dir`, an absolute path on the machine that
+    ran it (core/selection.py:48-65). The row's run id names the same folder."""
+    return {key: value for key, value in sel.items() if key != "chosen_run_dir"}
+
+
+def _kind(error: Any) -> str | None:
+    """An error's kind without its text: the exception class when it leads as `<Class>: ...` (core/schedule.py:654-657;
+    core/recursion.py:172, 296), else `other`; None for no error. The text names files and quotes model output."""
+    if not isinstance(error, str) or not error.strip():
+        return None
+    m = ERROR_KIND.match(error)
+    return m[1] if m else "other"
+
+
+def _meta_stage(rec: dict) -> dict:
+    """A stage record's text-free part (core/recursion.py:79-104): its flags, attempts and the kind of its error.
+    `notes` and the error text are the editor's and stay out unless --privacy full."""
+    out = {key: rec[key] for key in ("dim", "attempts", "cached", "fell_back", "kept_base") if rec.get(key) is not None}
+    if _kind(rec.get("error")) is not None:
+        out["error_kind"] = _kind(rec.get("error"))
+    return out
+
+
+def _meta_selection(sel: dict) -> dict:
+    """A selection record's text-free part (core/selection.py:46-66; core/schedule.py:545-548): ids, flags and
+    counts. `why`, `experience`, the `dropped` causes and the error text stay out unless --privacy full."""
+    out = {key: sel[key] for key in ("chosen_id", "chosen_label", "chosen_is_base", "chosen_tree_is_base",
+                                     "n_candidates", "ok", "fallback", "trivial", "harness_fingerprint")
+           if sel.get(key) is not None}
+    if sel.get("evidence") in ("deliverable", "trajectory"):     # core/selection.py:65, 151
+        out["evidence"] = sel["evidence"]
+    if isinstance(sel.get("dropped"), list):
+        out["n_dropped"] = len(sel["dropped"])
+    out["has_experience"] = bool(sel.get("experience"))
+    if _kind(sel.get("error")) is not None:
+        out["error_kind"] = _kind(sel.get("error"))
+    return out
+
+
+def _texts(value: Any) -> bool:
+    """Whether a value holds any string, the test the privacy profile applies (harness_runs/ocp.py retained_text)."""
+    if isinstance(value, str):
+        return True
+    if isinstance(value, dict):
+        return any(_texts(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_texts(v) for v in value)
+    return False
+
+
+def _recorded_dead(run_dir: Any, task_dir: str) -> bool:
+    """A rollout harness2 recorded dead: its run_dir is `<namespace>/<task dir>/missing` (core/schedule.py:424-427,
+    622; core/recursion.py:293). Its error is not written anywhere (no RunView is serialized)."""
+    parts = PurePosixPath(str(run_dir or "")).parts
+    return len(parts) >= 2 and parts[-2:] == (task_dir, "missing")
+
+
+def _stage_order(mode: str, label: str) -> tuple:
+    """Ledger order (core/recursion.py:366-425, 476-562): parallel inv<i>, dom<i> by i, then agg<i>;
+    sequential inv<t>, dom<t>, c<t> by round."""
+    m = LABEL.match(label)
+    t, kind = int(m["n"]), m["kind"]
+    if mode == "agg":
+        return (1, t, 0) if kind == "agg" else (0, t, 0 if kind == "inv" else 1)
+    return (0, t, ("inv", "dom", "c").index(kind))
+
+
+def _rolled(harnesses: Path, mode: str) -> list[str]:
+    """The stages a mode rolled, from its `harnesses/<label>` folders (each written right before its rollout,
+    core/recursion.py:274-276), for a mode whose crash record replaced its ledger (core/schedule.py:655-659)."""
+    if not harnesses.is_dir():
+        return []
+    kinds = ("inv", "dom", "agg") if mode == "agg" else ("inv", "dom", "c")
+    labels = [p.name for p in harnesses.iterdir()
+              if p.is_dir() and (m := LABEL.match(p.name)) is not None and m["kind"] in kinds]
+    return sorted(labels, key=lambda label: _stage_order(mode, label))
+
+
+def _sweep(lay: _Layout, agg_ns: str) -> dict[str, Any] | None:
+    """The newest sweep record of a namespace, `adapt/_sweeps/<namespace>-<UTC stamp>.json`, written once per
+    `harness2-run-sweep` after the sweep returns (cli/run_sweep.py:175-178); None when there is none."""
+    folder = lay.adapt / "_sweeps"
+    stamp = re.compile(re.escape(agg_ns) + r"-\d{8}T\d{6}Z\.json$")
+    found = sorted(p for p in folder.glob(f"{agg_ns}-*.json") if stamp.match(p.name)) if folder.is_dir() else []
+    if not found:
+        return None
+    doc = _load(found[-1], lay.root)
+    return doc if isinstance(doc, dict) else None
+
+
+def _sweep_meta(doc: dict[str, Any] | None) -> tuple[dict[str, Any] | None, int]:
+    """A sweep record without its error text (core/schedule.py:724-729, 835: a domain's or a task's `error`), and how
+    many errors it held."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("domains"), list):
+        return doc, 0
+    held, domains = 0, []
+    for dom in doc["domains"]:
+        if isinstance(dom, dict):
+            held += bool(dom.get("error"))
+            dom = {key: value for key, value in dom.items() if key != "error"}
+            if isinstance(dom.get("tasks"), list):
+                held += sum(1 for t in dom["tasks"] if isinstance(t, dict) and t.get("error"))
+                dom["tasks"] = [{key: value for key, value in t.items() if key != "error"} if isinstance(t, dict)
+                                else t for t in dom["tasks"]]
+        domains.append(dom)
+    return {**doc, "domains": domains}, held
+
+
+def read(path: str | Path, *, experiment: str | None = None, privacy: str = "metadata_only") -> Result:
     """Every rollout under a harness2 runs folder, as checked harness-runs rows. Reads only; writes nothing.
 
     Raises FormatError for a folder with no harness2 runs, an unknown method or marker version, or a
     summary missing its keys, naming what it found. `experiment` labels repeats of one configuration.
+    `privacy` "metadata_only" (the default) keeps no text a model or harness2 wrote: harness2's own records
+    and any text in a judge's extra members are withheld and counted (`records_withheld`, `text_withheld`).
+    "full" keeps them, and the rows that carry them become `full` documents.
     """
     from ..harness_runs.rows import SCHEMA, check_row
     from ..harness_runs.streams import rollout_usage
 
     if experiment is not None and not EXPERIMENT_LABEL.match(experiment):
         raise ValueError(f"--experiment {experiment!r}: letters, digits, '.', '_' or '-', at most 64")
+    if privacy not in PRIVACY:
+        raise ValueError(f"privacy {privacy!r}: one of {', '.join(PRIVACY)}")
+    full = privacy == "full"
     path = Path(path)
     layouts = _layouts(path)
     unsupported = _unsupported(_runs_root(path)) if not layouts or layouts[0].kind == "bench" else []
@@ -586,7 +745,7 @@ def read(path: str | Path, *, experiment: str | None = None) -> Result:
     counts = {k: 0 for k in ("rollouts", "bases", "stages", "adopted", "scored", "unscored", "failed",
                              "unavailable", "stale_judge", "bare_base", "mode_failed", "kept_base", "fallback",
                              "no_config", "fingerprint_mismatch", "parent_unverified", "unsupported",
-                             "unread_namespace", "cost_unread")}
+                             "unread_namespace", "cost_unread", "records_withheld", "text_withheld")}
     for name in unsupported:
         counts["unsupported"] += 1
         result.skipped.append({"run_id": f"{name}/adapt", "reason": f"unsupported bench folder: this importer "
@@ -623,8 +782,11 @@ def read(path: str | Path, *, experiment: str | None = None) -> Result:
                 result.notes.append(f"{_rel(ns_dir, root)}: WorkBuddy rollouts carry no cost: the agent stream "
                                     f"({WB_STREAMS.get(agg['sub'], 'agent/')}) is written by Harbor and this "
                                     f"importer does not read its usage; each row names it as cost_unread")
+            tasks: dict[str, Any] = {}
+            sweep, held = (_sweep(lay, ns_dir.name), 0) if full else _sweep_meta(_sweep(lay, ns_dir.name))
+            counts["text_withheld"] += held
             result.experiments.append({"experiment": exp, "bench": lay.bench, "namespace": ns_dir.name,
-                                       "config": config is not None})
+                                       "config": config, "sweep": sweep, "tasks": tasks})
             judges = _Judges(ns_dir, root, legacy)
             agent, kind = AGENTS.get(agg["sub"], (agg["sub"], None))
             if lay.kind == "demo":
@@ -635,6 +797,15 @@ def read(path: str | Path, *, experiment: str | None = None) -> Result:
                 legacy.extend([True] if summary["_legacy"] else [])
                 task_id = _check_id(str(summary["task_id"]), "task_id", spath, root)
                 task_dir = spath.parent.name               # core/schedule.py:101-102
+                drop = ("task_id", "base", "selections", "_legacy") + (() if full else TEXT_KEYS)
+                tasks[task_id] = {key: value for key, value in summary.items() if key not in drop}
+                tasks[task_id]["modes"] = {m: {key: value for key, value in rec.items()
+                                               if key != "stages" and (full or key not in TEXT_KEYS)}
+                                           if isinstance(rec, dict) else rec for m, rec in summary["modes"].items()}
+                if not full:
+                    counts["text_withheld"] += sum(1 for key in TEXT_KEYS if summary.get(key)) + sum(
+                        1 for rec in summary["modes"].values() if isinstance(rec, dict)
+                        for key in TEXT_KEYS if rec.get(key))
                 k = summary["k"] if isinstance(summary["k"], int) else agg["k"]
                 plan: list[dict[str, Any]] = []
                 base_ids = {}
@@ -651,20 +822,33 @@ def read(path: str | Path, *, experiment: str | None = None) -> Result:
                     plan.append({"run_id": rid, "label": label, "mode": "agg", "ns": ns_dir.name, "arm": "base",
                                  "tree": ns_dir / task_dir / "harnesses" / "base", "parent": None, "bare":
                                  not isinstance(entry, dict),
-                                 "run_dir": str(entry.get("run_dir") or "") if isinstance(entry, dict) else ""})
+                                 "run_dir": str(entry.get("run_dir") or "") if isinstance(entry, dict) else "",
+                                 "dead": isinstance(entry, dict) and _recorded_dead(entry.get("run_dir"), task_dir)})
                 for item in plan:          # one batch's markers all name its first base (workbuddy.py:853-854)
                     item["mark_ids"] = set(base_ids.values())
                 for mode, rec in sorted(summary["modes"].items()):
                     _check_id(mode, "mode", spath, root, part=True)
                     mode_ns = _mode_ns(agg, mode)
                     mode_dir = lay.adapt / mode_ns / task_dir
+                    crash = None
                     if not isinstance(rec, dict) or not isinstance(rec.get("ledger"), dict):
                         counts["mode_failed"] += 1                   # core/schedule.py:655-659
                         why = (rec or {}).get("error") if isinstance(rec, dict) else None
-                        result.skipped.append({"run_id": f"{mode_ns}/{task_id}",
-                                               "reason": f"the {mode} mode failed and left no ledger: {why or 'no record'}"})
-                        continue
-                    stage_usd = {s.get("label"): s.get("usd") for s in rec.get("stages") or [] if isinstance(s, dict)}
+                        why = why if full or not why else f"{_kind(why)} (its text is kept under --privacy full)"
+                        rolled = _rolled(mode_dir / "harnesses", mode)
+                        result.skipped.append({"run_id": f"{mode_ns}/{task_id}", "reason": (
+                            f"the {mode} mode failed and left no ledger: {why or 'no record'}"
+                            + (f"; its {len(rolled)} rollouts are read from {_rel(mode_dir / 'harnesses', root)} "
+                               f"(written before each rollout, core/recursion.py:274-276), each with the crash record"
+                               if rolled else ""))})
+                        if not rolled:
+                            continue
+                        # the traceback names files on the machine that ran it, so only the rest is kept
+                        crash = {k: v for k, v in rec.items() if k != "traceback"} if isinstance(rec, dict) \
+                            else {"error": None}
+                        rec = {"ledger": {"rollouts": rolled}}
+                    stage_rec = {s.get("label"): s for s in rec.get("stages") or [] if isinstance(s, dict)}
+                    stage_usd = {label: s.get("usd") for label, s in stage_rec.items()}
                     sel = summary["selections"].get(mode) or {}
                     if isinstance(sel, dict) and "mode" not in sel and "arm" in sel:
                         legacy.append(True)
@@ -692,7 +876,8 @@ def read(path: str | Path, *, experiment: str | None = None) -> Result:
                                      "parent": None if parent is None else mode_dir / "harnesses" / parent,
                                      "parent_run_id": prid,
                                      "parent_run_dir": recorded if prid is not None and prid == chosen else None,
-                                     "editor_usd": stage_usd.get(label),
+                                     "editor_usd": stage_usd.get(label), "stage_record": stage_rec.get(label),
+                                     "selection_record": _no_path(sel) if rid == chosen else None, "mode_crash": crash,
                                      "selector_usd": sel.get("usd") if rid == chosen else None,
                                      "selection_label": sel.get("chosen_label") if rid == chosen else None,
                                      "run_dir": recorded if rid == chosen else None})
@@ -702,7 +887,7 @@ def read(path: str | Path, *, experiment: str | None = None) -> Result:
                         continue
                     seen.add(rid)
                     row = _row(lay, agg, item, task_id, k, exp, experiment, executor, judge_name, agent, kind,
-                               judges, counts, result, rollout_usage)
+                               judges, counts, result, rollout_usage, full=full)
                     if row is None:
                         continue
                     row["schema"] = SCHEMA
@@ -722,7 +907,7 @@ def read(path: str | Path, *, experiment: str | None = None) -> Result:
 
 
 def _row(lay, agg, item, task_id, k, exp, label, executor, judge_name, agent, kind, judges, counts, result,
-         rollout_usage) -> dict[str, Any] | None:
+         rollout_usage, *, full: bool = False) -> dict[str, Any] | None:
     rid, is_base = item["run_id"], item["arm"] == "base"
     tree = item["tree"]
     if tree.is_dir():
@@ -738,8 +923,14 @@ def _row(lay, agg, item, task_id, k, exp, label, executor, judge_name, agent, ki
         out, traj = _rollout_dirs(lay, agg["sub"], task_id, rid)
         if not out.is_dir() and not traj.is_dir():
             counts["unavailable"] += 1
-            result.skipped.append({"run_id": rid, "reason": f"unavailable: no run folder at {_rel(out, lay.root)} "
-                                                            f"(copied without it, or never started)"})
+            skip = {"run_id": rid, "reason": (
+                f"unavailable: no run folder at {_rel(out, lay.root)} (copied without it, or the rollout died "
+                f"before its runner made one); harness2 records no rollout error (it writes no RunView, "
+                f"core/recursion.py:79-105)" + ("; harness2 recorded it dead (run_dir <task dir>/missing, "
+                                                 "core/schedule.py:424-427)" if item.get("dead") else ""))}
+            if isinstance(item.get("stage_record"), dict):     # the stage's editor session was paid even so
+                skip["stage"] = item["stage_record"] if full else _meta_stage(item["stage_record"])
+            result.skipped.append(skip)
             return None
     mark = _mark(traj, lay.root) if lay.kind == "bench" else None
     ok_ids = {rid, *item.get("mark_ids", ())} if _is_wb(lay) and is_base else {rid}
@@ -846,6 +1037,31 @@ def _row(lay, agg, item, task_id, k, exp, label, executor, judge_name, agent, ki
         note["parent_changed"] = True
     elif unverified and record is not None:
         note["parent_unverified"] = unverified
+    if mark is not None:                               # core/runmark.py:69-75; benchmarks/jobbench.py:755
+        if isinstance(mark.get("at"), (int, float)) and not isinstance(mark.get("at"), bool):
+            note["marked_at"] = _iso(float(mark["at"]))
+        if "output_fingerprint" in mark:
+            note["output_fingerprint"] = mark["output_fingerprint"]
+    note.update(runner.get("note") or {})
+    if item.get("mode_crash") is not None:
+        note["mode_crashed"] = True
+        if _kind(item["mode_crash"].get("error")) is not None:
+            note["crash_kind"] = _kind(item["mode_crash"].get("error"))
+    for key, meta in (("stage", _meta_stage), ("selection", _meta_selection)):
+        if isinstance(item.get(f"{key}_record"), dict):
+            note[key] = meta(item[f"{key}_record"])
+    records = {key: item[f"{key}_record"] for key in ("stage", "selection") if isinstance(item.get(f"{key}_record"), dict)}
+    if item.get("mode_crash") is not None:
+        records["mode_crash"] = item["mode_crash"]
+    if records and not full:
+        counts["records_withheld"] += len(records)
+        records = {}
+    if not full and isinstance(outcome, dict) and isinstance(outcome.get("detail"), dict):
+        texts = [key for key, value in outcome["detail"].items() if _texts(value)]
+        counts["text_withheld"] += len(texts)
+        outcome["detail"] = {key: value for key, value in outcome["detail"].items() if key not in texts}
+        if not outcome["detail"]:
+            del outcome["detail"]
     if _is_wb(lay):
         counts["cost_unread"] += 1
         note["cost_unread"] = (f"{WB_STREAMS.get(agg['sub'], 'the agent stream')} is Harbor's and its usage is not "
@@ -857,7 +1073,7 @@ def _row(lay, agg, item, task_id, k, exp, label, executor, judge_name, agent, ki
                            "outcome": outcome, "cost": cost,
                            "tool": {"name": TOOL, "version": TOOL_VERSION, "run_id": rid, "task_id": task_id,
                                     "stage": item["label"]},
-                           "ext": {NS: note}}
+                           "ext": {NS: note, **({RECORDS: records} if records else {})}}
     if runner.get("effort"):
         row["effort"] = runner["effort"]
     if started:

@@ -12,7 +12,9 @@ usual workflows `usual.<type>."<repo>"` / `usual.<type>."*"` with
 `usual_meta.<type>`, `research.<name>` strings kept
 verbatim (`research.sweep_dir`, `research.e0_corpus`), and the
 declared task features `features.<key>` with `features.min_tasks`
-(taskmodel.FeatureSet; spec 04 section 1).
+(taskmodel.FeatureSet; spec 04 section 1), and `belief.success_head` (unset or
+`eb`, 0.3.1's success head; `sampled` opts in to the success head by NUTS over
+its effects and scales, belief.integrated and belief.sampled).
 
 Reading uses `tomllib` (Python 3.11+), else a reader for the
 subset this module writes. The writer emits plain tables and JSON-compatible
@@ -52,6 +54,8 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "explore.default_pick": ("best_value", "max_gain"),
     "budget.period": ("week", "month", "none"),
     "harness.record": ("none", "auto"),
+    # unset or `eb`: 0.3.1's success head; `sampled` opts in (belief.integrated, belief.sampled)
+    "belief.success_head": ("eb", "sampled"),
 }
 LABELER_KINDS = ("claude", "codex", "command")
 LABELER_KEYS = ("onboard.labeler", "labeler")  # `labeler` is the spec 02 name; D39 stores `onboard.labeler`
@@ -62,7 +66,7 @@ POSITIVE_KEYS = ("plan.time_budget_s",)
 NONNEGATIVE_KEYS = ("benchmark_prior_weight",)  # 0 turns the benchmark factors off
 COUNT_KEYS = ("plan.exact_picks",)  # whole numbers >= 0; the recommender owns the defaults of the plan keys
 RESCUE_KEYS = ("rescue.decay", "rescue.max_attempts", "rescue.min_chance")  # `check_rescue`
-KNOWN_ROOTS = ("org", "acceptance_rule", "rules", "goal", "rescue", "models", "harnesses", "subtypes",
+KNOWN_ROOTS = ("org", "acceptance_rule", "rules", "goal", "rescue", "models", "harnesses", "subtypes", "belief",
                "labeler", "benchmark_prior_weight", "explore", "referee", "budget", "outcome", "usual",
                "usual_meta", "research", "onboard", "plan", "efforts", "features", "harness")
 STRING_ROOTS = ("research",)  # values stored as given, never parsed as JSON
@@ -70,7 +74,8 @@ STRING_ROOTS = ("research",)  # values stored as given, never parsed as JSON
 # `config set` refuses a key that is none of these nor a table above one (such as `rescue`).
 KEYS = ("org", "acceptance_rule", "rules.<name>", "goal", "rescue.kind", "rescue.person_usd_per_hour",
         "rescue.hours", "rescue.decay", "rescue.max_attempts", "rescue.min_chance", "models.allowed", "harnesses",
-        "subtypes", "benchmark_prior_weight", "explore.default_pick", "explore.auto_payback_runs", "referee.model",
+        "subtypes", "benchmark_prior_weight", "belief.success_head", "explore.default_pick",
+        "explore.auto_payback_runs", "referee.model",
         "budget.usd", "budget.period", "outcome.q.<tier>", "onboard.labeler", "onboard.skip",
         "usual.<type>.<repo>", "usual_meta.<type>.<repo>", "research.sweep_dir", "research.e0_corpus",
         "features.min_tasks", "features.<key>.<field>", "plan.time_budget_s", "plan.exact_picks",

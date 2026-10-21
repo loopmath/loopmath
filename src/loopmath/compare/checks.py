@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ..store import runs as R
-from ..store.commands import UserError
+from ..store.commands import UserError, parse_set
 from ..store.home import NotFound, Store, StoreError
 from ..store.ids import new_id, now_iso
 from ..store.lock import atomic_write_json
@@ -108,6 +108,88 @@ def arm_spec(value: str, flag: str = "the arm") -> dict[str, Any]:
     return arm
 
 
+# ---------------------------------------------------------------- an arm's setting
+def arm_set(items: list[str] | None, flag: str) -> dict[str, str] | None:
+    """`--base-set` or `--cand-set`, as `run record --set` takes it: {piece: "harness:model:effort"}, or None."""
+    if not items:
+        return None
+    try:
+        given = parse_set(items)
+    except UserError as exc:
+        raise UserError(str(exc).replace("--set", flag, 1)) from None
+    return {piece: f"{s.harness}:{s.model}:{s.effort}" for piece, s in given.items()}
+
+
+def _fixed(arm: dict[str, Any]) -> dict[str, Any]:
+    return parse_set([f"{piece}={spec}" for piece, spec in (arm.get("set") or {}).items()])
+
+
+def _same(a: Any, b: Any) -> bool:
+    """One harness, model and effort, model aliases (`sonnet-5`, `claude-sonnet-5`) counting as one."""
+    from ..belief.forest import canonical_model_id
+
+    return (a.harness.lower() == b.harness.lower() and canonical_model_id(a.model) == canonical_model_id(b.model)
+            and a.effort.lower() == b.effort.lower())
+
+
+def arm_settings(store: Store, args: Any) -> None:
+    """`run start` or `run record` into an arm with a set: the run takes the arm's set. A `--set` naming one of
+    the arm's pieces with another harness, model or effort is refused, and so are --config, --rec and --choice,
+    which bring their own configuration. All before anything is written."""
+    chk, arm = getattr(args, "check", None), getattr(args, "arm", None)
+    if not chk or arm not in ARMS:
+        return
+    spec = load(store, chk)[arm].get("set")
+    if not spec:
+        return
+    shown = " ".join(f"{piece}={s}" for piece, s in spec.items())
+    for flag, attr in (("--config", "config"), ("--rec", "rec"), ("--choice", "choice")):
+        if getattr(args, attr, None):
+            raise UserError(f"{flag}: arm {arm} of {chk} runs {shown}, which fixes the run's configuration; give "
+                            f"--workflow and leave the setting to the arm")
+    fixed = _fixed({"set": spec})
+    for piece, s in parse_set(getattr(args, "set", None) or []).items():
+        if piece in fixed and not _same(s, fixed[piece]):
+            raise UserError(f"--set {piece}={s.harness}:{s.model}:{s.effort}: arm {arm} of {chk} runs "
+                            f"{piece}={spec[piece]}; drop --set, or record the run into an arm that runs it")
+    args.set = [f"{piece}={s}" for piece, s in spec.items()] + [
+        item for item in getattr(args, "set", None) or [] if item.split("=", 1)[0].strip() not in spec]
+
+
+def arm_models(check: dict[str, Any], docs: list[dict[str, Any]]) -> tuple[dict[str, list[str]], list[dict]]:
+    """Per arm, the models its finished runs ran (one spelling each); and each attempt on a piece of its arm's
+    set that ran another harness, model or effort. Effort counts only when the arm names one (not `default`)
+    and the attempt has one. A mismatch is shown, never dropped: the comparison still counts the run."""
+    from ..belief.forest import canonical_model_id
+
+    models: dict[str, set[str]] = {arm: set() for arm in ARMS}
+    mismatch: list[dict[str, Any]] = []
+    fixed = {arm: _fixed(check[arm]) for arm in ARMS}
+    for doc in docs:
+        tag = ((doc.get("run") or {}).get("ext") or {}).get(CHECK_EXT) or {}
+        arm = tag.get("arm")
+        if arm not in ARMS:
+            continue
+        for a in doc.get("attempts") or []:
+            if not isinstance(a, dict):
+                continue
+            m = a.get("model")
+            ran_model = (m.get("raw") or m.get("id")) if isinstance(m, dict) else m
+            if ran_model:
+                models[arm].add(canonical_model_id(str(ran_model)))
+            piece = a.get("node") or a.get("piece")  # a stored attempt names its piece as `node` (store/runs.py:281)
+            want = fixed[arm].get(piece)
+            if want is None or not ran_model:
+                continue
+            effort = a.get("effort") if want.effort.lower() != "default" and a.get("effort") else want.effort
+            ran = type(want)(harness=a.get("harness") or want.harness, model=str(ran_model), effort=str(effort))
+            if not _same(ran, want):
+                mismatch.append({"pair": tag.get("pair"), "arm": arm, "piece": piece,
+                                 "declared": check[arm]["set"][piece],
+                                 "ran": f"{ran.harness}:{ran.model}:{ran.effort}"})
+    return {arm: sorted(v) for arm, v in models.items()}, sorted(mismatch, key=lambda x: (x["pair"] or "", x["arm"]))
+
+
 def read_tasks(path: str) -> list[dict[str, Any]]:
     """One task per line as JSON, as `plan --backlog` reads them; blank lines are skipped."""
     p = Path(path).expanduser()
@@ -177,7 +259,8 @@ def claim(store: Store, args: Any) -> dict[str, Any]:
     to the check yet; `commit` does that once the run exists."""
     chk, arm = args.check, getattr(args, "arm", None)
     if arm not in ARMS:
-        raise UserError(f"--check {chk} needs --arm base or --arm cand")
+        raise UserError(f"--check {chk} needs --arm base or --arm cand"
+                        + ("; A and B are a screen's arms: record them with --screen SCR" if arm in ("A", "B") else ""))
     if getattr(args, "slate", None) or getattr(args, "new_slate", False):
         raise UserError("--check gives the run its pair's slate; drop --slate and --new-slate")
     check = load(store, chk)
@@ -337,7 +420,9 @@ def next_view(check: dict[str, Any], pair: dict[str, Any]) -> dict[str, Any]:
         task_flags = " --type T --repo R" if task is None and i == 0 else ""
         harness = (f" --harness {shlex.quote(check[arm]['path'])}"  # the run records the arm's harness record
                    if check[arm].get("path") and check[arm].get("harness") else "")
-        commands.append(f"loopmath run record --check {chk} --arm {arm} --workflow WORKFLOW --source designed"
+        sets = "".join(f" --set {shlex.quote(f'{piece}={spec}')}"  # the arm's set
+                       for piece, spec in (check[arm].get("set") or {}).items())
+        commands.append(f"loopmath run record --check {chk} --arm {arm} --workflow WORKFLOW{sets} --source designed"
                         f"{task_flags} --cwd {worktrees[arm]}{harness} --since START --verified tests=pass|fail")
     commands.append(f"loopmath outcome --slate {pair['slate'] or 'SLT'} --prefer RUN|tie --judge referee --blinded")
     if task is None:

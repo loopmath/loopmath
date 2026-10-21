@@ -13,7 +13,8 @@
 - the success head's update is exact Bayes over its joint draws: every candidate's chance
   `s(eta)` in each of the 400 draws (the known nodes' draws plus each unseen node's own draws,
   shared by every row that has it), times Gauss-Hermite nodes on an unseen task's effect, which
-  every row shares (so a new task's id does not move the gain). The verdict reweights the
+  every row shares (so a new task's id does not move the gain), at each draw's own scales when the
+  head integrated them. The verdict reweights the
   draws by its likelihood, `q s + (1 - q)(1 - s)` or its complement, and `g` after it is the
   reweighted mean. `g` now, `P(z)` and `g` after come from the same draws, so each candidate's
   `g` after, averaged over `z`, is its `g` now. A Newton step linearized at the mean did not
@@ -43,6 +44,7 @@ from scipy.special import expit, ndtr
 
 from ..types import AcceptanceRule, Configuration, Interval, LookaheadResult, Task
 from .design import cost_rest
+from .forest import scale_group
 from .state import (MIN_SCORE_SWITCH, N_DRAWS, PREDICT_SOURCE, FitState, HeadState, _GW, _GX, inverse_transform,
                     transform)
 
@@ -137,6 +139,9 @@ def _success_draws(state: FitState, task: Task, plans: list[dict]) -> tuple[np.n
     tp = state._task_parts(task)["success"]
     eta = np.stack([tp.known + state._row(head, plan["run"]).draws for plan in plans])  # (n, draws)
     n, d = eta.shape
+    if np.ndim(tp.s2):  # integrated scales: each draw's unseen task effect at that draw's scales
+        eta = (eta[:, None, :] + np.sqrt(tp.s2)[None, None, :] * _GX[None, :, None]).reshape(n, -1)
+        return expit(eta), np.repeat(_GW, d) / d
     if tp.s2 > 0:
         eta = (eta[:, None, :] + math.sqrt(tp.s2) * _GX[None, :, None]).reshape(n, -1)  # column k * d + j
         return expit(eta), np.repeat(_GW, d) / d
@@ -347,7 +352,12 @@ def _spread(w: np.ndarray, v: np.ndarray) -> Interval:
 # ---------------------------------------------------------------- conditioned
 
 def _condition_head(head: HeadState, terms: Sequence[tuple], tau2: float) -> HeadState:
-    """Variance-only rank-one update of one head for one observation row with noise `tau2`."""
+    """Variance-only rank-one update of one head for one observation row with noise `tau2`.
+
+    A head that integrated its scales (the opt-in success head) gets the same update on its stored joint draws,
+    each new node drawn at its draw's own scales as a prediction draws it, with the draws' covariance in U's place:
+    the draws keep their means, their scales and their joint shape, and nodes still unseen keep a scale per draw.
+    U is updated as for any head (only `_Rows`, whose success rows give `conditioned` its mean, reads it)."""
     kx: dict[int, float] = {}
     new_nodes: list[str] = []
     new_vals: list[float] = []
@@ -383,11 +393,22 @@ def _condition_head(head: HeadState, terms: Sequence[tuple], tau2: float) -> Hea
     for i, node in enumerate(new_nodes):
         Z[p + i] = head.virtual_unit(node)
     draws = mean[:, None] + U @ Z
+    S = head.scale_rows
+    if S is not None:
+        J = np.vstack([head.draws] + [head.virtual_unit(n) * head.scale_draws(scale_group(n)) for n in new_nodes])
+        c = J - J.mean(axis=1, keepdims=True)
+        e = x @ c  # each draw's x'(b - mean)
+        t = float(e @ e) / N_DRAWS
+        if t > 0:  # J - Sigma x e' (1 - sqrt(tau2 / (t + tau2))) / t, Sigma the draws' covariance
+            J = J - ((1.0 - math.sqrt(tau2 / (t + tau2))) / t) * np.outer(c @ e / N_DRAWS, e)
+        draws = J
     meta = dict(head.meta) or {"engine": head.engine, "kind": head.kind, "sigma": head.sigma}
     out = HeadState(head.name, meta, head.nodes + new_nodes, None, head.fit_id, mean=mean, U=U, draws=draws,
                     unit=Z, seed_key=head.seed_key)
     out.fitted = head.fitted
     out.phi = dict(head.phi)
+    if S is not None:
+        out._extra["scale_draws"] = S
     return out
 
 

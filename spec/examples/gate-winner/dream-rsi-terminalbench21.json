@@ -1,0 +1,90 @@
+{
+ "schema": "loopmath.gate-winner-scores/0.1",
+ "better": "higher",
+ "scale": "fraction",
+ "spread": [
+  0.015,
+  0.035
+ ],
+ "parent": {
+  "id": "seed",
+  "score": 0.7247
+ },
+ "candidates": [
+  {
+   "id": "gen1",
+   "score": 0.7753,
+   "order": 1
+  },
+  {
+   "id": "gen3",
+   "score": 0.7865,
+   "order": 3
+  },
+  {
+   "id": "gen16",
+   "score": 0.7921,
+   "order": 16
+  },
+  {
+   "id": "gen30",
+   "score": 0.8034,
+   "order": 30
+  },
+  {
+   "id": "gen52",
+   "score": 0.809,
+   "order": 52
+  }
+ ],
+ "censored": [
+  {
+   "count": 1,
+   "at_most": 0.7753,
+   "order": [
+    2,
+    2
+   ]
+  },
+  {
+   "count": 12,
+   "at_most": 0.7865,
+   "order": [
+    4,
+    15
+   ]
+  },
+  {
+   "count": 13,
+   "at_most": 0.7921,
+   "order": [
+    17,
+    29
+   ]
+  },
+  {
+   "count": 21,
+   "at_most": 0.8034,
+   "order": [
+    31,
+    51
+   ]
+  },
+  {
+   "count": 12,
+   "at_most": 0.809,
+   "order": [
+    53,
+    64
+   ]
+  }
+ ],
+ "source": {
+  "cite": "arXiv 2609.14858v2",
+  "url": "https://arxiv.org/abs/2609.14858v2",
+  "where": "Sec. 4.4, Fig. 5 (a): the harness search's best-so-far curve on Terminal-Bench 2.1 (89 tasks, 2 runs each), decoded from the figure's vector data",
+  "spread_basis": "assumed, not measured: one suite score's SD under a Beta task model with the seed's mean is 0.019 to 0.034 across task concentrations; the range is that, widened",
+  "held_out": null,
+  "note": "new bests at generations 1, 3, 16, 30 and 52 of 64 (decoded); one candidate per generation is inferred; every other generation is censored at the running best"
+ }
+}

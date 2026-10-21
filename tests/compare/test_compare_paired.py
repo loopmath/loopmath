@@ -145,12 +145,18 @@ def test_a_spent_budget_keeps_the_base():
 
 
 @pytest.mark.parametrize("lookahead", [True, False])
-def test_a_spent_budget_keeps_the_base_without_a_price_and_with_refused_costs(lookahead):
+def test_a_spent_budget_keeps_the_base_without_a_price_and_with_refused_costs(lookahead, monkeypatch):
+    """The refused costs are $0.000001 and $1e9, which 0.3.1's cost model ("ln") refuses; that part pins it by
+    name, since a default model may state a range for them."""
+    from loopmath.compare import model
+
     c = paired([], [], rule="tests", budget_usd=1.0, spent_usd=2.0, lookahead=lookahead)
     assert c.pair_price_usd is None and c.verdict == "reject" and any("budget is spent" in r for r in c.reasons)
     base = [Observation(f"t{i}", "base", True, usd) for i, usd in enumerate((1e-6, 1e9))]
     cand = [Observation(f"t{i}", "cand", True, usd) for i, usd in enumerate((1e-6, 1e9))]
-    c = paired(base, cand, rule="tests", budget_usd=1.0, lookahead=lookahead)  # the cost draws are refused
+    with monkeypatch.context() as mp:
+        mp.setattr(model, "COST_MODEL", "ln")
+        c = paired(base, cand, rule="tests", budget_usd=1.0, lookahead=lookahead)  # the cost draws are refused
     assert c.cost_base is None and c.pair_price_usd is None and c.verdict == "reject"
     assert paired([], [], rule="tests", budget_usd=0.0, lookahead=lookahead).verdict == "reject"  # a zero budget
     c = paired([], [], rule="tests", budget_usd=2.0, spent_usd=1.0, lookahead=lookahead)
@@ -465,7 +471,7 @@ def test_scores_on_different_scales_are_refused_for_rows_and_ocp_documents():
                rule="score:judge", lookahead=False)
 
 
-# ---------------------------------------------------------------- the CLI tester's round 1 (h19-cli-r1)
+# ---------------------------------------------------------------- rules, stops, refusals and costs
 def verdict_rows(n, accepted=((True, False), (True, True)), *, usd=0.3):
     """Rows with a recorded verdict, as plugin-evals.jsonl: `accepted`, one task and pair per index."""
     from loopmath import harness_runs as HR

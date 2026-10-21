@@ -3,8 +3,10 @@
 The cross-version proof (this tree against the previous release on a fresh store and on a
 copy of a real store, every `recommend --json` and `posterior --json` leaf) is a release
 driver run outside the suite; its commands and results are in the report. The tests here
-hold the two properties that make that proof true by construction: nothing outside
-`loopmath.gate` imports it, and `gate` never writes to a store.
+hold the two properties that make that proof true by construction: nothing on the model path
+imports `loopmath.gate`, and `gate` never writes to a store. The one importer outside the gate is
+`loopmath.integrations.dspy`, by two named lines, and nothing in the package imports an integration,
+so only a caller's own `import` reaches it.
 """
 
 from __future__ import annotations
@@ -31,6 +33,21 @@ IMPORTS_GATE = re.compile(
 )
 
 
+IMPORTS_AN_INTEGRATION = re.compile(
+    r"^\s*(from\s+loopmath\.integrations\b|import\s+loopmath\.integrations\b|from\s+\.+integrations\b"
+    r"|from\s+\.+\s+import\s+.*\bintegrations\b)"
+    r"|import_module\(\s*[\"']loopmath\.integrations\b"
+    r"|_lazy\(\s*[\"']loopmath\.integrations\b"
+)
+
+# An integration is imported by its caller only (test_nothing_in_the_package_imports_an_integration), so its
+# function-level imports of the gate stay off the model path. Exact lines: a new or widened import still fails.
+INTEGRATION_IMPORTS = {
+    ("integrations/dspy.py", "from loopmath.gate import GatePolicy"),
+    ("integrations/dspy.py", "from loopmath.gate import decide as gate_decide"),
+}
+
+
 def test_nothing_outside_the_gate_imports_it():
     offenders = []
     for p in SRC.rglob("*.py"):
@@ -40,10 +57,31 @@ def test_nothing_outside_the_gate_imports_it():
         for line in p.read_text(encoding="utf-8").splitlines():
             if not IMPORTS_GATE.search(line):
                 continue
-            # The registry names the command's handler as a lazy string only.
-            if rel == "cli_registry.py" and '_lazy("loopmath.gate.commands:gate")' in line:
+            # The registry names the commands' handlers as lazy strings only.
+            if rel == "cli_registry.py" and any(f'_lazy("loopmath.gate.{h}")' in line
+                                                for h in ("commands:gate", "winner_cli:gate_winner")):
+                continue
+            if (rel, line.strip()) in INTEGRATION_IMPORTS:
                 continue
             offenders.append(f"{rel}: {line.strip()}")
+    assert offenders == []
+
+
+def test_the_named_integration_imports_of_the_gate_are_still_there():
+    # Keeps the allowance honest: an entry goes when its line goes.
+    for rel, line in INTEGRATION_IMPORTS:
+        assert line in [x.strip() for x in (SRC / rel).read_text(encoding="utf-8").splitlines()], (rel, line)
+
+
+def test_nothing_in_the_package_imports_an_integration():
+    offenders = []
+    for p in SRC.rglob("*.py"):
+        rel = p.relative_to(SRC).as_posix()
+        if rel.startswith("integrations/"):
+            continue
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if IMPORTS_AN_INTEGRATION.search(line):
+                offenders.append(f"{rel}: {line.strip()}")
     assert offenders == []
 
 

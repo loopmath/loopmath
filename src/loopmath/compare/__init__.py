@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -38,6 +38,7 @@ import numpy as np
 
 from ..output import counted
 from . import model as M
+from . import value as V
 
 SCHEMA = "loopmath.compare/1"
 HARNESS_RUNS_SCHEMA = "loopmath.harness-runs/0.1"
@@ -117,6 +118,8 @@ class Comparison:
     min_pairs: int = M.MIN_PAIRS_VALUE  # with value_stop, scored pairs before the next pair's value may stop the check
     value_stop: bool = False  # the next pair's value stops the check; off (the default) it is priced and shown only
     outcomes_only: bool = False  # a cost is unknown, so the answer is on the outcomes alone (the gain, no lookahead)
+    value: dict | None = None  # the next pairs' value and its plan (`compare.value.PairValue.to_dict`), or None
+    pair_price: float | None = None  # the price per pair given for the value (0 on a subscription), or None: its cost
 
     def to_dict(self) -> dict[str, Any]:
         out = {"schema": SCHEMA}
@@ -382,7 +385,7 @@ def _rules_that_score(runs: list[Any], config: Any = None) -> list[str]:
         try:
             if r == ACCEPT:
                 _one_rule(runs, [], config)
-            if any(o.outcome is not None for o in _observations(runs, r, None, config)):
+            if any(o.outcome is not None for o in _observations(runs, r, None, config, costs=False)):
                 found.append(r)
         except (TypeError, ValueError):
             continue
@@ -555,17 +558,80 @@ def _observe(x: Any, rule: Any, now: datetime | None, config: Any) -> Observatio
     raise TypeError(f"each run is an OCP run document, a {HARNESS_RUNS_SCHEMA} record or an Observation")
 
 
+# The token counts compare is given: an OCP attempt's, as run_cost reads them, and a row's cost.tokens, as _tokens does.
+COST_TOKENS = ("input_tokens", "cached_input_tokens", "cache_creation_tokens", "output_tokens")
+ROW_STREAMS = ("input", "cache_read", "cache_write", "output")
+
+
+def _who(o: Observation) -> str:
+    """The run a cost refusal names, as the pairing names it: the run, and the input row it came from."""
+    if not o.source:
+        return f"run {o.run}" if o.run else f"the {o.arm + ' ' if o.arm else ''}run of task {o.task}"
+    return f"row {o.source}" if o.source == o.run else f"run {o.run or '?'} from row {o.source}"
+
+
+def _given(x: Any) -> Iterable[tuple[str, Any, bool]]:
+    """(field, value, is a dollar figure) for each dollar figure and token count the run gives compare."""
+    if isinstance(x, Observation):
+        yield "usd", x.usd, True
+        yield "tokens", x.tokens, False
+        for k in ROW_STREAMS:
+            yield f"token_streams.{k}", (x.token_streams or {}).get(k), False
+    elif _is_doc(x):
+        for i, a in enumerate(x.get("attempts") or []):
+            cost = a.get("cost") if isinstance(a, dict) and isinstance(a.get("cost"), dict) else {}
+            yield f"attempts[{i}].cost.usd", cost.get("usd"), True
+            for k in COST_TOKENS:
+                yield f"attempts[{i}].cost.{k}", cost.get(k), False
+    else:  # a row: its cost, and each stage's (a staged row is read as no dollar cost, but its figures are given)
+        stages = x.get("stages") if isinstance(x.get("stages"), list) else []
+        for at, cost in [("cost", x.get("cost"))] + [(f"stages[{i}].cost", s.get("cost")) for i, s in
+                                                     enumerate(stages) if isinstance(s, dict)]:
+            cost = cost if isinstance(cost, dict) else {}
+            yield f"{at}.usd", cost.get("usd"), True
+            tokens = cost.get("tokens")
+            if isinstance(tokens, dict):
+                for k in ROW_STREAMS:
+                    yield f"{at}.tokens.{k}", tokens.get(k), False
+            else:
+                yield f"{at}.tokens", tokens, False
+
+
+def _costs(x: Any, o: Observation) -> Observation:
+    """`o`, read from the run `x`, once its costs are checked. A negative dollar cost, or a token count that is
+    negative or not a whole number, is an input error: ValueError naming the run and the field. A NaN or
+    infinite dollar cost is no dollar cost (None), as a harness-runs row reads it. 0 is a cost."""
+    for name, v, usd in _given(x):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue  # not a number: no figure, as the readers take it
+        if usd and math.isfinite(v) and v < 0:
+            raise ValueError(f"{_who(o)}: {name} is {v!r}, a negative dollar cost; a dollar cost is 0 or more "
+                             f"(0 for a free run), or left out when it is unknown")
+        if not usd and not (math.isfinite(v) and v >= 0 and v == int(v)):
+            raise ValueError(f"{_who(o)}: {name} is {v!r}; a token count is a whole number, 0 or more, or left "
+                             f"out when it is unknown")
+    if isinstance(o.usd, float) and not math.isfinite(o.usd):
+        return replace(o, usd=None)
+    return o
+
+
 def observe(x: Any, rule: Any = ACCEPT, *, now: datetime | None = None, config: Any = None) -> Observation:
     """An `Observation` from an OCP run document, a harness-runs record or an `Observation` (returned as is).
-    Under a score rule, a score whose stated direction disagrees with the rule's is refused."""
-    o = _observe(x, rule, now, config)
+    Under a score rule, a score whose stated direction disagrees with the rule's is refused. A negative dollar
+    cost or token count is refused, and a NaN or infinite dollar cost is no dollar cost (`_costs`)."""
+    o = _costs(x, _observe(x, rule, now, config))
     if score_rule(rule) is not None and not isinstance(x, Observation):
         _one_direction([o], [], rule)
     return o
 
 
-def _observations(runs: Iterable[Any], rule: Any, now: datetime | None, config: Any) -> list[Observation]:
-    out = [_observe(r, rule, now, config) for r in runs]
+def _observations(runs: Iterable[Any], rule: Any, now: datetime | None, config: Any, *,
+                  costs: bool = True) -> list[Observation]:
+    """Each run read under `rule`, its costs checked (`_costs`) unless `costs` is False."""
+    out = []
+    for r in runs:
+        o = _observe(r, rule, now, config)
+        out.append(_costs(r, o) if costs else o)
     score = score_rule(rule) is not None
     for o in out:
         if o.outcome is not None and (isinstance(o.outcome, bool) == score):
@@ -664,7 +730,8 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
            objective: str | None = None, floor: float | None = None, confidence: float = M.CONFIDENCE,
            horizon_runs: float = M.HORIZON_RUNS, value_usd: float | None = None, spent_usd: float | None = None,
            seed: int = 0, now: datetime | None = None, config: Any = None, lookahead: bool = True,
-           max_pairs: int | None = None, min_pairs: int | None = None, value_stop: bool = False) -> Comparison:
+           max_pairs: int | None = None, min_pairs: int | None = None, value_stop: bool = False,
+           pair_price: float | None = None, continuation: Any = None) -> Comparison:
     """Compare the candidate arm with the base arm on paired tasks. See the module docstring and
     `compare/model.py` for the models, and `compare/calibration.py` for the adopt threshold.
 
@@ -672,11 +739,22 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     `calibration.DEFAULT_CAP`); the threshold is calibrated for a look after every pair up to it. Every pair
     counts toward the cap, scored or not, as in the calibration's simulations. The next pair's value and price
     are priced and shown at each look, and stop nothing: the check goes on to a decision, the cap or the
-    budget. `value_stop=True` stops it (verdict reject, stop value) when the next pair is worth less than its
-    price, from `min_pairs` scored pairs on (default `model.MIN_PAIRS_VALUE`; 1 stops on value from the first
-    scored pair). `spent_usd`
+    budget. `value_stop=True` stops it (verdict reject, stop value) when the next pairs are certified not worth
+    buying (`value.worth` False: every plan's net below 0 by more than two standard errors, or no look left can
+    change the action; an unresolved value stops nothing), from `min_pairs` scored pairs on (default
+    `model.MIN_PAIRS_VALUE`; 1 stops on value from the first scored pair). `spent_usd`
     defaults to the known dollars of all the runs given. `lookahead=False` skips the next pair's value
     (simulations of the stopping rule): an undecided answer is then `more` while the budget allows.
+
+    The next pairs' value is `compare.value.pairs_value` on this comparison's posterior and plan (its
+    threshold, the pairs left before the cap, the recorded dollars left in the budget, the horizon), in `value`
+    and `next_pair_value_usd`; each simulated future spends the budget on its drawn pairs and stops where the
+    procedure would. `pair_price` is the price of a pair it is compared with, 0 or more (0 for runs on a
+    subscription, with no marginal dollars); None charges each simulated pair its drawn dollars, and states a
+    pair's expected cost, `pair_price_usd`, which the budget uses in any case. `continuation` is the procedure
+    that buys the next pairs, a
+    `compare.value.Continuation`: None is this check's own (a look after every pair); the gate passes its looks
+    and guards (`GatePolicy.continuation`), so its value is the gate's as it runs.
 
     With no scored pair there is no next pair's value; with nothing scored at all there is no answer either
     (P(better), the gain and the cost per accepted result are None, not the prior's), and the reasons name
@@ -708,6 +786,12 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
         raise ValueError("confidence: between 0.5 and 1")
     if max_pairs is not None and max_pairs < 1:
         raise ValueError("max_pairs: at least 1")
+    if pair_price is not None and (isinstance(pair_price, bool) or not isinstance(pair_price, (int, float))
+                                   or not math.isfinite(pair_price) or pair_price < 0):
+        raise ValueError(f"pair_price: the price of one pair, a number 0 or more (got {pair_price!r}); 0 for runs on "
+                         "a subscription")
+    if continuation is not None and not isinstance(continuation, V.Continuation):
+        raise ValueError(f"continuation: a compare.value.Continuation or None (got {continuation!r})")
     if not score:
         resolve_rule(rule, config)  # a bad rule fails here, before any run is read
     if rule == ACCEPT:
@@ -760,17 +844,17 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     data.lone = {k: (v[0], v[1]) for k, v in lone.items()}
     data.scale = M.score_scale(scored_values)
 
-    zero = 0
+    zeros, costs = {"base": 0, "cand": 0}, {"base": 0, "cand": 0}  # per arm: runs at $0, runs with a cost
 
-    def logc(r: Observation) -> float | None:
-        nonlocal zero
+    def logc(r: Observation, arm: str) -> float | None:
         if r.usd is None or not math.isfinite(r.usd) or r.usd < 0:
             return None
-        zero += r.usd == 0
+        zeros[arm] += r.usd == 0
+        costs[arm] += 1
         return math.log(max(r.usd, ZERO_USD))
 
     for _, b, c in pairs:
-        xb, xc = logc(b), logc(c)
+        xb, xc = logc(b, "base"), logc(c, "cand")
         if xb is not None and xc is not None:
             data.cost_pairs.append((xb, xc))
         else:
@@ -779,9 +863,11 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
                     data.cost_lone[arm].append(x)
     for arm, rs in (("base", lone_b), ("cand", lone_c)):
         for r in rs:
-            x = logc(r)
+            x = logc(r, arm)
             if x is not None:
                 data.cost_lone[arm].append(x)
+    data.cost_zero = {arm: (zeros[arm], costs[arm]) for arm in zeros}
+    zero, costed = sum(zeros.values()), sum(costs.values())
     no_cost = {arm: sum(r.usd is None for r in rs) for arm, rs in (("base", base), ("cand", cand))}
     if spent_usd is None:
         spent_usd = round(sum(r.usd for r in base + cand if r.usd is not None), 6)
@@ -813,6 +899,7 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     looks = len(pairs)  # the calibration counts every pair as a look toward the cap, scored or not
     cal = calibration.threshold(mode, confidence=confidence, floor=floor, cap=max_pairs, n_pairs=looks)
     n_lone = sum(sum(v) for v in lone.values())
+    bound_pairs = None if cal["bound"] is None else n_lone  # the scored pairs from which the bound holds
     if cal["bound"] is not None and n_lone > n_pairs:  # the verdict is unchanged; only the claim goes
         cal = dict(cal, bound=None, why=f"no false adopt bound is stated: {n_lone} scored {'run has' if n_lone == 1 else 'runs have'} no scored "
                                         f"partner against {counted(n_pairs, 'scored pair')}, and the calibrated families have "
@@ -849,7 +936,8 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
                        f"the cost ranges leave {'it' if n == 1 else 'them'} out")
     if zero:
         reasons.append(f"{counted(zero, 'run')} {'costs' if zero == 1 else 'cost'} $0; a $0 cost is counted as a "
-                       "tiny positive amount")
+                       "tiny positive amount" + ("; every recorded cost is $0, so the next pairs' value prices a pair "
+                                                 "at $0" if zero == costed and pair_price is None else ""))
     if d.post.cost_refused:
         reasons.append(d.post.cost_refused)
     if alone:
@@ -871,7 +959,7 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     ec = float(np.mean(d.cost_cand)) if d.cost_cand is not None else None
     price = eb + ec if eb is not None and ec is not None else None
     budget_left = None if budget_usd is None else budget_usd - spent_usd
-    value, payback = None, None
+    value, payback, pv_out = None, None, None
     verdict = M.decide(pb, st)
     stop = None if verdict is None else "decided"
     thr = st.threshold
@@ -919,37 +1007,48 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
             reasons.append("no scored pair yet, so the next pair is not priced: run more pairs until the answer is "
                            "clear or the budget ends")
         else:
-            look_cap = None
-            if budget_left is not None and price is not None and price > 0:
-                look_cap = int(budget_left // price)
-            left = cal["cap"] - looks
-            look_cap = left if look_cap is None else min(look_cap, left)
-            value, _ = (M.next_pair_value(data, st, d.post, rng, max_pairs=look_cap)
-                        if look_cap is None or look_cap > 0 else (0.0, None))
-            if value is None or price is None:
+            # The futures run the cap and the budget as the procedure does: the pairs left before the cap, and the
+            # recorded dollars left, which each future spends on its drawn pairs and checks at every look.
+            plan = V.Plan(objective=objective, floor=floor, confidence=confidence, threshold=st.threshold,
+                          horizon_runs=horizon_runs, value_usd=value_usd, pairs_left=cal["cap"] - looks,
+                          price=pair_price, zero_cost=bool(zero) and zero == costed, pairs_scored=n_pairs,
+                          bound_pairs=bound_pairs,
+                          continuation=continuation if continuation is not None else V.Continuation(),
+                          budget_left=budget_left)
+            pv = V.pairs_value(data, d.post, plan, V.value_rng(seed))
+            pv_out = pv.to_dict()
+            value, vprice = pv.per_pair, pv.price
+            if value is None or vprice is None:
                 verdict = "more"
-                reasons.append("the next pair's value is not priced (no dollar value for this outcome, or no "
-                               "costed runs yet): run more pairs until the answer is clear or the budget ends")
-            elif value < price and not value_stop:
-                verdict = "more"
-                reasons.append(f"the next pair is worth {value:.4f} USD over {horizon_runs:g} future runs, under "
-                               f"its price of {price:.4f} USD; the value stop is off, so the check goes on to "
-                               f"a decision, the cap or the budget: run another pair")
-            elif value < price and n_pairs < min_pairs:
-                verdict = "more"
-                reasons.append(f"the next pair is worth {value:.4f} USD over {horizon_runs:g} future runs, under "
-                               f"its price of {price:.4f} USD, but the value stop waits for "
-                               f"{counted(min_pairs, 'scored pair')} ({n_pairs} so far): run another pair")
-            elif value < price:
-                verdict, stop = "reject", "value"
-                reasons.append(f"the next pair is worth {value:.4f} USD over {horizon_runs:g} future runs, under "
-                               f"its price of {price:.4f} USD: keep the base")
+                reasons.append(f"the next pair's value is not stated ({pv.why or 'no costed runs yet'}): run more "
+                               "pairs until the answer is clear or the budget ends")
             else:
-                verdict = "more"
-                reasons.append(f"the next pair is worth {value:.4f} USD over {horizon_runs:g} future runs, above "
-                               f"its price of {price:.4f} USD: run another pair")
-            if value and price:
-                payback = round(price / (value / horizon_runs), 3)
+                vs = f"{value:.4f} USD a pair over {horizon_runs:g} future runs{V.plan_text(pv)}"
+                worth = (f"the next pair is worth {vs}, above its price of {V.price_text(pv, price)} by more than "
+                         f"two standard errors" if pv.worth is True else
+                         f"the next pair is worth {vs}, under its price of {V.price_text(pv, price)} by more than "
+                         f"two standard errors" if pv.worth is False else
+                         f"the next pair is worth {vs}, against its price of {V.price_text(pv, price)}: unresolved "
+                         f"({pv.why})")
+                if pv.worth is None:
+                    verdict = "more"
+                    reasons.append(f"{worth}; an unresolved value stops nothing: run another pair")
+                elif not pv.worth and not value_stop:
+                    verdict = "more"
+                    reasons.append(f"{worth}; the value stop is off, so the check goes on to a decision, the cap "
+                                   f"or the budget: run another pair")
+                elif not pv.worth and n_pairs < min_pairs:
+                    verdict = "more"
+                    reasons.append(f"{worth}, but the value stop waits for {counted(min_pairs, 'scored pair')} "
+                                   f"({n_pairs} so far): run another pair")
+                elif not pv.worth:
+                    verdict, stop = "reject", "value"
+                    reasons.append(f"{worth}: keep the base")
+                else:
+                    verdict = "more"
+                    reasons.append(f"{worth}: run another pair")
+            if value and vprice is not None:
+                payback = round(vprice / (value / horizon_runs), 3)
 
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
         ratio = d.cost_cand / d.cost_base if d.cost_base is not None and d.cost_cand is not None else None
@@ -970,7 +1069,7 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
         pairs=[{"key": k, "base": b.run, "cand": c.run} for k, b, c in pairs],
         adopt_threshold=round(thr, 6), max_pairs=cal["cap"], bound=cal["bound"], stop=stop,
         decided=stop == "decided", min_pairs=min_pairs, value_stop=bool(value_stop),
-        outcomes_only=alone is not None)
+        outcomes_only=alone is not None, value=pv_out, pair_price=None if pair_price is None else float(pair_price))
 
 
 def arm_runs(nb: int, nc: int, *, nonzero: bool = False) -> str:

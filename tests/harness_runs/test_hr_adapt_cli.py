@@ -120,7 +120,7 @@ def test_a_harness2_folder_with_no_importable_rollout_exits_1_and_says_why_each_
 
     skipped = [{"run_id": "jb-oc-agg2/t1/base1", "reason": "unavailable: no trajectory"},
                {"run_id": "jb-oc-agg2/t1/agg1", "reason": "unavailable: no summary row"}]
-    monkeypatch.setattr(H2, "read", lambda path, experiment=None: SimpleNamespace(
+    monkeypatch.setattr(H2, "read", lambda path, experiment=None, privacy="metadata_only": SimpleNamespace(
         rows=[], format="harness2/method-2", skipped=skipped, notes=[], experiments=[], counts={}))
     code, out, err = _run(capsys, "adapt", "harness2", str(tmp_path), "--out", str(tmp_path / "o"))
     assert code == 1 and not (tmp_path / "o").exists(), (out, err)

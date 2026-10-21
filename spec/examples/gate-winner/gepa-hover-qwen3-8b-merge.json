@@ -1,0 +1,143 @@
+{
+ "schema": "loopmath.gate-winner-scores/0.1",
+ "better": "higher",
+ "scale": "linear",
+ "spread": [
+  1.443,
+  2.885
+ ],
+ "parent": {
+  "id": "node0",
+  "score": 35.0
+ },
+ "candidates": [
+  {
+   "id": "node1",
+   "score": 44.33,
+   "order": 1
+  },
+  {
+   "id": "node2",
+   "score": 45.67,
+   "order": 2
+  },
+  {
+   "id": "node3",
+   "score": 47.33,
+   "order": 3
+  },
+  {
+   "id": "node4",
+   "score": 46.67,
+   "order": 4
+  },
+  {
+   "id": "node5",
+   "score": 51.67,
+   "order": 5
+  },
+  {
+   "id": "node6",
+   "score": 47.0,
+   "order": 6
+  },
+  {
+   "id": "node7",
+   "score": 47.0,
+   "order": 7
+  },
+  {
+   "id": "node8",
+   "score": 51.67,
+   "order": 8
+  },
+  {
+   "id": "node9",
+   "score": 50.0,
+   "order": 9
+  },
+  {
+   "id": "node10",
+   "score": 50.33,
+   "order": 10
+  },
+  {
+   "id": "node11",
+   "score": 51.0,
+   "order": 11
+  },
+  {
+   "id": "node12",
+   "score": 51.0,
+   "order": 12
+  },
+  {
+   "id": "node13",
+   "score": 49.67,
+   "order": 13
+  },
+  {
+   "id": "node14",
+   "score": 52.0,
+   "order": 14
+  },
+  {
+   "id": "node15",
+   "score": 45.0,
+   "order": 15
+  },
+  {
+   "id": "node16",
+   "score": 44.33,
+   "order": 16
+  },
+  {
+   "id": "node17",
+   "score": 52.0,
+   "order": 17
+  },
+  {
+   "id": "node18",
+   "score": 49.33,
+   "order": 18
+  },
+  {
+   "id": "node19",
+   "score": 50.33,
+   "order": 19
+  },
+  {
+   "id": "node20",
+   "score": 49.67,
+   "order": 20
+  },
+  {
+   "id": "node21",
+   "score": 51.0,
+   "order": 21
+  },
+  {
+   "id": "node22",
+   "score": 52.33,
+   "order": 22
+  }
+ ],
+ "source": {
+  "cite": "arXiv 2507.19457v2",
+  "title": "GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning",
+  "url": "https://arxiv.org/abs/2507.19457v2",
+  "where": "App. J, Fig. 24 (d) (search tree, validation scores); test scores from Table 1",
+  "model": "Qwen3 8B",
+  "benchmark": "HoVer",
+  "method": "GEPA+Merge",
+  "unit": "percentage points on the validation set (D_pareto), n = 300",
+  "spread_basis": "assumed, not measured: the paper prints no rerun spread. The range runs from half the binomial standard error at n = 300 validation items to that standard error, at the scores' mean",
+  "held_out": {
+   "seed": 35.33,
+   "winner": 51.67,
+   "n": 300,
+   "note": "the test-set scores the paper prints for the seed and the selected winner: a fresh-task comparison, which is not the estimand (a rerun on the same validation items)"
+  },
+  "note": "node ids as printed in the tree; the winner is the tree's top validation score, which matches Fig. 16's test minus generalization gap for this run; the seed's validation score is the same in all four runs of this figure, so a rerun on the same items may move it less than the range assumes"
+ }
+}

@@ -1,0 +1,92 @@
+"""The one number rule for the screen: it adds commands and a flag, and changes no existing output.
+
+The cross-version proof (this tree against the previous release on a fresh store and on a copy of a real store,
+every `recommend --json` and `posterior --json` leaf) is a release driver run outside the suite; its commands and
+results are in the report. The tests here hold the properties that make that proof true by construction: only the
+registry and the `--screen` branch of `run start` and `run record` reach the screen, a run started or recorded
+without `--screen` never imports it, and reading a screen writes nothing.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+from loopmath import cli
+
+SRC = Path(__file__).resolve().parents[2] / "src" / "loopmath"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_screen_cli import SOLO, cost, home, lm, record, start  # noqa: E402,F401
+
+IMPORTS_SCREEN = re.compile(
+    r"^\s*(from\s+loopmath\.screen\b|import\s+loopmath\.screen\b|from\s+\.+screen\b"
+    r"|from\s+\.+\s+import\s+.*\bscreen\b)"
+    r"|import_module\(\s*[\"']loopmath\.screen\b"
+    r"|_lazy\(\s*[\"']loopmath\.screen\b"
+)
+ALLOWED = {
+    "cli_registry.py": re.compile(r'_lazy\("loopmath\.screen\.commands:screen_(start|next|status|apply)"\)'),
+    "store/commands.py": re.compile(r"from \.\.screen import record as screens$"),
+}
+
+
+def test_only_the_registry_and_the_screen_flag_reach_the_screen():
+    offenders = []
+    for p in SRC.rglob("*.py"):
+        rel = p.relative_to(SRC).as_posix()
+        if rel.startswith("screen/"):
+            continue
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if not IMPORTS_SCREEN.search(line):
+                continue
+            if rel in ALLOWED and ALLOWED[rel].search(line.strip()):
+                continue
+            offenders.append(f"{rel}: {line.strip()}")
+    assert offenders == []
+
+
+def _drop_screen_modules(monkeypatch):
+    for name in [m for m in sys.modules if m == "loopmath.screen" or m.startswith("loopmath.screen.")]:
+        monkeypatch.delitem(sys.modules, name)
+
+
+def test_a_run_started_without_screen_never_imports_it(home, tmp_path, capsys, monkeypatch):
+    _drop_screen_modules(monkeypatch)
+    code, out, err = lm(capsys, "run", "start", "--type", "bug_fix", "--repo", "acme/app", "--title", "fix 1",
+                        *SOLO, "--json")
+    assert code == 0, err
+    assert "loopmath.screen" not in sys.modules
+
+
+def test_a_run_recorded_without_screen_never_imports_it(home, tmp_path, capsys, monkeypatch):
+    _drop_screen_modules(monkeypatch)
+    code, out, err = lm(capsys, "run", "record", "--type", "bug_fix", "--repo", "acme/app", "--title", "fix 1",
+                        *SOLO, "--cwd", f"implement={home.parent / 'wt'}", "--since", "1h", "--verified",
+                        "tests=pass", "--no-commits", "--no-fit", "--json")
+    assert code == 0, err
+    assert "loopmath.screen" not in sys.modules
+
+
+def _tree_hash(root: Path) -> str:
+    h = hashlib.sha256()
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            h.update(str(p.relative_to(root)).encode())
+            h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def test_reading_a_screen_writes_nothing(home, tmp_path, capsys):
+    scr = start(capsys, tmp_path, 3, 8)["screen"]
+    record(capsys, home, scr, "A")
+    record(capsys, home, scr, "B")
+    code, out, err = lm(capsys, "screen", "next", scr, "--json")  # builds the next pair's trees once
+    assert code == 0, err
+    before = _tree_hash(home)
+    for argv in (("screen", "status", scr, "--json"), ("screen", "status", scr), ("screen", "next", scr, "--json"),
+                 ("screen", "status", scr, "--on", "e01-line", "--json")):
+        code, out, err = lm(capsys, *argv)
+        assert code == 0, (argv, err)
+    assert _tree_hash(home) == before

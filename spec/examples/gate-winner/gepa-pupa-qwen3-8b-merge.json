@@ -1,0 +1,128 @@
+{
+ "schema": "loopmath.gate-winner-scores/0.1",
+ "better": "higher",
+ "scale": "linear",
+ "spread": [
+  1.819,
+  3.637
+ ],
+ "parent": {
+  "id": "node0",
+  "score": 80.75
+ },
+ "candidates": [
+  {
+   "id": "node1",
+   "score": 78.07,
+   "order": 1
+  },
+  {
+   "id": "node2",
+   "score": 78.28,
+   "order": 2
+  },
+  {
+   "id": "node3",
+   "score": 82.85,
+   "order": 3
+  },
+  {
+   "id": "node4",
+   "score": 81.27,
+   "order": 4
+  },
+  {
+   "id": "node5",
+   "score": 83.36,
+   "order": 5
+  },
+  {
+   "id": "node6",
+   "score": 80.78,
+   "order": 6
+  },
+  {
+   "id": "node7",
+   "score": 81.12,
+   "order": 7
+  },
+  {
+   "id": "node8",
+   "score": 78.35,
+   "order": 8
+  },
+  {
+   "id": "node9",
+   "score": 83.34,
+   "order": 9
+  },
+  {
+   "id": "node10",
+   "score": 82.85,
+   "order": 10
+  },
+  {
+   "id": "node11",
+   "score": 84.31,
+   "order": 11
+  },
+  {
+   "id": "node12",
+   "score": 85.3,
+   "order": 12
+  },
+  {
+   "id": "node13",
+   "score": 83.09,
+   "order": 13
+  },
+  {
+   "id": "node14",
+   "score": 87.98,
+   "order": 14
+  },
+  {
+   "id": "node15",
+   "score": 79.99,
+   "order": 15
+  },
+  {
+   "id": "node16",
+   "score": 81.97,
+   "order": 16
+  },
+  {
+   "id": "node17",
+   "score": 81.79,
+   "order": 17
+  },
+  {
+   "id": "node18",
+   "score": 84.23,
+   "order": 18
+  },
+  {
+   "id": "node19",
+   "score": 82.71,
+   "order": 19
+  }
+ ],
+ "source": {
+  "cite": "arXiv 2507.19457v2",
+  "title": "GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning",
+  "url": "https://arxiv.org/abs/2507.19457v2",
+  "where": "App. J, Fig. 26 (d) (search tree, validation scores); test scores from Table 1",
+  "model": "Qwen3 8B",
+  "benchmark": "PUPA",
+  "method": "GEPA+Merge",
+  "unit": "percentage points on the validation set (D_pareto), n = 111",
+  "spread_basis": "assumed, not measured: the paper prints no rerun spread. The range runs from half the binomial standard error at n = 111 validation items to that standard error, at the scores' mean; PUPA's score is a 0 to 100 composite, not a pass rate, so the binomial figure is only the largest standard error a score bounded in [0, 100] with this mean can have, under independent items",
+  "held_out": {
+   "seed": 80.82,
+   "winner": 86.26,
+   "n": 221,
+   "note": "the test-set scores the paper prints for the seed and the selected winner: a fresh-task comparison, which is not the estimand (a rerun on the same validation items)"
+  },
+  "note": "node ids as printed in the tree; the winner is the tree's top validation score, which matches Fig. 16's test minus generalization gap for this run; the seed's validation score differs across the four runs of this figure (80.15, 80.3, 79.21, 80.75: SD about 0.66 points), an incidental rerun yardstick"
+ }
+}

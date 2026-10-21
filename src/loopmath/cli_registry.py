@@ -58,9 +58,12 @@ def _task_args(p: argparse.ArgumentParser) -> None:
 def _check_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--check", default=None, metavar="CHK", help="record into this check-change check: the run gets "
                    "its pair's task and slate (with --arm)")
-    p.add_argument("--arm", default=None, choices=["base", "cand"], help="the check arm the run is (with --check)")
-    p.add_argument("--pair", default=None, metavar="PNN", help="the check's pair (default: the earliest one missing "
-                   "this arm)")
+    p.add_argument("--screen", default=None, metavar="SCR", help="experimental: record into this screen: the run "
+                   "gets its pair's task and slate (with --arm A or B)")
+    p.add_argument("--arm", default=None, choices=["base", "cand", "A", "B"], help="the check arm the run is (base "
+                   "or cand, with --check), or the screen arm (A or B, with --screen)")
+    p.add_argument("--pair", default=None, metavar="PNN", help="the check's or screen's pair (default: the earliest "
+                   "one missing this arm)")
     p.add_argument("--label", action="append", default=[], metavar="KEY=VALUE", help="a run label (repeatable), "
                    "e.g. config=new; check-change from-runs picks runs by label")
 
@@ -88,14 +91,30 @@ def _add_compare(sub) -> None:
         q.add_argument("--value-usd", type=float, default=None, metavar="USD", help="dollars per point of gain "
                        "(default: the base's cost per accepted result)")
         q.add_argument("--value-stop", action="store_true", default=None, help="stop the check, keeping the base, "
-                       "when the next pair is worth less than its price (by default the value and the price are "
-                       "shown at each look and the check goes on to a decision, its cap or its budget)")
+                       "only when the next pairs are certified not worth their price: every plan's net value below "
+                       "0 by more than two standard errors, or no look left can change the action; an unresolved "
+                       "value never stops. At price 0 it fires only when going on is certified to lose, or when no "
+                       "look left can change the action; a sample with no adoption never fires. By default the "
+                       "value and the price are shown at each look and the check goes on to a decision, its cap or "
+                       "its budget. Use it when a pair is dear against what an adoption is worth over "
+                       "--horizon-runs: in simulated checks (cap 24, an acceptance rule), at the default 50 future "
+                       "runs it saved 6 to 16 pairs ($2.90 to $10.33) a check but dropped 26 to 40 percent of the "
+                       "adoptions of real cuts; at 500 runs it saved 10 to 14 pairs ($6.22 to $9.02) a check and "
+                       "dropped none")
         q.add_argument("--min-pairs", type=int, default=None, metavar="K", help="with --value-stop, the scored "
                        "pairs before the value may stop the check (default 4; 1 stops from the first pair)")
+        q.add_argument("--pair-price", type=float, default=None, metavar="USD", help="the price of one pair that "
+                       "the next pairs' value is compared with (default: its expected cost); 0 for runs on a "
+                       "subscription, with no marginal dollars: the budget still counts the runs' recorded dollars")
 
     q = cs.add_parser("start", help="start a check: its pairs, each pair's arm order, and the next pair to run")
     q.add_argument("--base", required=True, metavar="LABEL|PATH", help="the base arm: a label, or its harness tree")
     q.add_argument("--cand", required=True, metavar="LABEL|PATH", help="the candidate arm: a label, or its harness tree")
+    q.add_argument("--base-set", action="append", default=None, metavar="PIECE=HARNESS:MODEL:EFFORT",
+                   help="the base arm's setting for a piece, as run record --set takes it (repeatable); its runs "
+                   "take it, a run with another is refused, and status names any run whose log ran another")
+    q.add_argument("--cand-set", action="append", default=None, metavar="PIECE=HARNESS:MODEL:EFFORT",
+                   help="the candidate arm's setting, as --base-set: a model switch is two arms by --set")
     tasks = q.add_mutually_exclusive_group(required=True)
     tasks.add_argument("--tasks", default=None, metavar="FILE.jsonl", help="one task per line; one pair per task")
     tasks.add_argument("--n", type=int, default=None, metavar="N", help="N pairs, each taking its task from its "
@@ -117,10 +136,98 @@ def _add_compare(sub) -> None:
     q.add_argument("--cand-label", required=True, metavar="SEL", help="the candidate runs, as --base-label")
     decision(q)
     q.add_argument("--max-pairs", type=int, default=None, metavar="N", help="the cap the false adopt bound is "
-                   "stated for (default 24; give the number of pairs for a single look)")
+                   "stated for (default: the smallest calibrated cap above the pairs recorded, 6, 12, 24 or 48; "
+                   "past 48 pairs, no bound is stated and adopting needs the strictest threshold)")
+    q.add_argument("--unit", choices=("case", "run"), default=None, help="what is paired: case, one pair per "
+                   "case (task) with each arm's mean score, or run (default: case under a score rule when a case "
+                   "has more than one run on an arm, since runs of one case are not independent pairs for new "
+                   "cases; else run; acceptance rows are compared run by run)")
     q.add_argument("--seed", type=int, default=0, metavar="S", help="seed of the comparison's draws")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.compare.commands:check_from_runs"))
+
+
+SCREEN_DESCRIPTION = """Experimental: screen up to about 16 atomic harness edits in one design. Each pair
+runs a task with some edits on (arm A) and with the others on (arm B); status
+ranks the edits on success and cost and names the predicted-best subset. Its
+ranges are against the base (every edit off), which no arm runs, so the effect
+of having the edited files at all is not in them."""
+
+SCREEN_FLOW = """the flow:
+  loopmath screen start --base harness --edits edits --tasks tasks.jsonl
+  loopmath screen next
+  loopmath run record --screen SCR --arm A --since START --verified tests=pass
+  loopmath screen status
+  loopmath screen apply --best --out best-harness
+  loopmath check-change start --base harness --cand best-harness --tasks other-tasks.jsonl
+next prints a pair's arms, their trees and the exact lines that record each
+run; run and record both arms, and repeat until every pair is recorded or
+status says stop. Then check the best subset against the base on other tasks:
+the screen's ranges guide the choice, the check decides it."""
+
+
+def _add_screen(sub) -> None:
+    p = sub.add_parser("screen", help="experimental: fold-over screen of harness edits: start, next, status, apply",
+                       description=SCREEN_DESCRIPTION, epilog=SCREEN_FLOW,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    cs = p.add_subparsers(dest="screen_command", required=True, metavar="{start,next,status,apply}")
+
+    q = cs.add_parser("start", help="experimental: start a screen: its pairs, each pair's fold-over row, and the next "
+                      "pair", description="Experimental: start a screen: one pair per task, each pair a fold-over row "
+                      "of edits on and off, and both arms' trees built from the base and the edits.")
+    q.add_argument("--base", required=True, metavar="PATH", help="the base harness tree the edits change")
+    q.add_argument("--edits", required=True, metavar="DIR", help="one subfolder per edit, laid over the base: "
+                   "PATH copies, PATH.append appends, PATH.remove removes lines")
+    tasks = q.add_mutually_exclusive_group(required=True)
+    tasks.add_argument("--tasks", default=None, metavar="FILE.jsonl", help="one task per line; one pair per task")
+    tasks.add_argument("--n", type=int, default=None, metavar="N", help="N pairs, each taking its task from its "
+                       "first run")
+    q.add_argument("--pairs", type=int, default=None, metavar="N", help="use the first N tasks of --tasks")
+    q.add_argument("--rule", default=None, metavar="RULE", help="what counts as accepted, as in check-change "
+                   "(default accept: each run's own rule)")
+    q.add_argument("--objective", default=None, choices=["cpar", "cost", "gain"], help="what the best subset "
+                   "maximises: the cut in cost per accepted result (default for an acceptance rule), in cost per "
+                   "run, or the gain in success (default for a score rule)")
+    q.add_argument("--confidence", type=float, default=0.9, metavar="C", help="an edit is settled at P(helps) of "
+                   "C or 1 - C (default 0.9); the screen stops when every edit is")
+    q.add_argument("--horizon-runs", type=float, default=50, metavar="N", help="future runs the best harness "
+                   "serves, which prices the next pair (default 50)")
+    q.add_argument("--min-pairs", type=int, default=4, metavar="K", help="scored pairs before the next pair's "
+                   "value may stop the screen (default 4)")
+    q.add_argument("--pair-usd", type=float, default=None, metavar="USD", help="the price of one more pair "
+                   "(default: twice the mean run cost; 0 on an allowance, so only the cap or settling stops)")
+    q.add_argument("--seed", type=int, default=0, metavar="S", help="seed of the design, the arm orders and the draws")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.screen.commands:screen_start"))
+
+    q = cs.add_parser("next", help="experimental: the next pair: its task, each arm's edits and built tree, the "
+                      "record lines", description="Experimental: the next pair to run: its task, each arm's edits "
+                      "and built tree, and the lines that record its two runs.")
+    q.add_argument("screen", nargs="?", default=None, metavar="SCR", help="the screen (default: the newest)")
+    q.add_argument("--pair", default=None, metavar="PNN", help="this pair instead, for a driver with several pairs "
+                   "in flight")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.screen.commands:screen_next"))
+
+    q = cs.add_parser("status", help="experimental: the edits ranked with ranges, the predicted-best subset and the "
+                      "next pair's worth", description="Experimental: the edits ranked on success and cost with 80% "
+                      "ranges, the predicted-best subset against the base, and the next pair's worth. The ranges "
+                      "assume the edits add up from the base, which no arm runs.")
+    q.add_argument("screen", nargs="?", default=None, metavar="SCR", help="the screen (default: the newest)")
+    q.add_argument("--on", default=None, metavar="EDIT,EDIT", help="also predict this subset of edits against the "
+                   "base, run or not")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.screen.commands:screen_status"))
+
+    q = cs.add_parser("apply", help="experimental: write the base with the best (or the given) edits to a new folder",
+                      description="Experimental: write the base with the predicted-best (or the given) edits to a new "
+                      "folder, ready for a check against the base.")
+    q.add_argument("screen", nargs="?", default=None, metavar="SCR", help="the screen (default: the newest)")
+    q.add_argument("--best", action="store_true", help="the predicted-best subset, as status names it")
+    q.add_argument("--on", default=None, metavar="EDIT,EDIT", help="these edits instead")
+    q.add_argument("--out", required=True, metavar="DIR", help="a new folder")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.screen.commands:screen_apply"))
 
 
 def task_types_verb(args: argparse.Namespace) -> int:
@@ -197,6 +304,12 @@ def _add_planning(sub) -> None:
                    "(default 5), for the default pick and the goal, against the bare harness label on the same draws")
     p.add_argument("--harness", default=None, metavar="PATH|auto", help="experimental: also price this harness tree "
                    "as the first variant (auto: the git working tree of this folder), even when no run recorded it")
+    p.add_argument("--role", default=None, metavar="ROLE", help="experimental: which model to give one role, such "
+                   "as the mutator of an evolution loop: each model's chance that one step of that role improves, "
+                   "its dollars per step and per improvement, on the runs recorded for that role (--models: these "
+                   "models only, recorded or not)")
+    p.add_argument("--unit", default=None, metavar="UNIT", help="with --role, when its runs come in more than one "
+                   "unit: query, evaluated child or stored child")
     _common(p, html=True)
     p.set_defaults(func=_lazy("loopmath.recommend.commands:recommend"))
 
@@ -567,10 +680,11 @@ def _add_gate(sub) -> None:
     p = sub.add_parser("gate", help="experimental: adopt or reject a harness change: compare base and candidate runs",
                        description="Experimental: adopt or reject a harness change, comparing base and candidate "
                                    "runs, for a loop that adopts changes on its own.")
-    p.add_argument("--base", required=True, metavar="SEL",
-                   help="the base arm: digest:sha256:<hex> or sha256:<hex> (the harness record's digest; a prefix of "
+    p.add_argument("--base", default=None, metavar="SEL",
+                   help="the base arm, required (as --cand is) unless a subcommand runs: digest:sha256:<hex> or "
+                        "sha256:<hex> (the harness record's digest; a prefix of "
                         "one digest will do), a cfg_ configuration id, or arm:<name> or arm=<name>")
-    p.add_argument("--cand", required=True, metavar="SEL", help="the candidate arm, in the same forms as --base")
+    p.add_argument("--cand", default=None, metavar="SEL", help="the candidate arm, in the same forms as --base")
     p.add_argument("--runs", default=None, metavar="FILE",
                    help="read loopmath.harness-runs/0.1 rows from FILE instead of the store's runs; the store's "
                         "config is still read for its rules")
@@ -589,8 +703,134 @@ def _add_gate(sub) -> None:
                         "run's cost")
     p.add_argument("--max-cost-ratio", type=float, default=None, metavar="R",
                    help="reject when the candidate costs more than R times the base per run; needs every run's cost")
+    p.add_argument("--value-stop", action=argparse.BooleanOptionalAction, default=True,
+                   help="the value stop, on by default: reject, keeping the base, from --min-pairs scored pairs on, "
+                        "only when the next pairs are certified not worth their price: every plan's net value below "
+                        "0 by more than two standard errors, or no look left can change the action; an unresolved "
+                        "value never stops, nor does a cost that is not finite. At price 0 it fires only when going "
+                        "on is certified to lose, or when no look left can change the action; a sample with no "
+                        "adoption never fires. --no-value-stop turns it off: the next pairs' value and price are "
+                        "then shown and stop nothing, as in check-change without --value-stop")
+    p.add_argument("--min-pairs", type=int, default=None, metavar="K",
+                   help="the scored pairs before the value may stop the gate (default 4; 1 stops from the first "
+                        "pair); refused with --no-value-stop")
+    p.add_argument("--pair-price", type=float, default=None, metavar="USD",
+                   help="the price of one pair that the next pairs' value is compared with (default: its expected "
+                        "cost); 0 for runs on a subscription: the budget still counts the runs' recorded dollars")
+    p.add_argument("--horizon-runs", type=float, default=None, metavar="N",
+                   help="the number of future runs the change will serve, which prices the next pairs (default 50)")
+    p.add_argument("--value-usd", type=float, default=None, metavar="USD", help="dollars per point of gain "
+                   "(default: the base's cost per accepted result)")
     _common(p, home_help=HOME_HELP + "; the store's config.toml is read for the rules it defines, also with --runs")
-    p.set_defaults(func=_lazy("loopmath.gate.commands:gate"))
+    # --base and --cand are required unless a subcommand runs; the handler says so as argparse would
+    p.set_defaults(func=_lazy("loopmath.gate.commands:gate"), usage_error=p.error)
+    _add_gate_winner(p)
+
+
+def _add_gate_winner(gate: argparse.ArgumentParser) -> None:
+    sub = gate.add_subparsers(dest="gate_command", metavar="winner", title="the search's winner",
+                              description="`gate winner` asks how much of a search loop's best score is real: run "
+                                          "`loopmath gate winner --help`.")
+    p = sub.add_parser("winner", help="experimental: how much of a search loop's winning lead is real, and what to "
+                                      "run before adopting it",
+                       description="A loop that scores many candidates and keeps the best overstates the best "
+                                   "one's gain: its noise was lucky. gate winner shrinks the winner's lead with a "
+                                   "prior learnt from all the candidates' scores, reports the gain with its 80% and "
+                                   "95% ranges and P(beats parent), and runs the gate on the confirmatory runs "
+                                   "(--confirm) to say what to run next. It reads no store.")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--scores", default=None, metavar="FILE",
+                     help="the search's scores: a CSV with a header (id, score; optional se, reps, order, role "
+                          "parent|candidate, at_most, at_least, count for unscored candidates) or a "
+                          "loopmath.gate-winner-scores/0.1 JSON file")
+    src.add_argument("--runs", default=None, metavar="FILE",
+                     help="the search's runs as loopmath.harness-runs/0.1 rows: each arm (harness digest, else arm, "
+                          "else configuration) is a candidate, scored by its mean over the tasks every arm ran")
+    p.add_argument("--parent", default="arm:base", metavar="SEL",
+                   help="with --runs, the arm the loop started from, in gate's selector forms (default arm:base)")
+    p.add_argument("--winner", default=None, metavar="ID",
+                   help="the candidate the loop picked, when it is not the best scored one")
+    p.add_argument("--rule", default="score:judge", metavar="R",
+                   help="the score: score:NAME (higher is better) or score:NAME:lower (default score:judge)")
+    p.add_argument("--spread", default=None, metavar="X|LO:HI",
+                   help="one evaluation's SD across reruns on the same tasks, in the score's units, or a range "
+                        "LO:HI to integrate over when it is not measured; with --runs, one run's SD on one task. "
+                        "Needed when the scores have no se and the runs no replicate")
+    p.add_argument("--confirm", default=None, metavar="FILE",
+                   help="confirmatory runs of the parent and the winner, as loopmath.harness-runs/0.1 rows, for "
+                        "the gate; with --scores each row is one complete evaluation")
+    p.add_argument("--confirm-base", default="arm:base", metavar="SEL",
+                   help="the parent's confirmatory runs in --confirm (default arm:base)")
+    p.add_argument("--confirm-cand", default="arm:candidate", metavar="SEL",
+                   help="the winner's confirmatory runs in --confirm (default arm:candidate)")
+    p.add_argument("--floor", type=float, default=None, metavar="X",
+                   help="the smallest gain worth adopting, in the score's units (default 0)")
+    p.add_argument("--r-min", type=int, default=2, metavar="N", help="pairs before any adoption (default 2)")
+    p.add_argument("--r-max", type=int, default=8, metavar="N", help="most confirmatory runs per arm (default 8)")
+    p.add_argument("--budget-usd", type=float, default=None, metavar="X",
+                   help="cap on the dollars of both arms' confirmatory runs; needs every run's cost")
+    p.add_argument("--prior", default="sparse", choices=("sparse", "ridge", "auto"),
+                   help="the candidates' spread around the parent: most near zero and a share spread out (sparse, "
+                        "the default), normal (ridge), or both weighed by the scores (auto)")
+    p.add_argument("--draws", type=int, default=200, metavar="N",
+                   help="draws for the projection of what the gate will do (default 200; 0: none)")
+    p.add_argument("--seed", type=int, default=0, metavar="N", help="the projection's seed (default 0)")
+    _common(p, home_help="accepted for the common form; gate winner reads no store")
+    p.set_defaults(func=_lazy("loopmath.gate.winner_cli:gate_winner"))
+
+
+def _add_tasks(sub) -> None:
+    p = sub.add_parser("tasks", help="experimental: score a candidate on fewer tasks: the next task, an estimate, "
+                                     "stop or continue",
+                       description="Experimental: score a candidate harness on a subset of a task suite, learning "
+                                   "each task from other arms' runs.")
+    ts = p.add_subparsers(dest="tasks_command", required=True, metavar="{pick}")
+    q = ts.add_parser("pick", help="the next tasks for a candidate, its suite score so far, and stop or continue",
+                      description="Experimental: from the history (other arms' runs on the suite's tasks) and the "
+                                  "candidate's runs so far, the next tasks to run, the candidate's suite score with "
+                                  "its 80% and 95% ranges, and stop or continue. Each call refits; from a store it "
+                                  "writes each next task's file under <home>/tasks-pick/ and prints the run record "
+                                  "line that records the run on it, in the same store. The ranges assume the "
+                                  "candidate behaves like the history's arms: for one unlike all of them (a new "
+                                  "model rather than a harness change on a known one) they can be much too narrow "
+                                  "under loss, info or fixed, and --method random or stratified keeps them closer "
+                                  "to honest; a candidate scoring below every history arm is estimated too high by "
+                                  "every method.")
+    q.add_argument("--candidate", required=True, metavar="SEL",
+                   help="the candidate's runs: KEY=VALUE for a run label (the --label of run record), arm=<name>, "
+                        "a cfg_ configuration id, or digest:sha256:<hex>")
+    q.add_argument("--runs", action="append", default=None, metavar="FILE",
+                   help="read loopmath.harness-runs/0.1 rows from FILE (repeatable) instead of the store's runs; "
+                        "no task file is written")
+    q.add_argument("--history", action="append", default=None, metavar="SEL",
+                   help="only these arms' runs as the history (repeatable; default every run not the candidate's)")
+    q.add_argument("--suite", default=None, metavar="FILE",
+                   help="the suite's task ids, one per line (a task JSON object, or the id); default every task "
+                        "the history or the candidate has run")
+    q.add_argument("--rule", default=None, metavar="R",
+                   help="what counts as a pass: accept (each run's own rule, the default), a rule name or short "
+                        "form, or score:NAME for a score from 0 to 1")
+    q.add_argument("--n", type=int, default=1, metavar="N", help="how many next tasks (default 1)")
+    q.add_argument("--method", default="loss", choices=("loss", "info", "fixed", "random", "stratified"),
+                   help="how the next task is chosen: loss (the largest expected cut in the score's variance, the "
+                        "default), info (Fisher information at the current ability), fixed (one order for every "
+                        "candidate), random, stratified; random or stratified for a candidate unlike the "
+                        "history's arms")
+    q.add_argument("--model", default="auto", choices=("auto", "rasch", "2pl"),
+                   help="the task model: rasch, 2pl (a slope per task) or auto (2pl from 8 history arms on)")
+    stop = q.add_mutually_exclusive_group()
+    stop.add_argument("--halfwidth", type=float, default=None, metavar="H",
+                      help="stop once the 80%% range is within +-H (default: what a full run of the suite gives)")
+    stop.add_argument("--versus", type=float, default=None, metavar="X",
+                      help="stop once the score is above or below X at --level")
+    stop.add_argument("--versus-arm", default=None, metavar="SEL",
+                      help="stop once the score is above or below this arm's, at --level")
+    q.add_argument("--level", type=float, default=0.9, metavar="P", help="the versus stop's level (default 0.9)")
+    q.add_argument("--min-sessions", type=int, default=5, metavar="K", help="no stop before K sessions (default 5)")
+    q.add_argument("--max-sessions", type=int, default=None, metavar="M", help="stop at M sessions")
+    q.add_argument("--seed", type=int, default=0, metavar="S", help="the random and stratified orders' seed")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.tasks.commands:tasks_pick"))
 
 
 def register(sub) -> None:
@@ -600,8 +840,10 @@ def register(sub) -> None:
     _add_learning(sub)
     _add_viewing(sub)
     _add_compare(sub)
+    _add_screen(sub)
     importlib.import_module("loopmath.builder.cli").add(sub)  # `builder` (0.2.1)
     _add_gate(sub)
+    _add_tasks(sub)
 
 
 # Handler targets, for the registry test: every one must import and be callable.

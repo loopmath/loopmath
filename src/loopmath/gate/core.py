@@ -27,6 +27,7 @@ SCHEMA = "loopmath.gate/1"
 ALPHA = 0.05  # two-sided; the gate spends half of it, one-sided
 CONFIDENCE = 1.0 - ALPHA / 2  # what the gate asks compare for: alpha 0.025 over all its looks
 LOOKS = ("double",)
+VALUE_STOP = True  # the next pairs' value stops the gate by default; check-change's value stop is opt-in
 UNRESOLVED = ("reject", "adopt")
 
 
@@ -40,6 +41,17 @@ class GatePolicy:
     looks: str = "double"
     on_unresolved: str = "reject"
     max_cost_ratio: float | None = None
+    # The next pairs' value (`loopmath.compare.value`), read from compare like every other setting: with
+    # value_stop (the default) it stops the gate (reject, keeping the base) from min_pairs scored pairs (compare's
+    # default 4); with value_stop False the value and its price are shown and stop nothing. pair_price is the
+    # price of a pair it is compared with (0 for runs on a subscription); horizon_runs the future runs it is
+    # valued over; value_usd the dollars per point of gain, as check-change's --value-usd (a score rule has a
+    # value only with it).
+    value_stop: bool = VALUE_STOP
+    min_pairs: int | None = None
+    pair_price: float | None = None
+    horizon_runs: float | None = None
+    value_usd: float | None = None
 
     def __post_init__(self) -> None:
         f = self.floor  # compare's own floor rule, here so that a bad floor is refused before any run is bought
@@ -58,6 +70,22 @@ class GatePolicy:
             raise ValueError(f"budget_usd must be a number, 0 or more (got {b!r})")
         if self.max_cost_ratio is not None and not self.max_cost_ratio > 0:
             raise ValueError(f"max_cost_ratio must be above 0 (got {self.max_cost_ratio!r})")
+        if not isinstance(self.value_stop, bool):
+            raise ValueError(f"value_stop must be true or false (got {self.value_stop!r})")
+        if self.min_pairs is not None and (isinstance(self.min_pairs, bool) or not isinstance(self.min_pairs, int)
+                                           or self.min_pairs < 1):
+            raise ValueError(f"min_pairs must be a whole number of scored pairs, at least 1 (got {self.min_pairs!r})")
+        if self.min_pairs is not None and not self.value_stop:
+            raise ValueError("min_pairs goes with value_stop: without it the next pair's value stops nothing")
+        p = self.pair_price
+        if p is not None and (isinstance(p, bool) or not isinstance(p, (int, float)) or not math.isfinite(p) or p < 0):
+            raise ValueError(f"pair_price must be a number, 0 or more (got {p!r}); 0 for runs on a subscription")
+        h = self.horizon_runs
+        if h is not None and (isinstance(h, bool) or not isinstance(h, (int, float)) or not math.isfinite(h) or h <= 0):
+            raise ValueError(f"horizon_runs must be a number above 0: the future runs the change will serve (got {h!r})")
+        v = self.value_usd
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0):
+            raise ValueError(f"value_usd must be a number, 0 or more: dollars per point of gain (got {v!r})")
 
     def look_points(self) -> list[int]:
         """The pair counts at which the gate asks: 1, 2, 4, ... and r_max."""
@@ -87,6 +115,16 @@ class GatePolicy:
 
     def next_look(self, n_pairs: int) -> int | None:
         return next((p for p in self.look_points() if p > n_pairs), None)
+
+    def continuation(self) -> Any:
+        """How the gate goes on, for the next pairs' value (`loopmath.compare.value.Continuation`): its planned
+        looks, adoption from r_min pairs with the 95% band above the floor, the futility and cost stops, the
+        P(better) it asks where compare states no bound, and on_unresolved at the cap or the budget."""
+        from ..compare import value as V
+
+        return V.Continuation(name="gate", looks=tuple(self.look_points()), adopt_from=self.r_min, band=True,
+                              futility=True, max_cost_ratio=self.max_cost_ratio, fallback=p_adopt(self),
+                              at_end=self.on_unresolved)
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -295,15 +333,17 @@ def decide(
     tail: list[str] = []  # after the decisive reason: the look, the cost and which threshold applied
 
     def ask() -> Any:
-        kw: dict[str, Any] = {"rule": policy.rule, "confidence": conf, "max_pairs": policy.r_max}
-        if policy.floor is not None:
-            kw["floor"] = policy.floor
+        kw: dict[str, Any] = {"rule": policy.rule, "confidence": conf, "max_pairs": policy.r_max,
+                              "value_stop": policy.value_stop, "continuation": policy.continuation()}
+        for name in ("floor", "min_pairs", "pair_price", "horizon_runs", "value_usd"):
+            if getattr(policy, name) is not None:
+                kw[name] = getattr(policy, name)
         if policy.budget_usd is not None:
             kw["budget_usd"] = policy.budget_usd
             kw["spent_usd"] = spent
         # Every run as given, scored or not: compare pairs first and leaves out the unscored after,
-        # so a run nobody scored never shifts which runs pair (D4 review round 2). A cost unknown is
-        # compare's to handle: it decides on the outcomes alone (CLI r3 R3-B1, one path with check-change).
+        # so a run nobody scored never shifts which runs pair. A cost unknown is compare's to handle: it
+        # decides on the outcomes alone, on one path with check-change.
         return compare(base_runs, cand_runs, **kw)
 
     c = None
@@ -330,7 +370,7 @@ def decide(
         pair_usd = _get(c, "pair_price_usd") if c is not None else None
         if not isinstance(pair_usd, (int, float)):
             pair_usd = base_usd + cand_usd if base_usd is not None and cand_usd is not None else None
-        # Compare states no cost range for an arm (no dollar cost, or costs outside its cost model, D2 R2-B5):
+        # Compare states no cost range for an arm (no dollar cost, or costs outside its cost model):
         # the cost per run is unknown, said with compare's own reason, and no figure stands in for it.
         unknown = None
         if c is not None and (base_usd is None or cand_usd is None):
@@ -349,9 +389,9 @@ def decide(
     objective = _get(c, "objective") if c is not None else (None if score or outcomes_only else "cpar")
     measure = _measure(policy.rule, objective)
     left = None if policy.budget_usd is None else round(policy.budget_usd - spent, 6)
-    # compare's budget stop (D2 R3-B1, in `loopmath.compare.paired`) on the inputs the gate passes it:
-    # no new run once the budget left is zero or less, priced or not. The gate keeps it where compare is not
-    # asked, before the first confirmation with the search cost sunk (D4 review round 4, R4-B2).
+    # compare's budget stop (in `loopmath.compare.paired`) on the inputs the gate passes it: no new run once
+    # the budget left is zero or less, priced or not. The gate keeps it where compare is not asked, before the
+    # first confirmation with the search cost sunk.
     spent_out = policy.budget_usd is not None and policy.budget_usd - spent <= 0
     cost = {
         "base_usd_per_run": base_usd,
@@ -487,7 +527,7 @@ def decide(
             )
             return done("adopt")
         reasons.extend(missing)
-        looked = _get(_get(c, "counts"), "pairs")  # compare's cap counts every pair, scored or not (D2 R2-B4)
+        looked = _get(_get(c, "counts"), "pairs")  # compare's cap counts every pair, scored or not
         looked = looked if isinstance(looked, int) else n_pairs
         said = _get(c, "stop")  # compare's why: decided, cap, budget or value (absent from older comparisons)
         if verdict == "reject" and (said == "cap" or max(looked, n_pairs) >= policy.r_max):
@@ -499,13 +539,16 @@ def decide(
                      else "the budget left is under one pair's price")
             return unresolved(f"budget: compare stopped buying pairs at P(better) {p_txt}, as {spend}", "budget")
         if verdict == "reject":
+            pv = _get(c, "value")
+            if said == "value" and isinstance(pv, dict) and pv.get("per_pair") is not None:
+                from ..compare import value as V
+
+                return unresolved(
+                    f"the next pair is not worth buying: worth {fmt_usd(pv['per_pair'])} a pair{V.plan_text(pv)}, "
+                    f"price {V.price_text(pv, pair_usd, money=True)}, at P(better) {p_txt} (--value-stop)", "value"
+                )
             why = "the next pair's value is under its price" if said == "value" else "budget or the next pair's value"
             return unresolved(f"compare stopped buying pairs ({why}) at P(better) {p_txt}", "value")
-        value = _get(c, "next_pair_value_usd")
-        if isinstance(value, (int, float)) and pair_usd is not None and value < pair_usd:
-            return unresolved(
-                f"the next pair is not worth buying: worth {fmt_usd(value)}, costs {fmt_usd(pair_usd)}", "value"
-            )
 
     if n_more <= 0:
         if by_budget:

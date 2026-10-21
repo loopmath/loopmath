@@ -22,7 +22,19 @@ priors:
   known is sampled exactly (Bartlett), truncated to arm sds within `SIGMA_RANGE` by rejection, which keeps
   every mean cost exp(mu + sigma^2 / 2) finite. A costed run without a costed partner reweights the draws by
   its normal likelihood. With no costed pair yet, each arm is sampled on its own from the matching marginal
-  (inverse gamma for sigma^2), with the correlation drawn from its prior.
+  (inverse gamma for sigma^2), with the correlation drawn from its prior. When an arm's costed runs mix runs
+  recorded at $0 (a tiny positive amount in log dollars) with priced runs, no cost range is stated
+  (`zero_beside_priced`): that one log far below the others spreads the arm's costs, and its mean cost then
+  grows with the pairs.
+- **A switched cost model: an experimental setting, not the default.** `COST_MODEL = "sw"` keeps the
+  lognormal above unless the pairs' mean log costs favour two normals over one (a BIC margin over `MIX_TAU`),
+  every pair orders the arms one way and the lognormal's means the other way, or the lognormal states no
+  range. Then each arm's mean cost comes from a Dirichlet process over the observed runs (`COST_PART`: its
+  base measure, alpha and tau), whose draws keep every pair's order. That suits arms that mix cheap and dear
+  models. Its ranges cover a true cost ratio of 1 poorly where it answers at few pairs: when every pair
+  orders the arms one way and there are no other runs, a range that keeps that order cannot hold a ratio
+  of 1. The default stays the lognormal above (`COST_MODEL = "ln"`); "avg", averaging the two, is kept for
+  comparison only.
 - **Cost per accepted result** (cpar), loopmath's default goal: the dollars to an accepted result when a run
   that is not accepted is run again with the same arm, mean cost over chance (Wald's identity). Its
   posterior mean exists only when the arm has at least one accepted run: with none, E[1/p] diverges, so the
@@ -35,17 +47,12 @@ the look schedule and the cap (`calibration.py`). Reject at `p_better <= 1 - con
 pairs while the next pair is worth its price and the budget allows; when it is not, keep the base (reject).
 Every stop other than adopt keeps the base, so it can only lower the false adopt rate.
 
-**The value of the next pair**, in dollars over `horizon_runs` future runs, is the knowledge gradient of
-`belief/lookahead.py` (spec 04 section 6) on this posterior: each simulated future takes one joint draw of
-the parameters from the same posterior that gave the decision (including the reweighting by lone runs), then
-draws its m pairs from that draw. The value is the mean over futures of the plug-in saving of the decision
-after them; the decision now is undecided, so it is worth 0. One pair rarely moves a leaning decision, so the
-value is the best per-pair value over 1, 2, 4, 8 and 16 more pairs (KG(*), Frazier and Powell 2010,
-"Paradoxes in learning and the marginal value of information", Decision Analysis 7(4)), never past the cap.
-Each of the `LOOK_SIMS` futures is drawn once for the largest step count and read at every step count, so the
-step counts are compared on the same futures. A mean cost exp(mu + sigma^2 / 2) is heavy-tailed in sigma, so
-a few futures carry much of the value: at 96 futures one tail draw could flip the stop, which 256 nested
-futures do not (`tests/compare/test_compare_model.py`).
+**The value of the next pairs** is `compare/value.py`'s (`pairs_value`): the expected dollars over
+`horizon_runs` future runs of going on as the procedure does (check-change's look after every pair, or the
+gate's looks and guards) against stopping now, on futures drawn from the same posterior that gave the decision
+(including the reweighting by lone runs), each action scored against the world its future was drawn from.
+`draw_future` and `extend` below are its parts. A mean cost exp(mu + sigma^2 / 2) is heavy-tailed in sigma, so
+a few futures carry much of the value; its Monte Carlo error is reported, and a stop needs it.
 """
 
 from __future__ import annotations
@@ -55,7 +62,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from scipy.special import stdtr
+from scipy.special import expit, stdtr
 
 DRAWS = 4000
 CONFIDENCE = 0.95
@@ -68,6 +75,16 @@ MIN_PAIRS_VALUE = 4  # with the value stop on, scored pairs before the next pair
 SIGMA_RANGE = (0.05, 3.0)  # the log-cost sds' prior support
 COST_NU = 3.0  # inverse Wishart degrees of freedom: the weakest proper prior in two dimensions
 COST_SD = 0.5  # its scale: a log-cost sd of 0.5 (dollars within a factor of 1.6)
+COST_MODEL = "ln"  # the default, the lognormal alone; "sw", switched to the DP part, and "avg", averaged with
+#                    it, are experimental settings, not the default
+COST_PART = ("extra", 2.0, 1.0)  # "sw" and "avg" only: the DP part's base measure ("level", "paired" or
+#                                  "extra"), alpha and tau
+MIX_TAU = 6.0  # sw: the BIC margin for two normals over one on the pairs' mean log costs
+MIX_ITERS = 60  # EM steps from each start of the mixture test
+MIX_MIN = 6  # pairs before the mixture test is made
+DP_MIN_WEIGHT = 1e-3  # avg: below this weight the DP part is not drawn
+DP_ATOMS = 24  # the fewest sticks of a DP draw
+DOM_MIN_PAIRS = 1  # pairs from which unanimous pairs overrule a contradicting mean
 SCORE_NU = 1.0  # the score differences' variance prior is worth one pair
 OVERSAMPLE = 8  # draws per kept draw when lone runs reweight them
 LOOK_STEPS = (1, 2, 4, 8, 16)
@@ -127,10 +144,12 @@ class Data:
     scale: float = 1.0  # score_scale of the scored pairs' scores
     cost_pairs: list[tuple[float, float]] = field(default_factory=list)  # (log base, log cand)
     cost_lone: dict[str, list[float]] = field(default_factory=lambda: {"base": [], "cand": []})
+    # (runs recorded at $0, runs with a cost) per arm, as compare counted them; a drawn future keeps these
+    cost_zero: dict[str, tuple[int, int]] = field(default_factory=lambda: {"base": (0, 0), "cand": (0, 0)})
 
     def copy(self) -> "Data":
         return Data(self.kind, self.cells.copy(), dict(self.lone), list(self.diffs), self.scale,
-                    list(self.cost_pairs), {k: list(v) for k, v in self.cost_lone.items()})
+                    list(self.cost_pairs), {k: list(v) for k, v in self.cost_lone.items()}, dict(self.cost_zero))
 
     def successes(self, arm: str) -> int:
         """Accepted runs of the arm, paired and lone: the cpar mean exists only from one."""
@@ -154,6 +173,7 @@ class Posterior:
     t: tuple[float, float, float] | None = None  # score: mu's t marginal (df, location, scale)
     cmu: np.ndarray | None = None  # (n, 2) log-cost means (base, cand); NaN for an arm without costs
     ccov: np.ndarray | None = None  # (n, 2, 2)
+    cost: "CostDraws | None" = None  # COST_MODEL "sw" or "avg": the mean costs, and how each draw's runs are drawn
     ess: dict[str, float] = field(default_factory=dict)  # effective sample sizes of reweighted draws
     cost_refused: str | None = None  # why there are no cost draws although there are costs
 
@@ -163,9 +183,12 @@ class Posterior:
         return self.theta[:, 0] + self.theta[:, 2 if arm == "base" else 1]
 
     def mean_cost(self, arm: str) -> np.ndarray | None:
+        a = ARMS.index(arm)
+        if self.cost is not None:
+            m = self.cost.mean[:, a]
+            return m if np.isfinite(m[0]) else None
         if self.cmu is None:
             return None
-        a = ARMS.index(arm)
         if not np.isfinite(self.cmu[0, a]):
             return None
         return np.exp(self.cmu[:, a] + self.ccov[:, a, a] / 2)
@@ -236,6 +259,20 @@ class CostRange(ValueError):
 
 COST_RANGE_WHY = (f"the log costs spread far outside the cost model's range (a log-cost sd of {SIGMA_RANGE[0]:g} "
                   f"to {SIGMA_RANGE[1]:g}), so no cost range is stated")
+
+
+def zero_beside_priced(data: Data) -> str | None:
+    """Why the lognormal states no cost range when an arm's costs mix runs recorded at $0 with priced runs, or
+    None. A $0 run enters the log costs at a tiny positive amount, far below a priced run's log, and the spread it
+    makes grows the arm's mean cost with the pairs."""
+    mixed = [(word, z, n) for arm, word in (("base", "base"), ("cand", "candidate"))
+             for z, n in [data.cost_zero.get(arm, (0, 0))] if 0 < z < n]
+    if not mixed:
+        return None
+    who = " and ".join(f"the {word}'s" for word, _, _ in mixed)
+    at = " and ".join(f"{z} of {n}" for _, z, n in mixed)
+    return (f"{who} recorded costs mix $0 and priced runs ({at} at $0); a $0 run among priced ones spreads the "
+            f"log costs far outside what the cost model reads, so no cost range is stated")
 
 
 def _in_range(cov: np.ndarray) -> np.ndarray:
@@ -320,6 +357,200 @@ def cost_posterior(data: Data, rng: np.random.Generator, n: int) -> tuple[np.nda
     return mu[idx], cov[idx], ess
 
 
+@dataclass
+class CostDraws:
+    """Draws of each arm's mean dollars per run (NaN for an arm without costs), and what `draw_future` needs
+    to draw future runs from each draw: a lognormal draw's parameters, or a DP draw's random measure."""
+
+    mean: np.ndarray  # (n, 2)
+    dp: np.ndarray  # (n,) bool: the draw is the DP part's
+    row: np.ndarray  # (n,) the draw's row in its part's arrays
+    mu: np.ndarray | None = None  # the lognormal's draws: (n0, 2) log-cost means
+    cov: np.ndarray | None = None  # (n0, 2, 2)
+    v: np.ndarray | None = None  # the DP part's draws: (n1,) the mass on new runs
+    w0: np.ndarray | None = None  # (n1, A) the new runs' weights
+    atoms: np.ndarray | None = None  # (2, n1, A) the new runs' dollars by arm
+    bw: np.ndarray | None = None  # (n1, U) the observed units' weights
+    units: np.ndarray | None = None  # (U, 2) the observed log costs: the pairs, the lone base runs, the lone
+    #                                   candidate runs, NaN for a missing cost
+    weight: float = 0.0  # the DP part's weight: 0 or 1 for "sw"
+    ess: float | None = None  # the lognormal's, when lone runs reweight its draws
+
+
+def _mix_bic(y: np.ndarray) -> float:
+    """BIC(one normal) - BIC(two normals with one shared variance) on y, by MIX_ITERS EM steps from splits at
+    its quartiles (the larger likelihood of the starts); -inf under MIX_MIN values or with no spread. Each EM
+    step reads the data through its weighted sums of 1, y and y^2, so the starts' parameters are scalars."""
+    n = y.size
+    if n < MIX_MIN or y.std() == 0:
+        return -math.inf
+    ll1 = n * (-0.5 * math.log(2 * math.pi * y.var()) - 0.5)
+    cuts = np.percentile(y, [25, 50, 75])
+    r = (y[None, :] > cuts[:, None]).astype(float)
+    k = r.sum(axis=1)
+    r = r[(k >= 1) & (k <= n - 1)]
+    if r.shape[0] == 0:
+        return -math.inf
+    yc = y - y.mean()
+    Y = np.stack([np.ones(n), yc, yc * yc], axis=1)
+    t0, t1, t2 = (float(x) for x in Y.sum(axis=0))
+    X = Y[:, :2].T
+    ab = np.empty((r.shape[0], 2))
+
+    def m_step(s0: float, s1: float, s2: float) -> tuple[float, float, float, float]:
+        u0, u1, u2 = t0 - s0, t1 - s1, t2 - s2
+        m1, m2 = u1 / u0, s1 / s0
+        return min(max(s0 / n, 1e-3), 1 - 1e-3), m1, m2, max((u2 - u1 * m1 + s2 - s1 * m2) / n, 1e-4)
+
+    for _ in range(MIX_ITERS):
+        s = (r @ Y).tolist()
+        for j, sj in enumerate(s):
+            w, m1, m2, v = m_step(*sj)
+            b = (m2 - m1) / v
+            ab[j] = math.log(w / (1 - w)) - b * (m1 + m2) / 2, b
+        r = expit(ab @ X)  # the second component's responsibilities
+    best = -math.inf
+    for sj in s:  # the likelihood at the last step's parameters
+        w, m1, m2, v = m_step(*sj)
+        lp = np.logaddexp(math.log(1 - w) - 0.5 * (yc - m1) ** 2 / v, math.log(w) - 0.5 * (yc - m2) ** 2 / v)
+        best = max(best, float(lp.sum()) - 0.5 * n * math.log(2 * math.pi * v))
+    return 2 * (best - ll1) - 2 * math.log(n)  # two more parameters: a second mean and a weight
+
+
+def _sticks(rng: np.random.Generator, n: int, alpha: float) -> np.ndarray:
+    """n stick-breaking weight vectors of a DP(alpha), renormalized: enough sticks that the mass left over,
+    (alpha / (1 + alpha))^sticks, is about 1e-4 or less."""
+    atoms = max(DP_ATOMS, math.ceil(9.5 * (alpha + 0.5)))
+    b = 1.0 - rng.random((n, atoms)) ** (1.0 / alpha)  # Beta(1, alpha) by its inverse cdf
+    w = b * np.concatenate([np.ones((n, 1)), np.cumprod(1 - b[:, :-1], axis=1)], axis=1)
+    return w / w.sum(axis=1, keepdims=True)
+
+
+def _level(g: np.ndarray, rng: np.random.Generator, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """(mu, sd) draws of a normal on log levels g: flat on mu, and the lognormal's marginal prior on the
+    variance (inverse gamma from COST_NU and COST_SD, sds within SIGMA_RANGE)."""
+    ss = float(((g - g.mean()) ** 2).sum())
+    var, _ = _truncated_inv_gamma((COST_NU - 1) / 2 + (g.size - 1) / 2, COST_SD ** 2 / 2 + ss / 2, rng, n)
+    return g.mean() + np.sqrt(var / g.size) * rng.standard_normal(n), np.sqrt(var)
+
+
+def _dp_part(units: np.ndarray, k: int, rng: np.random.Generator, n: int) -> CostDraws:
+    """n draws of the DP posterior DP(alpha G0 + the units). The units are k pairs and the lone runs; the mass
+    on G0 is V ~ Beta(alpha, units), on G0 a DP(alpha, G0) draw, and on the units Dirichlet(1, ..., 1)
+    weights, each arm's renormalized over the units with its cost. G0 keeps each pair's dominance:
+    - "level": a new pair is exp(L) times an observed pair's shape (b / g, c / g), g = sqrt(b c) its level,
+      with L normal and its (mu, sd) drawn from their posterior on the observed log levels. With no pair, each
+      arm's runs are exp(L) with (mu, sd) from its lone runs, the arms sharing their standard normals.
+    - "paired": an observed unit's costs (one uniform for both arms, the pairs first) times one lognormal
+      factor of mean 1 and log sd tau.
+    - "extra": "paired", with a second such factor t on a pair's extra cost: the cheaper arm min(b, c) s, the
+      dearer arm min(b, c) s + |c - b| s t. Every atom is positive and keeps its pair's order, each arm's mean
+      given the unit is its observed cost, and one pair's cost ratio is not a point unless its costs are equal.
+      A lone run is scaled by s alone."""
+    kind, alpha, tau = COST_PART
+    U = np.exp(units)
+    w0 = _sticks(rng, n, alpha)
+    atoms = np.full((2,) + w0.shape, np.nan)
+    if kind == "level":
+        z = rng.standard_normal(w0.shape)
+        if k:
+            lg = units[:k].mean(axis=1)
+            mu, sd = _level(lg, rng, n)
+            shape = np.exp(units[:k] - lg[:, None])
+            j = rng.integers(0, k, size=w0.shape)
+            lev = np.exp(mu[:, None] + sd[:, None] * z)
+            for a in range(2):
+                atoms[a] = lev * shape[j, a]
+        else:
+            for a in range(2):
+                x = units[np.isfinite(units[:, a]), a]
+                if x.size:
+                    mu, sd = _level(x, rng, n)
+                    atoms[a] = np.exp(mu[:, None] + sd[:, None] * z)
+    elif kind == "extra":
+        u = rng.random(w0.shape)
+        f = np.exp(tau * rng.standard_normal(w0.shape) - tau ** 2 / 2)
+        t = np.exp(tau * rng.standard_normal(w0.shape) - tau ** 2 / 2)
+        lo, ext = np.fmin(U[:, 0], U[:, 1]), np.abs(U[:, 1] - U[:, 0])  # a lone run: its own cost, no extra
+        for a in range(2):
+            idx = np.flatnonzero(np.isfinite(U[:, a]))
+            if idx.size:
+                j = idx[np.minimum((u * idx.size).astype(int), idx.size - 1)]
+                dear = np.isfinite(ext[j]) & (U[j, a] > U[j, 1 - a])
+                atoms[a] = f * (lo[j] + np.where(dear, ext[j] * t, 0.0))
+    else:
+        u = rng.random(w0.shape)
+        f = np.exp(tau * rng.standard_normal(w0.shape) - tau ** 2 / 2)
+        for a in range(2):
+            x = U[np.isfinite(U[:, a]), a]
+            if x.size:
+                atoms[a] = f * x[np.minimum((u * x.size).astype(int), x.size - 1)]
+    v = rng.beta(alpha, len(U), size=n)
+    bw = rng.dirichlet(np.ones(len(U)), size=n)
+    mean = np.full((n, 2), np.nan)
+    for a in range(2):
+        has = np.isfinite(U[:, a])
+        if has.any():
+            wa = bw[:, has]
+            mean[:, a] = v * (w0 * atoms[a]).sum(axis=1) + (1 - v) * (wa @ U[has, a]) / wa.sum(axis=1)
+    return CostDraws(mean, np.ones(n, bool), np.arange(n), v=v, w0=w0, atoms=atoms, bw=bw, units=units, weight=1.0)
+
+
+def _contradicted(xy: np.ndarray, mean: np.ndarray) -> bool:
+    """At DOM_MIN_PAIRS pairs or more, every pair orders the arms one way and the draws' means order them the
+    other way."""
+    if xy.shape[0] < DOM_MIN_PAIRS:
+        return False
+    up, down = bool(np.all(xy[:, 1] >= xy[:, 0])), bool(np.all(xy[:, 1] <= xy[:, 0]))
+    m = mean.mean(axis=0)
+    return up != down and ((up and m[1] < m[0]) or (down and m[1] > m[0]))
+
+
+def cost_draws(data: Data, rng: np.random.Generator, n: int) -> CostDraws | None:
+    """The cost model of COST_MODEL "sw" or "avg": the lognormal (`cost_posterior`) and the DP part on the
+    same data. Both read the mixture test, the BIC margin delta of two normals over one on the pairs' mean log
+    costs (`_mix_bic`).
+    - "sw": the DP part when delta > MIX_TAU, or when every pair orders the arms one way and the lognormal's
+      means the other way; else the lognormal.
+    - "avg": each draw is the DP part's with its BIC weight w = 1 / (1 + exp(-delta / 2)), else the
+      lognormal's; the DP part alone when the average's means contradict unanimous pairs.
+    Either is the DP part where the lognormal states no range."""
+    xy = np.asarray(data.cost_pairs, dtype=float).reshape(-1, 2)
+    lone = [np.asarray(data.cost_lone[a], dtype=float) for a in ARMS]
+    k = xy.shape[0]
+    if k == 0 and not any(v.size for v in lone):
+        return None
+    units = np.vstack([xy, np.c_[lone[0], np.full(lone[0].size, np.nan)], np.c_[np.full(lone[1].size, np.nan), lone[1]]])
+    delta = _mix_bic(xy.mean(axis=1)) if k else -math.inf
+    if COST_MODEL == "sw" and delta > MIX_TAU:
+        return _dp_part(units, k, rng, n)
+    try:
+        mu, cov, ess = cost_posterior(data, rng, n)
+    except CostRange:
+        return _dp_part(units, k, rng, n)
+    ln = np.exp(mu + np.stack([cov[:, 0, 0], cov[:, 1, 1]], axis=1) / 2)
+    out = CostDraws(ln, np.zeros(n, bool), np.arange(n), mu=mu, cov=cov, ess=ess)
+    if COST_MODEL == "avg":
+        w = 0.5 * (1 + math.tanh(delta / 4)) if math.isfinite(delta) else 0.0
+        out.weight = w
+        if w >= DP_MIN_WEIGHT:
+            dp = rng.random(n) < w
+            n1 = int(dp.sum())
+            try:
+                part = _dp_part(units, k, rng, n1) if n1 else None
+            except CostRange:  # the DP part states no range: the lognormal alone
+                part, out.weight = None, 0.0
+            if part is not None:
+                out.mean = out.mean.copy()
+                out.mean[dp] = part.mean
+                out.dp, out.row = dp, np.where(dp, np.cumsum(dp) - 1, np.cumsum(~dp) - 1)
+                out.v, out.w0, out.atoms, out.bw, out.units = part.v, part.w0, part.atoms, part.bw, units
+                out.mu, out.cov = mu[~dp], cov[~dp]
+    if _contradicted(xy, out.mean):
+        return _dp_part(units, k, rng, n)
+    return out
+
+
 def posterior(data: Data, rng: np.random.Generator, n: int = DRAWS) -> Posterior:
     """Outcome and cost draws come from two child streams of `rng`, so the cost ranges do not move when only
     outcomes change. The outcome and the cost parameters are independent a priori and in the likelihood."""
@@ -335,13 +566,17 @@ def posterior(data: Data, rng: np.random.Generator, n: int = DRAWS) -> Posterior
         if ess is not None:
             post.ess["outcome"] = round(ess, 1)
     try:
-        c = cost_posterior(data, r_cost, n)
+        if COST_MODEL == "ln" and (why := zero_beside_priced(data)):
+            raise CostRange(why)
+        c = cost_posterior(data, r_cost, n) if COST_MODEL == "ln" else cost_draws(data, r_cost, n)
     except CostRange as e:
         c, post.cost_refused = None, str(e)
-    if c is not None:
+    if isinstance(c, CostDraws):
+        post.cost, ess = c, c.ess
+    elif c is not None:
         post.cmu, post.ccov, ess = c
-        if ess is not None:
-            post.ess["cost"] = round(ess, 1)
+    if c is not None and ess is not None:
+        post.ess["cost"] = round(ess, 1)
     return post
 
 
@@ -394,7 +629,7 @@ def p_better(data: Data, d: Draws, floor: float) -> float | None:
     return None if d.improvement is None else float(np.mean(d.improvement > floor))
 
 
-# ---------------------------------------------------------------- the decision and the next pair's value
+# ---------------------------------------------------------------- the decision; the next pairs' parts
 @dataclass
 class Settings:
     objective: str = "cpar"
@@ -415,21 +650,6 @@ def decide(pb_: float | None, st: Settings) -> str | None:
     return None
 
 
-def plug_in_saving(data: Data, st: Settings, d: Draws) -> float | None:
-    """Dollars a future run saves by adopting the candidate, at the posterior means (the KG plug-in): mean
-    cost over mean chance per arm for cpar; for the gain, the gain's dollar value less the cost change."""
-    if d.cost_base is None or d.cost_cand is None or d.gain is None:
-        return None
-    eb, ec = float(np.mean(d.cost_base)), float(np.mean(d.cost_cand))
-    if data.kind == "score":
-        return None if st.value_usd is None else st.value_usd * float(np.mean(d.gain)) - (ec - eb)
-    pb, pc = float(np.mean(d.post.chance("base"))), float(np.mean(d.post.chance("cand")))
-    if st.objective == "gain":
-        value = st.value_usd if st.value_usd is not None else eb / pb
-        return value * (pc - pb) - (ec - eb)
-    return eb / pb - ec / pc
-
-
 def draw_future(data: Data, post: Posterior, i: int, m: int, rng: np.random.Generator) -> dict[str, Any]:
     """m more pairs from posterior draw i (the posterior predictive, one parameter draw per future): the cells
     or the score differences, and the log costs, paired or by arm. `extend` takes any prefix of them."""
@@ -439,8 +659,15 @@ def draw_future(data: Data, post: Posterior, i: int, m: int, rng: np.random.Gene
         out["cells"] = rng.choice(4, size=m, p=th)
     elif post.mu is not None:
         out["diffs"] = post.mu[i] + post.sd[i] * rng.standard_normal(m)
-    if post.cmu is not None:
-        mu, cov = post.cmu[i], post.ccov[i]
+    c = post.cost
+    if c is not None and c.dp[i]:
+        x = _dp_future(c, int(c.row[i]), m, rng)
+        if np.all(np.isfinite(x[0])):
+            out["cost_pairs"] = x
+        else:
+            out["cost_lone"] = {arm: x[:, a] for a, arm in enumerate(ARMS) if np.isfinite(x[0, a])}
+    elif c is not None or post.cmu is not None:
+        mu, cov = (c.mu[c.row[i]], c.cov[c.row[i]]) if c is not None else (post.cmu[i], post.ccov[i])
         if np.all(np.isfinite(mu)):
             l00 = math.sqrt(cov[0, 0])
             l10 = cov[1, 0] / l00
@@ -450,6 +677,23 @@ def draw_future(data: Data, post: Posterior, i: int, m: int, rng: np.random.Gene
         else:
             out["cost_lone"] = {arm: mu[a] + math.sqrt(cov[a, a]) * rng.standard_normal(m)
                                 for a, arm in enumerate(ARMS) if np.isfinite(mu[a])}
+    return out
+
+
+def _dp_future(c: CostDraws, k: int, m: int, rng: np.random.Generator) -> np.ndarray:
+    """m runs' log costs (m, 2) from row k of a DP part's random measure: each is a new run with chance v (one
+    stick for both arms), else an observed unit, drawn by each arm's weights over the units with its cost
+    through one shared uniform, the pairs first. Their mean over many is the draw's mean cost."""
+    new = rng.random(m) < c.v[k]
+    j = rng.choice(c.w0.shape[1], size=m, p=c.w0[k])
+    u = rng.random(m)
+    out = np.full((m, 2), np.nan)
+    for a in range(2):
+        has = np.isfinite(c.units[:, a])
+        if has.any():
+            cw = np.cumsum(np.where(has, c.bw[k], 0.0))
+            pick = np.minimum(np.searchsorted(cw / cw[-1], u, side="right"), len(cw) - 1)
+            out[:, a] = np.where(new, np.log(c.atoms[a, k, j]), c.units[pick, a])
     return out
 
 
@@ -470,35 +714,3 @@ def extend(data: Data, fut: dict[str, Any], m: int) -> Data:
 def future(data: Data, post: Posterior, i: int, m: int, rng: np.random.Generator) -> Data:
     """The data after m more pairs drawn from posterior draw i."""
     return extend(data, draw_future(data, post, i, m, rng), m)
-
-
-def decision_value(data: Data, st: Settings, rng: np.random.Generator) -> float:
-    """Dollars per future run of the decision the data would give: the plug-in saving if it adopts, else 0."""
-    d = draws(data, st.objective, rng, LOOK_DRAWS)
-    if decide(p_better(data, d, st.floor), st) != "adopt":
-        return 0.0
-    s = plug_in_saving(data, st, d)
-    return 0.0 if s is None else s
-
-
-def next_pair_value(data: Data, st: Settings, post: Posterior, rng: np.random.Generator,
-                    max_pairs: int | None = None, sims: int = LOOK_SIMS) -> tuple[float | None, int | None]:
-    """(dollars over the horizon that one more pair is worth, the step count that gave it); None when the
-    rule's outcome has no dollar value (a score without `value_usd`) or there is no posterior to draw from.
-    Called only while undecided, so the decision now is worth 0. Each simulated future is drawn once, for the
-    largest step count, and every step count reads its prefix: the steps are compared on the same futures."""
-    if data.kind == "score" and (st.value_usd is None or post.mu is None):
-        return None, None
-    if data.kind == "binary" and post.theta is None:
-        return None, None
-    steps = [m for m in LOOK_STEPS if max_pairs is None or m <= max_pairs]
-    if not steps:
-        return 0.0, None
-    totals = np.zeros(len(steps))
-    for i in rng.integers(post.n, size=sims):
-        fut = draw_future(data, post, int(i), steps[-1], rng)
-        for j, m in enumerate(steps):
-            totals[j] += decision_value(extend(data, fut, m), st, rng)
-    per_pair = st.horizon_runs * totals / sims / np.asarray(steps, dtype=float)
-    j = int(np.argmax(per_pair))
-    return (float(per_pair[j]), steps[j]) if per_pair[j] > 0 else (0.0, None)

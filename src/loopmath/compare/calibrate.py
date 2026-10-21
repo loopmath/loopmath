@@ -64,7 +64,9 @@ OBJECTIVE = {"cpar": "cpar", "gain": "gain", "score": "gain"}
 class Family:
     """One simulated truth. Binary: each arm's chance of acceptance, task-correlated chances (each task's
     chance from Beta(conc * p, conc * (1 - p)), shared by both arms), the candidate's cost multiple, and
-    missingness: unscored and uncosted runs at random, extra base runs with no partner. Score: the task sd,
+    missingness: unscored and uncosted runs at random, extra base runs with no partner, and mixed models: the
+    share of pairs whose two runs (and an extra base run after them) come from a model costing `cheap_cost` times
+    the rest, one model per pair. Score: the task sd,
     the run noise (normal or t with 3 df), an optional grid (step, lo, hi, mid, noise sd), the effect, the base
     run noise as a multiple of the candidate's (0: a constant base), and the correlation of the two runs' noise."""
 
@@ -77,6 +79,8 @@ class Family:
     unscored: float = 0.0
     uncosted: float = 0.0
     extra_base: float = 0.0
+    cheap: float = 0.0
+    cheap_cost: float = 0.01
     task_sd: float = 0.0
     noise: str = "normal"
     grid: tuple[float, float, float, float, float] | None = None
@@ -113,6 +117,12 @@ SCORE_NULLS = [
     Family("score, judge 0 to 5 on a 0.25 grid, constant base at 2.5", kind="score",
            grid=(0.25, 0.0, 5.0, 2.5, 0.75), base_sd=0.0),
     Family("score, normal noise anti-correlated across the pair (rho -0.5)", kind="score", rho=-0.5)]
+# Arms that mix a cheap model and a dear one, as a read and its final share a developer model: cost per run is
+# where a lognormal reading of the costs goes wrong.
+MIXED_COST_NULLS = [
+    Family("matched cpar, mixed models: candidate accepted at 0.6 against 0.4, at 1.5 times the cost, 40% of "
+           "pairs at 1/100 the cost", pb=0.4, pc=0.6, cost_ratio=1.5, cheap=0.4),
+    Family("binary at 0.5, mixed models: 40% of pairs at 1/100 the cost", cheap=0.4)]
 NULLS = {"cpar": BINARY_NULLS + MATCHED_CPAR_NULLS, "gain": BINARY_NULLS, "score": SCORE_NULLS}
 ALTERNATIVES = {
     "cpar": [Family("accepted 0.5 to 0.7, same cost", pb=0.5, pc=0.7),
@@ -167,6 +177,9 @@ def simulate(fam: Family, rng: np.random.Generator, n: int) -> dict[str, np.ndar
     extra = rng.random(n) < fam.extra_base
     eo = (rng.random(n) < fam.pb).astype(np.int8)
     ex = TASK_COST_SD * rng.standard_normal(n) + RUN_COST_SD * rng.standard_normal(n)
+    if fam.cheap:  # drawn after the rest, so the other families' paths are unchanged
+        lc = np.where(rng.random(n) < fam.cheap, math.log(fam.cheap_cost), 0.0)
+        xb, xc, ex = xb + lc, xc + lc, ex + lc
     return {"ob": ob, "oc": oc, "xb": xb, "xc": xc, "extra": extra, "eo": eo, "ex": ex}
 
 
@@ -475,7 +488,8 @@ def cmd_stopped(args) -> None:
     path = out / "stopped.json"  # a run of one kind keeps the other kind's results
     report = json.loads(path.read_text()) if path.is_file() else {"null": {}, "power": {}}
     report |= {"seed": SEEDS["stopped"], "looks": calibration.LOOKS, "horizon_runs": M.HORIZON_RUNS,
-               "look_sims": M.LOOK_SIMS, "thresholds_from": calibration.TABLE.get("cpar", {}).get("check_seed")}
+               "look_sims": M.LOOK_SIMS,
+               "thresholds_from": calibration.table_in_use().get("cpar", {}).get("check_seed")}
     report |= {kind: {} for kind in args.kinds}
     for (kind, mode, name, cap, h), rows in sorted(grouped.items()):
         thr = rows[0]["threshold"]

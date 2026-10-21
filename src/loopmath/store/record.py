@@ -471,8 +471,8 @@ def record(store: Store, args: argparse.Namespace) -> dict[str, Any]:
                                       ("--rec", args.rec), ("--choice", args.choice), ("--config", args.config),
                                       ("--workflow", args.workflow), ("--set", args.set), ("--source", args.source),
                                       ("--rule", args.rule)) if v]
-        given += [flag for flag, attr in (("--check", "check"), ("--arm", "arm"), ("--pair", "pair"),
-                                          ("--label", "label")) if getattr(args, attr, None)]
+        given += [flag for flag, attr in (("--check", "check"), ("--screen", "screen"), ("--arm", "arm"),
+                                          ("--pair", "pair"), ("--label", "label")) if getattr(args, attr, None)]
         if given:  # the open run has them all; a flag it would ignore is refused
             raise UserError(f"--run records into the run `run start` opened, with its task, configuration, rule and "
                             f"base commit; drop {', '.join(given)}")
@@ -490,6 +490,10 @@ def record(store: Store, args: argparse.Namespace) -> dict[str, Any]:
         raise UserError("give --source (usual, alternative, exploration, user_edit, habit or designed)")
     if doc is None and args.cwd and not args.since:
         raise UserError("--cwd needs a window: record into a run with --run RUN, or give --since TS")
+    if doc is None and getattr(args, "check", None):
+        from ..compare import checks
+
+        checks.arm_settings(store, args)  # an arm with a set gives the run its --set, or refuses another
 
     # every lookup and check, before the first write
     notes: list[str] = []

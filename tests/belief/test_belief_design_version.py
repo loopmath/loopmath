@@ -10,9 +10,10 @@ import simdata
 
 from loopmath.belief import fit as F
 from loopmath.belief import state as S
-from loopmath.belief.design import DESIGN_VERSION
+from loopmath.belief.design import DESIGN_VERSION, OPT_IN_DESIGN_VERSION, other_design
 from loopmath.belief.fit import UnknownFit, load_fit
 from loopmath.belief.state import load_latest
+from loopmath.store.config import CHOICES
 
 
 @pytest.fixture()
@@ -34,7 +35,9 @@ def _set_version(home, version):
 
 
 def test_a_new_fit_records_the_design_version(home):
-    assert json.loads((S.fit_dir(home) / "meta.json").read_text())["design_version"] == DESIGN_VERSION == 4
+    meta = json.loads((S.fit_dir(home) / "meta.json").read_text())
+    assert meta["design_version"] == DESIGN_VERSION == 4
+    assert "model_options" not in meta and other_design(meta) is None
     assert load_latest(home) is not None
 
 
@@ -130,3 +133,138 @@ def test_doctor_warns_that_the_fit_is_not_usable(home):
     _set_version(home, DESIGN_VERSION)
     check = check_fit(home, time.time())
     assert check["status"] == "ok" and check["detail"]["usable"] is True
+
+
+# ---------------------------------------------------------------- design version 5: a fit with model options
+
+NOW = datetime.fromisoformat("2026-09-24T12:00:00-07:00")
+SUCCESS_HEAD = "belief.success_head"
+
+
+def _opt_in(options, fit_id="fit_x"):
+    return {"fit": fit_id, "design_version": OPT_IN_DESIGN_VERSION, "model_options": options}
+
+
+def _set_options(home, options):
+    """The latest fit's meta as a fit with these model options writes it (design version 5)."""
+    path = S.fit_dir(home) / "meta.json"
+    meta = json.loads(path.read_text())
+    path.write_text(json.dumps({**meta, "design_version": OPT_IN_DESIGN_VERSION, "model_options": options}))
+    return meta["fit"]
+
+
+@pytest.mark.parametrize("options", [{"prior.version": 2}, {SUCCESS_HEAD: "sampled", "prior.version": 2}])
+def test_a_fit_with_a_model_option_this_loopmath_does_not_know_is_refused(home, capsys, monkeypatch, options):
+    """A newer loopmath may write a model option this one has no nodes for. Read without them, the fit would give
+    other numbers than its writer's, so every reader refuses it by the option's name and asks for a new fit."""
+    import time
+
+    from loopmath.recommend.commands import EXIT_NO_FIT, load_belief
+    from loopmath.skill.doctor import check_fit
+    from loopmath.store.status import fit_summary
+
+    monkeypatch.setattr(S, "_NOTED", set())
+    fit_id = _set_options(home, options)
+    line = f"fit {fit_id} is from design version 5 (made by another loopmath) with the model option `prior.version`,"
+    why = other_design(json.loads((S.fit_dir(home) / "meta.json").read_text()))
+    assert why is not None and why.startswith(line) and why.endswith("run `loopmath fit` for a new fit")
+    assert SUCCESS_HEAD not in why  # only the option it does not know is named
+    assert S.latest_problem(home) == why
+    assert load_latest(home) is None
+    assert capsys.readouterr().err == f"loopmath: {why}\n"
+    with pytest.raises(UnknownFit, match="`prior.version`"):
+        load_fit(home, fit_id)
+    monkeypatch.setattr(S, "_NOTED", set())
+    belief, code = load_belief(home)  # what `recommend` reads
+    assert belief is None and code == EXIT_NO_FIT
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and err.startswith("error: ") and line in err and "no fit yet" not in err
+    assert fit_summary(home, fit_id)["problem"] == why  # `status`
+    check = check_fit(home, time.time())  # `doctor`
+    assert check["status"] == "warn" and check["detail"]["usable"] is False and check["summary"] == why
+
+
+def test_every_option_this_loopmath_does_not_know_is_named():
+    why = other_design(_opt_in({"prior.version": 2, SUCCESS_HEAD: "sampled", "a.b": True}))
+    assert why is not None
+    assert "with the model options `a.b`, `prior.version`, which this loopmath does not know;" in why
+
+
+@pytest.mark.parametrize("value", ["full", "integrated", "eb", "", 2, True, None, ["sampled"], {"sampled": 1}])
+def test_a_value_this_loopmath_does_not_write_is_refused(value):
+    """Only the values this loopmath's `fit` writes are read: `sampled` (`eb` and unset write design version 4
+    with no options, and `integrated` was never written by a release). Any JSON value is named, never a TypeError."""
+    why = other_design(_opt_in({SUCCESS_HEAD: value}))
+    assert why == (f"fit fit_x is from design version 5 (made by another loopmath) with the model option "
+                   f"`{SUCCESS_HEAD}` = {json.dumps(value)}, a value this loopmath does not know; "
+                   "run `loopmath fit` for a new fit")
+
+
+def test_a_fit_with_an_unknown_value_is_not_loaded(home, capsys, monkeypatch):
+    monkeypatch.setattr(S, "_NOTED", set())
+    fit_id = _set_options(home, {SUCCESS_HEAD: "full"})
+    assert load_latest(home) is None
+    assert f'`{SUCCESS_HEAD}` = "full", a value this loopmath does not know' in capsys.readouterr().err
+    with pytest.raises(UnknownFit, match="a value this loopmath does not know"):
+        load_fit(home, fit_id)
+
+
+def test_an_empty_options_block_is_refused():
+    """`fit` writes design version 5 only with an option set: an empty block is not a fit this loopmath wrote."""
+    assert other_design(_opt_in({})) == (
+        "fit fit_x is from design version 5 (made by another loopmath) with no model options, which this loopmath "
+        "does not write; run `loopmath fit` for a new fit")
+
+
+def test_every_opt_in_value_config_takes_is_read():
+    """Each value `config set` takes that makes `fit` write design version 5 is one this loopmath reads back."""
+    for value in CHOICES[SUCCESS_HEAD]:
+        why = other_design(_opt_in({SUCCESS_HEAD: value}))
+        assert (why is None) == (value != "eb"), value
+
+
+@pytest.mark.parametrize("meta", [{"design_version": 5}, {"design_version": 5, "model_options": "sampled"},
+                                  {"design_version": 5, "model_options": None}])
+def test_version_5_without_an_options_block_keeps_its_refusal(meta):
+    assert other_design({"fit": "fit_x", **meta}) == (
+        "fit fit_x is from design version 5 (made by another loopmath) and this loopmath reads version 4; "
+        "run `loopmath fit` for a new fit")
+
+
+def test_the_check_stays_light():
+    """`status` and `doctor` call `other_design` without the engine: no numpy and no fitting module."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import loopmath
+
+    code = ("import sys\nfrom loopmath.belief.design import other_design\n"
+            "assert other_design({'design_version': 5, 'model_options': {'prior.version': 2}})\n"
+            "print(sorted(m for m in sys.modules if m.split('.')[0] in ('numpy', 'scipy')"
+            " or m.startswith(('loopmath.belief.', 'loopmath.store'))))")
+    env = {**os.environ, "PYTHONPATH": str(Path(loopmath.__file__).resolve().parents[1])}
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout
+    assert json.loads(out.replace("'", '"')) == ["loopmath.belief.design", "loopmath.belief.forest",
+                                                  "loopmath.belief.pricing"]
+
+
+def test_a_sampled_fit_still_loads(tmp_path, capsys, monkeypatch):
+    """The fit the opt-in writes (`belief.success_head = "sampled"`) is read by every reader, as before."""
+    import time
+
+    from loopmath.skill.doctor import check_fit
+    from loopmath.store.status import fit_summary
+
+    monkeypatch.setattr(S, "_NOTED", set())
+    (tmp_path / "config.toml").write_text('[belief]\nsuccess_head = "sampled"\n', encoding="utf-8")
+    docs, _ = simdata.simulate(60, seed=2, source="live", n_tasks=20)
+    path = F.fit(tmp_path, docs=docs, no_prior=True, now=NOW)
+    meta = json.loads((path / "meta.json").read_text())
+    assert meta["design_version"] == OPT_IN_DESIGN_VERSION and meta["model_options"] == {SUCCESS_HEAD: "sampled"}
+    assert other_design(meta) is None and S.latest_problem(tmp_path) is None
+    assert load_latest(tmp_path).fit_id == load_fit(tmp_path, meta["fit"]).fit_id == meta["fit"]
+    assert fit_summary(tmp_path, meta["fit"])["problem"] is None
+    assert check_fit(tmp_path, time.time())["status"] == "ok"
+    assert "design version" not in capsys.readouterr().err

@@ -191,8 +191,8 @@ def test_budget_caps_the_replicates_and_is_passed_on():
     (1.0, 2.0, (50, 52), (60, 61), 0.0, _cmp(n_pairs=2, cost_base=0.0, cost_cand=0.0)),  # free pairs
 ], ids=["spent", "overspent", "one-arm", "free-pairs"])
 def test_a_spent_budget_buys_no_pair_whatever_a_pair_costs(budget, sunk, base, cand, usd, cmp):
-    """D4 review round 4 (R4-B2): compare buys no new run once the budget left is zero or less, priced or not
-    (D2 R3-B1, in `loopmath.compare.paired`). The gate keeps the same rule where compare is not asked
+    """compare buys no new run once the budget left is zero or less, priced or not (in
+    `loopmath.compare.paired`). The gate keeps the same rule where compare is not asked
     (before the first confirmation, with the search cost sunk) or reports no stop of its own."""
     from loopmath.gate import GatePolicy, decide
 
@@ -212,10 +212,18 @@ def test_a_budget_left_buys_the_first_pair_before_its_price_is_known():
     assert (d.action, d.n_more) == ("replicate", 1)
 
 
-def test_value_of_the_next_pair_below_its_cost_stops():
+def test_value_of_the_next_pair_below_its_cost_stops_only_through_compare():
+    # Since 0.3.2 the gate's own check (the value under the pair's price, at any pair count) is gone. The
+    # value stops the gate only as compare's stop "value" (value_stop, on by default), and only on a certified
+    # "not worth buying".
     d, _ = _decide(_cmp(n_pairs=2, next_pair_value_usd=0.2))
-    assert d.action == "reject"
-    assert any("not worth" in r for r in d.reasons)
+    assert d.action == "replicate" and not any("not worth" in r for r in d.reasons)
+    pv = {"per_pair": 0.2, "pairs": 2, "expected_pairs": 2.0, "threshold": 0.99, "pairs_left": 4, "price": 1.0,
+          "price_from": "cost", "worth": False, "continuation": None}
+    d, _ = _decide(_cmp(n_pairs=4, next_pair_value_usd=0.2, verdict="reject", stop="value", value=pv),
+                   base_scores=(50,) * 4, cand_scores=(60,) * 4, value_stop=True)
+    assert (d.action, d.stop) == ("reject", "value")
+    assert any("not worth buying" in r and "--value-stop" in r for r in d.reasons)
 
 
 def test_no_value_for_the_next_pair_is_not_a_stop():
@@ -266,7 +274,7 @@ def test_unscored_runs_reach_compare_and_are_counted_not_zero():
     base = _runs("base", (50, 52)) + [_row("base", None)]
     cand = _runs("cand", (60, 61)) + [_row("cand", ...)]
     d = decide(base, cand, GatePolicy(), compare=rec)
-    # compare pairs first and leaves out the unscored after, so it gets every run (review round 2):
+    # compare pairs first and leaves out the unscored after, so it gets every run:
     # a filter here would shift which runs pair when there is no pair key.
     assert rec.calls[0]["base"] == base and rec.calls[0]["cand"] == cand
     assert d.inputs["base"] == {"n": 3, "scored": 2, "unscored": 1}
@@ -484,7 +492,7 @@ def test_the_threshold_is_compares_where_it_states_a_bound():
     assert d.action != "adopt"
     assert any("below 0.99375" in r for r in d.reasons)
     assert "no false adopt bound" in d.reasons[-1] and "the 4 looks that can adopt" in d.reasons[-1]
-    # A compare without the round 2 fields is treated as stating no bound.
+    # A compare without the false adopt bound's fields is treated as stating no bound.
     d = decide(four_b, four_c, GatePolicy(), compare=Recorder(_cmp(p_better=0.99, **GOOD)))
     assert d.action != "adopt"
 

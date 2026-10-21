@@ -38,6 +38,7 @@ from .block import leaf_split
 from .forest import Forest, default_scale, fixed_sd, scale_group
 from .pricing import PRICE_NODE, PRICE_PRIOR_SD, STREAMS, fit_offsets, price_term, rate_floors
 from .gaussian import N_DRAWS, Factors, GaussianHead, HeadFit, LogisticHead, Prior
+from .integrated import SUCCESS_HEAD_KEY, integrate_success, success_method
 from .state import SCORE_CLAMP, inverse_transform, transform  # noqa: F401  (re-exported)
 
 FIT_LOCK = ".fit.lock"
@@ -615,6 +616,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         remove_partials(home)
         settled, settle_note = _settle_receipts(home) if docs is None else ([], None)
         config = _read_config(home)
+        success_head = success_method(config)  # `belief.success_head`: unset or `eb` is 0.3.1's head
         raw_weight = config.get("benchmark_prior_weight")  # unset: each benchmark's own weight (spec 04 section 5)
         weight = None if raw_weight is None else float(raw_weight)
         try:
@@ -670,6 +672,9 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         fit_id = new_fit_id(fits, now)
         partial = fits / f"{fit_id}.partial"
         partial.mkdir(parents=True)
+        success_arrays = {}
+        if success_head != "eb" and "success" in fitted:  # the opt-in head (integrated.py); unset, 0.3.1's
+            success_arrays = integrate_success(fitted["success"], seed_for(seed_key, "success"), forest.parents)
         arrays = {}
         for name, h in fitted.items():
             key = name.replace(":", "@")
@@ -682,6 +687,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             arrays[f"{key}__P_data"] = res.precision.data
             arrays[f"{key}__P_indices"] = res.precision.indices.astype(np.int32)
             arrays[f"{key}__P_indptr"] = res.precision.indptr.astype(np.int64)
+        arrays.update(success_arrays)
         np.savez(partial / "state.npz", **arrays)
         task_support: dict[str, int] = {}
         for h in fitted.values():
@@ -740,6 +746,11 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             table = meta["full"].pop("table", None)
             if table is not None:
                 _atomic_json(partial / "pymc_check.json", table)
+        if success_head != "eb":  # an opt-in fit: 0.3.1 refuses design version 5
+            meta["design_version"] = design_rows.OPT_IN_DESIGN_VERSION
+            meta.setdefault("model_options", {})[SUCCESS_HEAD_KEY] = success_head
+            if "success" in fitted:
+                meta["heads"]["success"]["method"] = success_head
         meta["seconds"] = round(time.monotonic() - started, 3)
         _atomic_json(partial / "meta.json", meta)
         final = fits / fit_id

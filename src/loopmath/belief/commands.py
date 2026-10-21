@@ -67,7 +67,7 @@ def _summary(path: Path) -> dict:
         "user_labels": meta.get("user_labels", {}),
         "heads": {name: {"rows": h.get("n_rows"), "runs": h.get("n_runs"), "sigma": h.get("sigma"),
                          "rows_by_source": h.get("rows_by_source", {}),
-                         "converged": (h.get("optimizer") or {}).get("converged")}
+                         "converged": (h.get("optimizer") or {}).get("converged"), **_sampler(h)}
                   for name, h in (meta.get("heads") or {}).items()},
         "dropped": meta.get("dropped", {}),
         "not_model_attempts": meta.get("not_model_attempts", {}),
@@ -77,6 +77,16 @@ def _summary(path: Path) -> dict:
         **({"receipts_rescored": meta["receipts_rescored"]} if meta.get("receipts_rescored") else {}),
         **({"notes": meta["notes"]} if meta.get("notes") else {}),
     }
+
+
+def _sampler(h: dict) -> dict:
+    """A head fitted by NUTS (`belief.success_head = "sampled"`): its convergence, for the summary. Other heads,
+    and every head when the key is unset, add nothing."""
+    opt = h.get("optimizer") or {}
+    if "converged_draws" not in opt:
+        return {}
+    keys = ("converged_draws", "max_rhat", "min_ess_bulk", "min_ess_tail", "divergences", "max_depth_hits")
+    return {"sampler": {k: opt.get(k) for k in keys}}
 
 
 def _print_summary(s: dict) -> None:
@@ -103,6 +113,12 @@ def _print_summary(s: dict) -> None:
     for name, h in heads:
         conv = "" if h.get("converged") in (True, None) else "  (scales did not converge)"
         print(f"  {name:{width}s} {h['rows']:>7} rows  {h['runs']:>6} runs{conv}")
+        smp = h.get("sampler")
+        if smp and not smp["converged_draws"]:
+            print(f"  {'':{width}s} the sampler did not converge (largest R-hat {smp['max_rhat']:.3f}, smallest "
+                  f"bulk and tail ESS {smp['min_ess_bulk']:.0f} and {smp['min_ess_tail']:.0f}, "
+                  f"{smp['divergences']} divergent transitions): its ranges may be off; "
+                  "`loopmath config set belief.success_head eb` fits the default head")
     checks = s.get("not_model_attempts") or {}
     if checks:
         names = ", ".join(k if len(checks) == 1 else f"{k} {v}" for k, v in sorted(checks.items(), key=lambda kv: -kv[1]))

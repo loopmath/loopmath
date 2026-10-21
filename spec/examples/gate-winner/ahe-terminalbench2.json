@@ -1,0 +1,70 @@
+{
+ "schema": "loopmath.gate-winner-scores/0.1",
+ "better": "higher",
+ "scale": "fraction",
+ "spread": [
+  0.01642,
+  0.03284
+ ],
+ "parent": {
+  "id": "it1",
+  "score": 0.696629,
+  "reps": 1
+ },
+ "candidates": [
+  {
+   "id": "it2",
+   "score": 0.741573,
+   "order": 2
+  },
+  {
+   "id": "it3",
+   "score": 0.741573,
+   "order": 3
+  },
+  {
+   "id": "it4",
+   "score": 0.730337,
+   "order": 4
+  },
+  {
+   "id": "it5",
+   "score": 0.747191,
+   "order": 5
+  },
+  {
+   "id": "it6",
+   "score": 0.758427,
+   "order": 6
+  },
+  {
+   "id": "it7",
+   "score": 0.730337,
+   "order": 7
+  },
+  {
+   "id": "it8",
+   "score": 0.769663,
+   "order": 8
+  },
+  {
+   "id": "it9",
+   "score": 0.741573,
+   "order": 9
+  },
+  {
+   "id": "it10",
+   "score": 0.752809,
+   "order": 10
+  }
+ ],
+ "source": {
+  "cite": "arXiv 2604.25850v4",
+  "url": "https://arxiv.org/abs/2604.25850v4",
+  "where": "Fig. 1 (training curve, pass@1 per iteration, decoded from the figure's vector data; every value is a count out of 178), with Table 1 (seed 69.7, AHE 77.0)",
+  "benchmark": "TerminalBench-2, 89 tasks with 2 rollouts each (Table 4), 178 trials per score",
+  "spread_basis": "assumed, not measured: the paper prints no rerun spread. The range runs from half the binomial standard error at 178 trials to that standard error, at the scores' mean",
+  "held_out": null,
+  "note": "the winner it8 (137 of 178) is the score Table 1 prints for AHE, so the headline reuses the selection score (inferred); the paper's transfer to SWE-bench Verified is another benchmark and is not a check of this gain"
+ }
+}

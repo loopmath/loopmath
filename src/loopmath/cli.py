@@ -285,10 +285,13 @@ def adapt_verb(args: argparse.Namespace) -> int:
     import json
     from pathlib import Path
 
-    if args.name in ("harness2", "harness-runs"):   # run importers: one OCP v0.3 run per rollout (docs/adapters.md)
+    if args.name in ("harness2", "harness-runs", "plugin-eval", "openevolve", "shinkaevolve"):  # run importers
         from .harness_runs.commands import adapt_runs
 
         return adapt_runs(args)
+    if args.privacy == "full":
+        print(f"error: adapt {args.name}: --privacy full applies to adapt harness2 only", file=sys.stderr)
+        return 2
     if args.path:
         args.store.append(args.path)
     from .adapters import Selection, UnknownAdapterError, lookup
@@ -352,13 +355,21 @@ def _add_adapt(sub) -> None:
         description="Emit OCP v0.2 from an ADE store, or import rollouts as OCP v0.3 runs with a run importer: "
                     "`loopmath adapt harness2 RUNS --out DIR` reads a harness2 runs folder, and "
                     "`loopmath adapt harness-runs FILE --out DIR` reads a loopmath.harness-runs/0.1 file "
-                    "(spec/harness-runs.md). Then `loopmath run import DIR --finish` stores them. "
-                    "Experimental: the ADE adapters and the harness2 importer, which are tested on synthetic "
-                    "fixtures written from each tool's format, not yet on real data.")
+                    "(spec/harness-runs.md), and `loopmath adapt plugin-eval RESULT --out DIR` reads a "
+                    "`claude plugin eval` result (docs/plugin-eval.md). `loopmath adapt openevolve PATH` and "
+                    "`loopmath adapt shinkaevolve PATH` read an evolution run: one mutator run per LLM call whose "
+                    "model was recorded. Then `loopmath run import DIR --finish` stores them. Experimental: the ADE "
+                    "adapters and the harness2 importer, and the openevolve and shinkaevolve importers, which are "
+                    "tested on synthetic fixtures written from each tool's format, not yet on real data, and the "
+                    "plugin-eval importer, tested on results written from Claude Code's docs.")
     p.add_argument("name", metavar="NAME", help="registered adapter name (experimental), or a run importer: "
-                   "harness2 (experimental), harness-runs")
+                   "harness2 (experimental), harness-runs, plugin-eval (experimental), openevolve (experimental), "
+                   "shinkaevolve (experimental)")
     p.add_argument("path", nargs="?", default=None, metavar="PATH",
-                   help="the input: the same as --store PATH for an adapter; the runs folder (harness2) or rows file (harness-runs) for a run importer")
+                   help="the input: the same as --store PATH for an adapter; the runs folder (harness2), rows file "
+                        "(harness-runs), aggregate-result.json or its results folder (plugin-eval), output folder, "
+                        "checkpoint or evolution_trace.jsonl (openevolve), or results folder or programs.sqlite "
+                        "(shinkaevolve) for a run importer")
     p.add_argument("--out", default=None, help="write here instead of stdout (any path; missing folders are created; an existing file is replaced). Run importers: a folder, one <run id>.ocp.json per rollout")
     p.add_argument("--store", action="append", default=[], metavar="PATH", help="use this store path instead of discovery (repeatable)")
     p.add_argument("--session", action="append", default=[], metavar="ID", help="include this session id (repeatable; default: all)")
@@ -372,6 +383,26 @@ def _add_adapt(sub) -> None:
     p.add_argument("--accept-at", type=float, default=None, metavar="X", help="run importers: accept a run whose score reaches X (default: the tests rule)")
     p.add_argument("--type", default=None, metavar="TYPE", help="run importers: the task type for rows that give none (default research)")
     p.add_argument("--repo", default=None, metavar="REPO", help="run importers: the task repo for rows that give none")
+    p.add_argument("--cost-from", default=None, metavar="FILE", help="plugin-eval: each run's cost from your own "
+                   "JSON lines file, one {case, arm, run, usd and/or tokens, model} per run (plugin eval records the "
+                   "suite's cost only, and it is never split)")
+    p.add_argument("--outcome", default=None, choices=["accept", "score"], help="plugin-eval: accept a run whose "
+                   "grade reaches the threshold (default; --accept-at X sets it, default 1.0, as plugin eval's "
+                   "--threshold), or keep the grade as score plugin-eval")
+    p.add_argument("--model", default=None, metavar="M", help="plugin-eval: the model the suite ran on, which the "
+                   "result does not record; openevolve: the model that wrote children whose token usage names none")
+    p.add_argument("--plugin", default=None, metavar="NAME", help="plugin-eval: the plugin's name, when no "
+                   "plugin.json sits where plugin eval keeps its results")
+    p.add_argument("--keep-text", action="store_true", help="plugin-eval: keep prompts, grader names and other free "
+                   "text in the runs (default: dropped, and listed in the summary)")
+    p.add_argument("--task", default=None, metavar="NAME", help="openevolve, shinkaevolve: the task id (default: the folder holding the run's output)")
+    p.add_argument("--min-delta", type=float, default=None, metavar="X", help="openevolve, shinkaevolve: improved means the child beat its parent by more than X (default 0)")
+    p.add_argument("--metric", default=None, metavar="NAME", help="openevolve: score programs by this metric instead of OpenEvolve's fitness")
+    p.add_argument("--prices", default=None, metavar="FILE", help="openevolve: price tokens with this TOML price table (the packaged format; loopmath prices --prices FILE shows it)")
+    p.add_argument("--children-only", action="store_true", help="shinkaevolve: one run per evaluated child from its applied reply, when the per-query records are missing")
+    p.add_argument("--privacy", choices=("metadata_only", "full"), default="metadata_only",
+                   help="adapt harness2: full also keeps harness2's own records and error text, which hold text a "
+                        "model wrote, and makes those runs privacy full (default metadata_only)")
     p.set_defaults(func=adapt_verb)
 
 

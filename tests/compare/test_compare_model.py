@@ -81,9 +81,10 @@ def test_the_predictive_reads_the_lone_runs():
         assert abs(got - want) <= 4 * math.sqrt(want * (1 - want) / picks.size) + 1e-3
 
 
-def test_expected_updated_means_equal_the_current_means():
+def test_expected_updated_means_equal_the_current_means(monkeypatch):
     """The martingale identity: averaged over futures drawn from the posterior, the updated posterior mean is
-    the current one."""
+    the current one. The cost half reads 0.3.1's lognormal parameters (`cmu`), so it pins that model by name."""
+    monkeypatch.setattr(M, "COST_MODEL", "ln")
     rng = np.random.default_rng(2)
     d = binary([2, 3, 1, 2], lone={"base": (1, 3), "cand": (0, 0)}, k=8)
     d.cost_lone = {"base": [0.4], "cand": []}
@@ -105,31 +106,45 @@ def test_expected_updated_means_equal_the_current_means():
     assert abs(np.mean(locs) - M.score_t(s)[1]) <= 4 * np.std(locs) / math.sqrt(len(locs))
 
 
-@pytest.mark.parametrize("cells,ratio,k,stop", [
-    ([2, 2, 2, 2], 1.0, 8, True),  # flat: the next pairs cannot pay
-    ([5, 1, 1, 1], 0.6, 8, True),
-    ([2, 6, 0, 1], 0.8, 9, False),  # leaning to the candidate: worth more pairs
-])
-def test_the_stop_decision_holds_as_the_futures_grow(cells, ratio, k, stop):
-    d = binary(cells, ratio=ratio, k=k)
+def _value_plan(cells, **kw):
+    from loopmath.compare import value as V
+
     st = M.Settings(threshold=0.99)
+    return V.Plan(objective="cpar", floor=st.floor, confidence=st.confidence, threshold=0.99,
+                  horizon_runs=st.horizon_runs, pairs_scored=int(sum(cells)), **kw)
+
+
+@pytest.mark.parametrize("cells,ratio,k,worth", [
+    ([2, 2, 2, 2], 1.0, 8, False),  # flat: the next pairs cannot pay
+    ([5, 1, 1, 1], 0.6, 8, False),
+    ([2, 6, 0, 1], 0.8, 9, True),  # leaning to the candidate: worth more pairs
+])
+def test_the_value_verdict_holds_as_the_futures_grow(cells, ratio, k, worth):
+    # compare.value.pairs_value replaces next_pair_value; its certified verdict holds over seeds and
+    # three times the futures, and a positive value per pair is stable to within a half.
+    from loopmath.compare import value as V
+
+    d = binary(cells, ratio=ratio, k=k)
     post = M.posterior(d, np.random.default_rng(0))
-    dd = M.draws(d, "cpar", np.random.default_rng(0))
-    price = float(np.mean(dd.cost_base) + np.mean(dd.cost_cand))
-    values = [M.next_pair_value(d, st, post, np.random.default_rng(seed), max_pairs=16, sims=sims)[0]
-              for seed, sims in ((1, M.LOOK_SIMS), (2, M.LOOK_SIMS), (3, 3 * M.LOOK_SIMS))]
-    assert all((v < price) == stop for v in values), (values, price)
-    if not stop:
-        assert abs(values[0] - values[2]) <= 0.5 * values[2] and abs(values[1] - values[2]) <= 0.5 * values[2]
+    plan = _value_plan(cells, pairs_left=16)
+    pvs = [V.pairs_value(d, post, plan, np.random.default_rng(seed), sims=sims)
+           for seed, sims in ((1, M.LOOK_SIMS), (2, M.LOOK_SIMS), (3, 3 * M.LOOK_SIMS))]
+    assert all(pv.worth is worth for pv in pvs), [(pv.worth, pv.net, pv.se) for pv in pvs]
+    if worth:
+        per = [pv.per_pair for pv in pvs]
+        assert abs(per[0] - per[2]) <= 0.5 * per[2] and abs(per[1] - per[2]) <= 0.5 * per[2]
 
 
 def test_the_lookahead_stops_at_the_cap():
-    d = binary([2, 6, 0, 1], ratio=0.8, k=9)
+    from loopmath.compare import value as V
+
+    cells = [2, 6, 0, 1]
+    d = binary(cells, ratio=0.8, k=9)
     post = M.posterior(d, np.random.default_rng(0))
-    st = M.Settings(threshold=0.99)
-    assert M.next_pair_value(d, st, post, np.random.default_rng(1), max_pairs=0) == (0.0, None)
-    _, m = M.next_pair_value(d, st, post, np.random.default_rng(1), max_pairs=3, sims=32)
-    assert m is None or m <= 3
+    pv = V.pairs_value(d, post, _value_plan(cells, pairs_left=0), np.random.default_rng(1))
+    assert (pv.pairs, pv.gross, pv.worth) == (0, 0.0, False)
+    pv = V.pairs_value(d, post, _value_plan(cells, pairs_left=3), np.random.default_rng(1), sims=32)
+    assert all(s["pairs"] <= 3 and s["expected_pairs"] <= 3 for s in pv.steps) and pv.pairs <= 3
 
 
 # ---------------------------------------------------------------- N1: the paired cost model
@@ -166,7 +181,9 @@ def test_paired_costs_recover_the_truth_with_80_percent_ranges(k):
     assert np.all((cover >= 0.7) & (cover <= 0.92)), cover
 
 
-def test_one_costed_pair_and_lone_costs_give_finite_ranges_in_the_prior_support():
+def test_one_costed_pair_and_lone_costs_give_finite_ranges_in_the_prior_support(monkeypatch):
+    """0.3.1's lognormal: its variances stay in the prior support. It reads `ccov`, so it pins that model by name."""
+    monkeypatch.setattr(M, "COST_MODEL", "ln")
     d = M.Data(kind="binary", cost_pairs=[(0.1, -0.2)], cost_lone={"base": [0.3, -0.4], "cand": []})
     post = M.posterior(d, np.random.default_rng(0))
     for arm in ("base", "cand"):
@@ -178,7 +195,9 @@ def test_one_costed_pair_and_lone_costs_give_finite_ranges_in_the_prior_support(
     assert alone.mean_cost("cand") is None and np.all(np.isfinite(alone.mean_cost("base")))
 
 
-def test_costs_far_outside_the_sd_range_are_refused_and_every_returned_draw_is_in_the_support():
+def test_costs_far_outside_the_sd_range_are_refused_and_every_returned_draw_is_in_the_support(monkeypatch):
+    """0.3.1's lognormal refuses log costs far outside its sd range, so it pins that model by name."""
+    monkeypatch.setattr(M, "COST_MODEL", "ln")
     tiny, huge = math.log(1e-6), math.log(1e9)  # $0.000001 and $1e9: a log-cost sd near 24, the support ends at 3
     for d in (M.Data(kind="binary", cost_pairs=[(tiny, tiny), (huge, huge)]),
               M.Data(kind="binary", cost_lone={"base": [tiny, huge], "cand": []})):
