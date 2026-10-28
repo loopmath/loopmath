@@ -1,0 +1,38 @@
+# The herdr plugin of `loopmath harness`: watch a tune in a pane, see its status, stop it.
+# Link it with `loopmath harness herdr link` (it prints `herdr plugin link <this folder>` and asks first).
+
+id = "loopmath-harness"
+name = "loopmath harness"
+version = "0.4.0-rc.1"
+min_herdr_version = "0.9.3"
+description = "Watch, check and stop a loopmath harness tune from herdr."
+
+[[actions]]
+id = "watch"
+title = "loopmath harness: watch the newest tune"
+description = "Follow the newest tune's events in a split pane."
+command = ["herdr", "plugin", "pane", "open", "--plugin", "loopmath-harness", "--entrypoint", "watch", "--placement", "split"]
+
+[[actions]]
+id = "status"
+title = "loopmath harness: status of the newest tune"
+description = "A snapshot of the newest tune in a popup."
+command = ["herdr", "plugin", "pane", "open", "--plugin", "loopmath-harness", "--entrypoint", "status", "--placement", "popup"]
+
+[[actions]]
+id = "stop"
+title = "loopmath harness: stop the newest tune"
+description = "Ask the newest tune to stop; running sessions finish."
+command = ["loopmath", "harness", "stop"]
+
+[[panes]]
+id = "watch"
+title = "harness watch"
+placement = "split"
+command = ["loopmath", "harness", "watch", "--pretty"]
+
+[[panes]]
+id = "status"
+title = "harness status"
+placement = "popup"
+command = ["loopmath", "harness", "status"]

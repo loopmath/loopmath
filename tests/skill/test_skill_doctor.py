@@ -62,7 +62,8 @@ def test_logs_models_prices_fit_and_skill(machine, monkeypatch):
     shutil.copy(FIXTURES / "claude_code_sidechain.jsonl", session)
     old = machine["home"] / ".claude" / "projects" / "-repo" / "old.jsonl"
     shutil.copy(FIXTURES / "claude_code_sidechain.jsonl", old)
-    stale = time.time() - 60 * 86400
+    now = time.mktime(time.strptime("2026-09-23 17:00:00", "%Y-%m-%d %H:%M:%S"))
+    stale = now - 60 * 86400  # from the check's own now, so the file stays outside SCAN_DAYS on any real date
     os.utime(old, (stale, stale))
 
     fit = machine["store"] / "fits" / "fit_20260923150000"
@@ -72,7 +73,6 @@ def test_logs_models_prices_fit_and_skill(machine, monkeypatch):
     install.install("claude-code", "user")
 
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    now = time.mktime(time.strptime("2026-09-23 17:00:00", "%Y-%m-%d %H:%M:%S"))
     report = doctor.run_checks(machine["store"], now=now + 0.0,
                                run=_fake_run({"claude": "2.1.280 (Claude Code)", "codex": "codex-cli 0.155.1"}))
     checks = _by_name(report)

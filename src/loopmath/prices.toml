@@ -285,3 +285,26 @@ zero_ok = true  # OpenAI does not charge for cache writes; this zero is real
 output = 2.00
 todo = true
 source = "guess: mini tier, roughly a tenth of the gpt-5.4 rate"
+
+# ---------------------------------------------------------------------------
+# Claude 5.5 rows not yet read on the provider page. todo = true until they
+# are. The Haiku rates are its tier for prompts up to 100,000 input tokens;
+# a longer prompt is priced at the same rate, so its figure is a floor.
+# cache_write is the 1h rate (2x input), as for the rows above.
+# ---------------------------------------------------------------------------
+
+["claude-haiku-5-5"]
+input = 0.10
+cache_read = 0.01
+cache_write = 0.20
+output = 0.50
+todo = true
+source = "unconfirmed: Claude Haiku 5.5 at $0.10 input, $0.20 1h cache write, $0.01 cache read, $0.50 output for prompts up to 100,000 input tokens; not yet checked on https://platform.claude.com/docs/en/about-claude/pricing"
+
+["claude-sonnet-5-5"]
+input = 2.00
+cache_read = 0.10
+cache_write = 4.00
+output = 10.00
+todo = true
+source = "unconfirmed: Claude Sonnet 5.5 at $2 input, $4 1h cache write, $0.10 cache read, $10 output; not yet checked on https://platform.claude.com/docs/en/about-claude/pricing"

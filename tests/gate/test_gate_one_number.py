@@ -4,13 +4,17 @@ The cross-version proof (this tree against the previous release on a fresh store
 copy of a real store, every `recommend --json` and `posterior --json` leaf) is a release
 driver run outside the suite; its commands and results are in the report. The tests here
 hold the two properties that make that proof true by construction: nothing on the model path
-imports `loopmath.gate`, and `gate` never writes to a store. The one importer outside the gate is
-`loopmath.integrations.dspy`, by two named lines, and nothing in the package imports an integration,
-so only a caller's own `import` reaches it.
+imports `loopmath.gate`, and `gate` never writes to a store. Two modules outside the gate import it,
+each by named lines inside functions. `loopmath.integrations.dspy` has two such lines, and nothing in
+the package imports an integration, so only a caller's own `import` reaches it.
+`loopmath.harness.tune.engine` has one, for its `gate` delivery rule. Nothing outside `harness/tune/`
+imports the tune package, except the CLI registry's lazy handler strings, so only the `harness`
+command or a caller's own `import` reaches it.
 """
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -47,6 +51,22 @@ INTEGRATION_IMPORTS = {
     ("integrations/dspy.py", "from loopmath.gate import decide as gate_decide"),
 }
 
+# The tune engine's `gate` delivery rule calls the gate from inside `gate_decide`. The tune package is reached
+# only through the registry's lazy `harness` handlers or a caller's own import
+# (test_nothing_outside_the_tune_package_imports_it), and the import is inside a function
+# (test_the_tune_import_of_the_gate_is_inside_a_function), so it stays off the model path. Exact line.
+TUNE_IMPORTS = {
+    ("harness/tune/engine.py", "from ...gate import GatePolicy, decide"),
+}
+
+IMPORTS_TUNE = re.compile(
+    r"^\s*(from\s+loopmath\.harness\.tune\b|import\s+loopmath\.harness\.tune\b"
+    r"|from\s+loopmath\.harness\s+import\s+.*\btune\b|from\s+\.+(harness\.)?tune\b"
+    r"|from\s+\.+(harness)?\s+import\s+.*\btune\b)"
+    r"|import_module\(\s*[\"']loopmath\.harness\.tune\b"
+    r"|_lazy\(\s*[\"']loopmath\.harness\.tune\b"
+)
+
 
 def test_nothing_outside_the_gate_imports_it():
     offenders = []
@@ -61,16 +81,65 @@ def test_nothing_outside_the_gate_imports_it():
             if rel == "cli_registry.py" and any(f'_lazy("loopmath.gate.{h}")' in line
                                                 for h in ("commands:gate", "winner_cli:gate_winner")):
                 continue
-            if (rel, line.strip()) in INTEGRATION_IMPORTS:
+            if (rel, line.strip()) in INTEGRATION_IMPORTS | TUNE_IMPORTS:
                 continue
             offenders.append(f"{rel}: {line.strip()}")
     assert offenders == []
 
 
-def test_the_named_integration_imports_of_the_gate_are_still_there():
+def test_the_named_imports_of_the_gate_are_still_there():
     # Keeps the allowance honest: an entry goes when its line goes.
-    for rel, line in INTEGRATION_IMPORTS:
+    for rel, line in INTEGRATION_IMPORTS | TUNE_IMPORTS:
         assert line in [x.strip() for x in (SRC / rel).read_text(encoding="utf-8").splitlines()], (rel, line)
+
+
+def _imports_the_gate(node: ast.AST) -> bool:
+    if not isinstance(node, (ast.Import, ast.ImportFrom)):
+        return False
+    if isinstance(node, ast.Import):
+        return any(a.name == "loopmath.gate" or a.name.startswith("loopmath.gate.") for a in node.names)
+    mod = node.module or ""
+    if node.level == 0:
+        return mod == "loopmath.gate" or mod.startswith("loopmath.gate.")
+    return mod == "gate" or mod.startswith("gate.") or (not mod and any(a.name == "gate" for a in node.names))
+
+
+def test_the_tune_import_of_the_gate_is_inside_a_function():
+    for rel in {rel for rel, _ in TUNE_IMPORTS}:
+        tree = ast.parse((SRC / rel).read_text(encoding="utf-8"))
+        inside = {id(n) for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  for n in ast.walk(fn)}
+        found = [n for n in ast.walk(tree) if _imports_the_gate(n)]
+        assert found, rel
+        assert all(id(n) in inside for n in found), (rel, [n.lineno for n in found if id(n) not in inside])
+
+
+def test_nothing_outside_the_tune_package_imports_it():
+    offenders = []
+    for p in SRC.rglob("*.py"):
+        rel = p.relative_to(SRC).as_posix()
+        if rel.startswith("harness/tune/"):
+            continue
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if not IMPORTS_TUNE.search(line):
+                continue
+            # The registry names the harness commands' handlers as lazy strings only.
+            if (rel == "cli_registry.py" and '_lazy("loopmath.harness.tune.' in line
+                    and not re.match(r"\s*(from|import)\s", line)):
+                continue
+            offenders.append(f"{rel}: {line.strip()}")
+    assert offenders == []
+
+
+def test_the_tune_pattern_sees_each_import_form():
+    for line in ("from loopmath.harness.tune import engine", "import loopmath.harness.tune.engine",
+                 "from loopmath.harness import digest, tune", "from .tune import engine",
+                 "from ..harness.tune.engine import start", "from . import tune", "from ..harness import tune",
+                 'mod = import_module("loopmath.harness.tune.commands")',
+                 '    "harness": _lazy("loopmath.harness.tune.commands:run"),'):
+        assert IMPORTS_TUNE.search(line), line
+    for line in ("from .tuner import x", "from loopmath.harness_runs import rows", "tune=args.tune,"):
+        assert not IMPORTS_TUNE.search(line), line
 
 
 def test_nothing_in_the_package_imports_an_integration():

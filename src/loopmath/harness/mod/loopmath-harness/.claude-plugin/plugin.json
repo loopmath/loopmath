@@ -1,0 +1,21 @@
+{
+  "name": "loopmath-harness",
+  "version": "0.4.0-rc.1",
+  "description": "Configure, start and watch a loopmath harness tune from Claude Code. Runs the loopmath CLI; makes no model call itself.",
+  "author": { "name": "QKV Labs" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "loopmath_bin": {
+      "type": "string",
+      "title": "loopmath command",
+      "description": "The loopmath executable the mod runs (a name on PATH or a full path).",
+      "default": "loopmath"
+    },
+    "config_path": {
+      "type": "string",
+      "title": "Config file",
+      "description": "The tune's config file; empty means loopmath-harness.toml in the session's folder.",
+      "default": ""
+    }
+  }
+}

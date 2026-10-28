@@ -833,6 +833,239 @@ def _add_tasks(sub) -> None:
     q.set_defaults(func=_lazy("loopmath.tasks.commands:tasks_pick"))
 
 
+HARNESS_DESCRIPTION = """Experimental: tune a Claude Code harness on your own task. Editor sessions propose edits to the
+repo's CLAUDE.md, skills and agents; a screening design of task runs measures each edit against your score;
+the kept edits are delivered only when they beat the base. Every config field has a flag."""
+
+HARNESS_FLOW = """flow:
+  loopmath harness init                    write loopmath-harness.toml
+  loopmath harness plan                    sessions, cost point and range, time, preflight; no model call
+  loopmath harness run --detach --yes      start a tune once its spend is agreed
+  loopmath harness watch ID                follow it to the end
+  loopmath harness show ID                 what was delivered, and why
+  loopmath harness apply ID                write the delivered harness into the repo; commits nothing
+
+exit codes: 0 delivered, 1 error, 2 usage, 3 refused by budget or preflight, 4 not enough signal (the base is
+delivered), 5 stopped, 6 paused (resume continues)"""
+
+HARNESS_VERBS = ("init", "plan", "run", "status", "watch", "stop", "resume", "show", "apply", "list", "config",
+                 "schema", "skill", "mod", "herdr")
+
+
+HARNESS_FLAGS = "loopmath.harness.tune.commands:add_config_flags"
+
+
+def _late_flags(base: type) -> type:
+    """A parser class whose `flags=` target (a `_lazy` string) adds its flags the first time the parser parses or
+    prints help, so the config flags, generated from the tune's field table, load only for those verbs."""
+
+    class LateFlags(base):
+        def __init__(self, *a, flags: str | None = None, **kw):
+            super().__init__(*a, **kw)
+            self._late = flags
+
+        def _load(self) -> None:
+            target, self._late = self._late, None
+            if target:
+                _lazy(target)(self)
+
+        def parse_known_args(self, args=None, namespace=None):
+            self._load()
+            return super().parse_known_args(args, namespace)
+
+        def format_help(self):
+            self._load()
+            return super().format_help()
+
+        def format_usage(self):
+            self._load()
+            return super().format_usage()
+
+    return LateFlags
+
+
+def _add_harness(sub) -> None:
+    target = "loopmath.harness.tune.commands:"
+    p = sub.add_parser("harness", help="experimental: tune a Claude Code harness: init, plan, run, watch, show, "
+                       "apply", description=HARNESS_DESCRIPTION, epilog=HARNESS_FLOW,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    hs = p.add_subparsers(dest="harness_command", required=True, metavar="{" + ",".join(HARNESS_VERBS) + "}",
+                          parser_class=_late_flags(type(p)))
+
+    def ident(q, nargs="?", text="the tune: its id, the end of its id, or its folder (default: the newest)"):
+        q.add_argument("id", nargs=nargs, default=None, metavar="ID", help=text)
+
+    q = hs.add_parser("init", flags=HARNESS_FLAGS,
+                      help="write loopmath-harness.toml with the defaults, one comment per field",
+                      description="Write the config file: the defaults and any flags, one comment per field.")
+    q.add_argument("--out", default=None, metavar="PATH", help="where to write it (default ./loopmath-harness.toml)")
+    q.add_argument("--force", action="store_true", help="overwrite an existing file")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "init_verb"))
+
+    q = hs.add_parser("plan", flags=HARNESS_FLAGS,
+                      help="the dry run: stages, sessions, cost point and range, time, preflight",
+                      description="The dry run, with no model call: the resolved stages and their order, session "
+                                  "counts by component, the cost point and range, the worst-case time, the "
+                                  "design's residual df, the signal and budget warnings, and the preflight checks.")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "plan_verb"))
+
+    q = hs.add_parser("run", flags=HARNESS_FLAGS,
+                      help="start a tune and print its id (spends model calls)",
+                      description="Start a tune. It prints the plan and asks on a terminal; without one it "
+                                  "refuses unless --yes. With --detach the engine runs as its own session and the "
+                                  "command returns at once.")
+    q.add_argument("--detach", action="store_true", help="return at once; the engine runs on in its own session")
+    q.add_argument("--yes", action="store_true", help="the spend is agreed: do not ask")
+    q.add_argument("--parts", default=None, help=argparse.SUPPRESS)
+    _common(q)
+    q.set_defaults(func=_lazy(target + "run_verb"))
+
+    q = hs.add_parser("status", help="a snapshot: stage, sessions, spend against the caps, last events",
+                      description="A snapshot of a tune, folded from its event stream.")
+    ident(q)
+    q.add_argument("--line", action="store_true", help="one line, as the Claude Code mod's band shows it")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "status_verb"))
+
+    q = hs.add_parser("watch", help="follow a tune's events until it ends",
+                      description="Follow a tune's events.jsonl until tune.end (or a pause with no engine). The "
+                                  "exit code is the tune's.")
+    ident(q)
+    q.add_argument("--from", dest="from_seq", type=int, default=1, metavar="SEQ", help="start at this seq")
+    q.add_argument("--pretty", action="store_true", help="readable lines (the default without --json)")
+    q.add_argument("--poll", type=float, default=0.5, help=argparse.SUPPRESS)
+    q.add_argument("--grace", type=float, default=10.0, help=argparse.SUPPRESS)
+    _common(q, json_flag=False)
+    q.add_argument("--json", action="store_true", help="the raw events, one JSON object per line")
+    q.set_defaults(func=_lazy(target + "watch_verb"))
+
+    q = hs.add_parser("stop", help="ask a tune to stop: no new session starts",
+                      description="Write the stop file. The engine finishes the running sessions, or with --now "
+                                  "kills them by recorded pid, then ends stopped.")
+    ident(q)
+    q.add_argument("--now", action="store_true", help="kill the running sessions by recorded pid")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "stop_verb"))
+
+    q = hs.add_parser("resume", help="continue a paused or interrupted tune (spends model calls)",
+                      description="Continue a tune from its state.json. A session with no end record runs again "
+                                  "from a fresh worktree.")
+    ident(q, nargs=None, text="the tune: its id, the end of its id, or its folder")
+    q.add_argument("--detach", action="store_true", help="return at once; the engine runs on in its own session")
+    q.add_argument("--parts", default=None, help=argparse.SUPPRESS)
+    _common(q)
+    q.set_defaults(func=_lazy(target + "resume_verb"))
+
+    q = hs.add_parser("show", help="the delivered harness and why; the effects table; spend by component",
+                      description="What a tune delivered and why, with the effects table.")
+    ident(q)
+    q.add_argument("--diff", action="store_true", help="the delivered harness against the base")
+    q.add_argument("--effects", action="store_true", help="the effects table")
+    q.add_argument("--ledger", action="store_true", help="spend by role and model, beside Claude Code's own figure")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "show_verb"))
+
+    q = hs.add_parser("apply", help="write the delivered harness into the repo; commits nothing",
+                      description="Write the delivered harness files into the repo's working tree (the hooks key "
+                                  "only of .claude/settings.json). Refuses when those paths have uncommitted "
+                                  "changes. Commits nothing.")
+    ident(q)
+    q.add_argument("--to", default=None, metavar="REPO", help="this working tree (default: the tune's repo)")
+    q.add_argument("--work", action="store_true", help="also apply the delivered run's diff")
+    q.add_argument("--dry-run", action="store_true", help="say what would be written, and write nothing")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "apply_verb"))
+
+    q = hs.add_parser("list", help="tunes, newest first", description="The tunes in the store, newest first.")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "list_verb"))
+
+    q = hs.add_parser("config", help="read or edit loopmath-harness.toml in place, keeping comments",
+                      description="Read or edit the config file in place. Comments, unknown keys and the order "
+                                  "stay; every value is checked against its field.")
+    cs = q.add_subparsers(dest="harness_config_command", required=True, metavar="{get,set,unset}")
+    c = cs.add_parser("get", help="a value, or the whole config with --all",
+                      description="A value (file, else default), or the whole effective config.")
+    c.add_argument("key", nargs="?", default=None, metavar="KEY", help="a dotted key, such as budget.usd")
+    c.add_argument("--all", action="store_true", help="the whole effective config, and its errors")
+    c.add_argument("--config", default=None, metavar="PATH", help="the config file")
+    _common(c)
+    c.set_defaults(func=_lazy(target + "config_get_verb"))
+    c = cs.add_parser("set", help="set one key", description="Set one key in the file, keeping comments.")
+    c.add_argument("key", metavar="KEY", help="a dotted key: TABLE.KEY or editors.N.KEY")
+    c.add_argument("value", metavar="VALUE", help="the value, read as TOML when it parses, else as text")
+    c.add_argument("--config", default=None, metavar="PATH", help="the config file")
+    _common(c)
+    c.set_defaults(func=_lazy(target + "config_set_verb"))
+    c = cs.add_parser("unset", help="remove one key (its default applies) or one editor block (editors.N)",
+                      description="Remove one key from the file, or one editor block with editors.N.")
+    c.add_argument("key", metavar="KEY", help="a dotted key, or editors.N")
+    c.add_argument("--config", default=None, metavar="PATH", help="the config file")
+    _common(c)
+    c.set_defaults(func=_lazy(target + "config_unset_verb"))
+
+    q = hs.add_parser("schema", help="the config's JSON Schema", description="The config's fields; with --json "
+                      "its JSON Schema, which the Claude Code mod draws its configure pane from.")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "schema_verb"))
+
+    q = hs.add_parser("skill", help="the agent skill doc for driving this CLI",
+                      description="The skill doc for an agent that drives `loopmath harness`.")
+    q.add_argument("--format", default="md", choices=["md", "json"], help="markdown (default) or the same as data")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "skill_verb"))
+
+    q = hs.add_parser("mod", help="the Claude Code mod: install, uninstall, path, validate",
+                      description="The Claude Code mod (/harness). install and uninstall print each claude "
+                                  "command and ask before running it.")
+    ms = q.add_subparsers(dest="harness_mod_command", required=True, metavar="{install,uninstall,path,validate}")
+    for name, text in (("install", "copy the mod out of the package and add it to Claude Code"),
+                       ("uninstall", "remove the mod from Claude Code")):
+        m = ms.add_parser(name, help=text, description=text[0].upper() + text[1:] + ".")
+        m.add_argument("--scope", default="user", choices=["user", "project"], help="Claude Code's scope "
+                       "(default user)")
+        m.add_argument("--print", dest="print_only", action="store_true", help="print the commands and run nothing")
+        m.add_argument("--yes", action="store_true", help="run them without asking")
+        _common(m)
+        m.set_defaults(func=_lazy(target + "mod_verb"))
+    m = ms.add_parser("path", help="the mod folder", description="The packaged mod folder, and the installed copy.")
+    _common(m)
+    m.set_defaults(func=_lazy(target + "mod_verb"))
+    m = ms.add_parser("validate", help="claude plugin validate --strict on the mod, in a throwaway config folder",
+                      description="Run `claude plugin validate --strict` on the packaged mod under a throwaway "
+                                  "CLAUDE_CONFIG_DIR.")
+    m.add_argument("--test", action="store_true", help="also run `claude plugin test` on it")
+    _common(m)
+    m.set_defaults(func=_lazy(target + "mod_verb"))
+
+    q = hs.add_parser("herdr", help="the herdr plugin: link, unlink, path",
+                      description="The herdr plugin (watch, status and stop actions). link and unlink print the "
+                                  "herdr command and ask before running it.")
+    hs2 = q.add_subparsers(dest="harness_herdr_command", required=True, metavar="{link,unlink,path}")
+    for name, text in (("link", "link the packaged plugin into herdr"), ("unlink", "unlink it")):
+        m = hs2.add_parser(name, help=text, description=text[0].upper() + text[1:] + ".")
+        m.add_argument("--print", dest="print_only", action="store_true", help="print the command and run nothing")
+        m.add_argument("--yes", action="store_true", help="run it without asking")
+        _common(m)
+        m.set_defaults(func=_lazy(target + "herdr_verb"))
+    m = hs2.add_parser("path", help="the plugin folder", description="The packaged herdr plugin folder.")
+    _common(m)
+    m.set_defaults(func=_lazy(target + "herdr_verb"))
+
+    # internal verbs: no help, so they stay out of the listing
+    q = hs.add_parser("_drive")
+    q.add_argument("spec")
+    q.set_defaults(func=_lazy(target + "drive_verb"), json=False)
+    q = hs.add_parser("_session")
+    q.add_argument("tune")
+    q.add_argument("label")
+    q.add_argument("--pane", default="")
+    q.add_argument("--parts", default=None)
+    q.set_defaults(func=_lazy(target + "session_verb"), json=False)
+
+
 def register(sub) -> None:
     """Add every 0.1.0 command to the top-level subparsers."""
     _add_planning(sub)
@@ -844,6 +1077,7 @@ def register(sub) -> None:
     importlib.import_module("loopmath.builder.cli").add(sub)  # `builder` (0.2.1)
     _add_gate(sub)
     _add_tasks(sub)
+    _add_harness(sub)
 
 
 # Handler targets, for the registry test: every one must import and be callable.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopmath"
-version = "0.3.2"
+version = "0.4.0rc1"
 description = "Plan agent workflows, record how they went, and learn from your own Claude Code and Codex logs"
 readme = "README.md"
 license = "MIT"
@@ -94,6 +94,14 @@ loopmath = [
     "priors/bundle/*",
     "views/assets/*",
     "ocp/schema/*.json",
+    "harness/mod/loopmath-harness/README.md",
+    "harness/mod/loopmath-harness/.gitignore",
+    "harness/mod/loopmath-harness/.claude-plugin/*.json",
+    "harness/mod/loopmath-harness/hooks/*.json",
+    "harness/mod/loopmath-harness/hooks/*.ts",
+    "harness/mod/loopmath-harness/hooks/*.tsx",
+    "harness/mod/loopmath-harness/types/*.d.ts",
+    "harness/herdr/loopmath-harness/*.toml",
 ]
 
 [tool.setuptools.data-files]

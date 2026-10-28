@@ -57,8 +57,8 @@ def test_the_run_screen_flag_says_experimental(capsys, verb):
 
 def test_the_changelog_names_the_screen_experimental():
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert text.startswith("# Changelog\n\n## 0.3.2")
-    section = text.split("## 0.3.2", 1)[1].split("\n## 0.3.1", 1)[0]
+    assert text.startswith("# Changelog\n") and "\n## 0.3.2 (" in text  # wherever later releases put it
+    section = text.split("\n## 0.3.2 (", 1)[1].split("\n## ", 1)[0]
     assert "`screen`" in section and "experimental" in section
     for verb in ("screen start", "screen next", "screen status", "screen apply", "run record --screen"):
         assert verb in section, verb

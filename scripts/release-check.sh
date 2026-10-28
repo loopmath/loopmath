@@ -21,6 +21,7 @@
 #        scripts/release-check.sh [--python PY] --prior-only DIR
 #   PY builds and supplies the dependencies: $LOOPMATH_PY, then python3. It needs `build`,
 #   `twine` and the core dependencies installed (online: only a Python with venv and pip).
+#   `claude` must be on PATH: the installed `loopmath harness mod validate --test` runs it.
 #   --online pypi or testpypi (dependencies from PyPI), or a simple index URL.
 #   --version defaults to the version in this tree's pyproject.toml.
 #   --keep leaves the temp folder in place. Exit 0 only when every check passes.
@@ -39,7 +40,7 @@ while [ $# -gt 0 ]; do
     --online) online="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
     --prior-only) prior_only="$2"; shift 2 ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "release-check.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -453,6 +454,18 @@ check "loopmath recommend --html" loopmath recommend --type feature --repo acme/
 check "loopmath runs --html" loopmath runs --html
 check "loopmath posterior --html" loopmath posterior --html
 check "loopmath status --json" loopmath status --json
+
+# The Claude Code mod in the wheel: `claude plugin validate --strict` and the mod's own tests
+# (`claude plugin test`), run by the installed command under a throwaway CLAUDE_CONFIG_DIR, so the
+# user's own Claude Code config is not touched. Neither calls a model or the network. Without
+# claude on PATH the check fails.
+claude_bin="$(command -v claude 2>/dev/null || true)"
+if [ -n "$claude_bin" ]; then
+  check "loopmath harness mod validate --test (temp Claude config)" \
+    env PATH="$venv/bin:${claude_bin%/*}:/usr/bin:/bin" loopmath harness mod validate --test
+else
+  step "loopmath harness mod validate --test (temp Claude config)"; fail "claude is not on PATH"
+fi
 
 # The research verbs need the [bayes] extra, which this venv lacks: they must say so.
 step "loopmath research fit names the missing [bayes] extra"

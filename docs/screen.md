@@ -1,6 +1,6 @@
 # Screening harness edits (experimental)
 
-`loopmath screen` is experimental in 0.3.2: it works and has tests, but it has had one real run so far, and its
+`loopmath screen` is experimental in 0.4.0rc1: it works and has tests, but it has had one real run so far, and its
 output may change.
 
 Use it when you have several small, separate edits to a harness (lines of a CLAUDE.md, a hook, a setting) and want

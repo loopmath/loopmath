@@ -56,9 +56,13 @@ fixture must succeed, and so must the loop on a temporary store:
 `loopmath ocp validate` on the OCP v0.3 examples in `spec/examples/v0.3/`,
 `loopmath fit --json`, `loopmath recommend` with `--json` and with `--html`,
 `loopmath runs --html`, `loopmath posterior --html` and `loopmath status --json`.
+`loopmath harness mod validate --test` must pass too: it runs
+`claude plugin validate --strict` and the mod's own tests (`claude plugin test`)
+on the Claude Code mod in the wheel, under a throwaway `CLAUDE_CONFIG_DIR`, with
+no model or network call. `claude` must be on `PATH`; without it the check fails.
 This check catches a missing console entry point or package data, including
 `loopmath/prices.toml`, the six skills under `loopmath/skill/skills/`, the OCP schemas, the
-workflow catalog, the prior bundle and the view pages.
+workflow catalog, the prior bundle, the view pages and the Claude Code mod.
 The environment holds the wheel's declared core dependencies and nothing else:
 no extra, and nothing borrowed from another environment, so these checks show
 that a plain `pip install loopmath` runs the loop. The check also confirms that

@@ -4,11 +4,15 @@ The cross-version proof (this tree against the previous release on a fresh store
 every `recommend --json` and `posterior --json` leaf) is a release driver run outside the suite; its commands and
 results are in the report. The tests here hold the properties that make that proof true by construction: only the
 registry and the `--screen` branch of `run start` and `run record` reach the screen, a run started or recorded
-without `--screen` never imports it, and reading a screen writes nothing.
+without `--screen` never imports it, and reading a screen writes nothing. One other importer is allowed:
+`loopmath.harness.tune` (its `design`, `effects` and `edits` modules), by four named lines inside functions.
+Nothing outside `harness/tune/` imports the tune package except the CLI registry's lazy handler strings
+(tests/gate/test_gate_one_number.py), so only the `harness` command or a caller's own `import` reaches it.
 """
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import re
 import sys
@@ -31,6 +35,18 @@ ALLOWED = {
     "store/commands.py": re.compile(r"from \.\.screen import record as screens$"),
 }
 
+# The tune package builds its designs, its head view and its edit folders on the screen's own code, from inside
+# functions. It is reached only through the registry's lazy `harness` handlers or a caller's own import
+# (test_nothing_outside_the_tune_package_imports_it in tests/gate/test_gate_one_number.py), and each import is
+# inside a function (test_the_tune_imports_of_the_screen_are_inside_functions), so they stay off the run path.
+# Exact lines: a new or widened import still fails.
+TUNE_IMPORTS = {
+    ("harness/tune/design.py", "from ...screen.design import _plackett_burman"),
+    ("harness/tune/design.py", "from ...screen.design import fold_over"),
+    ("harness/tune/effects.py", "from ...screen import model"),
+    ("harness/tune/edits.py", "from ...screen import edits as screen_edits"),
+}
+
 
 def test_only_the_registry_and_the_screen_flag_reach_the_screen():
     offenders = []
@@ -43,8 +59,37 @@ def test_only_the_registry_and_the_screen_flag_reach_the_screen():
                 continue
             if rel in ALLOWED and ALLOWED[rel].search(line.strip()):
                 continue
+            if (rel, line.strip()) in TUNE_IMPORTS:
+                continue
             offenders.append(f"{rel}: {line.strip()}")
     assert offenders == []
+
+
+def test_the_named_tune_imports_of_the_screen_are_still_there():
+    # Keeps the allowance honest: an entry goes when its line goes.
+    for rel, line in TUNE_IMPORTS:
+        assert line in [x.strip() for x in (SRC / rel).read_text(encoding="utf-8").splitlines()], (rel, line)
+
+
+def _imports_the_screen(node: ast.AST) -> bool:
+    if isinstance(node, ast.Import):
+        return any(a.name == "loopmath.screen" or a.name.startswith("loopmath.screen.") for a in node.names)
+    if not isinstance(node, ast.ImportFrom):
+        return False
+    mod = node.module or ""
+    if node.level == 0:
+        return mod == "loopmath.screen" or mod.startswith("loopmath.screen.")
+    return mod == "screen" or mod.startswith("screen.") or (not mod and any(a.name == "screen" for a in node.names))
+
+
+def test_the_tune_imports_of_the_screen_are_inside_functions():
+    for rel in {rel for rel, _ in TUNE_IMPORTS}:
+        tree = ast.parse((SRC / rel).read_text(encoding="utf-8"))
+        inside = {id(n) for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  for n in ast.walk(fn)}
+        found = [n for n in ast.walk(tree) if _imports_the_screen(n)]
+        assert found, rel
+        assert all(id(n) in inside for n in found), (rel, [n.lineno for n in found if id(n) not in inside])
 
 
 def _drop_screen_modules(monkeypatch):

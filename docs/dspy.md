@@ -1,6 +1,6 @@
 # DSPy: the gate at GEPA's and MIPROv2's accept step (experimental)
 
-`loopmath.integrations.dspy` is experimental in 0.3.2: it works and has tests, written from DSPy's and GEPA's
+`loopmath.integrations.dspy` is experimental in 0.4.0rc1: it works and has tests, written from DSPy's and GEPA's
 source, but it has not yet run with either installed, and its output may change.
 
 `loopmath.integrations.dspy` asks loopmath's gate whether a DSPy optimizer's new prompt is really better

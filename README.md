@@ -248,6 +248,21 @@ These commands are for changing the harness your agents run with and finding out
 - **DSPy's GEPA and MIPROv2 (experimental).** An optimizer's accept step keeps a new prompt when its score on a few instances goes up, and on 3 instances that keeps many children that are no better. `loopmath.integrations.dspy` puts the gate there: `GEPAAcceptance` is a GEPA acceptance criterion (run GEPA with `use_merge=False`), `MIPROv2Gate` confirms MIPROv2's replacements, and `run([], [], more)` gates any compiled program against its student. It imports neither dspy nor gepa. See [the DSPy guide](docs/dspy.md).
 - **`tasks pick` (experimental).** For a loop or a benchmark run that scores each candidate on some of a suite's tasks instead of all of them. `loopmath tasks pick --candidate SEL` reads the finished runs in the store, or `--runs FILE`, learns each task's difficulty and discrimination from the other arms' runs on it, and prints the candidate's suite score so far (the mean over the suite of its chance of acceptance per task) with 80% and 95% ranges, whether to stop, and the next task to run. From a store it writes that task's file and the `run record --task-file F --label KEY=VALUE --home PATH` line that records the run in the same store, so the next call sees it. It stops when the 80% range is as narrow as one full run of the suite would give (`--halfwidth` sets another target), or, with `--versus X` or `--versus-arm SEL`, when the score is above or below a number or another arm's at `--level`. `--method` chooses the next task: the largest expected cut in the score's variance (`loss`, the default), information, one fixed order, random, or stratified by predicted rate. The default learns fastest when the candidate behaves like the arms in the history; for a candidate unlike all of them (a new model rather than a change to a known one's harness), `--method stratified` or `random` keeps the ranges closer to honest at the cost of more sessions. A candidate that scores below every arm in the history (a broken setup, say) is estimated too high by every method, and its ranges can miss even at the full suite; under `--method random` the accepted count over the sessions, which every call prints, is the check. Every estimate prints both warnings, in text and in `--json` (`estimate.warnings`). With `--versus`, a bar within about 0.01 of the candidate's score is close to a coin toss for any method; to ask whether a change helps by at least some margin, pass the bar plus that margin. The ranges are approximate: they leave out the history fit's own error shared with other arms. `loopmath tasks pick --help` lists the rest.
 
+## Tune a Claude Code harness
+
+`loopmath harness` (experimental) tunes a repo's Claude Code harness (CLAUDE.md, skills and agents) on a task you run again and again: editor sessions propose edits, a screening design of task runs measures each one, and the kept edits are delivered only when they beat the base. It follows the design measured in stream 1 of our harness2 study; this release has not been measured on its own yet. Every session spends model calls, so `plan` prices the tune before any runs:
+
+```
+loopmath harness init                    # loopmath-harness.toml, one comment per field
+loopmath harness config set task.prompt "add a --json flag to the export command"
+loopmath harness plan                    # no model call; on the defaults: cost: 2.72 USD (1.72 to 6.38)
+loopmath harness run --detach --yes      # prints the tune id; the engine runs on in its own session
+loopmath harness watch                   # follow the events to the end
+loopmath harness apply --dry-run         # the files it would write; `apply` writes them and commits nothing
+```
+
+Every config field has a flag (`--budget-usd 6`), and `loopmath harness skill` prints the guide an agent follows to drive these commands. In Claude Code, `loopmath harness mod install` adds `/harness`: a pane to configure, plan and start a tune, and a line above the prompt while it runs. The [harness guide](docs/harness.md) has the fields, the events and the isolation.
+
 ## Does my plugin pay?
 
 `claude plugin eval` grades a plugin's eval cases with and without the plugin. `adapt plugin-eval` (experimental) reads its result, and loopmath turns the per-case deltas into a decision: adopt, reject, or run more, with ranges on the gain and, given each run's cost with `--cost-from`, on cost per accepted result. It reads the file only and never runs Claude Code.
@@ -302,6 +317,7 @@ loopmath graph --workspace NAME --format html --out graph.html
 - [OpenEvolve and ShinkaEvolve runs](docs/adapters.md#openevolve-and-shinkaevolve): `adapt openevolve`, `adapt shinkaevolve` and `recommend --role`, which model to give an evolution loop's mutator
 - [Release policy](docs/release.md)
 - [Screening harness edits](docs/screen.md): `screen`, with a worked 48-session example and its limits
+- [Tuning a Claude Code harness](docs/harness.md): `loopmath harness`, the `/harness` mod and the herdr runner
 - [Packaged model prices](src/loopmath/prices.toml)
 
 ## License

@@ -1,0 +1,6 @@
+{
+  "name": "loopmath",
+  "description": "loopmath mods for Claude Code",
+  "owner": { "name": "QKV Labs" },
+  "plugins": [{ "name": "loopmath-harness", "source": "./" }]
+}
