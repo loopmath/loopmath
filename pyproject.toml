@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopmath"
-version = "0.3.2"
+version = "0.3.3"
 description = "Plan agent workflows, record how they went, and learn from your own Claude Code and Codex logs"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [
-    { name = "QKV Labs" },
+    { name = "loopmath" },
 ]
 keywords = [
     "agents",

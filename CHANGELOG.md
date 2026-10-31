@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3 (2026-10-31)
+
+Metadata only: the package's author and the copyright holder in `LICENSE` are now loopmath instead of QKV Labs. The code, commands and output are 0.3.2's.
+
 ## 0.3.2 (2026-10-21)
 
 `screen`, `gate winner`, `tasks pick`, `adapt plugin-eval`, `adapt openevolve`, `adapt shinkaevolve` and `recommend --role` are new, and experimental, as is the accept gate for DSPy's GEPA and MIPROv2 optimizers (`loopmath.integrations.dspy`). `screen` tests several harness edits at once and suggests the subset worth a `check-change`; `gate winner` gives a search winner's gain after the winner's curse; `tasks pick` scores a candidate on fewer of a suite's tasks. Three defaults change: `check-change from-runs` compares cases, not runs, when score rows have replicates, and sets its cap from the pairs it has; `check-change` and `gate` value the next pairs by one rule; and `gate` stops on that value only when the next pairs are certified not worth their price. A negative cost or token count is refused by name. Runs whose recorded costs are all $0 price a pair at $0, and by default a check in which an arm mixes $0 and priced runs decides on the outcomes alone. Fits, predictions and recommendations are 0.3.1's unless you set the opt-in `belief.success_head` (below). The experimental parts have had few real runs or none, and their output may change.
