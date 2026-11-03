@@ -143,15 +143,20 @@ source = "OpenCode 1.17.11 model catalog, opencode free route"
 
 # ---------------------------------------------------------------------------
 # Rows checked on the provider pages on 2026-09-23; gpt-6.1-sol added and
-# gpt-6-luna checked again on 2026-10-12 (no newer luna is listed). as_of
-# stays the copied table's date: a row with no "checked" date takes it as
-# the date of its tariff, and those rows were not read again.
+# gpt-6-luna checked again on 2026-10-12 (no newer luna is listed);
+# claude-sonnet-5-5 and claude-haiku-5-5 confirmed and gpt-6.1-terra added
+# on 2026-11-03. as_of stays the copied table's date: a row with no
+# "checked" date takes it as the date of its tariff, and those rows were
+# not read again.
 # Each source names its page and the date it was read; the tariff record
 # written with every priced attempt takes its date from "checked YYYY-MM-DD".
 #
 # Anthropic (https://platform.claude.com/docs/en/about-claude/pricing): cache_write is the 1-hour write rate (2x input), as
 #   for the rows above. Claude Code writes the 1-hour cache: 64.2M of 64.2M
 #   cache-write tokens in 200 recent sessions on the build machine were 1h.
+#   Claude Haiku 5.5 is priced by prompt length: its row is the tier for
+#   prompts up to 100,000 input tokens, a longer prompt bills 5x those rates
+#   and is priced at the same rate here, so a Haiku 5.5 figure is a floor.
 # OpenAI (https://developers.openai.com/api/docs/pricing and each model's
 #   page): GPT-6 bills cache writes (1.25x input), but Codex reported 0
 #   cache-write tokens in all 91 recent GPT-6 sessions on the build machine,
@@ -167,6 +172,20 @@ cache_read = 0.20
 cache_write = 8.00
 output = 20.00
 source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-23: Claude Opus 5.5 at $4 input, $8 1h cache write, $0.20 cache read (0.05x input), $20 output; cache_write is the 1h rate"
+
+["claude-sonnet-5-5"]
+input = 2.00
+cache_read = 0.10
+cache_write = 4.00
+output = 10.00
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-03: Claude Sonnet 5.5 at $2 input, $4 1h cache write, $0.10 cache read (0.05x input), $10 output; cache_write is the 1h rate"
+
+["claude-haiku-5-5"]
+input = 0.10
+cache_read = 0.01
+cache_write = 0.20
+output = 0.50
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-03: Claude Haiku 5.5 at $0.10 input, $0.20 1h cache write, $0.01 cache read, $0.50 output for prompts up to 100,000 tokens; prompts over 100,000 tokens bill $0.50 input, $1 1h cache write, $0.05 cache read, $2.50 output and are priced at this rate (a floor); cache_write is the 1h rate"
 
 ["gpt-6-astra"]
 input = 10.00
@@ -188,6 +207,13 @@ cache_read = 0.10
 cache_write = 2.50
 output = 10.00
 source = "official list, https://developers.openai.com/api/docs/models/gpt-6.1-sol, checked 2026-10-12: standard tier, $2 input, $0.10 cached input, $2.50 cache write, $10 output; prompts over 272K input tokens bill more and are priced at this rate (a floor)"
+
+["gpt-6.1-terra"]
+input = 1.00
+cache_read = 0.05
+cache_write = 1.25
+output = 5.00
+source = "official list, https://developers.openai.com/api/docs/models/gpt-6.1-terra, checked 2026-11-03: standard tier, $1 input, $0.05 cached input, $1.25 cache write (30-minute retention; 12-hour retention is $2.50), $5 output; prompts over 272K input tokens bill more and are priced at this rate (a floor)"
 
 ["gpt-6-luna"]
 input = 0.10

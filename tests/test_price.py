@@ -108,11 +108,12 @@ def test_load_prices_packaged_table():
 
 def test_load_prices_packaged_table_shape_and_todo_count():
     # The authoritative table, five OpenCode-observed entries, the rows
-    # checked on the provider pages on 2026-09-23 and gpt-6.1-sol (2026-10-12):
-    # 28 entries, 5 still flagged todo (the placeholder section), and the
-    # canonical short name resolves to the full-name table entry.
+    # checked on the provider pages on 2026-09-23, gpt-6.1-sol (2026-10-12) and
+    # the Claude 5.5 rows and gpt-6.1-terra (2026-11-03): 31 entries, 5 still
+    # flagged todo (the placeholder section), and the canonical short name
+    # resolves to the full-name table entry.
     table = load_prices()
-    assert len(table.rates) == 28
+    assert len(table.rates) == 31
     assert len(table.todo) == 5
 
     rates = table.rate("opus-5")

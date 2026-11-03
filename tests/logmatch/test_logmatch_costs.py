@@ -119,6 +119,9 @@ def test_the_packaged_rows_price_the_new_models():
         ("gpt-6-luna", 0.10 + 0.01 + 0.125 + 0.50, "2026-10-12"),  # read again in 0.2.8, the same rates
         ("claude-haiku-4-5-20251001", 1.00 + 0.10 + 2.00 + 5.00, "2026-09-23"),
         ("claude-sonnet-5", 2.00 + 0.20 + 4.00 + 10.00, "2026-09-23"),
+        ("claude-sonnet-5-5", 2.00 + 0.10 + 4.00 + 10.00, "2026-11-03"),  # added 2026-11-03
+        ("claude-haiku-5-5", 0.10 + 0.01 + 0.20 + 0.50, "2026-11-03"),  # added 2026-11-03
+        ("gpt-6.1-terra", 1.00 + 0.05 + 1.25 + 5.00, "2026-11-03"),  # added 2026-11-03
     ):
         usd, tariff = price_attempt(one, model, AT)
         assert usd == pytest.approx(want), model
