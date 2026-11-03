@@ -14,9 +14,11 @@ Verbs:
   plan:    task-types  workflows  recommend  builder  plan
   record:  run start|record|import|attempt|artifact|finish|sessions  outcome  budget  config
   learn:   fit  onboard  share
-  view:    runs  posterior  status  report  doctor  guide  skill  ocp
+  view:    runs  posterior  status  report  doctor  guide  skill  update  ocp
 
-No verb in this CLI connects to another machine; builder serves on 127.0.0.1 only.
+No verb in this CLI connects to another machine, except the daily update check (update.py): once a
+day, after any command, loopmath asks pypi.org for its latest version, sending only its own
+(LOOPMATH_NO_UPDATE_CHECK=1 or CI turns it off). builder serves on 127.0.0.1 only.
 Verbs write only to the store ($LOOPMATH_HOME, default ~/.loopmath, which also
 holds the parse cache and the fit --full compile folder), to the skill folders
 skill install names, and to paths the user names.
@@ -550,9 +552,23 @@ def _add_verify_receipts(sub) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .cli_errors import JsonErrorParser, run_guarded, wants_json
+    """Run one command, then the daily update check (update.py), which never changes the exit code or stdout.
+    A command that ends in an exception other than SystemExit, or in Ctrl-C, skips the check."""
+    from .update import after_command
 
     raw_args = sys.argv[1:] if argv is None else argv
+    try:
+        code = _main(raw_args)
+    except SystemExit:  # --help, --version and usage errors too
+        after_command(raw_args)
+        raise
+    after_command(raw_args)
+    return code
+
+
+def _main(raw_args: list[str]) -> int:
+    from .cli_errors import JsonErrorParser, run_guarded, wants_json
+
     JsonErrorParser.json_mode = wants_json(raw_args)  # under --json a usage error is a JSON object on stdout too
     JsonErrorParser.argv = list(raw_args)
     parser = JsonErrorParser(

@@ -50,7 +50,7 @@ def _lm(src: Path, home: Path, *argv: str) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("LOOPMATH_", "PYTHON"))}
     env.update(PYTHONPATH=str(src), HOME=str(tmp / "userhome"), LOOPMATH_HOME=str(home),
                LOOPMATH_CACHE_DIR=str(tmp / f"cache-{home.name}"), MPLCONFIGDIR=str(tmp / "mpl"),
-               NO_COLOR="1", PYTHON_COLORS="0")
+               NO_COLOR="1", PYTHON_COLORS="0", LOOPMATH_NO_UPDATE_CHECK="1")
     (tmp / "userhome").mkdir(exist_ok=True)
     p = subprocess.run([sys.executable, "-m", "loopmath", *argv, "--json"], env=env, capture_output=True,
                        text=True, cwd=str(tmp), timeout=900)

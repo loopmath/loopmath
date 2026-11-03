@@ -30,7 +30,7 @@ Do not run loopmath commands with `--help`: the help text is written for people 
 
 ## What to do first
 
-1. Run `loopmath status --json`. If `loopmath` is not found, tell the user to install it with `uv tool install --python 3.12 loopmath`, and stop.
+1. Run `loopmath status --json`. If `loopmath` is not found, tell the user to install it with `uv tool install --python 3.12 loopmath`, and stop. If status shows update.available, tell the user in one line and offer the update.command; run it only if they agree.
 2. Pick the guide from what the user asked for:
 
 | When | Run and follow |

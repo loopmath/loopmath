@@ -137,7 +137,7 @@ def onboarded(tmp_path_factory, clock: dt.datetime) -> dict:
     (tmp / "labeler.py").write_text(LABELER, encoding="utf-8")
     env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "LOOPMATH_HOME": str(tmp / "store"),
            "LOOPMATH_CACHE_DIR": str(tmp / "cache"), "PYTHONPATH": str(SRC), "PYTHONDONTWRITEBYTECODE": "1",
-           "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8"}
+           "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8", "LOOPMATH_NO_UPDATE_CHECK": "1"}
     res = subprocess.run([sys.executable, "-m", "loopmath", "onboard", "--labeler",
                           f"command:{sys.executable} {tmp / 'labeler.py'}", "--since", "3650d", "--yes", "--json"],
                          env=env, cwd=tmp, text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=180)

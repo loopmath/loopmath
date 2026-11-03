@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.5 (2026-11-03)
+
+loopmath checks once a day whether a newer version is out and says how to upgrade; it never upgrades itself. Claude Sonnet 5.5, Claude Haiku 5.5 and GPT-6.1 Terra get price rows. Everything else is 0.3.4's.
+
+### The daily update check
+
+- Once a day, after any command, loopmath asks pypi.org for its latest version (`https://pypi.org/pypi/loopmath/json`). The request sends only loopmath's version, as its User-Agent, and uploads nothing, and loopmath waits at most 2 seconds for the answer. The answer is kept for 24 hours in `update.json` in the cache folder (`~/.loopmath`, `cache/` in a store you name, or `LOOPMATH_CACHE_DIR`) and a failed check for 6 hours, so an offline machine waits out the 2 seconds at most four times a day. A pre-release counts only when the installed loopmath is one.
+- When a newer version is known and stderr is a terminal, one line on stderr says so: `loopmath X.Y.Z is out (you have A.B.C): <upgrade command>, then loopmath skill install`. Nothing goes to stdout, so `--json` output is unchanged, and a failed or slow check never changes a command's output or exit code.
+- `LOOPMATH_NO_UPDATE_CHECK=1` (any value but empty) turns the check off, and it is off when `CI` is set. The README says so where it says loopmath connects to no other machine, which now names pypi.org as the one exception.
+- `loopmath status --json` has an `update` object: `latest`, `installed`, `available`, `command` (the upgrade command, then `loopmath skill install`) and `checked_at`, or null when the check is off or pypi.org has not answered yet. `loopmath guide reference` lists it. The skill has one sentence more: when `update.available` is true, the agent tells you in one line and offers `update.command`, and runs it only if you agree.
+
+### `loopmath update` (new)
+
+- `loopmath update` shows the installed and the latest version, a link to the latest version's changelog, and the upgrade command for how loopmath was installed: `uv tool upgrade loopmath` for a uv tool, `pipx upgrade loopmath` for pipx, otherwise `<python> -m pip install -U loopmath` with the Python loopmath runs on, each followed by `loopmath skill install`. It never upgrades.
+- `--refresh` asks pypi.org again instead of reusing the last answer, and `--json` prints `loopmath.update/1`. It exits 0 when the check worked, whether or not a newer version is out, and 1 when it failed. It asks pypi.org even when the daily check is off, since you asked for it by name.
+
+### `doctor`
+
+- A skill on disk that differs from the one this loopmath writes, as after an upgrade without `loopmath skill install`, now reads "has a loopmath skill that differs from the one loopmath 0.3.5 writes" (it said "is older than this loopmath"), with the same `loopmath skill install` command to fix it.
+
+### Prices
+
+- Claude Sonnet 5.5 (`claude-sonnet-5-5`) and Claude Haiku 5.5 (`claude-haiku-5-5`) now have confirmed prices, from Anthropic's price list, read on 2026-11-03: Sonnet 5.5 at $2 input, $4 1h cache write, $0.10 cache read and $10 output per million tokens, Haiku 5.5 at $0.10, $0.20, $0.01 and $0.50. Haiku 5.5 bills a prompt over 100,000 tokens at 5 times those rates, and loopmath prices it at these, so a Haiku 5.5 cost is a floor.
+- GPT-6.1 Terra (`gpt-6.1-terra`) is added, from its page on OpenAI's site, read on 2026-11-03: $1 input, $0.05 cached input, $1.25 cache write (30-minute retention) and $5 output per million tokens. A prompt over 272K input tokens bills more and is priced at these rates, so such a cost is a floor.
+- 0.3.4 had no row for any of the three, so it left their runs unpriced.
+
+### Tests
+
+- The suite and `scripts/release-check.sh` run with `LOOPMATH_NO_UPDATE_CHECK=1`, so they never ask pypi.org, and the release check fails if an `update.json` was written.
+
 ## 0.3.4 (2026-11-03)
 
 loopmath installs one skill, `loopmath`, in place of six, and the instructions for each job come from the CLI: `loopmath guide <topic>`. Fits, predictions, recommendations and every other command are 0.3.3's.

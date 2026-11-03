@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from loopmath import cli
+from loopmath import __version__, cli
 from loopmath.skill import doctor, install
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -144,7 +144,8 @@ def test_skill_check_names_a_missing_skill_a_stale_copy_and_the_old_single_skill
     manifest["files"]["loopmath/SKILL.md"] = hashlib.sha256(older.encode()).hexdigest()
     (root / install.MANIFEST).write_text(json.dumps(manifest))
     assert doctor.check_skill(None, None)["summary"] == (
-        "claude-code user is older than this loopmath: run `loopmath skill install --target claude-code --scope user`")
+        f"claude-code user has a loopmath skill that differs from the one loopmath {__version__} writes: "
+        "run `loopmath skill install --target claude-code --scope user`")
     install.install("claude-code", "user")
     old = machine["home"] / ".codex" / "loopmath" / "SKILL.md"  # 0.1 for Codex without skills
     old.parent.mkdir(parents=True)

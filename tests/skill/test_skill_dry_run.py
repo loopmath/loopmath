@@ -88,7 +88,8 @@ class Agent:
         self.tmp, self.top, self.seen = tmp, parser(), {}
         self.env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp / "home"), "LOOPMATH_HOME": str(store),
                     "LOOPMATH_CACHE_DIR": str(tmp / "cache"), "PYTHONPATH": str(SRC),
-                    "PYTHONDONTWRITEBYTECODE": "1", "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8"}
+                    "PYTHONDONTWRITEBYTECODE": "1", "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8",
+                    "LOOPMATH_NO_UPDATE_CHECK": "1"}
 
     def __call__(self, *argv: str, ok: tuple[int, ...] = (0,), pin: str | None = None):
         res = self.run(*argv, pin=pin)

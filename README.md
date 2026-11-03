@@ -4,7 +4,7 @@ loopmath helps an orchestrator agent choose how to run a coding task, and learns
 
 Before a task, it predicts how the user's usual agent workflow will do: the chance of an accepted result, and the cost in tokens and dollars. It shows the other workflows on a success-cost curve and offers two exploration picks. Each pick comes with its gain on every future similar run, its one-time price, and the number of runs it takes to pay back. After the task, the orchestrator records what ran and what came of it. loopmath fills in the token costs from the Claude Code and Codex logs, writes a receipt of predicted against actual, and refits.
 
-loopmath never starts or coordinates agents. Claude Code, Codex, herdr or your own tool does that; loopmath is a CLI they call. Everything runs locally. loopmath connects to no other machine: `loopmath builder` serves its page on 127.0.0.1 only, and no other command opens a network connection. The logs are opened read only, and loopmath writes only to its store (`~/.loopmath`, which holds its caches too), to the skill folders `skill install` names, and to paths you name.
+loopmath never starts or coordinates agents. Claude Code, Codex, herdr or your own tool does that; loopmath is a CLI they call. Everything runs locally. loopmath connects to no other machine but pypi.org: `loopmath builder` serves its page on 127.0.0.1 only, and no other command opens a network connection, except the daily update check. Once a day loopmath asks pypi.org whether a newer loopmath exists; it sends only its version and uploads nothing. `LOOPMATH_NO_UPDATE_CHECK=1` turns the check off, and it is off when `CI` is set. The logs are opened read only, and loopmath writes only to its store (`~/.loopmath`, which holds its caches too), to the skill folders `skill install` names, and to paths you name.
 
 The package installs two commands: `loopmath` and its short alias `loop`. If another `loop` is already on your PATH, use `loopmath`.
 
@@ -25,6 +25,8 @@ python3 -m venv .venv
 ```
 
 Installing needs the network: pip, pipx and uv download the build backend (setuptools 77 or newer) and the dependencies (jsonschema, numpy, pandas, scipy), from a clone too, so `pip install --no-index -e .` fails offline.
+
+To upgrade, `loopmath update` says whether a newer loopmath is out and prints the command for how you installed it (`uv tool upgrade loopmath`, `pipx upgrade loopmath`, or pip); run it, then `loopmath skill install`. loopmath never upgrades itself.
 
 ## First run
 
@@ -139,7 +141,7 @@ The workflow builder is the one page that is served: `loopmath builder --type bu
 | Plan | `task-types`, `workflows` (list, show, validate, diff), `recommend`, `builder` |
 | Record | `run` (start, record, import, attempt, artifact, finish, sessions), `outcome`, `budget`, `config` (get, set, unset) |
 | Learn | `fit`, `onboard`, `share`, `prior` |
-| View | `runs`, `posterior`, `status`, `report`, `doctor`, `verify-receipts` |
+| View | `runs`, `posterior`, `status`, `report`, `doctor`, `verify-receipts`, `update` |
 | Harness testing | `check-change`, `gate` (experimental), `screen` (experimental) |
 | Task subsets | `tasks pick` (experimental) |
 | Evolution loops | `adapt openevolve` (experimental), `adapt shinkaevolve` (experimental), `recommend --role` (experimental) |
@@ -270,7 +272,7 @@ The store is `~/.loopmath`. Set `LOOPMATH_HOME` or pass `--home` to put it elsew
 - signals, receipts and fits;
 - your config and your workflows;
 - the views you write;
-- the caches: the log parse cache, and the folder where `fit --full` compiles its model (when that compile fails, it also leaves the C code it tried in a `pytensor_compilation_error_*` file in the system temp folder and prints where).
+- the caches: the log parse cache, the daily update check's last answer (`update.json`), and the folder where `fit --full` compiles its model (when that compile fails, it also leaves the C code it tried in a `pytensor_compilation_error_*` file in the system temp folder and prints where).
 
 Do not edit the store by hand; use the commands. `loopmath verify-receipts` checks the receipts in your store; give a file to verify a research receipt ledger instead.
 

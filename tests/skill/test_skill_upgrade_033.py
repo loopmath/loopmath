@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from loopmath import cli
+from loopmath import __version__, cli
 from loopmath.skill import doctor
 from loopmath.skill import install as inst
 from v033 import installer
@@ -221,7 +221,8 @@ def test_doctor_names_the_retired_skills_and_the_command_that_removes_them(env, 
     check = doctor.check_skill(None, None)
     cmd = f"loopmath skill install --target {target} --scope user"
     assert check["status"] == "warn" and check["summary"] == (
-        f"{target} user is older than this loopmath: run `{cmd}`; {target} user still has the job skills 0.3.3 and "
+        f"{target} user has a loopmath skill that differs from the one loopmath {__version__} writes: run `{cmd}`; "
+        f"{target} user still has the job skills 0.3.3 and "
         "older installed (loopmath/reference.md, loopmath-onboard, loopmath-import-runs, loopmath-update-fit, "
         f"loopmath-plan-task, loopmath-record-run): run `{cmd}` to remove them")
     [place] = [p for p in check["detail"]["places"] if p["any"]]

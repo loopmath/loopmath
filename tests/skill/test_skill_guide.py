@@ -2,7 +2,8 @@
 
 The topics are 0.3.3's five job skills and its `reference.md`, without frontmatter, with each
 cross reference to another skill or to the reference copy turned into a `loopmath guide` call and
-nothing else changed. A guide call needs no store and writes nothing.
+nothing else changed, but for the `update` object 0.3.5 documents in the reference. A guide call needs
+no store and writes nothing.
 """
 
 from __future__ import annotations
@@ -25,6 +26,11 @@ from v033 import FIXTURE
 SRC = Path(loopmath.__file__).resolve().parents[1]
 # The 0.3.3 text each topic was made from.
 SOURCE = {**{topic: f"{name}/SKILL.md" for name, topic in inst.RETIRED_SKILLS.items()}, "reference": "reference.md"}
+# 0.3.5 adds `status --json`'s `update` object to the reference's status line; the rest is 0.3.4's.
+UPDATE_035 = (", `update` (null when the update check is off or pypi.org has not answered yet; else `latest`, "
+              "`installed`, `available` (true when a newer loopmath is out), `command` (the upgrade command: "
+              "offer it when a newer loopmath is out, and run it only if the user agrees), `checked_at` (when "
+              "loopmath last asked pypi.org))")
 
 
 def _old(topic: str) -> str:
@@ -44,6 +50,8 @@ def test_the_topics_are_the_five_jobs_then_the_reference():
 @pytest.mark.parametrize("topic", list(guide.TOPICS))
 def test_each_topic_is_its_0_3_3_text_with_only_the_cross_references_rewritten(topic):
     text = guide.text(topic)
+    assert (UPDATE_035 in text) == (topic == "reference")
+    text = text.replace(UPDATE_035, "")
     assert not text.startswith("---") and text.startswith("# ") and text.endswith("\n")
     old, new = _old(topic).splitlines(), text.splitlines()
     assert len(old) == len(new)  # line for line: no line added or dropped
@@ -125,7 +133,7 @@ def test_a_guide_call_with_no_store_writes_nothing(tmp_path):
     home.mkdir()
     work.mkdir()
     env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "PYTHONPATH": str(SRC), "PYTHONDONTWRITEBYTECODE": "1",
-           "LANG": "en_US.UTF-8"}
+           "LANG": "en_US.UTF-8", "LOOPMATH_NO_UPDATE_CHECK": "1"}
     for argv, code in ((["guide"], 0), (["guide", "plan"], 0), (["guide", "reference"], 0), (["guide", "nope"], 2)):
         res = subprocess.run([sys.executable, "-m", "loopmath", *argv], env=env, cwd=work, capture_output=True,
                              text=True, stdin=subprocess.DEVNULL, timeout=60)

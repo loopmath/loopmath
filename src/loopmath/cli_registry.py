@@ -639,6 +639,13 @@ def _add_viewing(sub) -> None:
                    help="onboard, import, plan, record, fit or reference (default: list them, with when to use each)")
     p.set_defaults(func=_lazy("loopmath.skill.guide:command"))
 
+    p = sub.add_parser("update", help="is a newer loopmath out? the installed and latest versions and the upgrade "
+                       "command; never upgrades")
+    p.add_argument("--refresh", action="store_true", help="ask pypi.org now, instead of reusing the last answer "
+                   "(kept for 24 h, a failed check for 6 h)")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.update:command"))
+
     p = sub.add_parser("skill", help="install, remove or print the loopmath skill")
     ss = p.add_subparsers(dest="skill_command", required=True)
     for verb, helptext in (("install", "write the loopmath skill for Claude Code, Codex or both, and remove the job "

@@ -66,7 +66,8 @@ no extra, and nothing borrowed from another environment, so these checks show
 that a plain `pip install loopmath` runs the loop. The check also confirms that
 the extras' packages (PyMC, PyTensor, ArviZ, Matplotlib) are absent and that
 `loopmath research fit` names the missing `[bayes]` extra.
-The check makes no network requests. uv resolves the dependencies offline from
+The check makes no network requests: every loopmath command in it runs with
+`LOOPMATH_NO_UPDATE_CHECK=1`, so the daily update check stays off. uv resolves the dependencies offline from
 its cache when it can. Otherwise the build interpreter's installed copies of the
 declared core dependencies, and of their own dependencies, are repacked as
 wheels in a temporary folder, and pip resolves the wheel against that folder

@@ -6,10 +6,11 @@ Six checks, each `ok`, `warn` or `fail`:
   store    the store root exists and is writable
   fit      `fits/latest` present, and its age
   prices   every model seen in the scan window has a price
-  skill    where the loopmath skill is installed (and which Codex form), whether it is current, and the
-           job skills 0.3.3 and older installed that are still on disk
+  skill    where the loopmath skill is installed (and which Codex form), whether it is the one this
+           loopmath writes, and the job skills 0.3.3 and older installed that are still on disk
 
-Nothing here opens a network connection. Log files are read through the
+Nothing here opens a network connection (the daily update check runs after the command, from
+cli.main). Log files are read through the
 parse cache, which doctor keeps up to date in the store's cache folder (the
 report's `cache` says where and how large); it writes nothing else there, and
 creates the store folder only when it is missing. Codex auth files are never
@@ -29,6 +30,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable, Mapping
 
+from .. import __version__
 from ..belief.design import other_design
 from . import install as _install
 
@@ -218,7 +220,8 @@ def check_skill(cwd: Path | None, env: Mapping[str, str] | None) -> dict:
         elif p["missing"]:
             problems.append(f"{where} lacks the loopmath skill: run `{_install_cmd(p)}`")
         elif not p["current"]:
-            problems.append(f"{where} is older than this loopmath: run `{_install_cmd(p)}`")
+            problems.append(f"{where} has a loopmath skill that differs from the one loopmath {__version__} writes: "
+                            f"run `{_install_cmd(p)}`")
         if retired["owned"]:
             problems.append(f"{where} still has the job skills 0.3.3 and older installed "
                             f"({_folders(retired['owned'])}): run `{_install_cmd(p)}` to remove them")

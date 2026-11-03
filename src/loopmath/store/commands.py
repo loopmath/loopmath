@@ -1576,6 +1576,7 @@ def config_unset(args: argparse.Namespace) -> int:
 # ================================================================ status, report
 @handler("status")
 def status(args: argparse.Namespace) -> int:
+    from ..update import status_object
     from .status import status_payload, status_lines
 
     store = _store(args)
@@ -1583,6 +1584,7 @@ def status(args: argparse.Namespace) -> int:
     payload = status_payload(store)
     if reindexed is not None:
         payload["reindex"] = reindexed
+    payload["update"] = status_object()  # the daily check, here so the first status of the day has it
     return _out(args, "status", payload, status_lines(payload))
 
 

@@ -35,7 +35,7 @@ Workflow shapes (`--workflow`): `solo`, `best_of_n`, `plan_implement`, `implemen
 ## Commands
 
 ### Status
-`loopmath status --json`. Read `exists` (the store exists), `fit.latest` (fit id or null), `fit.usable` (false with no fit, or with a fit an older loopmath made: refit), `fit.problem` (why not, or null), `fit.running`, `counts.runs`, `open_runs[]` (`run`, `type`, `repo`, `started_at`, `slate`), `budget.cap_usd`, `budget.spent.usd`.
+`loopmath status --json`. Read `exists` (the store exists), `fit.latest` (fit id or null), `fit.usable` (false with no fit, or with a fit an older loopmath made: refit), `fit.problem` (why not, or null), `fit.running`, `counts.runs`, `open_runs[]` (`run`, `type`, `repo`, `started_at`, `slate`), `budget.cap_usd`, `budget.spent.usd`, `update` (null when the update check is off or pypi.org has not answered yet; else `latest`, `installed`, `available` (true when a newer loopmath is out), `command` (the upgrade command: offer it when a newer loopmath is out, and run it only if the user agrees), `checked_at` (when loopmath last asked pypi.org)).
 
 ### Onboard
 - `loopmath onboard --dry-run --json`: reads the history, writes nothing. Read `prior.line` (the starting prior, in one line: show it once), `groups.total`, `groups.to_label`, `window.from`, `window.to`, `sessions`, `cost_in_logs.usd`, `labeler.chosen`, `labeler.spec`, `labeler.expected.usd`, `labeler.options[]` (`spec`, `title`, `expected.usd`): one entry per labeller this machine can run, plus `none`.
