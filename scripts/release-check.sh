@@ -439,6 +439,8 @@ check "loopmath --help" loopmath --help
 check "loopmath task-types --json" loopmath task-types --json
 check "loopmath skill install --target both (temp HOME)" loopmath skill install --target both --json
 check "loopmath skill show" loopmath skill show
+check "loopmath guide" loopmath guide
+check "loopmath guide plan" loopmath guide plan
 check "loopmath doctor --json" loopmath doctor --json
 check "loopmath analyze on the committed fixture" loopmath analyze --logs "$fixture" --all --no-cache
 

@@ -1,30 +1,33 @@
-"""Install the skill set for Claude Code and Codex, user and project scope (spec 07, section 1).
+"""Install the loopmath skill for Claude Code and Codex, user and project scope (spec 07, section 1).
 
-Six skills, one per job (`SKILLS`), each a folder with its `SKILL.md` and a copy of the shared
-`reference.md`:
+One skill, `loopmath` (`SKILLS`), a folder with its `SKILL.md`; the instructions for each job
+come from `loopmath guide` (guide.py), so they match the installed version:
 
-| target      | scope   | where each skill folder goes                                  |
+| target      | scope   | where the skill folder goes                                   |
 |-------------|---------|---------------------------------------------------------------|
-| claude-code | user    | ~/.claude/skills/<name>/ ($CLAUDE_CONFIG_DIR wins)            |
-| claude-code | project | .claude/skills/<name>/                                        |
-| codex       | user    | ~/.codex/skills/<name>/ ($CODEX_HOME wins), or                |
-|             |         | ~/.codex/loopmath/<name>/ and a marked block in               |
-|             |         | ~/.codex/AGENTS.md listing the six                            |
-| codex       | project | .codex/skills/<name>/, or .codex/loopmath/<name>/ and the     |
+| claude-code | user    | ~/.claude/skills/loopmath/ ($CLAUDE_CONFIG_DIR wins)          |
+| claude-code | project | .claude/skills/loopmath/                                      |
+| codex       | user    | ~/.codex/skills/loopmath/ ($CODEX_HOME wins), or              |
+|             |         | ~/.codex/loopmath/loopmath/ and a marked block in             |
+|             |         | ~/.codex/AGENTS.md naming it                                  |
+| codex       | project | .codex/skills/loopmath/, or .codex/loopmath/loopmath/ and the |
 |             |         | block in AGENTS.md                                            |
 
-Codex gets skill folders when it supports skills, which we read from the user's Codex skills
-folder existing (Codex creates it); otherwise the pointer block. The packaged sources carry
+Codex gets the skill folder when it supports skills, which we read from the user's Codex skills
+folder existing (Codex creates it); otherwise the pointer block. The packaged source carries
 Claude Code's frontmatter; Codex gets the same text without `allowed-tools`.
 
 Ownership is by manifest, never by a path alone. Install writes `.loopmath-skills.json` in the
 folder that holds the skill folders, with the sha256 of every file it wrote. Install, upgrade and
-uninstall touch only the twelve files of the set (exact names), and only when the manifest lists
-the file with its current hash, or the file already holds exactly what install would write. A
-listed file the user has changed is kept, with a note. Any other file in the way stops the whole
-install before its first write. The 0.1 single skill (`loopmath/SKILL.md`, and for Codex without
-skills `loopmath/SKILL.md` beside the block) is replaced or removed only when its hash is one
-loopmath 0.1 shipped (`LEGACY_SHA256`). In AGENTS.md only the text between the markers changes.
+uninstall write only the skill's file (`OWNED`), and only when the manifest lists it with its
+current hash, or it already holds exactly what install would write. A listed file the user has
+changed is kept, with a note. Any other file in the way stops the whole install before its first
+write. 0.2.0 to 0.3.3 installed six skills, each with a copy of a shared `reference.md`; install
+and uninstall remove those eleven files (`RETIRED`) only where the manifest lists them with their
+current hash, and keep the rest with a note. The 0.1 single skill (`loopmath/SKILL.md`, and for
+Codex without skills `loopmath/SKILL.md` beside the block) is replaced or removed only when its
+hash is one loopmath 0.1 shipped (`LEGACY_SHA256`). In AGENTS.md only the text between the
+markers changes.
 """
 
 from __future__ import annotations
@@ -39,17 +42,11 @@ from importlib import resources
 from pathlib import Path
 from typing import Mapping
 
-SKILLS = ("loopmath", "loopmath-onboard", "loopmath-import-runs", "loopmath-update-fit", "loopmath-plan-task",
-          "loopmath-record-run")
-TRIGGERS = {  # one line each in the Codex pointer block
-    "loopmath": "start here when the user mentions loopmath without naming a job",
-    "loopmath-onboard": "onboard, set up or try loopmath from the user's history",
-    "loopmath-import-runs": "bring existing OCP files or a folder of finished runs into loopmath",
-    "loopmath-update-fit": "update the fit, or say what loopmath learned",
-    "loopmath-plan-task": "plan a coding task: which workflow, model or effort, then start the run",
-    "loopmath-record-run": "record a finished run, show its receipt, judge a pair",
-}
-REFERENCE = "reference.md"
+SKILLS = ("loopmath",)
+# The job skills 0.2.0 to 0.3.3 installed beside `loopmath`, and the `loopmath guide` topic that has each one's text now.
+RETIRED_SKILLS = {"loopmath-onboard": "onboard", "loopmath-import-runs": "import", "loopmath-update-fit": "fit",
+                  "loopmath-plan-task": "plan", "loopmath-record-run": "record"}
+REFERENCE = "reference.md"  # each of the six skill folders had a copy; now `loopmath guide reference`
 TARGETS = ("claude-code", "codex")
 TARGET_CHOICES = ("auto", "claude-code", "codex", "both")
 SCOPES = ("user", "project")
@@ -57,8 +54,9 @@ BLOCK_BEGIN = "<!-- loopmath -->"
 BLOCK_END = "<!-- /loopmath -->"
 MANIFEST = ".loopmath-skills.json"
 MANIFEST_SCHEMA = "loopmath.skill.manifest/1"
-OWNED = tuple(f"{name}/{file}" for name in SKILLS for file in ("SKILL.md", REFERENCE))  # the only files it touches
-LEGACY = "loopmath/SKILL.md"  # where 0.1 put its single skill, now the start-here skill
+OWNED = tuple(f"{name}/SKILL.md" for name in SKILLS)  # the only files it writes
+RETIRED = (f"loopmath/{REFERENCE}",) + tuple(f"{name}/{file}" for name in RETIRED_SKILLS for file in ("SKILL.md", REFERENCE))
+LEGACY = "loopmath/SKILL.md"  # where 0.1 put its single skill, and where the one skill goes now
 # sha256 of the single SKILL.md loopmath 0.1 wrote, the same text for every target and form.
 LEGACY_SHA256 = {
     "164e47ba206b15a978c13858b1c1839c05f06afb3afb533786bb94e1433857e1": "0.1.0",
@@ -86,18 +84,20 @@ def _package_file(*parts: str) -> str:
     return resources.files("loopmath.skill").joinpath("skills", *parts).read_text(encoding="utf-8")
 
 
-def reference_text() -> str:
-    """The shared reference, as packaged."""
-    return _package_file(REFERENCE)
-
-
 def skill_text(name: str = "loopmath") -> str:
-    """One packaged skill (Claude Code form), or the reference for `reference`. KeyError on another name."""
-    if name == "reference":
-        return reference_text()
+    """The packaged skill (Claude Code form). KeyError on another name."""
     if name not in SKILLS:
         raise KeyError(name)
     return _package_file(name, "SKILL.md")
+
+
+def description(text: str) -> str:
+    """The `description` in a skill's frontmatter, unquoted."""
+    head = text.split("\n---\n", 1)[0] if text.startswith("---\n") else ""
+    for line in head.splitlines():
+        if line.startswith("description:"):
+            return line.partition(":")[2].strip().strip('"')
+    return ""
 
 
 def _for_target(text: str, target: str) -> str:
@@ -178,10 +178,11 @@ def _block_path(where: Placement, path: Path, cwd: Path | None) -> str:
 
 
 def pointer_block(where: Placement, cwd: Path | None = None) -> str:
+    """The marked AGENTS.md block: one entry, the skill's own description and where its file is."""
+    when = description(skill_text("loopmath")).rstrip(".")
     lines = [BLOCK_BEGIN, "## loopmath", "",
-             "loopmath has one skill per job. Read the one that fits and follow it; "
-             "`loopmath skill show NAME` prints the same text.", ""]
-    lines += [f"- {TRIGGERS[name]}: `{_block_path(where, where.skill_md(name), cwd)}`" for name in SKILLS]
+             "loopmath has one skill. Read it and follow it; `loopmath skill show` prints the same text.", "",
+             f"- {when}: `{_block_path(where, where.skill_md('loopmath'), cwd)}`"]
     return "\n".join(lines) + f"\n{BLOCK_END}\n"
 
 
@@ -229,13 +230,8 @@ def _not_a_folder(path: Path) -> Path | None:
 
 
 def _want(target: str) -> dict[str, str]:
-    """Every file of the set for `target`, by its path under the folder that holds the skill folders."""
-    reference = reference_text()
-    want = {}
-    for skill, text in skill_texts(target).items():
-        want[f"{skill}/SKILL.md"] = text
-        want[f"{skill}/{REFERENCE}"] = reference
-    return want
+    """Every file install writes for `target`, by its path under the folder that holds the skill folders."""
+    return {f"{skill}/SKILL.md": text for skill, text in skill_texts(target).items()}
 
 
 def _load_manifest(root: Path) -> dict:
@@ -261,12 +257,40 @@ def _save_manifest(root: Path, manifest: dict) -> None:
         path.unlink()
 
 
+def _retired(where: Placement, listed: dict[str, str]) -> list[tuple[str, Path, str]]:
+    """(path under root, path, how) for each retired file on disk in `where`: `owned` when the manifest
+    lists it with its current hash, so install and uninstall remove it; `changed` when listed with another
+    hash, and `foreign` when not listed, both kept."""
+    out = []
+    for rel in RETIRED:
+        path = where.root / rel
+        cur = _state(path)
+        if cur is None:
+            continue
+        how = "owned" if cur and listed.get(rel) == cur else ("changed" if rel in listed else "foreign")
+        out.append((rel, path, how))
+    return out
+
+
+def guide_for(rel: str) -> str:
+    """The `loopmath guide` topic that holds a retired file's text now."""
+    folder, _, file = rel.partition("/")
+    return "reference" if file == REFERENCE else RETIRED_SKILLS[folder]
+
+
+def _retired_note(rel: str, path: Path, how: str) -> str:
+    why = "changed since loopmath wrote it" if how == "changed" else "loopmath did not write it"
+    return (f"kept {path}: {why}; 0.3.4 no longer installs it (`loopmath guide {guide_for(rel)}` has its text), "
+            "so move it aside when you no longer need it")
+
+
 def _plan(where: Placement, want: dict[str, str]) -> tuple[dict, list[dict], list[str]]:
     """What install would do in `where`, before any write: (the manifest, one step per file, the paths
     in the way). A file is loopmath's when the manifest lists it with its current hash, or when it
     already holds exactly what install writes; the 0.1 single skill, when its hash is one 0.1 shipped.
     A listed file with another hash was changed by someone and is kept. A file where a folder must be
-    (a skill folder, or one above it), and a folder or a dangling link at AGENTS.md, are in the way too."""
+    (a skill folder, or one above it), and a folder or a dangling link at AGENTS.md, are in the way too.
+    The retired files are not in the way: they are removed or kept after the writes (`_retired`)."""
     manifest = _load_manifest(where.root)
     listed = manifest["files"]
     steps, blocked = [], []
@@ -307,12 +331,11 @@ def _blocked(paths: list[str]) -> str:
 
 
 def _entry(result: dict, rel: str, path: Path | str, action: str) -> None:
-    """File one step under `skills` or `reference`."""
-    skill, _, file = rel.partition("/")
-    if file == REFERENCE:
-        result["reference"].append({"path": str(path), "action": action})
-    else:
-        result["skills"].append({"name": skill, "path": str(path), "action": action})
+    """File one step: the skill under `skills`, a retired file removed under `removed`."""
+    if rel in OWNED:
+        result["skills"].append({"name": rel.partition("/")[0], "path": str(path), "action": action})
+    elif action == "removed":
+        result["removed"].append({"path": str(path), "action": action})
 
 
 # A file of the set with no manifest entry that already holds exactly the text install writes.
@@ -378,10 +401,16 @@ def _retire_legacy(path: Path, notes: list[str], dry_run: bool = False) -> str |
     return "kept"
 
 
+def _folders() -> list[str]:
+    """Every skill folder the set and the retired files were in, in `OWNED` then `RETIRED` order."""
+    return list(dict.fromkeys(rel.partition("/")[0] for rel in OWNED + RETIRED))
+
+
 def _remove_owned(where: Placement, notes: list[str], dry_run: bool = False) -> list[tuple[str, Path, str]]:
-    """Remove each file of the set in `where` that is loopmath's (as `_plan` decides) and keep the rest,
-    with a note. Returns (path under root, path, action) per file of the set; the manifest keeps only
-    the files that stay. A dry run changes nothing and returns the same."""
+    """Remove the skill in `where` when it is loopmath's (as `_plan` decides), and each retired file the
+    manifest lists with its current hash; keep the rest, with a note. Returns (path under root, path,
+    action) for the skill, and for each retired file on disk; the manifest keeps only the files that
+    stay. A dry run changes nothing and returns the same."""
     manifest = _load_manifest(where.root)
     listed = manifest["files"]
     want = _want(where.target)
@@ -404,9 +433,21 @@ def _remove_owned(where: Placement, notes: list[str], dry_run: bool = False) -> 
             action = "kept"
             notes.append(_kept(path, rel in listed))
         out.append((rel, path, action))
+    for rel in RETIRED:
+        if _state(where.root / rel) is None:
+            listed.pop(rel, None)
+    for rel, path, how in _retired(where, listed):
+        if how == "owned":
+            if not dry_run:
+                path.unlink()
+            listed.pop(rel, None)
+            out.append((rel, path, "removed"))
+        else:
+            notes.append(_retired_note(rel, path, how))
+            out.append((rel, path, "kept"))
     if dry_run:
         return out
-    for skill in SKILLS:
+    for skill in _folders():
         _rmdir_empty(where.root / skill)
     _save_manifest(where.root, manifest)
     return out
@@ -421,8 +462,18 @@ def _preflight(target: str, scope: str, cwd: Path | None, env: Mapping[str, str]
 
 
 def _result(where: Placement) -> dict:
-    return {**where.to_dict(), "manifest": str(where.root / MANIFEST), "skills": [], "reference": [],
+    return {**where.to_dict(), "manifest": str(where.root / MANIFEST), "manifest_action": None, "skills": [],
             "removed": [], "block": None, "notes": []}
+
+
+def _manifest_action(root: Path, before: dict[str, str], after: dict[str, str]) -> str:
+    """What saving the manifest does to its file: created, updated, removed or unchanged."""
+    exists = (root / MANIFEST).is_file()
+    if not after:
+        return "removed" if exists else "unchanged"
+    if not exists:
+        return "created"
+    return "unchanged" if after == before else "updated"
 
 
 def install(target: str = "auto", scope: str = "user", *, cwd: Path | None = None,
@@ -446,6 +497,7 @@ def install(target: str = "auto", scope: str = "user", *, cwd: Path | None = Non
         result = _result(where)
         if dry_run:
             result["dry_run"] = True
+        before = dict(manifest["files"])
         for step in steps:
             if step["action"] in ("created", "updated", "replaced") and not dry_run:
                 _write_atomic(step["path"], step["text"])
@@ -458,7 +510,21 @@ def install(target: str = "auto", scope: str = "user", *, cwd: Path | None = Non
                 result["notes"].append(_ADOPTED.format(path=step["path"], verb="would take" if dry_run else "took",
                                                        tense="holds"))
             _entry(result, step["rel"], step["path"], step["action"])
+        for rel in RETIRED:  # 0.2.0 to 0.3.3's job skills and reference copies: gone where loopmath still owns them
+            if _state(where.root / rel) is None:
+                manifest["files"].pop(rel, None)
+        for rel, path, how in _retired(where, manifest["files"]):
+            if how == "owned":
+                if not dry_run:
+                    path.unlink()
+                manifest["files"].pop(rel, None)
+                _entry(result, rel, path, "removed")
+            else:
+                result["notes"].append(_retired_note(rel, path, how))
+        result["manifest_action"] = _manifest_action(where.root, before, manifest["files"])
         if not dry_run:
+            for skill in _folders():
+                _rmdir_empty(where.root / skill)
             _save_manifest(where.root, manifest)
         if where.method == "agents_block":
             if _retire_legacy(where.root / "SKILL.md", result["notes"], dry_run) == "removed":
@@ -534,9 +600,10 @@ def uninstall(target: str = "auto", scope: str = "user", *, cwd: Path | None = N
 
 
 def status(*, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> list[dict]:
-    """Where the set is installed, for `doctor`: one entry per target and scope."""
+    """Where the skill is installed, for `doctor`: one entry per target and scope. `retired` lists the
+    retired files still on disk there by how they stand (`_retired`), and with a broken manifest every
+    one of them as `foreign`."""
     env = os.environ if env is None else env
-    reference = reference_text()
     out = []
     for name in TARGETS:
         texts = skill_texts(name)
@@ -546,17 +613,23 @@ def status(*, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> 
             block = True
             if where.method == "agents_block":
                 try:
-                    block = where.agents_md.is_file() and \
-                        _split_block(where.agents_md.read_text(encoding="utf-8"))[1] is not None
+                    found = _split_block(where.agents_md.read_text(encoding="utf-8"))[1] \
+                        if where.agents_md.is_file() else None
+                    block = found == pointer_block(where, cwd)
                 except ValueError:
                     block = False
             old = _state(where.root / LEGACY) in LEGACY_SHA256 or (where.method == "agents_block"
                                                                    and _state(where.root / "SKILL.md") in LEGACY_SHA256)
-            current = all(where.skill_md(s).read_text(encoding="utf-8") == texts[s]
-                          and (where.root / s / REFERENCE).is_file()
-                          and (where.root / s / REFERENCE).read_text(encoding="utf-8") == reference
-                          for s in present)
+            current = all(where.skill_md(s).read_text(encoding="utf-8") == texts[s] for s in present)
+            try:
+                listed = _load_manifest(where.root)["files"]
+            except ValueError:
+                listed = {}
+            retired: dict[str, list[str]] = {"owned": [], "changed": [], "foreign": []}
+            for _, path, how in _retired(where, listed):
+                retired[how].append(str(path))
             out.append({**where.to_dict(), "installed": len(present) == len(SKILLS) and block,
-                        "any": bool(present) or old, "missing": [s for s in SKILLS if s not in present],
-                        "current": bool(present) and current and block, "old": old})
+                        "any": bool(present) or old or any(retired.values()),
+                        "missing": [s for s in SKILLS if s not in present],
+                        "current": bool(present) and current and block, "old": old, "retired": retired})
     return out

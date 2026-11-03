@@ -1,4 +1,5 @@
 """Handlers for `loopmath doctor` and `loopmath skill install|uninstall|show`.
+(`loopmath guide` is guide.py's, which imports nothing else.)
 """
 
 from __future__ import annotations
@@ -36,16 +37,9 @@ _WOULD = {"created": "to write", "updated": "to update", "replaced": "to replace
           "removed": "to remove", "unchanged": "unchanged", "kept": "kept"}
 
 
-def _count(entries: list[dict], dry_run: bool = False) -> str:
-    counts: dict[str, int] = {}
-    for e in entries:
-        counts[e["action"]] = counts.get(e["action"], 0) + 1
-    return ", ".join(f"{n} {_WOULD[action] if dry_run else action}" for action, n in counts.items())
-
-
 def _results(verb: str, results: list[dict], as_json: bool) -> None:
     if as_json:
-        emit_json("loopmath.skill/2", {"verb": verb, "results": results})
+        emit_json("loopmath.skill/3", {"verb": verb, "results": results})
         return
     dry = any(r.get("dry_run") for r in results)
     if dry:
@@ -53,19 +47,20 @@ def _results(verb: str, results: list[dict], as_json: bool) -> None:
     for r in results:
         form = " (AGENTS.md block)" if r["method"] == "agents_block" else ""
         head = f"{r['target']} {r['scope']}{form}"
-        actions = {e["action"] for e in r["skills"] + r["reference"]}
-        if verb == "uninstall" and actions <= {"absent"}:
+        [skill] = r["skills"]
+        if verb == "uninstall" and skill["action"] == "absent" and not r["removed"]:
             print(f"{head}: not installed in {r['root']}, nothing to remove")
-        elif verb == "uninstall" and actions <= {"removed", "absent"}:
-            n = sum(e["action"] == "removed" for e in r["skills"])
-            print(f"{head}: removed {n} skill{'s' if n != 1 else ''} and the reference.md beside each from {r['root']}")
-        else:
-            print(f"{head}: {len(r['skills'])} skills in {r['root']}: {_count(r['skills'], dry)}")
-        if dry:
-            print(f"  and in each skill folder a copy of the shared reference.md ({_count(r['reference'], dry)}), "
-                  f"and {r['manifest']}, the list of the files install wrote")
+            continue
+        print(f"{head}:")
+        if skill["action"] != "absent":
+            print(f"  {_WOULD[skill['action']] if dry else skill['action']} {skill['path']}, the loopmath skill")
+        action = r.get("manifest_action")
+        if dry and action:
+            print(f"  {_WOULD[action]} {r['manifest']}, the list of the files install wrote")
         for e in r["removed"]:
             print(f"  {'to remove' if dry else 'removed'} {e['path']}")
+        if any(e["path"].endswith(f"/{name}/SKILL.md") for e in r["removed"] for name in _install.RETIRED_SKILLS):
+            print("  (0.3.4 installs one skill; the job skills' text comes from `loopmath guide` now)")
         block, where = r.get("block"), r.get("block_file") or r.get("agents_md")
         if block == "removed":
             print(f"  {'to remove' if dry else 'removed'} the loopmath block from {where}")
@@ -104,5 +99,8 @@ def show(args: argparse.Namespace) -> int:
     try:
         sys.stdout.write(_install.skill_text(name))
     except KeyError:
-        return fail(f"no skill {name!r}; one of {', '.join(_install.SKILLS)}, or reference")
+        topic = "reference" if name == "reference" else _install.RETIRED_SKILLS.get(name)
+        if topic:
+            return fail(f"0.3.4 has one skill, loopmath; {name} is `loopmath guide {topic}` now")
+        return fail(f"no skill {name!r}; the one skill is loopmath, and `loopmath guide` lists the job guides")
     return EXIT_OK

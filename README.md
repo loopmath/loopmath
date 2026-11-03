@@ -35,20 +35,21 @@ loopmath skill install             # teach your coding agents how to use loopmat
 
 Then ask your agent to onboard, for example "onboard loopmath". The agent runs a dry run, asks you one question (which model labels your sessions, with the cost of each option), onboards, fits, and opens the results page.
 
-`skill install` writes six skills, one per job. Each skill's folder also gets its own copy of the shared `reference.md`, with every command and JSON field the skills use, so each skill works on its own. An agent loads only the skill for the job at hand, and each phrase belongs to one skill:
+`skill install` writes one skill, `loopmath`. It tells the agent to check the store with `loopmath status --json`, pick the job, and read that job's guide from the CLI, so the instructions always match the loopmath you have installed. Mention loopmath in what you ask, and the skill picks the guide:
 
-| Skill | Ask your agent |
+| Guide | Ask your agent |
 |---|---|
-| `loopmath` | loopmath named without a job: "use loopmath", "what can loopmath do", "what next with loopmath" |
-| `loopmath-onboard` | "onboard", "set up", "start" or "try" loopmath; or loopmath has no runs yet |
-| `loopmath-import-runs` | OCP files (`*.ocp.json`), a folder of finished runs, or the output of an orchestrator or experiment harness that writes OCP |
-| `loopmath-update-fit` | "update", "refresh" or "rerun" the fit; what loopmath learned; runs imported or recorded without a refit |
-| `loopmath-plan-task` | "plan a task with loopmath"; which workflow, model or effort to use; a coding task of more than a few minutes in a repo that uses loopmath |
-| `loopmath-record-run` | a task planned with loopmath is done; "record", "log" or "save" a run; both runs of a pair need a blind judge |
+| `loopmath guide onboard` | "onboard", "set up", "start" or "try" loopmath; or loopmath has no runs yet |
+| `loopmath guide import` | OCP files (`*.ocp.json`), a folder of finished runs, or the output of an orchestrator or experiment harness that writes OCP |
+| `loopmath guide plan` | "plan a task with loopmath"; which workflow, model or effort to use |
+| `loopmath guide record` | a task planned with loopmath is done; "record", "log" or "save" a run; both runs of a pair need a blind judge |
+| `loopmath guide fit` | "update", "refresh" or "rerun" the fit; what loopmath learned; runs imported or recorded without a refit |
 
-By default the skills go to every agent whose home exists: Claude Code (`~/.claude/skills/<name>/`, or under `$CLAUDE_CONFIG_DIR`) and Codex (`~/.codex/skills/<name>/`, or under `$CODEX_HOME`). `--target claude-code`, `codex` or `both` picks them yourself. If your Codex has no skills folder, the files go to `~/.codex/loopmath/<name>/` instead, with a short marked block in `~/.codex/AGENTS.md` that lists them. Add `--scope project` to install into the current repository (or `--dir PATH` for another one).
+`loopmath guide` alone lists them, and `loopmath guide reference` prints the command reference they share, with every command, flag and JSON field they use. A guide is read only: it needs no store and writes nothing.
 
-It is safe to run again. It records the files it wrote, with their hashes, in `.loopmath-skills.json` beside the skill folders, and it replaces or removes only those. A skill file you changed is kept, with a note. Any other file where a skill goes stops the install before it writes anything, and names the path to move aside. The single skill that 0.1 installed is replaced when it is as 0.1 wrote it. `loopmath skill show NAME` prints one skill, and `loopmath skill uninstall` removes the files it wrote. `loopmath doctor` shows what loopmath can see: logs, agents, store, fit, prices and skills. To read the logs it builds the log parse cache in the store and keeps it, so the next read is fast, and it says how big the cache is; it changes nothing else in the store.
+By default the skill goes to every agent whose home exists: Claude Code (`~/.claude/skills/loopmath/`, or under `$CLAUDE_CONFIG_DIR`) and Codex (`~/.codex/skills/loopmath/`, or under `$CODEX_HOME`). `--target claude-code`, `codex` or `both` picks them yourself. If your Codex has no skills folder, the skill goes to `~/.codex/loopmath/loopmath/` instead, with a short marked block in `~/.codex/AGENTS.md` that points to it. Add `--scope project` to install into the current repository (or `--dir PATH` for another one).
+
+It is safe to run again. It records the files it wrote, with their hashes, in `.loopmath-skills.json` beside the skill folder, and it replaces or removes only those. A skill file you changed is kept, with a note. Any other file where the skill goes stops the install before it writes anything, and names the path to move aside. The single skill that 0.1 installed is replaced when it is as 0.1 wrote it. Upgrading from 0.2 or 0.3 removes the five job skills those versions installed and the `reference.md` copy in each skill folder, where loopmath wrote them and they are unchanged; a file you changed is kept, with a note. `--dry-run` lists every file install would write or remove. `loopmath skill show` prints the skill, and `loopmath skill uninstall` removes the files it wrote. `loopmath doctor` shows what loopmath can see: logs, agents, store, fit, prices and the skill, and names any job skill an older loopmath left behind. To read the logs it builds the log parse cache in the store and keeps it, so the next read is fast, and it says how big the cache is; it changes nothing else in the store.
 
 To onboard by hand instead:
 
@@ -74,7 +75,7 @@ The prior ships inside the package: our runs, in the shared form (no titles, pat
 
 ## The loop
 
-The plan and record skills take an agent through the loop in three commands:
+The plan and record guides take an agent through the loop in three commands:
 
 ```sh
 loopmath recommend --type bug_fix --repo acme/api --title "Fix the parser crash" --json --brief --html
@@ -142,7 +143,7 @@ The workflow builder is the one page that is served: `loopmath builder --type bu
 | Harness testing | `check-change`, `gate` (experimental), `screen` (experimental) |
 | Task subsets | `tasks pick` (experimental) |
 | Evolution loops | `adapt openevolve` (experimental), `adapt shinkaevolve` (experimental), `recommend --role` (experimental) |
-| Skill | `skill` (install, uninstall, show) |
+| Skill | `skill` (install, uninstall, show), `guide` |
 | OCP | `ocp` (validate, migrate) |
 | Log analysis | `analyze`, `graph`, `adapt`, `prices`, `validate-prices` |
 

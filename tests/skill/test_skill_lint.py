@@ -1,10 +1,11 @@
-"""Spec 07: static checks on the packaged skills and their shared reference.
+"""Spec 07: static checks on the packaged skill and the `loopmath guide` texts.
 
-Each skill is named for its folder, says when to use it in a short description and may run only
-loopmath and the few commands it shows. Every `loopmath ...` command the skills, the reference and
-the README show names a real command, only flags that command has and only values its choices
-allow; every flag a skill uses is in the reference. No example hands the shell a comparison it
-would read as a redirection. The texts carry no em dash and none of the private names.
+The skill is named for its folder, has a short description and may run only loopmath and the few
+commands the guides show; each job guide sends flags and fields to `loopmath guide reference`.
+Every `loopmath ...` command the skill, the guides and the README show names a real command, only
+flags that command has and only values its choices allow; every flag a guide uses is in the
+reference. No example hands the shell a comparison it would read as a redirection. The texts carry
+no em dash and none of the private names.
 """
 
 from __future__ import annotations
@@ -17,26 +18,34 @@ from pathlib import Path
 
 import pytest
 
+from loopmath.skill import guide
 from loopmath.skill import install as inst
 from skill_texts import ROOT, PLACEHOLDER, commands, frontmatter, parser, texts, walk, words
 
-SOURCES = [*inst.SKILLS, "reference", "README.md"]
+SOURCES = [*texts(), "README.md"]
+JOBS = [t for t in guide.TOPICS if t != "reference"]
 
 
 def _text(source: str) -> str:
-    return (ROOT / source).read_text(encoding="utf-8") if source == "README.md" else inst.skill_text(source)
+    return (ROOT / source).read_text(encoding="utf-8") if source == "README.md" else texts()[source]
 
 
 @pytest.mark.parametrize("name", inst.SKILLS)
-def test_each_skill_has_its_folder_name_a_short_description_and_its_tools(name):
+def test_the_skill_has_its_folder_name_a_short_description_and_its_tools(name):
     text = inst.skill_text(name)
     meta = frontmatter(text)
     assert meta["name"] == name
     desc = meta["description"]
-    assert 100 <= len(desc) <= 1024 and " when " in desc.lower(), desc
+    assert 0 < len(desc) <= 1024 and "loopmath" in desc, desc
     assert meta["allowed-tools"].split(", ")[0] == "Bash(loopmath:*)", meta["allowed-tools"]
     body = text.split("---\n", 2)[2]
-    assert "`reference.md`" in body and "run `--help`" in body.lower()
+    assert "`loopmath guide`" in body and "`--help`" in body
+
+
+@pytest.mark.parametrize("topic", JOBS)
+def test_each_job_guide_sends_flags_to_the_reference_and_never_to_help(topic):
+    text = guide.text(topic)
+    assert "Flags and fields are in `loopmath guide reference`." in text and "run `--help`" in text.lower()
 
 
 @pytest.mark.parametrize("source", SOURCES)
@@ -67,29 +76,28 @@ def test_every_command_shown_parses(source):
     assert not problems, "\n".join(problems)
 
 
-def test_every_flag_a_skill_uses_is_in_the_reference():
-    top, ref = parser(), inst.reference_text()
+def test_every_flag_the_skill_or_a_guide_uses_is_in_the_reference():
+    top, ref = parser(), guide.text("reference")
     missing = set()
-    for name in inst.SKILLS:
-        for _, command in commands(inst.skill_text(name)):
+    for name, text in texts().items():
+        for _, command in commands(text):
             chain, _, rest = walk(top, words(command))
             missing |= {f"{name}: loopmath {' '.join(chain)} {w}" for w in rest
                         if w.startswith("--") and w not in ref}
     assert not missing, sorted(missing)
 
 
-def test_skills_name_only_skills_that_exist_and_no_retired_command():
+def test_no_text_names_a_retired_skill_or_command():
     for name, text in texts().items():
-        named = set(re.findall(r"`(loopmath-[a-z-]+)`", text))
-        assert named <= set(inst.SKILLS), (name, named - set(inst.SKILLS))
+        assert not re.findall(r"`(loopmath-[a-z-]+)`", text), name
         assert "loopmath plan " not in text and "loopmath plan`" not in text, name
 
 
 TOOLS = {"Bash(loopmath:*)", "Bash(git rev-parse:*)", "Bash(git remote get-url:*)", "Bash(open:*)", "Bash(xdg-open:*)"}
 
 
-def test_skills_allow_only_loopmath_git_reads_and_open_and_name_no_web_tool():
-    """A skill runs loopmath, reads git and opens a page without a prompt; nothing else, and never the web."""
+def test_the_skill_allows_only_loopmath_git_reads_and_open_and_no_text_names_a_web_tool():
+    """The skill may run loopmath, read git and open a page without a prompt; nothing else, and never the web."""
     for name in inst.SKILLS:
         assert set(frontmatter(inst.skill_text(name))["allowed-tools"].split(", ")) <= TOOLS, name
     for name, text in texts().items():
@@ -149,7 +157,7 @@ def test_target_examples_reach_the_parser_intact(tmp_path):
     raws = [m for source in SOURCES for s in _shell_snippets(_text(source))
             if not s.startswith("loopmath skill")
             for m in re.findall(r"--target\s+('[^']*'|\"[^\"]*\"|[^\s`\]]+)", s) if re.search("[<>]", m)]
-    assert len(raws) >= 4, raws  # plan-task and the reference, and two in the README
+    assert len(raws) >= 4, raws  # the plan guide and the reference, and two in the README
     task = "recommend --type feature --repo acme/web --target "
     for n, raw in enumerate(raws):
         cwd = tmp_path / f"cwd{n}"

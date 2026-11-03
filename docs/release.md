@@ -50,6 +50,7 @@ wheel, not the source tree or an editable install, into a genuinely fresh
 virtual environment under `/tmp`. In that environment `loopmath --version`,
 `loop --version`, `loopmath --help`, `loopmath task-types --json`,
 `loopmath skill install` into a temporary home, `loopmath skill show`,
+`loopmath guide`, `loopmath guide plan`,
 `loopmath doctor --json` and `loopmath analyze` on the committed synthetic
 fixture must succeed, and so must the loop on a temporary store:
 `loopmath workflows list --json`, `loopmath prior show --json`,
@@ -57,7 +58,8 @@ fixture must succeed, and so must the loop on a temporary store:
 `loopmath fit --json`, `loopmath recommend` with `--json` and with `--html`,
 `loopmath runs --html`, `loopmath posterior --html` and `loopmath status --json`.
 This check catches a missing console entry point or package data, including
-`loopmath/prices.toml`, the six skills under `loopmath/skill/skills/`, the OCP schemas, the
+`loopmath/prices.toml`, the skill under `loopmath/skill/skills/`, the guides under
+`loopmath/skill/guides/`, the OCP schemas, the
 workflow catalog, the prior bundle and the view pages.
 The environment holds the wheel's declared core dependencies and nothing else:
 no extra, and nothing borrowed from another environment, so these checks show

@@ -14,7 +14,7 @@ Verbs:
   plan:    task-types  workflows  recommend  builder  plan
   record:  run start|record|import|attempt|artifact|finish|sessions  outcome  budget  config
   learn:   fit  onboard  share
-  view:    runs  posterior  status  report  doctor  skill  ocp
+  view:    runs  posterior  status  report  doctor  guide  skill  ocp
 
 No verb in this CLI connects to another machine; builder serves on 127.0.0.1 only.
 Verbs write only to the store ($LOOPMATH_HOME, default ~/.loopmath, which also

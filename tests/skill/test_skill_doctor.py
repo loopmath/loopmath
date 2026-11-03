@@ -62,8 +62,10 @@ def test_logs_models_prices_fit_and_skill(machine, monkeypatch):
     shutil.copy(FIXTURES / "claude_code_sidechain.jsonl", session)
     old = machine["home"] / ".claude" / "projects" / "-repo" / "old.jsonl"
     shutil.copy(FIXTURES / "claude_code_sidechain.jsonl", old)
-    stale = time.time() - 60 * 86400
+    now = time.mktime(time.strptime("2026-09-23 17:00:00", "%Y-%m-%d %H:%M:%S"))
+    stale = now - 60 * 86400  # outside the scan window of `now`, whatever today is
     os.utime(old, (stale, stale))
+    os.utime(session, (now, now))
 
     fit = machine["store"] / "fits" / "fit_20260923150000"
     fit.mkdir(parents=True)
@@ -72,7 +74,6 @@ def test_logs_models_prices_fit_and_skill(machine, monkeypatch):
     install.install("claude-code", "user")
 
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    now = time.mktime(time.strptime("2026-09-23 17:00:00", "%Y-%m-%d %H:%M:%S"))
     report = doctor.run_checks(machine["store"], now=now + 0.0,
                                run=_fake_run({"claude": "2.1.280 (Claude Code)", "codex": "codex-cli 0.155.1"}))
     checks = _by_name(report)
@@ -80,7 +81,7 @@ def test_logs_models_prices_fit_and_skill(machine, monkeypatch):
     assert logs["files"] == 2
     assert checks["agents"]["status"] == "ok" and "codex-cli 0.155.1" in checks["agents"]["summary"]
     assert checks["fit"]["detail"]["fit"] == "fit_20260923150000"
-    assert checks["skill"]["status"] == "ok" and "6 skills: claude-code user (skills)" in checks["skill"]["summary"]
+    assert checks["skill"]["status"] == "ok" and checks["skill"]["summary"] == "the loopmath skill: claude-code user (skills)"
     prices = checks["prices"]["detail"]
     # a record counts once for each model it ran (0.2.7): the sidechain's model too, not only the session's first
     assert prices["records"] == 1 and prices["models"] == {"opus-5": 1, "sonnet-5": 1}
@@ -128,18 +129,22 @@ def test_doctor_says_on_stderr_that_it_is_reading_logs(machine, capsys, monkeypa
 def test_skill_check_names_a_missing_skill_a_stale_copy_and_the_old_single_skill(machine):
     install.install("claude-code", "user")
     root = machine["home"] / ".claude" / "skills"
-    (root / "loopmath-record-run" / "SKILL.md").unlink()
+    (root / "loopmath" / "SKILL.md").unlink()
+    (root / "loopmath-onboard").mkdir()
+    (root / "loopmath-onboard" / "SKILL.md").write_text("mine\n")  # not loopmath's, so seen and left alone
     check = doctor.check_skill(None, None)
-    assert check["status"] == "warn" and check["summary"] == (
-        "claude-code user lacks loopmath-record-run: run `loopmath skill install --target claude-code --scope user`")
+    assert check["status"] == "warn" and check["summary"].startswith(
+        "claude-code user lacks the loopmath skill: run `loopmath skill install --target claude-code --scope user`; ")
+    (root / "loopmath-onboard" / "SKILL.md").unlink()
     install.install("claude-code", "user")
     assert doctor.check_skill(None, None)["status"] == "ok"
-    older = "an older reference\n"  # as an older loopmath left it: its text, and that text's hash in the manifest
-    (root / "loopmath-onboard" / "reference.md").write_text(older)
+    older = "an older skill\n"  # as an older loopmath left it: its text, and that text's hash in the manifest
+    (root / "loopmath" / "SKILL.md").write_text(older)
     manifest = json.loads((root / install.MANIFEST).read_text())
-    manifest["files"]["loopmath-onboard/reference.md"] = hashlib.sha256(older.encode()).hexdigest()
+    manifest["files"]["loopmath/SKILL.md"] = hashlib.sha256(older.encode()).hexdigest()
     (root / install.MANIFEST).write_text(json.dumps(manifest))
-    assert "claude-code user is older than this loopmath" in doctor.check_skill(None, None)["summary"]
+    assert doctor.check_skill(None, None)["summary"] == (
+        "claude-code user is older than this loopmath: run `loopmath skill install --target claude-code --scope user`")
     install.install("claude-code", "user")
     old = machine["home"] / ".codex" / "loopmath" / "SKILL.md"  # 0.1 for Codex without skills
     old.parent.mkdir(parents=True)
@@ -149,7 +154,7 @@ def test_skill_check_names_a_missing_skill_a_stale_copy_and_the_old_single_skill
         "codex user still has the 0.1 single skill: run `loopmath skill install --target codex --scope user`")
     install.install("codex", "user")
     assert doctor.check_skill(None, None)["summary"] == (
-        "6 skills: claude-code user (skills), codex user (AGENTS.md block)")
+        "the loopmath skill: claude-code user (skills), codex user (AGENTS.md block)")
 
 
 def test_doctor_says_what_it_wrote(machine, capsys, monkeypatch):

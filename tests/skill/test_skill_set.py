@@ -1,5 +1,5 @@
-"""The skill set: install, upgrade from 0.1 and uninstall on a temp HOME, both targets and scopes
-(spec 07, section 1). Install and uninstall touch only files loopmath wrote, as its manifest or the
+"""The loopmath skill: install, upgrade from 0.1 and uninstall on a temp HOME, both targets and scopes
+(spec 07, section 1). The upgrade from 0.3.3's six skills is test_skill_upgrade_033.py's. Install and uninstall touch only files loopmath wrote, as its manifest or the
 0.1 hashes say; a user's file in the way, next door or edited is never replaced or removed."""
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from loopmath import cli
+from loopmath.skill import guide
 from loopmath.skill import install as inst
 
 # The single SKILL.md loopmath 0.1.0 and 0.1.1 wrote, byte for byte.
@@ -61,9 +62,9 @@ def test_the_legacy_hashes_are_the_shipped_files():
     assert {hashlib.sha256(t.encode()).hexdigest(): v for v, t in LEGACY.items()} == inst.LEGACY_SHA256
 
 
-def test_the_set_is_six_skills_and_a_reference_with_frontmatter_per_target():
+def test_the_set_is_one_skill_with_frontmatter_per_target():
     claude, codex = inst.skill_texts("claude-code"), inst.skill_texts("codex")
-    assert list(claude) == list(codex) == list(inst.SKILLS) and len(inst.SKILLS) == 6
+    assert list(claude) == list(codex) == list(inst.SKILLS) == ["loopmath"] and inst.OWNED == ("loopmath/SKILL.md",)
     for name in inst.SKILLS:
         assert claude[name].startswith(f"---\nname: {name}\ndescription: ")
         assert "\nallowed-tools: Bash(loopmath:*)" in claude[name].split("\n---\n", 1)[0]
@@ -71,9 +72,17 @@ def test_the_set_is_six_skills_and_a_reference_with_frontmatter_per_target():
         assert codex[name] == claude[name].replace(
             "\n" + next(ln for ln in claude[name].splitlines() if ln.startswith("allowed-tools:")), "", 1)
         assert inst.skill_text(name) == claude[name]
-    assert inst.skill_text("reference").startswith("# loopmath reference for agents")
-    with pytest.raises(KeyError):
-        inst.skill_text("plan")
+    for name in ("reference", "loopmath-plan-task", "plan"):
+        with pytest.raises(KeyError):
+            inst.skill_text(name)
+
+
+def test_the_retired_files_are_the_five_job_skills_and_every_reference_copy():
+    assert len(inst.RETIRED) == 11 and not set(inst.RETIRED) & set(inst.OWNED)
+    assert set(inst.RETIRED) == {"loopmath/reference.md"} | {f"{n}/{f}" for n in inst.RETIRED_SKILLS
+                                                             for f in ("SKILL.md", "reference.md")}
+    assert sorted(inst.RETIRED_SKILLS.values()) == sorted(t for t in guide.TOPICS if t != "reference")
+    assert {inst.guide_for(rel) for rel in inst.RETIRED} == set(guide.TOPICS)
 
 
 @pytest.mark.parametrize("target,scope,codex_skills", [
@@ -95,37 +104,34 @@ def test_install_writes_the_set_once_and_uninstall_removes_exactly_it(env, targe
 
     [result] = inst.install(target, scope)
     assert result["method"] == ("agents_block" if block_form else "skill") and result["root"] == str(root)
-    assert [(s["name"], s["action"]) for s in result["skills"]] == [(n, "created") for n in inst.SKILLS]
+    assert [(s["name"], s["action"]) for s in result["skills"]] == [("loopmath", "created")]
     texts = inst.skill_texts(target)
-    for name in inst.SKILLS:
-        assert (root / name / "SKILL.md").read_text() == texts[name]
-        assert (root / name / "reference.md").read_text() == inst.reference_text()
-    assert {r["action"] for r in result["reference"]} == {"created"} and result["removed"] == []
+    assert (root / "loopmath" / "SKILL.md").read_text() == texts["loopmath"]
+    assert sorted(p.name for p in (root / "loopmath").iterdir()) == ["SKILL.md"]  # no reference.md copy
+    assert result["removed"] == [] and result["manifest_action"] == "created"
     assert result["manifest"] == str(root / inst.MANIFEST) and result["notes"] == []
-    want = {**{f"{n}/SKILL.md": texts[n] for n in inst.SKILLS}, **{f"{n}/reference.md": inst.reference_text()
-                                                                    for n in inst.SKILLS}}
-    assert _manifest(root) == {rel: hashlib.sha256(t.encode()).hexdigest() for rel, t in want.items()}
+    assert _manifest(root) == {"loopmath/SKILL.md": hashlib.sha256(texts["loopmath"].encode()).hexdigest()}
     if block_form:
         assert result["block"] == "appended"
         text = agents.read_text()
         assert text.startswith("# My rules\n\nBe kind.\n\n<!-- loopmath -->\n") and text.count(inst.BLOCK_BEGIN) == 1
-        for name in inst.SKILLS:
-            shown = (Path(".codex") / "loopmath" / name / "SKILL.md").as_posix() if scope == "project" \
-                else str(root / name / "SKILL.md")
-            assert f"{inst.TRIGGERS[name]}: `{shown}`" in text
+        shown = (Path(".codex") / "loopmath" / "loopmath" / "SKILL.md").as_posix() if scope == "project" \
+            else str(root / "loopmath" / "SKILL.md")
+        when = inst.description(texts["loopmath"]).rstrip(".")
+        assert f"\n- {when}: `{shown}`\n{inst.BLOCK_END}" in text and text.count("SKILL.md`") == 1  # one entry
     else:
         assert result["block"] is None and agents.read_text() == "# My rules\n\nBe kind.\n"
 
     again = inst.install(target, scope)[0]
-    assert {e["action"] for e in again["skills"] + again["reference"]} == {"unchanged"}
+    assert {e["action"] for e in again["skills"]} == {"unchanged"} and again["manifest_action"] == "unchanged"
     assert again["block"] in (None, "unchanged") and again["removed"] == []
 
-    _as_older(root, "loopmath-plan-task/SKILL.md", "the text an older loopmath wrote\n")
-    assert [s["action"] for s in inst.install(target, scope)[0]["skills"]].count("updated") == 1
-    assert (root / "loopmath-plan-task" / "SKILL.md").read_text() == texts["loopmath-plan-task"]
+    _as_older(root, "loopmath/SKILL.md", "the text an older loopmath wrote\n")
+    assert [s["action"] for s in inst.install(target, scope)[0]["skills"]] == ["updated"]
+    assert (root / "loopmath" / "SKILL.md").read_text() == texts["loopmath"]
 
     gone = inst.uninstall(target, scope)[0]
-    assert {e["action"] for e in gone["skills"] + gone["reference"]} == {"removed"}
+    assert {e["action"] for e in gone["skills"]} == {"removed"}
     assert gone["block"] == ("removed" if block_form else ("absent" if target == "codex" else None))
     assert _tree(env["tmp"]) == before  # exactly what install wrote, and nothing else
     assert {e["action"] for e in inst.uninstall(target, scope)[0]["skills"]} == {"absent"}
@@ -146,16 +152,15 @@ def test_upgrade_from_the_single_skill_replaces_removes_and_updates(env):
                       + outside_after)
 
     claude, codex = inst.install("both", "user")
-    assert [(s["name"], s["action"]) for s in claude["skills"]] == [("loopmath", "replaced")] + [
-        (n, "created") for n in inst.SKILLS[1:]]
+    assert [(s["name"], s["action"]) for s in claude["skills"]] == [("loopmath", "replaced")]
     assert claude_old.read_text() == inst.skill_text("loopmath") and claude["removed"] == claude["notes"] == []
     assert codex["method"] == "agents_block" and codex["block"] == "updated"
     assert codex["removed"] == [{"path": str(codex_old), "action": "removed"}] and not codex_old.exists()
     text = agents.read_text()
     assert text.startswith(outside_before) and text.endswith(outside_after)  # byte for byte outside the markers
-    assert str(codex_old) not in text and text.count("SKILL.md`") == 6
+    assert str(codex_old) not in text and text.count("SKILL.md`") == 1
     again = inst.install("both", "user")
-    assert {e["action"] for r in again for e in r["skills"] + r["reference"]} == {"unchanged"}
+    assert {e["action"] for r in again for e in r["skills"]} == {"unchanged"}
 
 
 def test_codex_that_gained_skills_drops_the_old_file_and_block(env):
@@ -181,9 +186,7 @@ def test_unclosed_block_is_an_error_before_any_write(env):
     assert not (env["home"] / ".codex" / "loopmath").exists()
 
 
-@pytest.mark.parametrize("where", [".claude/skills/loopmath-onboard/SKILL.md", ".claude/skills/loopmath/SKILL.md",
-                                   ".claude/skills/loopmath-plan-task/reference.md",
-                                   ".codex/loopmath/loopmath-record-run/SKILL.md"])
+@pytest.mark.parametrize("where", [".claude/skills/loopmath/SKILL.md", ".codex/loopmath/loopmath/SKILL.md"])
 def test_a_file_in_the_way_stops_the_whole_install(env, capsys, where):
     """A user's file where the set goes, and no manifest entry for it (a 0.1 skill the user changed is
     one), is refused: exit 1, the path and how to move it, and nothing written for any target."""
@@ -199,7 +202,7 @@ def test_a_file_in_the_way_stops_the_whole_install(env, capsys, where):
     assert _tree(env["tmp"]) == before
 
 
-@pytest.mark.parametrize("where, kind", [(".claude/skills/loopmath-onboard", "file"), (".claude/skills", "file"),
+@pytest.mark.parametrize("where, kind", [(".claude/skills/loopmath", "file"), (".claude/skills", "file"),
                                          (".claude/skills/loopmath", "dangling link"), (".codex/loopmath", "file"),
                                          (".codex/AGENTS.md", "folder"), (".codex/AGENTS.md", "dangling link")])
 def test_an_entry_where_a_folder_goes_stops_the_whole_install(env, capsys, where, kind):
@@ -286,7 +289,8 @@ def test_an_unrecognised_legacy_codex_file_is_kept(env, codex_skills):
 
 
 def test_a_fresh_uninstall_leaves_user_files(env):
-    """No manifest, so nothing at the set's paths is loopmath's unless it is the text loopmath ships."""
+    """No manifest, so nothing at the skill's path is loopmath's unless it is the text loopmath ships, and no
+    retired file is."""
     root = env["home"] / ".claude" / "skills"
     for rel in ("loopmath/SKILL.md", "loopmath-onboard/reference.md"):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -294,15 +298,17 @@ def test_a_fresh_uninstall_leaves_user_files(env):
     before = _tree(env["tmp"])
     [gone] = inst.uninstall("claude-code", "user")
     assert _tree(env["tmp"]) == before
-    assert [s["action"] for s in gone["skills"]] == ["kept"] + ["absent"] * 5
+    assert [s["action"] for s in gone["skills"]] == ["kept"] and gone["removed"] == []
     assert gone["notes"] == [f"kept {root / 'loopmath' / 'SKILL.md'}: loopmath did not write it",
-                             f"kept {root / 'loopmath-onboard' / 'reference.md'}: loopmath did not write it"]
+                             f"kept {root / 'loopmath-onboard' / 'reference.md'}: loopmath did not write it; 0.3.4 "
+                             "no longer installs it (`loopmath guide reference` has its text), so move it aside when "
+                             "you no longer need it"]
 
 
 def test_an_edited_file_is_kept_by_install_and_uninstall(env, capsys):
     root = env["home"] / ".claude" / "skills"
     inst.install("claude-code", "user")
-    edited = root / "loopmath-plan-task" / "SKILL.md"
+    edited = root / "loopmath" / "SKILL.md"
     edited.write_text("my edits\n")
     assert cli.main(["skill", "install", "--target", "claude-code"]) == 0
     assert f"  note: kept {edited}: changed since loopmath wrote it; move it aside" in capsys.readouterr().out
@@ -310,10 +316,10 @@ def test_an_edited_file_is_kept_by_install_and_uninstall(env, capsys):
     [gone] = inst.uninstall("claude-code", "user")
     assert edited.read_text() == "my edits\n" and gone["notes"] == [f"kept {edited}: changed since loopmath wrote it"]
     assert sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()) == [
-        inst.MANIFEST, "loopmath-plan-task/SKILL.md"]
-    assert list(_manifest(root)) == ["loopmath-plan-task/SKILL.md"]
+        inst.MANIFEST, "loopmath/SKILL.md"]
+    assert list(_manifest(root)) == ["loopmath/SKILL.md"]
     [back] = inst.install("claude-code", "user")  # still listed as loopmath's, changed: kept, not in the way
-    assert [s["action"] for s in back["skills"]] == ["created"] * 4 + ["kept", "created"]
+    assert [s["action"] for s in back["skills"]] == ["kept"]
 
 
 def test_a_broken_manifest_stops_before_any_change(env):
@@ -328,7 +334,7 @@ def test_a_broken_manifest_stops_before_any_change(env):
 
 
 def test_only_the_sets_exact_names_are_ever_touched(env):
-    """A manifest names files by path, but loopmath acts only on the twelve files of its set."""
+    """A manifest names files by path, but loopmath acts only on the skill's file and the eleven retired ones."""
     inst.install("claude-code", "user")
     root = env["home"] / ".claude" / "skills"
     outside = env["home"] / "outside.txt"
@@ -351,13 +357,13 @@ def test_a_file_already_identical_to_the_set_is_taken_as_loopmaths(env):
     root = Path(first["root"])
     (root / inst.MANIFEST).unlink()
     [again] = inst.install("claude-code", "user")
-    assert {e["action"] for e in again["skills"] + again["reference"]} == {"unchanged"} and len(_manifest(root)) == 12
+    assert {e["action"] for e in again["skills"]} == {"unchanged"} and len(_manifest(root)) == 1
     assert again["notes"] == [f"took {root / rel} as loopmath's: not in the manifest, but it holds the text install "
                               "writes" for rel in inst.OWNED]
     assert inst.install("claude-code", "user")[0]["notes"] == []  # listed now
     (root / inst.MANIFEST).unlink()
     [gone] = inst.uninstall("claude-code", "user")
-    assert {e["action"] for e in gone["skills"]} == {"removed"} and len(gone["notes"]) == 12
+    assert {e["action"] for e in gone["skills"]} == {"removed"} and len(gone["notes"]) == 1
     assert gone["notes"][0] == (f"removed {root / 'loopmath' / 'SKILL.md'} as loopmath's: not in the manifest, "
                                 "but it held the text install writes")
 
@@ -381,45 +387,63 @@ def test_status_names_missing_stale_and_old(env):
     rows = {(r["target"], r["scope"]): r for r in inst.status()}
     mine = rows[("claude-code", "user")]
     assert mine["installed"] and mine["current"] and mine["missing"] == [] and not mine["old"]
+    assert mine["retired"] == {"owned": [], "changed": [], "foreign": []}
     assert not rows[("claude-code", "project")]["any"]
     root = env["home"] / ".claude" / "skills"
-    (root / "loopmath-onboard" / "reference.md").write_text("older\n")
+    (root / "loopmath" / "SKILL.md").write_text("older\n")
     assert not {(r["target"], r["scope"]): r for r in inst.status()}[("claude-code", "user")]["current"]
-    (root / "loopmath-record-run" / "SKILL.md").unlink()
     (root / "loopmath" / "SKILL.md").write_text(OLD_SKILL)
     mine = {(r["target"], r["scope"]): r for r in inst.status()}[("claude-code", "user")]
-    assert mine["missing"] == ["loopmath-record-run"] and mine["old"] and not mine["installed"]
+    assert mine["missing"] == [] and mine["old"]
+    (root / "loopmath" / "SKILL.md").unlink()
+    mine = {(r["target"], r["scope"]): r for r in inst.status()}[("claude-code", "user")]
+    assert mine["missing"] == ["loopmath"] and not mine["installed"] and not mine["any"]
+
+
+def test_status_reads_the_block_too(env):
+    """The block form is current only with the block install writes now: one entry, at the skill's path."""
+    inst.install("codex", "user")
+    agents = env["home"] / ".codex" / "AGENTS.md"
+    row = lambda: {(r["target"], r["scope"]): r for r in inst.status()}[("codex", "user")]  # noqa: E731
+    assert row()["method"] == "agents_block" and row()["current"] and row()["installed"]
+    agents.write_text(agents.read_text().replace("- Use", "- use"))
+    assert not row()["current"] and not row()["installed"]
+    agents.write_text("")
+    assert not row()["current"] and not row()["installed"]
 
 
 def test_cli_install_show_and_uninstall(env, capsys):
     (env["home"] / ".claude").mkdir()
     assert cli.main(["skill", "install", "--json"]) == 0  # auto: Claude Code only
     out = json.loads(capsys.readouterr().out)
-    assert out["schema"] == "loopmath.skill/2" and out["verb"] == "install"
-    assert [(r["target"], len(r["skills"]), len(r["reference"])) for r in out["results"]] == [("claude-code", 6, 6)]
+    assert out["schema"] == "loopmath.skill/3" and out["verb"] == "install"
+    assert [(r["target"], len(r["skills"]), "reference" in r) for r in out["results"]] == [("claude-code", 1, False)]
     assert cli.main(["skill", "install", "--target", "both"]) == 0
-    lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == f"claude-code user: 6 skills in {env['home'] / '.claude' / 'skills'}: 6 unchanged"
-    assert lines[1].startswith("codex user (AGENTS.md block): 6 skills in ") and lines[1].endswith(": 6 created")
-    assert lines[2].startswith("  AGENTS.md block created in ")
+    skill = env["home"] / ".claude" / "skills" / "loopmath" / "SKILL.md"
+    assert capsys.readouterr().out.splitlines() == [
+        "claude-code user:", f"  unchanged {skill}, the loopmath skill",
+        "codex user (AGENTS.md block):",
+        f"  created {env['home'] / '.codex' / 'loopmath' / 'loopmath' / 'SKILL.md'}, the loopmath skill",
+        f"  AGENTS.md block created in {env['home'] / '.codex' / 'AGENTS.md'}"]
 
     elsewhere = env["tmp"] / "other-repo"
     elsewhere.mkdir()
     assert cli.main(["skill", "install", "--target", "claude-code", "--scope", "project", "--dir", str(elsewhere)]) == 0
     capsys.readouterr()
-    assert (elsewhere / ".claude" / "skills" / "loopmath-record-run" / "SKILL.md").is_file()
+    assert (elsewhere / ".claude" / "skills" / "loopmath" / "SKILL.md").is_file()
     assert not (env["project"] / ".claude").exists()
     assert cli.main(["skill", "install", "--dir", str(elsewhere)]) == 1
     assert "--scope project" in capsys.readouterr().err
 
     assert cli.main(["skill", "show"]) == 0
     assert capsys.readouterr().out == inst.skill_text("loopmath")
-    assert cli.main(["skill", "show", "loopmath-plan-task"]) == 0
-    assert capsys.readouterr().out == inst.skill_text("loopmath-plan-task")
-    assert cli.main(["skill", "show", "reference"]) == 0
-    assert capsys.readouterr().out == inst.reference_text()
+    assert cli.main(["skill", "show", "loopmath"]) == 0
+    assert capsys.readouterr().out == inst.skill_text("loopmath")
+    for name, topic in (("loopmath-plan-task", "plan"), ("loopmath-update-fit", "fit"), ("reference", "reference")):
+        assert cli.main(["skill", "show", name]) == 1  # 0.3.3's names point to the guide that has the text now
+        assert capsys.readouterr().err == f"error: 0.3.4 has one skill, loopmath; {name} is `loopmath guide {topic}` now\n"
     assert cli.main(["skill", "show", "plan"]) == 1
-    assert "loopmath-record-run, or reference" in capsys.readouterr().err
+    assert "the one skill is loopmath, and `loopmath guide` lists the job guides" in capsys.readouterr().err
 
     assert cli.main(["skill", "uninstall", "--target", "both", "--json"]) == 0
     results = json.loads(capsys.readouterr().out)["results"]

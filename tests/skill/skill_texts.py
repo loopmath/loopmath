@@ -1,4 +1,4 @@
-"""The packaged skill texts, and the commands and JSON fields they show, for the skill tests.
+"""The packaged skill and guide texts, and the commands and JSON fields they show, for the skill tests.
 
 A skill tells the agent which fields to read in sentences of one form: "Read `a`, `b.c`, `d[]`
 (`e`, `f`)." A backticked name is a field path (`[]` marks a list), and backticked names in
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from loopmath import cli
+from loopmath.skill import guide
 from loopmath.skill import install as inst
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,8 +26,8 @@ PLACEHOLDER = re.compile(r"[A-Z][A-Z_]*(\.\.\.)?")
 
 
 def texts() -> dict[str, str]:
-    """Each packaged skill by name, then the shared reference as `reference`."""
-    return {name: inst.skill_text(name) for name in (*inst.SKILLS, "reference")}
+    """The packaged skill by its name, then each `loopmath guide` topic by its name (the reference last)."""
+    return {**{name: inst.skill_text(name) for name in inst.SKILLS}, **{t: guide.text(t) for t in guide.TOPICS}}
 
 
 def frontmatter(text: str) -> dict[str, str]:

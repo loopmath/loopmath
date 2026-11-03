@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.4 (2026-11-03)
+
+loopmath installs one skill, `loopmath`, in place of six, and the instructions for each job come from the CLI: `loopmath guide <topic>`. Fits, predictions, recommendations and every other command are 0.3.3's.
+
+### One skill
+
+- `loopmath skill install` writes one skill, `loopmath`: `~/.claude/skills/loopmath/SKILL.md` for Claude Code, and `~/.codex/skills/loopmath/SKILL.md` for Codex, or `~/.codex/loopmath/loopmath/SKILL.md` with a one-entry block in `~/.codex/AGENTS.md` when Codex has no skills folder. Its description, the text an agent loads at start, is "Use whenever the user mentions loopmath." (40 characters; the six 0.3.3 descriptions came to 2,082). The skill has the agent check the store with `loopmath status --json`, pick the job, and run `loopmath guide <job>` and follow it. Codex gets the same text without `allowed-tools`.
+- Upgrading from 0.2.0 to 0.3.3 removes the five job skills those versions installed (`loopmath-onboard`, `loopmath-import-runs`, `loopmath-plan-task`, `loopmath-record-run` and `loopmath-update-fit`) and the `reference.md` copy in each of the six skill folders, where `.loopmath-skills.json` lists the file with the hash loopmath wrote. A listed file you changed is kept, with a note naming the guide that has its text now; a file loopmath did not write is left alone. A user install goes from 12 files to 1, besides the manifest. The 0.1 skill is still replaced when it is as 0.1 wrote it.
+- `skill install --dry-run` lists every file install would write, change or remove, the manifest among them. `skill uninstall` also removes a retired file loopmath still owns.
+- `skill show` prints the one skill. `skill show` with a retired name or `reference` exits 1 and names the guide to run instead.
+- `skill install --json` and `skill uninstall --json` print `loopmath.skill/3`: each result has no `reference` list, its `removed` list holds the retired files, and `manifest_action` says whether the manifest was created, updated, removed or left unchanged.
+
+### `loopmath guide` (new)
+
+- `loopmath guide` lists the topics, with one line on when to use each: `onboard`, `import`, `plan`, `record`, `fit` and `reference`. `loopmath guide TOPIC` prints one: 0.3.3's job skill or its `reference.md`, without frontmatter, with each pointer to another skill or to `reference.md` now a `loopmath guide` call. An unknown topic exits 2, names it and lists the topics.
+- A guide is plain text, as `skill show` is, so it has no `--json`. It needs no store and writes nothing.
+
+### `doctor`
+
+- `loopmath doctor` checks the one skill. It names any job skill folder an older loopmath left on disk, with the `loopmath skill install` command that removes it, and says when a file was kept because you changed it, or left alone because loopmath did not write it.
+
+### Tests
+
+- A `doctor` test that set a log's time from today's date, and so failed from late October 2026, now sets it from its fixed clock.
+
 ## 0.3.3 (2026-10-31)
 
 Metadata only: the package's author and the copyright holder in `LICENSE` are now loopmath instead of QKV Labs. The code, commands and output are 0.3.2's.

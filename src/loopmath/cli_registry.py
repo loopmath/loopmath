@@ -633,9 +633,16 @@ def _add_viewing(sub) -> None:
     _common(p)
     p.set_defaults(func=_lazy("loopmath.skill.commands:doctor"))
 
-    p = sub.add_parser("skill", help="install, remove or print the orchestrator skills")
+    p = sub.add_parser("guide", help="print the instructions for one job (onboard, import, plan, record, fit) or "
+                       "the command reference, for an agent to follow; read only")
+    p.add_argument("topic", nargs="?", default=None, metavar="TOPIC",
+                   help="onboard, import, plan, record, fit or reference (default: list them, with when to use each)")
+    p.set_defaults(func=_lazy("loopmath.skill.guide:command"))
+
+    p = sub.add_parser("skill", help="install, remove or print the loopmath skill")
     ss = p.add_subparsers(dest="skill_command", required=True)
-    for verb, helptext in (("install", "write the six skills for Claude Code, Codex or both"),
+    for verb, helptext in (("install", "write the loopmath skill for Claude Code, Codex or both, and remove the job "
+                                       "skills 0.3.3 and older installed"),
                            ("uninstall", "remove what install wrote")):
         q = ss.add_parser(verb, help=helptext)
         q.add_argument("--target", default="auto", choices=["auto", "claude-code", "codex", "both"],
@@ -645,14 +652,12 @@ def _add_viewing(sub) -> None:
         q.add_argument("--dir", default=None, metavar="PATH", help="the project folder for --scope project "
                        "(default: this folder)")
         if verb == "install":
-            q.add_argument("--dry-run", action="store_true", help="print every file install would write or "
-                           "change, and write nothing")
+            q.add_argument("--dry-run", action="store_true", help="print every file install would write, change "
+                           "or remove, and write nothing")
         _common(q)
         q.set_defaults(func=_lazy(f"loopmath.skill.commands:{verb}"))
-    q = ss.add_parser("show", help="print one skill (default loopmath, the start-here skill) or the shared reference")
-    q.add_argument("name", nargs="?", default="loopmath", metavar="NAME",
-                   help="loopmath, loopmath-onboard, loopmath-import-runs, loopmath-update-fit, loopmath-plan-task, "
-                   "loopmath-record-run, or reference")
+    q = ss.add_parser("show", help="print the loopmath skill (the job guides are `loopmath guide`)")
+    q.add_argument("name", nargs="?", default="loopmath", metavar="NAME", help="loopmath, the one skill")
     q.set_defaults(func=_lazy("loopmath.skill.commands:show"))
 
     p = sub.add_parser("ocp", help="validate or migrate OCP documents")

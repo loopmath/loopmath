@@ -12,13 +12,13 @@ import subprocess
 import pytest
 
 from loopmath.priors import overlap_note
-from loopmath.skill import install as inst
+from loopmath.skill import guide
 from skill_texts import SH_BLOCK
 
-PLAN = inst.skill_text("loopmath-plan-task")
-IMPORT = inst.skill_text("loopmath-import-runs")
-FIT = inst.skill_text("loopmath-update-fit")
-REF = inst.reference_text()
+PLAN = guide.text("plan")
+IMPORT = guide.text("import")
+FIT = guide.text("fit")
+REF = guide.text("reference")
 
 
 def _flat(text: str) -> str:
@@ -155,9 +155,6 @@ def test_a_pasted_option_maps_to_one_choice():
     assert ('loopmath run start --rec REC --type TYPE --repo REPO --title "TITLE" --config CFG --source alternative '
             "--base-commit SHA --json") in " ".join(PLAN.replace("\\\n", " ").split())
     assert "For a row that is not a numbered option it copies `workflow CFG: LABEL`" in _flat(REF)
-    desc = PLAN.split("---\n", 2)[1]
-    assert "pastes an option from a loopmath planning page (option 2: ...)" in desc
-    assert "`option N: ...` pasted from a planning page | `loopmath-plan-task`" in inst.skill_text("loopmath")
 
 
 def test_the_reference_documents_the_new_recommend_fields():
