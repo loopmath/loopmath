@@ -4,7 +4,7 @@ loopmath helps an orchestrator agent choose how to run a coding task, and learns
 
 Before a task, it predicts how the user's usual agent workflow will do: the chance of an accepted result, and the cost in tokens and dollars. It shows the other workflows on a success-cost curve and offers two exploration picks. Each pick comes with its gain on every future similar run, its one-time price, and the number of runs it takes to pay back. After the task, the orchestrator records what ran and what came of it. loopmath fills in the token costs from the Claude Code and Codex logs, writes a receipt of predicted against actual, and refits.
 
-loopmath never starts or coordinates agents. Claude Code, Codex, herdr or your own tool does that; loopmath is a CLI they call. Everything runs locally. loopmath connects to no other machine: `loopmath builder` serves its page on 127.0.0.1 only, and no other command opens a network connection. The logs are opened read only, and loopmath writes only to its store (`~/.loopmath`, which holds its caches too), to the skill folders `skill install` names, and to paths you name.
+loopmath never starts or coordinates agents, except `loopmath harness` (experimental), which runs Claude Code sessions to tune a repo's harness once you agree to its cost. Otherwise Claude Code, Codex, herdr or your own tool does that; loopmath is a CLI they call. Everything runs locally. loopmath connects to no other machine but pypi.org: `loopmath builder` serves its page on 127.0.0.1 only, and no other command opens a network connection, except the daily update check. Once a day loopmath asks pypi.org whether a newer loopmath exists; it sends only its version and uploads nothing. `LOOPMATH_NO_UPDATE_CHECK=1` turns the check off, and it is off when `CI` is set. A harness tune's sessions are Claude Code sessions, and they call their model as Claude Code does. The logs are opened read only, and loopmath writes only to its store (`~/.loopmath`, which holds its caches too), to the skill folders `skill install` names, and to paths you name.
 
 The package installs two commands: `loopmath` and its short alias `loop`. If another `loop` is already on your PATH, use `loopmath`.
 
@@ -26,6 +26,8 @@ python3 -m venv .venv
 
 Installing needs the network: pip, pipx and uv download the build backend (setuptools 77 or newer) and the dependencies (jsonschema, numpy, pandas, scipy), from a clone too, so `pip install --no-index -e .` fails offline.
 
+To upgrade, `loopmath update` says whether a newer loopmath is out and prints the command for how you installed it (`uv tool upgrade loopmath`, `pipx upgrade loopmath`, or pip); run it, then `loopmath skill install`. loopmath never upgrades itself.
+
 ## First run
 
 ```sh
@@ -35,20 +37,22 @@ loopmath skill install             # teach your coding agents how to use loopmat
 
 Then ask your agent to onboard, for example "onboard loopmath". The agent runs a dry run, asks you one question (which model labels your sessions, with the cost of each option), onboards, fits, and opens the results page.
 
-`skill install` writes six skills, one per job. Each skill's folder also gets its own copy of the shared `reference.md`, with every command and JSON field the skills use, so each skill works on its own. An agent loads only the skill for the job at hand, and each phrase belongs to one skill:
+`skill install` writes one skill, `loopmath`. It tells the agent to check the store with `loopmath status --json`, pick the job, and read that job's guide from the CLI, so the instructions always match the loopmath you have installed. Mention loopmath in what you ask, and the skill picks the guide:
 
-| Skill | Ask your agent |
+| Guide | Ask your agent |
 |---|---|
-| `loopmath` | loopmath named without a job: "use loopmath", "what can loopmath do", "what next with loopmath" |
-| `loopmath-onboard` | "onboard", "set up", "start" or "try" loopmath; or loopmath has no runs yet |
-| `loopmath-import-runs` | OCP files (`*.ocp.json`), a folder of finished runs, or the output of an orchestrator or experiment harness that writes OCP |
-| `loopmath-update-fit` | "update", "refresh" or "rerun" the fit; what loopmath learned; runs imported or recorded without a refit |
-| `loopmath-plan-task` | "plan a task with loopmath"; which workflow, model or effort to use; a coding task of more than a few minutes in a repo that uses loopmath |
-| `loopmath-record-run` | a task planned with loopmath is done; "record", "log" or "save" a run; both runs of a pair need a blind judge |
+| `loopmath guide onboard` | "onboard", "set up", "start" or "try" loopmath; or loopmath has no runs yet |
+| `loopmath guide import` | OCP files (`*.ocp.json`), a folder of finished runs, or the output of an orchestrator or experiment harness that writes OCP |
+| `loopmath guide plan` | "plan a task with loopmath"; which workflow, model or effort to use |
+| `loopmath guide record` | a task planned with loopmath is done; "record", "log" or "save" a run; both runs of a pair need a blind judge |
+| `loopmath guide fit` | "update", "refresh" or "rerun" the fit; what loopmath learned; runs imported or recorded without a refit |
+| `loopmath guide flow` | an experiment on a fixed multi-step workflow (a flow): set it up, run its arms, record them, read the verdicts |
 
-By default the skills go to every agent whose home exists: Claude Code (`~/.claude/skills/<name>/`, or under `$CLAUDE_CONFIG_DIR`) and Codex (`~/.codex/skills/<name>/`, or under `$CODEX_HOME`). `--target claude-code`, `codex` or `both` picks them yourself. If your Codex has no skills folder, the files go to `~/.codex/loopmath/<name>/` instead, with a short marked block in `~/.codex/AGENTS.md` that lists them. Add `--scope project` to install into the current repository (or `--dir PATH` for another one).
+`loopmath guide` alone lists them, and `loopmath guide reference` prints the command reference they share, with every command, flag and JSON field they use. A guide is read only: it needs no store and writes nothing.
 
-It is safe to run again. It records the files it wrote, with their hashes, in `.loopmath-skills.json` beside the skill folders, and it replaces or removes only those. A skill file you changed is kept, with a note. Any other file where a skill goes stops the install before it writes anything, and names the path to move aside. The single skill that 0.1 installed is replaced when it is as 0.1 wrote it. `loopmath skill show NAME` prints one skill, and `loopmath skill uninstall` removes the files it wrote. `loopmath doctor` shows what loopmath can see: logs, agents, store, fit, prices and skills. To read the logs it builds the log parse cache in the store and keeps it, so the next read is fast, and it says how big the cache is; it changes nothing else in the store.
+By default the skill goes to every agent whose home exists: Claude Code (`~/.claude/skills/loopmath/`, or under `$CLAUDE_CONFIG_DIR`) and Codex (`~/.codex/skills/loopmath/`, or under `$CODEX_HOME`). `--target claude-code`, `codex` or `both` picks them yourself. If your Codex has no skills folder, the skill goes to `~/.codex/loopmath/loopmath/` instead, with a short marked block in `~/.codex/AGENTS.md` that points to it. Add `--scope project` to install into the current repository (or `--dir PATH` for another one).
+
+It is safe to run again. It records the files it wrote, with their hashes, in `.loopmath-skills.json` beside the skill folder, and it replaces or removes only those. A skill file you changed is kept, with a note. Any other file where the skill goes stops the install before it writes anything, and names the path to move aside. The single skill that 0.1 installed is replaced when it is as 0.1 wrote it. Upgrading from 0.2 or 0.3 removes the five job skills those versions installed and the `reference.md` copy in each skill folder, where loopmath wrote them and they are unchanged; a file you changed is kept, with a note. `--dry-run` lists every file install would write or remove. `loopmath skill show` prints the skill, and `loopmath skill uninstall` removes the files it wrote. `loopmath doctor` shows what loopmath can see: logs, agents, store, fit, prices and the skill, and names any job skill an older loopmath left behind. To read the logs it builds the log parse cache in the store and keeps it, so the next read is fast, and it says how big the cache is; it changes nothing else in the store.
 
 To onboard by hand instead:
 
@@ -68,13 +72,13 @@ The dry run makes no labelling call and writes no runs or fit; like `doctor`, it
 
 Reading the history uses up to 8 worker processes (one per CPU, at most 8). Set `LOOPMATH_WORKERS=1` to keep everything in one process, or another number to change the count.
 
-loopmath ships with a prior built from our own sweeps and experiments, so `recommend` gives an answer before you have any history. Your own runs then move it.
+loopmath ships with a prior built from our own sweeps and experiments, so `recommend` gives an answer before you have any history. Your own runs then move it. Your store's overall pass rate is its own, with a wide prior that only your runs move: the shipped runs give their costs and gate rows but no success rows, and the public benchmarks say which models are stronger (`belief.level`, `store` by default; `loopmath config set belief.level shared`, then `loopmath fit`, gives 0.3.5's fit).
 
 The prior ships inside the package: our runs, in the shared form (no titles, paths, commands or free text), and the published benchmark results. They are the same files we fit with, and each release updates them. `onboard` and the results page say in one line which prior they start from, and `loopmath prior show` lists it source by source.
 
 ## The loop
 
-The plan and record skills take an agent through the loop in three commands:
+The plan and record guides take an agent through the loop in three commands:
 
 ```sh
 loopmath recommend --type bug_fix --repo acme/api --title "Fix the parser crash" --json --brief --html
@@ -117,7 +121,7 @@ A pair runs the goal workflow and an exploration pick from the same base commit,
 
 A run counts as a success when it is accepted under your rule. By default that means the task's tests pass. A run that `onboard` brought in from your logs, or that `run import` stored, with no tests verdict but a review or accepted verdict, is judged by the review rule instead: a success when its latest review or accepted verdict is accept, approve or pass. `loopmath runs` lists other finished runs such a verdict could settle, with the command that moves them to the review rule, `loopmath outcome --rule review RUN...`. `loopmath outcome --undo-rule RUN...` undoes that, restoring each run's rule as it was; naming that rule (`tests` when it had none) does too, unless the run's own rule was also named review. A review verdict on a reviewer's last attempt then counts twice: as the review gate's pass, and as the run's success. A rule can also be a score target: `loopmath recommend ... --target 'heldout_perf>=2400'` or `--target 'runtime_s<=200'` gives the expected score and the chance of reaching the target. Set standing rules and other options with `loopmath config set KEY VALUE` (`loopmath config get` lists every key, set or not, `config set` refuses a key loopmath does not read, and `loopmath config unset KEY` returns a key to its default), and the spending cap with `loopmath budget --usd X --period month`. Spend counts your runs and onboard's labelling calls; runs onboard brought in from your logs are shown apart and not counted. A run you record with `--source habit` counts.
 
-Runs recorded by another tool that writes OCP v0.3, such as an experiment runner, come in with `loopmath run import DIR --finish`: several files or a directory, with one refit at the end (`--no-fit` skips it). It says how many runs were new, unchanged or replaced; importing finished runs into a store with no fit starts a fit. Importing the same documents again changes nothing and keeps the outcomes you added since, and with `--finish` it finishes the runs left open (without it, the runs are stored open and it says to import again with `--finish`). A document whose run id is already in the store with different content is refused by name, with the fields that differ; `--replace` takes it and keeps the outcomes added after the import, and refuses a copy that would overwrite one. Runs in your store always count as yours, whatever source their documents name. `loopmath fit --without SOURCE` leaves out one shipped prior source, and `loopmath status` names the options of the current fit.
+Runs recorded by another tool that writes OCP v0.3 (or v0.4, for a run that names a flow or states checks), such as an experiment runner, come in with `loopmath run import DIR --finish`: several files or a directory, with one refit at the end (`--no-fit` skips it). It says how many runs were new, unchanged or replaced; importing finished runs into a store with no fit starts a fit. Importing the same documents again changes nothing and keeps the outcomes you added since, and with `--finish` it finishes the runs left open (without it, the runs are stored open and it says to import again with `--finish`). A document whose run id is already in the store with different content is refused by name, with the fields that differ; `--replace` takes it and keeps the outcomes added after the import, and refuses a copy that would overwrite one. Runs in your store always count as yours, whatever source their documents name. `loopmath fit --without SOURCE` leaves out one shipped prior source, and `loopmath status` names the options of the current fit.
 
 ## The three views
 
@@ -137,16 +141,18 @@ The workflow builder is the one page that is served: `loopmath builder --type bu
 |---|---|
 | Plan | `task-types`, `workflows` (list, show, validate, diff), `recommend`, `builder` |
 | Record | `run` (start, record, import, attempt, artifact, finish, sessions), `outcome`, `budget`, `config` (get, set, unset) |
+| Flows | `flow` (init, show, export, import, plan, next, record, score, status, check) |
 | Learn | `fit`, `onboard`, `share`, `prior` |
-| View | `runs`, `posterior`, `status`, `report`, `doctor`, `verify-receipts` |
+| View | `runs`, `posterior`, `status`, `report`, `doctor`, `verify-receipts`, `update` |
 | Harness testing | `check-change`, `gate` (experimental), `screen` (experimental) |
+| Harness tuning | `harness` (experimental) |
 | Task subsets | `tasks pick` (experimental) |
 | Evolution loops | `adapt openevolve` (experimental), `adapt shinkaevolve` (experimental), `recommend --role` (experimental) |
-| Skill | `skill` (install, uninstall, show) |
+| Skill | `skill` (install, uninstall, show), `guide` |
 | OCP | `ocp` (validate, migrate) |
 | Log analysis | `analyze`, `graph`, `adapt`, `prices`, `validate-prices` |
 
-These are experimental: `gate`, `screen`, `tasks pick`, the harness-part estimates (`recommend --harness-variants` and `--harness`, `posterior --level harness` and its `factors`), `recommend --role`, `adapt harness2`, `adapt plugin-eval`, `adapt openevolve`, `adapt shinkaevolve` and the ADE adapters (`adapt NAME`). Each works and has tests, but has had little use on real work so far, and its output may change. Their help says so too. The gate at DSPy's GEPA and MIPROv2 accept step (`loopmath.integrations.dspy`, Python) is experimental too: it is tested against fakes written from their source, not yet with DSPy installed, and its guide says so. So is the opt-in cost model for arms that mix models, `loopmath.compare.model.COST_MODEL = "sw"`, a Python setting with no help of its own; the [changelog](CHANGELOG.md) describes it.
+These are experimental: `harness`, `gate`, `screen`, `tasks pick`, the harness-part estimates (`recommend --harness-variants` and `--harness`, `posterior --level harness` and its `factors`), `recommend --role`, `adapt harness2`, `adapt plugin-eval`, `adapt openevolve`, `adapt shinkaevolve` and the ADE adapters (`adapt NAME`). Each works and has tests, but has had little use on real work so far, and its output may change. Their help says so too. The gate at DSPy's GEPA and MIPROv2 accept step (`loopmath.integrations.dspy`, Python) is experimental too: it is tested against fakes written from their source, not yet with DSPy installed, and its guide says so. So is the opt-in cost model for arms that mix models, `loopmath.compare.model.COST_MODEL = "sw"`, a Python setting with no help of its own; the [changelog](CHANGELOG.md) describes it.
 
 Each command prints a short summary by default. With `--json`, it prints exactly one JSON object instead. One exception: `loopmath adapt harness2`, `adapt harness-runs`, `adapt plugin-eval`, `adapt openevolve` and `adapt shinkaevolve` without `--out` print the run documents on stdout, one per line, so their `--json` summary goes to stderr. Exit codes: 0 ok, 1 user error, 2 not found, 3 not implemented, 4 store locked, 5 no fit yet. For flags, `loopmath <command> --help` is the source of truth. Commands, pages and the `runs` table show times in your local time with the zone; the store and `--json` keep UTC. A cost under a cent shows one significant digit (`$0.004`), and an exact zero is `$0`.
 
@@ -280,11 +286,11 @@ Runs of one case are not new tasks: to learn whether the plugin helps on tasks l
 
 The store is `~/.loopmath`. Set `LOOPMATH_HOME` or pass `--home` to put it elsewhere; the log parse cache moves with it, to `cache/` inside the store, unless you set `LOOPMATH_CACHE_DIR`. It holds:
 
-- one OCP v0.3 document per recorded run;
+- one OCP document per recorded run: v0.3, or v0.4 for a run that names a flow or states checks;
 - signals, receipts and fits;
 - your config and your workflows;
 - the views you write;
-- the caches: the log parse cache, and the folder where `fit --full` compiles its model (when that compile fails, it also leaves the C code it tried in a `pytensor_compilation_error_*` file in the system temp folder and prints where).
+- the caches: the log parse cache, the daily update check's last answer (`update.json`), and the folder where `fit --full` compiles its model (when that compile fails, it also leaves the C code it tried in a `pytensor_compilation_error_*` file in the system temp folder and prints where).
 
 Do not edit the store by hand; use the commands. `loopmath verify-receipts` checks the receipts in your store; give a file to verify a research receipt ledger instead.
 

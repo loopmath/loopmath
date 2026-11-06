@@ -18,7 +18,7 @@ from typing import Any
 from ..output import fmt_time, fmt_usd
 from . import runs as R
 from .budget import is_history_row
-from .finish import Q_DEFAULT, evidence_for, rule_of, unsettled
+from .finish import Q_DEFAULT, _loop_quality, evidence_for, rule_of, unsettled
 from .home import NotFound, Store, StoreError
 from .ids import parse_ts, ulid_time, utc_iso
 
@@ -158,6 +158,7 @@ def report_payload(store: Store, since: datetime | None = None) -> dict[str, Any
 
     conf = store.config()
     q = {t: conf.q_for_tier(t) for t in Q_DEFAULT}
+    flow_quality = _loop_quality(store)  # every finished flow run of the store, not only the rows in the window
     per_source: dict[str, dict[str, Any]] = {}
     explore_runs = []
     total_usd = 0.0
@@ -171,10 +172,12 @@ def report_payload(store: Store, since: datetime | None = None) -> dict[str, Any
             doc = store._read(row["run"])
         except (NotFound, StoreError, ValueError):
             continue
-        to_settle += len(unsettled(doc, by_run.get(row["run"], []), q))  # the next fit re-scores them; a read here
+        quality = flow_quality(doc)
+        # the next fit re-scores them; a read here
+        to_settle += len(unsettled(doc, by_run.get(row["run"], []), q, quality=quality))
         z = next((_num(_get(rc, "after", "z")) for rc in by_run.get(row["run"], []) if isinstance(rc.get("after"), dict)), None)
         if z is None:
-            z = evidence_for(doc, rule_of(doc), q_by_tier=q).z
+            z = evidence_for(doc, rule_of(doc), q_by_tier=q, quality=quality).z
         cost = R.run_cost(doc)
         usd = cost["usd_known"]  # known dollars; a run missing some is counted in runs_not_costed
         missing = 0 if cost["complete"] else 1

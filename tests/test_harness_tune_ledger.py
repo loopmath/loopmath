@@ -45,12 +45,14 @@ C = Usage(model="claude-opus-5-5", input=7, cache_read=3_000_000, cache_write=11
           cli_cost_usd=3.5)
 
 
-def test_the_price_table_has_the_new_rows_marked_unconfirmed():
+def test_the_price_table_has_the_new_rows_confirmed_on_the_official_list():
     t = load_prices()
     for model, r in (("claude-haiku-5-5", HAIKU55), ("claude-sonnet-5-5", SONNET55)):
         rate = t.rate(model)
         assert (rate["input"], rate["cache_read"], rate["cache_write"], rate["output"]) == r
-        assert t.is_todo(model) and t.source_for(model).startswith("unconfirmed:")
+        source = t.source_for(model)
+        assert not t.is_todo(model) and source.startswith("official list, https://platform.claude.com/")
+        assert "checked 2026-11-03" in source
     assert not t.is_todo("claude-opus-5-5")
 
 
@@ -107,7 +109,8 @@ def test_record_writes_one_row_per_model_with_the_named_fields(tune):
     assert abs(a["cost_usd"] - hand(A, HAIKU55)) < 1e-9 and abs(b["cost_usd"] - hand(B, SONNET55)) < 1e-9
     assert a["cli_cost_usd"] == 0.0205 and b["cli_cost_usd"] == 0.06
     assert a["wall_s"] == 12.5 and b["wall_s"] == 0.0  # the session's wall time once
-    assert a["price_note"] == "placeholder price row"
+    assert "price_note" not in a and "price_note" not in b  # both rows confirmed on 2026-11-03
+    assert row_cost(Usage(model="gpt-5.5", input=1), load_prices())[1] == "placeholder price row"  # a todo row
     assert abs(sum(r["cost_usd"] for r in rows) - led.price([A, B])) < 1e-9
 
 

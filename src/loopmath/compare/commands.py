@@ -14,8 +14,8 @@ from ..output import EXIT_USER, counted
 from ..store.commands import UserError, _error, _out, _store, handler
 from ..store.home import Store
 from . import value as V
-from . import (ACCEPT, CHECK_EXT, Comparison, _harness_digest, _observations, arm_runs, check_floor, check_rule, checks,
-               own_rules, pair_up, paired, resolve_rule, score_rule, units)
+from . import (ACCEPT, CHECK_EXT, Comparison, _flow_quality, _harness_digest, _observations, arm_runs, check_floor,
+               check_rule, checks, own_rules, pair_up, paired, resolve_rule, score_rule, units)
 
 SCHEMA = "check-change"
 SETTINGS = ("budget_usd", "objective", "floor", "confidence", "horizon_runs", "value_usd", "min_pairs",
@@ -344,7 +344,9 @@ def check_from_runs(args: argparse.Namespace) -> int:
     config = store.config()
     check_rule(rule, base, cand, config)  # a rule these runs cannot be read under names what is there
     try:
-        obs_b, obs_c = _observations(base, rule, None, config), _observations(cand, rule, None, config)
+        quality = _flow_quality(base, cand)  # one fit of the judges for both arms
+        obs_b = _observations(base, rule, None, config, quality=quality)
+        obs_c = _observations(cand, rule, None, config, quality=quality)
         pairs = len(pair_up(obs_b, obs_c)[0])  # the runs pair as they are first: a bad pairing is refused here
         unit = units.choose(rule, obs_b, obs_c, getattr(args, "unit", None))
         if unit["unit"] == "case":  # one pair per case, each arm's mean score (compare/units.py)

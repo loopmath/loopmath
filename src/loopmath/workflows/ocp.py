@@ -13,6 +13,11 @@ Mapping:
   `{kind: configuration, ref: usual}` (any other OCP rescue object is kept
   whole in `Control.rescue`); a gate rule that is not its role's default goes
   to `control.ext["dev.loopmath.gate_rules"]`;
+- OCP 0.4 `control.checks`, a list of `{id, after, rule, on_fail}` objects, is
+  `Control.checks`, ids, extras and an explicit null `on_fail` kept; any other
+  `checks` value (an empty list, a malformed entry) stays in `Control.extra`
+  as written, for validation to name. A gate with a non-default id or extras,
+  or two gates after one piece, is written as checks (OCP 0.4 section 11);
 - settings `{harness, model: {raw, id}, effort, context_policy, options}`,
   `context_policy` always written.
 """
@@ -22,7 +27,7 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 
 from ..ocp import emit as _emit
-from ..types import Configuration, Control, Gate, Piece, Setting, Workflow
+from ..types import Check, Configuration, Control, Gate, Piece, Setting, Workflow
 from .shapes import GATE_RULE_DEFAULTS
 
 RECOMMENDED_KINDS = ("issue", "repo", "plan", "spec", "diff", "review", "verdict", "test_record", "report", "other")
@@ -186,8 +191,11 @@ def workflow_from_ocp(obj: Mapping[str, Any], resolver: Resolver | None = None) 
              on_fail=repair.get(g))
         for g in control.get("gates") or []
     )
+    checks = control.get("checks")
+    read_checks = isinstance(checks, list) and bool(checks) and all(_is_check(c) for c in checks)
     rescue = _rescue_from_ocp(control.get("rescue"))
-    control_extra = {k: v for k, v in control.items() if k not in ("gates", "repair", "budget", "rescue", "ext")}
+    skip = ("gates", "repair", "budget", "rescue", "ext") + (("checks",) if read_checks else ())
+    control_extra = {k: v for k, v in control.items() if k not in skip}
     other_ext = {k: v for k, v in ext.items() if k != GATE_RULES_KEY}
     if other_ext:
         control_extra["ext"] = other_ext
@@ -202,9 +210,15 @@ def workflow_from_ocp(obj: Mapping[str, Any], resolver: Resolver | None = None) 
         artifacts=tuple(artifacts),
         edges=tuple((str(a), str(b)) for a, b in obj.get("edges") or []),
         control=Control(gates=gates, budget_rounds=max(1, int(control.get("budget") or 0)), rescue=rescue,
-                        extra=control_extra),
+                        extra=control_extra,
+                        checks=tuple(Check.from_dict(dict(c)) for c in checks) if read_checks else ()),
         extra=extra,
     )
+
+
+def _is_check(obj: Any) -> bool:
+    """An OCP check `Check` can hold: an object with string `id`, `after` and `rule`."""
+    return isinstance(obj, Mapping) and all(isinstance(obj.get(k), str) for k in ("id", "after", "rule"))
 
 
 def configuration_from_ocp(obj: Mapping[str, Any], resolver: Resolver | None = None) -> Configuration:

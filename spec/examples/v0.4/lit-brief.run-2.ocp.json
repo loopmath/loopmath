@@ -1,0 +1,557 @@
+{
+  "ocp": "0.4",
+  "producer": {
+    "name": "loopmath/harness-runs",
+    "version": "0.4.0rc1",
+    "source_contract": "loopmath.harness-runs/0.1",
+    "emitted_at": "2026-11-03T11:06:00-08:00",
+    "capabilities": {
+      "task": true,
+      "configuration": true,
+      "signals": true,
+      "slate": false,
+      "receipt": false,
+      "events": true,
+      "artifacts": false,
+      "cost_tokens": true,
+      "cost_usd": true,
+      "outcome_evidence": true,
+      "flow": true
+    }
+  },
+  "privacy": {
+    "profile": "metadata_only"
+  },
+  "run": {
+    "id": "run_hr_937b1ddb429d92d3d5f5",
+    "started_at": "2026-11-03T11:00:00-08:00",
+    "ended_at": "2026-11-03T11:06:00-08:00",
+    "task": {
+      "id": "q07",
+      "type": "research",
+      "repo": "unknown",
+      "source": {
+        "kind": "live"
+      },
+      "labeled_by": {
+        "how": "default"
+      }
+    },
+    "configuration": {
+      "id": "cfg_9bc4f6e876f9",
+      "workflow": {
+        "id": "lit-brief",
+        "version": 1,
+        "title": "Question to a one-page brief",
+        "pieces": [
+          {
+            "id": "scout",
+            "role": "worker",
+            "width": 1
+          },
+          {
+            "id": "extract",
+            "role": "worker",
+            "width": 1
+          },
+          {
+            "id": "synthesize",
+            "role": "worker",
+            "width": 1
+          },
+          {
+            "id": "critic",
+            "role": "reviewer",
+            "width": 1
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "question",
+            "kind": "other"
+          },
+          {
+            "id": "sources",
+            "kind": "other"
+          },
+          {
+            "id": "claims",
+            "kind": "other"
+          },
+          {
+            "id": "brief",
+            "kind": "other"
+          },
+          {
+            "id": "verdict",
+            "kind": "verdict"
+          }
+        ],
+        "edges": [
+          [
+            "question",
+            "scout"
+          ],
+          [
+            "scout",
+            "sources"
+          ],
+          [
+            "sources",
+            "extract"
+          ],
+          [
+            "extract",
+            "claims"
+          ],
+          [
+            "claims",
+            "synthesize"
+          ],
+          [
+            "question",
+            "synthesize"
+          ],
+          [
+            "synthesize",
+            "brief"
+          ],
+          [
+            "brief",
+            "critic"
+          ],
+          [
+            "claims",
+            "critic"
+          ],
+          [
+            "critic",
+            "verdict"
+          ]
+        ],
+        "control": {
+          "gates": [
+            "extract",
+            "critic"
+          ],
+          "repair": {
+            "extract": "extract",
+            "critic": "synthesize"
+          },
+          "budget": 2,
+          "rescue": {
+            "kind": "configuration",
+            "ref": "usual"
+          },
+          "ext": {
+            "dev.loopmath.gate_rules": {
+              "extract": "command:claims-check"
+            }
+          }
+        }
+      },
+      "settings": {
+        "scout": {
+          "harness": "api",
+          "model": {
+            "raw": "claude-sonnet-5-5",
+            "id": "claude-sonnet-5-5"
+          },
+          "effort": "default",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "extract": {
+          "harness": "api",
+          "model": {
+            "raw": "claude-opus-5-5",
+            "id": "claude-opus-5-5"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "synthesize": {
+          "harness": "api",
+          "model": {
+            "raw": "gpt-6-astra",
+            "id": "gpt-6-astra"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "critic": {
+          "harness": "api",
+          "model": {
+            "raw": "claude-haiku-5-5",
+            "id": "claude-haiku-5-5"
+          },
+          "effort": "default",
+          "context_policy": "fresh",
+          "options": {}
+        }
+      },
+      "source": "usual"
+    },
+    "provenance": {
+      "kind": "logged",
+      "chooser": "user"
+    },
+    "acceptance_rule": {
+      "name": "quality>=0.7+claims-check",
+      "definition": "quality at least 0.7 and the claims check passes",
+      "requires": [
+        "claims-check"
+      ],
+      "score": {
+        "name": "quality",
+        "target": 0.7,
+        "better": "higher",
+        "scale": "fraction"
+      }
+    },
+    "signals": [
+      {
+        "id": "sig_run_hr_937b1ddb429d92d3d5f5_judge_0",
+        "kind": "score",
+        "name": "quality",
+        "value": 0.8,
+        "better": "higher",
+        "scale": "fraction",
+        "observed_at": "2026-11-03T11:07:00-08:00",
+        "tier": "reported",
+        "at_attempt": "att_hr_937b1ddb429d92d3d5f5_6",
+        "source": {
+          "kind": "judge",
+          "ref": "j-claude"
+        }
+      },
+      {
+        "id": "sig_run_hr_937b1ddb429d92d3d5f5_judge_1",
+        "kind": "score",
+        "name": "quality",
+        "value": 0.7,
+        "better": "higher",
+        "scale": "fraction",
+        "observed_at": "2026-11-03T11:08:00-08:00",
+        "tier": "reported",
+        "at_attempt": "att_hr_937b1ddb429d92d3d5f5_6",
+        "source": {
+          "kind": "judge",
+          "ref": "j-astra"
+        }
+      }
+    ],
+    "workspace": "unknown",
+    "labels": {
+      "arm": "base"
+    },
+    "flow": {
+      "id": "lit-brief",
+      "version": 1,
+      "digest": "flw_774ab7a14c50",
+      "arm": "base"
+    },
+    "ext": {
+      "dev.loopmath.adapter.harness-runs": {
+        "schema": "loopmath.harness-runs/0.1",
+        "row_id": "q07-r2",
+        "arm": "base",
+        "status": "done",
+        "flow": {
+          "id": "lit-brief",
+          "version": 1
+        }
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "scout",
+      "kind": "impl",
+      "vertex": "scout",
+      "state": "done"
+    },
+    {
+      "id": "extract",
+      "kind": "gate",
+      "vertex": "extract",
+      "state": "done"
+    },
+    {
+      "id": "synthesize",
+      "kind": "impl",
+      "vertex": "synthesize",
+      "state": "done"
+    },
+    {
+      "id": "critic",
+      "kind": "review",
+      "vertex": "critic",
+      "state": "done"
+    }
+  ],
+  "edges": [
+    {
+      "from": "scout",
+      "to": "extract",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "extract",
+      "to": "synthesize",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "extract",
+      "to": "critic",
+      "kind": "dep",
+      "tier": "reported"
+    },
+    {
+      "from": "synthesize",
+      "to": "critic",
+      "kind": "dep",
+      "tier": "reported"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "att_hr_937b1ddb429d92d3d5f5_1",
+      "node": "scout",
+      "vertex": "scout",
+      "n": 1,
+      "round": 1,
+      "harness": "api",
+      "model": {
+        "raw": "claude-sonnet-5-5",
+        "id": "claude-sonnet-5-5"
+      },
+      "effort": "default",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "usd": 0.3,
+        "basis": "measured"
+      },
+      "ext": {
+        "dev.loopmath.adapter.harness-runs": {
+          "cost": {
+            "recovered": false,
+            "usd_source": "reported",
+            "unpriced": null
+          },
+          "stage": 0,
+          "role": "worker"
+        }
+      }
+    },
+    {
+      "id": "att_hr_937b1ddb429d92d3d5f5_2",
+      "node": "extract",
+      "vertex": "extract",
+      "n": 1,
+      "round": 1,
+      "harness": "api",
+      "model": {
+        "raw": "claude-opus-5-5",
+        "id": "claude-opus-5-5"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "usd": 1.0,
+        "basis": "measured"
+      },
+      "ext": {
+        "dev.loopmath.adapter.harness-runs": {
+          "cost": {
+            "recovered": false,
+            "usd_source": "reported",
+            "unpriced": null
+          },
+          "stage": 1,
+          "role": "worker"
+        }
+      }
+    },
+    {
+      "id": "att_hr_937b1ddb429d92d3d5f5_3",
+      "node": "synthesize",
+      "vertex": "synthesize",
+      "n": 1,
+      "round": 1,
+      "harness": "api",
+      "model": {
+        "raw": "gpt-6-astra",
+        "id": "gpt-6-astra"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "usd": 0.6,
+        "basis": "measured"
+      },
+      "ext": {
+        "dev.loopmath.adapter.harness-runs": {
+          "cost": {
+            "recovered": false,
+            "usd_source": "reported",
+            "unpriced": null
+          },
+          "stage": 2,
+          "role": "worker"
+        }
+      }
+    },
+    {
+      "id": "att_hr_937b1ddb429d92d3d5f5_4",
+      "node": "critic",
+      "vertex": "critic",
+      "n": 1,
+      "round": 1,
+      "harness": "api",
+      "model": {
+        "raw": "claude-haiku-5-5",
+        "id": "claude-haiku-5-5"
+      },
+      "effort": "default",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "usd": 0.05,
+        "basis": "measured"
+      },
+      "ext": {
+        "dev.loopmath.adapter.harness-runs": {
+          "cost": {
+            "recovered": false,
+            "usd_source": "reported",
+            "unpriced": null
+          },
+          "stage": 3,
+          "role": "reviewer"
+        }
+      }
+    },
+    {
+      "id": "att_hr_937b1ddb429d92d3d5f5_5",
+      "node": "synthesize",
+      "vertex": "synthesize",
+      "n": 2,
+      "round": 2,
+      "harness": "api",
+      "model": {
+        "raw": "gpt-6-astra",
+        "id": "gpt-6-astra"
+      },
+      "effort": "high",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "usd": 0.4,
+        "basis": "measured"
+      },
+      "ext": {
+        "dev.loopmath.adapter.harness-runs": {
+          "cost": {
+            "recovered": false,
+            "usd_source": "reported",
+            "unpriced": null
+          },
+          "stage": 4,
+          "role": "worker"
+        }
+      }
+    },
+    {
+      "id": "att_hr_937b1ddb429d92d3d5f5_6",
+      "node": "critic",
+      "vertex": "critic",
+      "n": 2,
+      "round": 2,
+      "harness": "api",
+      "model": {
+        "raw": "claude-haiku-5-5",
+        "id": "claude-haiku-5-5"
+      },
+      "effort": "default",
+      "cause": {
+        "type": "initial"
+      },
+      "status": "done",
+      "outcome": {
+        "result": "done",
+        "evidence": "reported"
+      },
+      "cost": {
+        "usd": 0.05,
+        "basis": "measured"
+      },
+      "ext": {
+        "dev.loopmath.adapter.harness-runs": {
+          "cost": {
+            "recovered": false,
+            "usd_source": "reported",
+            "unpriced": null
+          },
+          "stage": 5,
+          "role": "reviewer"
+        }
+      }
+    }
+  ],
+  "artifacts": [],
+  "events": [
+    {
+      "at": "2026-11-03T11:00:00-08:00",
+      "type": "note",
+      "detail": "run started"
+    },
+    {
+      "at": "2026-11-03T11:07:00-08:00",
+      "type": "signal_observed",
+      "detail": "score quality"
+    },
+    {
+      "at": "2026-11-03T11:08:00-08:00",
+      "type": "signal_observed",
+      "detail": "score quality"
+    }
+  ]
+}

@@ -159,6 +159,54 @@ class Gate(Record):
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def _given_to_dict(record: Any) -> dict[str, Any]:
+    """`to_dict` for a record with `given`: a None member is written only when `from_dict` read it."""
+    out: dict[str, Any] = {}
+    for f in dataclasses.fields(record):
+        if f.name in ("extra", "given"):
+            continue
+        value = getattr(record, f.name)
+        if value is None and f.name not in record.given:
+            continue
+        out[f.name] = _dump(value)
+    out.update(record.extra)
+    return out
+
+
+def _given_from_dict(cls: Any, data: dict[str, Any]) -> Any:
+    """`from_dict` for a flat record with `given`; members named `extra` or `given` are unknown members. A missing
+    member with no default raises ValueError naming it."""
+    members = [f for f in dataclasses.fields(cls) if f.name not in ("extra", "given")]
+    names = {f.name for f in members}
+    kwargs = {k: v for k, v in data.items() if k in names}
+    for f in members:
+        if f.name not in kwargs and f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING:
+            raise ValueError(f"{cls.__name__}: the member {f.name!r} is missing")
+    extra = {k: v for k, v in data.items() if k not in names}
+    return cls(**kwargs, extra=extra, given=frozenset(kwargs))
+
+
+@_frozen
+class Check(Record):
+    """An OCP 0.4 check (`control.checks`): it judges a piece's output and sends a failure back, without being
+    a gate. Kept apart from `Gate`. Members are kept as read: an absent `on_fail` stays absent and an explicit
+    null stays null (`given` holds the member names `from_dict` read)."""
+
+    id: str
+    after: str  # piece id whose output it judges
+    rule: str  # "tests_pass" | "review_approve" | "command:<name>" | ...
+    on_fail: str | None = None  # piece id to send back to; None = stop
+    extra: dict[str, Any] = field(default_factory=dict)
+    given: frozenset[str] = field(default=frozenset(), compare=False, repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _given_to_dict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Check:
+        return _given_from_dict(cls, data)
+
+
 @_frozen
 class Control(Record):
     gates: tuple[Gate, ...] = ()
@@ -166,6 +214,15 @@ class Control(Record):
     # "redo_usual" | "person" | "none", or an OCP rescue object kept whole
     rescue: str | dict[str, Any] = "redo_usual"
     extra: dict[str, Any] = field(default_factory=dict)
+    checks: tuple[Check, ...] = ()  # OCP 0.4 control.checks; last, so positional calls keep their meaning
+
+    def to_dict(self) -> dict[str, Any]:
+        # No checks writes no member, so a control without them keeps its bytes; extras stay last, as written
+        out = {"gates": _dump(self.gates), "budget_rounds": self.budget_rounds, "rescue": _dump(self.rescue)}
+        if self.checks:
+            out["checks"] = _dump(self.checks)
+        out.update(self.extra)
+        return out
 
 
 @_frozen
@@ -195,6 +252,28 @@ class Configuration(Record):
             if s is not None:
                 parts.append(f"{s.model}/{s.effort}")
         return f"{self.workflow.id}: " + ", ".join(parts)
+
+
+@_frozen
+class FlowRef(Record):
+    """OCP 0.4 `run.flow`: the flow a run belongs to. `ext` and other unknown members stay in `extra`. A None
+    member is written only when `from_dict` read it, so a `FlowRef` built in code writes a valid `run.flow`."""
+
+    id: str
+    version: int
+    digest: str | None = None  # "flw_" + 12 hex
+    arm: str | None = None  # "base" or an arm label
+    plan: str | None = None  # the plan id
+    split: str | None = None  # "train" | "holdout"; open
+    extra: dict[str, Any] = field(default_factory=dict)
+    given: frozenset[str] = field(default=frozenset(), compare=False, repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _given_to_dict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FlowRef:
+        return _given_from_dict(cls, data)
 
 
 @_frozen

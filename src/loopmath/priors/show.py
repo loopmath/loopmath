@@ -7,9 +7,12 @@ import datetime as dt
 from collections import Counter
 from pathlib import Path
 
+from ..belief.outcome import signal_list
+
 
 def _verdicts(run: dict) -> dict[str, str]:
-    return {s.get("name"): s.get("value") for s in run.get("signals") or [] if s.get("kind") == "verdict"}
+    return {s.get("name"): s.get("value") for s in signal_list(run)
+            if isinstance(s, dict) and s.get("kind") == "verdict"}
 
 
 def _accepted(run: dict) -> bool | None:
@@ -25,8 +28,9 @@ def _accepted(run: dict) -> bool | None:
             return None
     score = rule.get("score")
     if isinstance(score, dict):
-        vals = [s.get("value") for s in run.get("signals") or []
-                if s.get("kind") == "score" and s.get("name") == score.get("name") and s.get("value") is not None]
+        vals = [s.get("value") for s in signal_list(run)
+                if isinstance(s, dict) and s.get("kind") == "score" and s.get("name") == score.get("name")
+                and s.get("value") is not None]
         if not vals:
             return None
         v, t = vals[-1], score.get("target")
@@ -35,7 +39,8 @@ def _accepted(run: dict) -> bool | None:
 
 
 def run_summary(docs: list[dict]) -> dict:
-    """Counts by type, model, shape and outcome, plus total tokens and dollars."""
+    """Counts by type, model, shape and outcome, plus total tokens and dollars. Signals are read as the belief
+    model reads them: signals that are not a list are none, and a signal that is not an object is skipped."""
     types, models, shapes, outcomes = Counter(), Counter(), Counter(), Counter()
     usd = 0.0
     tokens = 0

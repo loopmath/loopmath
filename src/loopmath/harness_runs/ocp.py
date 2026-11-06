@@ -9,37 +9,49 @@ document.
 A row with `stages` becomes one piece per stage piece and one attempt per stage, each with its own
 setting, round and cost, under the catalog workflow its pieces and roles match, else a chain of its pieces.
 A row without them gives the same document as before.
+
+A row that names a flow (`flow`, section 10) is converted with that flow (`flows.load`): an OCP 0.4 run of the
+arm's declared configuration, with `run.flow`, the flow's acceptance rule, one score signal per judge score
+and one verdict signal per check a stage reports. Such a row marked simulated (`ext["dev.loopmath.simulate"]`,
+an object) carries the mark to `run.ext` and gives its costs basis `simulated`. Rows without `flow` give the same
+documents as before.
 """
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from .. import __version__, harness
 from ..ocp import emit
-from ..types import DEFAULT_RULE, AcceptanceRule, Control, Gate, Piece, ScoreTarget, Setting, Workflow
+from ..ocp.conformance import SIMULATE_KEY
+from ..types import DEFAULT_RULE, AcceptanceRule, Control, FlowRef, Gate, Piece, ScoreTarget, Setting, Workflow
 from ..workflows.format import catalog
 from ..workflows.ids import make_config
+from ..workflows.ocp import catalog_resolver, configuration_from_ocp
 from .costs import price_tokens
-from .rows import KNOWN, SCHEMA, STAGE_KNOWN, STREAMS, check_row, row_id, stage_piece
+from .rows import (CHECK_KNOWN, FLOW_KNOWN, JUDGE_KNOWN, KNOWN, NO_FLOW_KNOWN, NO_FLOW_STAGE_KNOWN, SCHEMA,
+                   SLATE_KNOWN, STAGE_KNOWN, STREAMS, check_row, names_flow, row_id, run_id_for, stage_piece)
+
+if TYPE_CHECKING:
+    from ..flows.folder import FlowFolder
 
 NS = "dev.loopmath.adapter.harness-runs"
+JUDGE_NS = "dev.loopmath.judge"  # on a linear judge's score signal: {"range": [lo, hi]} from the flow
 PAIR_KEY = "dev.loopmath.pair"
+FLOW_EXT = "dev.loopmath.flow"  # in run.flow.ext: {"named_arm": ID} on a run recorded under arm `unplanned`
 PRODUCER = "loopmath/harness-runs"
 DEFAULT_TYPE = "research"
 UNKNOWN = "unknown"
 OUTCOME_LABELS = ("name", "score", "judge", "scale", "better", "observed_at", "accepted", "by", "n_passed",
-                  "n_criteria", "all_pass", "metric", "error")
-
-
-def run_id_for(row: dict[str, Any]) -> str:
-    """`run_hr_` and 20 hex of SHA-256 over the format and the row's stable id."""
-    return "run_hr_" + hashlib.sha256(f"{SCHEMA}\0{row_id(row)}".encode("utf-8")).hexdigest()[:20]
+                  "n_criteria", "all_pass", "metric", "error", "judges")
+NO_FLOW_OUTCOME_LABELS = tuple(k for k in OUTCOME_LABELS if k != "judges")  # a row naming no flow keeps `judges`
+FLOW_OCP = "0.4"  # the OCP version of a run that names a flow
 
 
 def _record(row: dict[str, Any], base_dir: Path | None) -> dict[str, Any] | None:
@@ -82,14 +94,37 @@ def retained_text(row: dict[str, Any]) -> list[str]:
     """Where the document keeps text the row's writer chose, not a label loopmath defines: strings in unknown
     row or stage fields, in ext namespaces other than loopmath's own, and in outcome fields beyond the known
     ones. Any of it makes the document's privacy profile `full` (spec/OCP.md section 5: `metadata_only`
-    promises no prompt, completion or transcript text anywhere, and loopmath cannot tell what such text is)."""
+    promises no prompt, completion or transcript text anywhere, and loopmath cannot tell what such text is).
+    On a row naming no flow, its `flow`, `slate`, `outcome.judges` and stage `checks` are unknown fields."""
+    if not names_flow(row):
+        out = _foreign_text(row, NO_FLOW_KNOWN, "")
+        for i, stage in enumerate(row.get("stages") or []):
+            if isinstance(stage, dict):
+                out += _foreign_text(stage, NO_FLOW_STAGE_KNOWN, f"stages.{i}.")
+        if isinstance(row.get("outcome"), dict):
+            out += [p for k, v in row["outcome"].items() if k not in NO_FLOW_OUTCOME_LABELS
+                    for p in _text_paths(v, f"outcome.{k}")]
+        return sorted(out)
     out = _foreign_text(row, KNOWN, "")
     for i, stage in enumerate(row.get("stages") or []):
         if isinstance(stage, dict):
             out += _foreign_text(stage, STAGE_KNOWN, f"stages.{i}.")
+            checks = stage.get("checks")
+            for j, item in enumerate(checks if isinstance(checks, list) else []):
+                if isinstance(item, dict):
+                    out += [p for k, v in item.items() if k not in CHECK_KNOWN
+                            for p in _text_paths(v, f"stages.{i}.checks.{j}.{k}")]
     if isinstance(row.get("outcome"), dict):
         out += [p for k, v in row["outcome"].items() if k not in OUTCOME_LABELS
                 for p in _text_paths(v, f"outcome.{k}")]
+        judges = row["outcome"].get("judges")
+        for i, item in enumerate(judges if isinstance(judges, list) else []):
+            if isinstance(item, dict):
+                out += [p for k, v in item.items() if k not in JUDGE_KNOWN
+                        for p in _text_paths(v, f"outcome.judges.{i}.{k}")]
+    out += [p for k, v in row["flow"].items() if k not in FLOW_KNOWN for p in _text_paths(v, f"flow.{k}")]
+    if isinstance(row.get("slate"), dict):
+        out += _foreign_text(row["slate"], SLATE_KNOWN, "slate.")
     return sorted(out)
 
 
@@ -108,21 +143,23 @@ def _rule(outcome: dict[str, Any] | None, accept_at: float | None) -> Acceptance
 
 def _signal(row: dict[str, Any], run_id: str, att_id: str, at: str) -> dict[str, Any] | None:
     out = row.get("outcome")
-    if not isinstance(out, dict):
+    if not isinstance(out, dict) or not ("accepted" in out or "score" in out):
         return None
     observed = out.get("observed_at") or at
+    judges = ("judges",) if names_flow(row) else ()  # without a flow, `judges` is kept like any other member
     if "accepted" in out:
         sig = {"id": f"sig_{run_id}_accepted", "kind": "verdict", "name": "accepted",
                "value": "accept" if out["accepted"] else "reject", "observed_at": observed, "tier": "reported",
                "at_attempt": att_id, "source": {"kind": "judge", **({"ref": out["by"]} if out.get("by") else {})}}
-        extra = {k: v for k, v in out.items() if k not in ("accepted", "by", "observed_at")}
+        extra = {k: v for k, v in out.items() if k not in ("accepted", "by", "observed_at", *judges)}
     else:
         name = out.get("name") or "judge"
         sig = {"id": f"sig_{run_id}_{name}", "kind": "score", "name": name, "value": out["score"],
                "better": out.get("better") or "higher", "scale": out.get("scale") or "linear",
                "observed_at": observed, "tier": "reported", "at_attempt": att_id,
                "source": {"kind": "judge", **({"ref": out["judge"]} if out.get("judge") else {})}}
-        extra = {k: v for k, v in out.items() if k not in ("score", "name", "judge", "better", "scale", "observed_at")}
+        extra = {k: v for k, v in out.items()
+                 if k not in ("score", "name", "judge", "better", "scale", "observed_at", *judges)}
     if extra:
         sig["ext"] = {NS: extra}
     return sig
@@ -207,8 +244,9 @@ def _stage_workflow(row: dict[str, Any], stages: list[tuple[dict[str, Any], str,
     """The workflow the stages ran: one piece per piece id in first-appearance order, as wide as its most
     stages in one round, under the catalog workflow whose pieces and roles these are, else a chain (issue and
     repo feed every piece, each piece's output feeds the next, a reviewer gates the developer before it). Its
-    id is the row's `workflow`, else the catalog id, else a derived one (`_stages_id`). Artifact and gate ids
-    are kept apart from the piece ids and within the id length (`_free_id`)."""
+    id is the row's `workflow`, else the catalog id, else a derived one (`_stages_id`). Artifact ids are kept
+    apart from the piece ids and within the id length (`_free_id`). A gate has its default id `g_<piece>`, which
+    the gates form does not write, so a row without a flow converts as it did before checks existed."""
     order: list[str] = []
     roles: dict[str, str] = {}
     per_round: dict[tuple[str, int], int] = {}
@@ -239,7 +277,7 @@ def _stage_workflow(row: dict[str, Any], stages: list[tuple[dict[str, Any], str,
     for i, pid in enumerate(order):
         back = next((q for q in reversed(order[:i]) if roles[q] == "implementer"), None)
         if roles[pid] == "reviewer" and back is not None:
-            gates.append(Gate(id=_free_id(f"g_{pid}", taken), after=pid, rule="review_approve", on_fail=back))
+            gates.append(Gate(id=f"g_{pid}", after=pid, rule="review_approve", on_fail=back))
     budget = max(3 if gates else 1, rounds)
     return Workflow(id=row.get("workflow") or _stages_id(order), version=1,
                     title="the stages of a harness-runs row", pieces=tuple(Piece(id=pid, role=roles[pid],
@@ -249,12 +287,14 @@ def _stage_workflow(row: dict[str, Any], stages: list[tuple[dict[str, Any], str,
 
 
 def _stage_attempts(doc: dict[str, Any], row: dict[str, Any], stages: list[tuple[dict[str, Any], str, str]],
-                    run_id: str, setting: tuple[str, str, str], at: str) -> list[dict[str, Any]]:
+                    run_id: str, setting: tuple[str, str, str], at: str,
+                    defaults: dict[str, tuple[str, str, str]] | None = None) -> list[dict[str, Any]]:
     """One attempt per stage, in stage order: its piece, round, setting and cost. A stage with no status is
-    done, except the last, which takes the row's."""
-    agent, model, effort = setting
+    done, except the last, which takes the row's. `defaults` (a row naming a flow) gives each piece's setting
+    when the stage and the row give none, and prices it by that model."""
     attempts, seen = [], {}
     for i, (stage, pid, _) in enumerate(stages, 1):
+        agent, model, effort = defaults[pid] if defaults else setting
         seen[pid] = seen.get(pid, 0) + 1
         status = stage.get("status") or (row.get("status") if i == len(stages) else None) or "done"
         started = _first_time(stage.get("started_at"))
@@ -267,13 +307,14 @@ def _stage_attempts(doc: dict[str, Any], row: dict[str, Any], stages: list[tuple
         if stage.get("ended_at"):
             att["ended_at"] = stage["ended_at"]
         att["outcome"] = {"result": status, "evidence": "reported"}
-        cost, marks = _cost(stage, stage.get("model") or row.get("model"))
+        cost, marks = _cost(stage, stage.get("model") or (model if defaults else row.get("model")))
         if cost:
             att["cost"] = cost
         kept: dict[str, Any] = {**marks, "stage": i - 1, "role": stage["role"]}
         if isinstance(stage.get("ext"), dict) and stage["ext"]:
             kept["stage_ext"] = stage["ext"]
-        extra = {k: v for k, v in stage.items() if k not in STAGE_KNOWN}
+        known = STAGE_KNOWN if defaults is not None else NO_FLOW_STAGE_KNOWN
+        extra = {k: v for k, v in stage.items() if k not in known}
         if extra:
             kept["extra"] = extra
         att["ext"] = {NS: kept}
@@ -295,9 +336,221 @@ def _producer(tool_name: str | None, at: str) -> dict[str, Any]:
     return out
 
 
+def _row_configuration(row: dict[str, Any], stages: list[tuple[dict[str, Any], str, str]], agent: str, model: str,
+                       effort: str) -> tuple[Any, str | None]:
+    """The configuration a row without a flow runs, and an unplanned row of a flow: its stages' workflow with each
+    piece's first setting, else the solo workflow. Also the solo piece, which a run with no stages runs (None
+    with stages)."""
+    if stages:
+        workflow = _stage_workflow(row, stages)
+        settings: dict[str, Setting] = {}
+        for stage, pid, _ in stages:
+            settings.setdefault(pid, Setting(harness=stage.get("agent") or agent, model=stage.get("model") or model,
+                                             effort=stage.get("effort") or effort))
+        return make_config(workflow, settings), None
+    solo = catalog()["solo"]
+    piece = solo.pieces[0].id
+    return make_config(solo, {piece: Setting(harness=agent, model=model, effort=effort)}), piece
+
+
+def _unplanned_arm(flow: FlowFolder, arm: str | None) -> bool:
+    """Whether a row's arm is one `--allow-unplanned` records under arm `unplanned`: `unplanned` itself, an arm
+    unknown to the plan, or any arm but base with no plan. Base, an arm of the plan and any arm under a stale
+    plan are not: `FlowFolder.configuration` gives them, or refuses."""
+    if arm in (None, "base") or flow.plan_stale:
+        return False
+    return arm == "unplanned" or flow.plan is None or arm not in {a.id for a in flow.plan.arms}
+
+
+def known_configurations(flow: FlowFolder) -> dict[str, str]:
+    """Configuration id -> arm, for base and the arms of a current plan."""
+    known = {flow.flow.configuration.get("id"): "base"}
+    if flow.plan is not None and not flow.plan_stale:
+        for arm in flow.plan.arms:
+            known.setdefault(arm.configuration.get("id"), arm.id)
+    return known
+
+
+def _flow_configuration(row: dict[str, Any], flow: FlowFolder | None, stages: list[tuple[dict[str, Any], str, str]],
+                        accept_at: float | None, unscored_rule: dict[str, Any] | None, unplanned: bool = False,
+                        own: Any = None) -> tuple[str, dict[str, Any] | None, Any,
+                                                  dict[str, tuple[str, str, str]] | None, str | None]:
+    """(arm, its declared configuration, that as a Configuration, the setting per piece, the arm the row named
+    when it is recorded unplanned) for a row naming a flow. Refuses a missing or different flow, a `flow.digest`
+    other than the flow's (with `unplanned` too), a stage piece the configuration lacks and another workflow. With
+    `unplanned`, a row whose arm `_unplanned_arm` takes gives arm `unplanned` and the row's own configuration
+    (`own()`, as `_row_configuration` gives it), with no declared configuration and no settings; one whose own
+    configuration is a known arm's is refused."""
+    ref = row["flow"]
+    named = f"flow {ref['id']!r} version {int(ref['version'])}"  # check_row passed: 1 and 1.0 alike
+    if flow is None:
+        raise ValueError(f"flow: this row names {named}; give the flow to convert it "
+                         "(loopmath flow record FLOW --rows FILE)")
+    if (ref["id"], ref["version"]) != (flow.flow.id, flow.flow.version):
+        raise ValueError(f"flow: this row names {named}, but the flow given is flow {flow.flow.id!r} version "
+                         f"{flow.flow.version} ({flow.path})")
+    digest = ref.get("digest")
+    if digest is not None and digest != flow.digest:
+        raise ValueError(f"flow.digest: this row names {named} digest {digest!r}, but the flow given has digest "
+                         f"{flow.digest} ({flow.path}): the row was made for another revision of the flow")
+    for key, value in (("accept_at", accept_at), ("unscored_rule", unscored_rule)):
+        if value is not None:
+            raise ValueError(f"{key}: not used for a row naming a flow; the flow's acceptance rule applies")
+    given = ref.get("arm") or row.get("arm") or None
+    if unplanned and _unplanned_arm(flow, given):
+        cfg = own()
+        other = known_configurations(flow).get(cfg.id)
+        if other is not None:
+            raise ValueError(f"flow: this row's arm {given!r} is not in the plan, but its configuration {cfg.id} is "
+                             f"arm {other!r}'s; name arm {other!r}")
+        return "unplanned", None, cfg, None, (given if given != "unplanned" else None)
+    arm, declared = flow.configuration(given)
+    cfg = configuration_from_ocp(declared, catalog_resolver)
+    pieces = [p.id for p in cfg.workflow.pieces]
+    for n, (_, pid, _) in enumerate(stages):
+        if pid not in pieces:
+            raise ValueError(f"stages.{n}.piece: {pid!r} is not a piece of flow {flow.flow.id!r} arm {arm!r} "
+                             f"(pieces: {', '.join(pieces)})")
+    if row.get("workflow") is not None and row["workflow"] != cfg.workflow.id:
+        raise ValueError(f"workflow: {row['workflow']!r} is not the workflow of flow {flow.flow.id!r} arm {arm!r} "
+                         f"({cfg.workflow.id!r})")
+    settings = declared.get("settings") if isinstance(declared.get("settings"), dict) else {}
+    defaults = {}
+    for pid in pieces:
+        setting = settings.get(pid) if isinstance(settings.get(pid), dict) else {}
+        model = setting.get("model") if isinstance(setting.get("model"), dict) else {}
+        defaults[pid] = (row.get("agent") or setting.get("harness") or UNKNOWN,
+                         row.get("model") or model.get("id") or model.get("raw") or UNKNOWN,
+                         row.get("effort") or setting.get("effort") or "default")
+    return arm, declared, cfg, defaults, None
+
+
+def _judge_signals(row: dict[str, Any], flow: FlowFolder, run_id: str, att_id: str, at: str,
+                   taken: set[str]) -> list[dict[str, Any]]:
+    """One score signal per `outcome.judges` item, in order, at the last attempt: named by the judge's score
+    (else the objective's), on the judge's scale, from source `user` for a person judge, else `judge`. An id
+    that names no judge of the flow is converted with the objective's score name; W219 reports it. A signal id
+    in `taken` (the row's own score named `judge_<i>`) is not reused: `_free_id` gives the judge another. The
+    value stays the raw score; a linear judge with a range adds `ext[JUDGE_NS] = {"range": [lo, hi]}`, its
+    range from the flow, after the item's extras under `NS`, so a reader takes the value as a fraction of it."""
+    from ..flows.records import judge_scale, judge_score
+
+    out = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
+    judges = {j.id: j for j in flow.flow.judges or ()}
+    objective = flow.flow.objective
+    signals = []
+    for i, item in enumerate(out.get("judges") or []):
+        judge = judges.get(item["id"])
+        name = (judge_score(judge, objective) if judge is not None else objective.score) or "judge"
+        scale = judge_scale(judge) if judge is not None else "fraction"
+        score = item["score"]
+        if scale == "fraction" and score is not None and not 0 <= score <= 1:
+            raise ValueError(f"outcome.judges.{i}.score: judge {item['id']!r} scores a fraction in [0, 1], "
+                             f"got {score!r}")
+        sig = {"id": _free_id(f"sig_{run_id}_judge_{i}", taken), "kind": "score", "name": name,
+               "value": score,
+               "better": "higher", "scale": scale,
+               "observed_at": item.get("observed_at") or out.get("observed_at") or at, "tier": "reported",
+               "at_attempt": att_id,
+               "source": {"kind": "user" if judge is not None and judge.kind == "person" else "judge",
+                          "ref": item["id"]}}
+        extra = {k: v for k, v in item.items() if k not in JUDGE_KNOWN}
+        if extra:
+            sig["ext"] = {NS: extra}
+        if scale == "linear" and judge.range is not None:
+            sig.setdefault("ext", {})[JUDGE_NS] = {"range": list(judge.range)}
+        signals.append(sig)
+    return signals
+
+
+def _check_rules(cfg: Any) -> dict[str, str]:
+    """The rule of each check a stage of `cfg` may report: a check by its id, then a gate by the piece it follows.
+    Read from the control as written, since a configuration read from OCP keeps `checks` among its extras."""
+    control = cfg.workflow.control.to_dict()
+    rules = {c["id"]: c["rule"] for c in control.get("checks") or [] if isinstance(c, dict)}
+    for gate in control["gates"]:
+        rules.setdefault(gate["after"], gate["rule"])
+    return rules
+
+
+def _score_names(flow: FlowFolder) -> set[str]:
+    """The names of the scores a flow defines: its acceptance rule's, its objective's and each judge's."""
+    from ..flows.records import judge_score
+
+    rule, objective = flow.flow.acceptance_rule.get("score"), flow.flow.objective
+    names = {rule.get("name") if isinstance(rule, dict) else None, objective.score}
+    names |= {judge_score(j, objective) for j in flow.flow.judges or ()}
+    return {n for n in names if isinstance(n, str)}
+
+
+def _check_name(cid: str, rules: dict[str, str], requires: Any, scores: set[str]) -> str:
+    """The signal name of check `cid`: `cid` when the acceptance rule requires it; else `<c>` for a rule
+    `command:<c>`, else `cid`, the first that names no score in `scores`; else `check:<cid>`, cut to fit with a
+    suffix (`_free_id`) when it is too long or a score has that name too. So a verdict the rule does not require
+    never shares its name with a score of the flow (E195 refuses a rule whose score names a verdict)."""
+    if isinstance(requires, list) and cid in requires:
+        return cid
+    rule = rules.get(cid, "")
+    command = rule[len("command:"):] if rule.startswith("command:") else ""
+    for name in (command, cid):
+        if name and name not in scores:
+            return name
+    return _free_id(f"check:{cid}", set(scores))
+
+
+def _check_signals(row: dict[str, Any], flow: FlowFolder, cfg: Any, run_id: str, attempts: list[dict[str, Any]],
+                   at: str, taken: set[str]) -> list[dict[str, Any]]:
+    """One verdict signal per stage `checks` item, in stage and then item order, at that stage's attempt: id
+    `sig_<run id>_check_<k>` (`k` counting the run's items from 0; an id in `taken` is not reused), named by
+    `_check_name`, from source `orchestrator` with the item's id as ref, observed when the stage ended, else at
+    `at`. An id that names no check of the configuration is named the same way, as a check with no rule;
+    `flow_row_findings` reports it."""
+    rules, requires, scores = _check_rules(cfg), flow.flow.acceptance_rule.get("requires"), _score_names(flow)
+    signals: list[dict[str, Any]] = []
+    for i, stage in enumerate(row["stages"]):
+        for item in stage.get("checks") or []:
+            sig = {"id": _free_id(f"sig_{run_id}_check_{len(signals)}", taken), "kind": "verdict",
+                   "name": _check_name(item["id"], rules, requires, scores), "value": item["verdict"],
+                   "observed_at": stage.get("ended_at") or at, "tier": "reported", "at_attempt": attempts[i]["id"],
+                   "source": {"kind": "orchestrator", "ref": item["id"]}}
+            extra = {k: v for k, v in item.items() if k not in CHECK_KNOWN}
+            if extra:
+                sig["ext"] = {NS: extra}
+            signals.append(sig)
+    return signals
+
+
+def flow_row_findings(row: dict[str, Any], flow: FlowFolder) -> list[str]:
+    """What a row naming `flow` reports that the flow lacks, one line each: a stage `checks` id that names no
+    check or gate piece of the arm's configuration. The row still converts. A row whose `flow` is present but
+    not an object gets one advisory line saying it was converted as a row without a flow. Empty for a row whose
+    `flow` is absent or null, and for one `check_row` or the flow refuses (another flow, an unknown arm, a piece
+    or workflow the configuration lacks), since `to_ocp` names that problem."""
+    if check_row(row):
+        return []
+    if not names_flow(row):
+        if row.get("flow") is None:
+            return []
+        kind = {bool: "a boolean", str: "a string", list: "a list"}.get(type(row["flow"]), "a number")
+        return [f"flow: {kind}, not an object {{id, version, arm, plan, split}}; the row was converted as a row "
+                "without a flow"]
+    stages = [(s, *stage_piece(s)) for s in row["stages"]]
+    try:
+        arm, _, cfg, _, _ = _flow_configuration(row, flow, stages, None, None)
+    except ValueError:
+        return []
+    rules = _check_rules(cfg)
+    names = ", ".join(sorted(rules)) or "none"
+    return [f"stages.{i}.checks.{j}.id: {item['id']!r} names no check or gate piece of flow {flow.flow.id!r} arm "
+            f"{arm!r} (checks: {names})"
+            for i, stage in enumerate(row["stages"]) for j, item in enumerate(stage.get("checks") or [])
+            if item["id"] not in rules]
+
+
 def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at: float | None = None,
            observed_default: str | None = None, task_type: str | None = None,
-           repo: str | None = None, unscored_rule: dict[str, Any] | None = None) -> dict[str, Any]:
+           repo: str | None = None, unscored_rule: dict[str, Any] | None = None,
+           flow: FlowFolder | None = None, unplanned: bool = False) -> dict[str, Any]:
     """The OCP v0.3 run of one row. Raises ValueError naming the field for a bad row or tree path.
 
     Execution times come only from the row: a run or attempt with no `started_at` has none, and no
@@ -306,6 +559,13 @@ def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at
     it, the time of the call. `task_type` and `repo` fill a row's missing task fields. `unscored_rule`, an
     outcome such as `{"accepted": True}`, gives a row with no outcome the acceptance rule that outcome's rows
     have, for an importer whose unscored runs sit beside runs judged by that rule; the run stays unscored.
+
+    A row that names a flow needs `flow`, that flow loaded (`loopmath.flows.load`), and gives an OCP 0.4 run of
+    the arm's configuration (spec/harness-runs.md section 10); a row without one ignores `flow`. With `unplanned`
+    (`flow record --allow-unplanned`), a row whose arm the plan lacks gives a run of arm `unplanned` with the row's
+    own configuration, built as for a row without a flow, and the arm it named in
+    `run.flow.ext["dev.loopmath.flow"].named_arm`. A row whose `flow.digest` is not null and not the flow's, made
+    for another revision of it, is refused, with `unplanned` too.
     """
     problems = check_row(row)
     if problems:
@@ -315,22 +575,25 @@ def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at
     task_in = row.get("task") if isinstance(row.get("task"), dict) else {}
     agent, model, effort = row.get("agent") or UNKNOWN, row.get("model") or UNKNOWN, row.get("effort") or "default"
     stages = [(s, *stage_piece(s)) for s in row.get("stages") or []]
+    own: list[tuple[Any, str | None]] = []
+
+    def own_configuration() -> tuple[Any, str | None]:
+        if not own:
+            own.append(_row_configuration(row, stages, agent, model, effort))
+        return own[0]
+
+    named = _flow_configuration(row, flow, stages, accept_at, unscored_rule, unplanned,
+                                lambda: own_configuration()[0]) if names_flow(row) else None
+    simulated = named is not None and isinstance(row.get("ext"), dict) and isinstance(row["ext"].get(SIMULATE_KEY), dict)
     first, last = (stages[0][0], stages[-1][0]) if stages else ({}, {})
     started = _first_time(row.get("started_at"), first.get("started_at"))
     ended = _first_time(row.get("ended_at"), last.get("ended_at"))
     at = _first_time(ended, started, observed_default) or emit.now()
 
-    if stages:
-        workflow = _stage_workflow(row, stages)
-        settings: dict[str, Setting] = {}
-        for stage, pid, _ in stages:
-            settings.setdefault(pid, Setting(harness=stage.get("agent") or agent, model=stage.get("model") or model,
-                                             effort=stage.get("effort") or effort))
-        cfg = make_config(workflow, settings)
-    else:
-        solo = catalog()["solo"]
-        piece = solo.pieces[0].id
-        cfg = make_config(solo, {piece: Setting(harness=agent, model=model, effort=effort)})
+    if named is not None and named[1] is not None:  # an arm of the flow: its declared configuration
+        cfg = named[2]
+    else:  # a row without a flow, or an unplanned one: its own
+        cfg, piece = own_configuration()
     given_type = task_in.get("type") or task_type
     task = {"id": row["task_id"], "type": given_type or DEFAULT_TYPE,
             "repo": task_in.get("repo") or repo or tool.get("name") or UNKNOWN,
@@ -353,10 +616,34 @@ def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at
         run["title"] = str(task["title"])[:500]
     if row.get("arm"):
         run["labels"] = {"arm": row["arm"]}
+    if named is not None and flow is not None:
+        arm, declared = named[0], named[1]
+        if declared is not None:  # an unplanned run keeps its own
+            run["configuration"] = declared
+        run["acceptance_rule"] = copy.deepcopy(flow.flow.acceptance_rule)
+        run["flow"] = FlowRef(id=flow.flow.id, version=flow.flow.version, digest=flow.digest, arm=arm,
+                              plan=row["flow"].get("plan"), split=row["flow"].get("split")).to_dict()
+        if named[4] is not None:
+            run["flow"]["ext"] = {FLOW_EXT: {"named_arm": named[4]}}
+        run["labels"] = {"arm": arm}
+        if row.get("slate") is not None:
+            run["slate"] = copy.deepcopy(row["slate"])
+        if ended:  # a run of a flow is stored finished at its own end, the row's or its last stage's, after its start
+            items = list(run.items())
+            after = next((n + 1 for n, (key, _) in enumerate(items) if key == "started_at"), 1)
+            run.clear()
+            run.update(items[:after] + [("ended_at", ended)] + items[after:])
+        doc["ocp"] = FLOW_OCP
+        doc["producer"]["capabilities"].update(slate="slate" in run, flow=True)
 
     if stages:
-        doc["attempts"] = _stage_attempts(doc, row, stages, run_id, (agent, model, effort), at)
+        doc["attempts"] = _stage_attempts(doc, row, stages, run_id, (agent, model, effort), at,
+                                          named[3] if named is not None else None)
         att_id = doc["attempts"][-1]["id"]
+        if simulated:
+            for att in doc["attempts"]:
+                if "cost" in att:
+                    att["cost"]["basis"] = "simulated"
     else:
         att_id = f"att_{run_id[len('run_'):]}_1"
         failed = row.get("status") == "failed"
@@ -379,7 +666,11 @@ def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at
 
     sig = _signal(row, run_id, att_id, at)
     run["signals"] = [sig] if sig else []
-    if sig:
+    if named is not None and flow is not None:
+        taken = {s["id"] for s in run["signals"]}
+        run["signals"] += _judge_signals(row, flow, run_id, att_id, at, taken)
+        run["signals"] += _check_signals(row, flow, named[2], run_id, doc["attempts"], at, taken)
+    for sig in run["signals"]:
         emit.add_event(doc, "signal_observed", at=sig["observed_at"], detail=f"{sig['kind']} {sig['name']}")
 
     ext = run.setdefault("ext", {})
@@ -388,15 +679,19 @@ def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at
         ext[harness.EXT_KEY] = record
     if row.get("pair") or row.get("experiment"):
         ext[PAIR_KEY] = {"pair": row.get("pair"), "arm": row.get("arm"), "experiment": row.get("experiment")}
+    if simulated:
+        ext[SIMULATE_KEY] = copy.deepcopy(row["ext"][SIMULATE_KEY])
     kept: dict[str, Any] = {"schema": SCHEMA, "row_id": row_id(row)}
     for key in ("arm", "experiment", "status"):
         if row.get(key):
             kept[key] = row[key]
+    if named is not None:
+        kept["flow"] = copy.deepcopy(row["flow"])
     if tool:
         kept["tool"] = tool
     if isinstance(row.get("ext"), dict) and row["ext"]:
         kept["row_ext"] = row["ext"]
-    extra = {k: v for k, v in row.items() if k not in KNOWN}
+    extra = {k: v for k, v in row.items() if k not in (KNOWN if named is not None else NO_FLOW_KNOWN)}
     if extra:
         kept["extra"] = extra
     text = retained_text(row)
@@ -406,6 +701,27 @@ def to_ocp(row: dict[str, Any], *, base_dir: str | Path | None = None, accept_at
     ext[NS] = kept
     doc["events"].sort(key=lambda e: _instant(e.get("at")))
     return doc
+
+
+def to_ocp_rows(rows: Iterable[dict[str, Any]], **kw: Any) -> list[dict[str, Any]]:
+    """`to_ocp(row, **kw)` of each row, in order: one conversion. Two rows that keep the same run id (rows naming a
+    flow whose `id` starts with `run_`) are refused naming both, before any is converted; a row's own refusal
+    names its place (`row N: ...`), counting from 1."""
+    rows = list(rows)
+    first: dict[str, int] = {}
+    for n, row in enumerate(rows, 1):
+        rid = row.get("id") if isinstance(row, dict) and isinstance(row.get("flow"), dict) else None
+        if isinstance(rid, str) and rid.startswith("run_"):
+            if rid in first:
+                raise ValueError(f"rows {first[rid]} and {n}: both keep run id {rid!r}")
+            first[rid] = n
+    docs = []
+    for n, row in enumerate(rows, 1):
+        try:
+            docs.append(to_ocp(row, **kw))
+        except ValueError as exc:
+            raise ValueError(f"row {n}: {exc}") from exc
+    return docs
 
 
 def _instant(value: Any) -> float:

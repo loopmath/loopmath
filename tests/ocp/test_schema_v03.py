@@ -33,11 +33,11 @@ def test_spec_and_package_copies_are_identical():
 
 
 def test_schema_paths_cover_every_version_and_resolve_inside_the_package():
-    assert set(conformance.SCHEMA_PATHS) == {"0.1", "0.2", "0.3"}
+    assert set(conformance.SCHEMA_PATHS) == {"0.1", "0.2", "0.3", "0.4"}
     for version, path in conformance.SCHEMA_PATHS.items():
         assert path.is_file(), version
         assert path.parent == PACKAGE_SCHEMA.resolve(), version
-    assert conformance.CURRENT_VERSION == "0.3"
+    assert conformance.CURRENT_VERSION == "0.4"
     assert V03["properties"]["ocp"] == {"const": "0.3"} or V03["properties"]["ocp"].get("const") == "0.3"
     Draft202012Validator.check_schema(V03)
 

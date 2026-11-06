@@ -167,6 +167,58 @@ def benchmark_factors(path: Path | None = None, *, weight: float | None = None) 
     return out
 
 
+BENCHMARK_RUNS = 100  # a success benchmark's runs when neither its table (`runs`) nor RUNS_BY_BENCHMARK names them
+# Task runs behind each published value (tasks x 3 repeats, from each benchmark's `metric`); benchmarks.toml is
+# generated, so the counts live here until its generator writes `runs`
+RUNS_BY_BENCHMARK = {"aa-terminal-bench-4.0": 198, "aa-terminal-bench-2.1": 267}
+
+
+def benchmark_offset_factors(path: Path | None = None, *, alpha: float = 1.0, gap_scale: float = 1.0,
+                             transfer_sd: float = 0.6, effort_sd: float = 0.0,
+                             weight: float | None = None) -> list[FactorSpec]:
+    """Success factors by offset and scale (`level.py`), one per model and effort, no reference model.
+
+    A result p of model m at effort e on benchmark b, on its `runs` n, reads
+    `S_{m,e} + o_b + t_{b,m} ~ N(c logit(p~), c^2 / (n p~ (1 - p~)) / alpha)`, p~ = (n p + 1/2) / (n + 1):
+    `S` the setting's provider, family, model, effort and family x effort nodes, `o_b` the benchmark's free offset
+    `bench:<b>`, `t_{b,m}` the model's transfer error `btx:<b>|<m>` with prior variance (c transfer_sd)^2 / alpha
+    (`fit.make_prior`), shared by the model's efforts, `c` the gap scale; with `effort_sd` > 0 also the effort's
+    own transfer error `btxe:<b>|<m>|<e>`, variance (c effort_sd)^2 / alpha. alpha 0 gives no factors; benchmarks of
+    weight 0 give none, as in `benchmark_factors`, and so does `weight` 0 (`benchmark_prior_weight`, which overrides
+    each benchmark's own); a weight is not read otherwise. A value that is not a finite number gives no factor, and
+    one outside 0 to 1 is read as its bound (the reference path clamps to 0.01 to 0.99)."""
+    path = path or benchmark_path()
+    if alpha <= 0 or not path.is_file():
+        return []
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    out: list[FactorSpec] = []
+    for bench in data.get("benchmark") or []:
+        bid = str(bench.get("id") or "")
+        if not bid or str(bench.get("kind") or "success") != "success" or _weight_of(bench, weight) <= 0:
+            continue
+        own = bench.get("runs")
+        n = (float(own) if isinstance(own, (int, float)) and not isinstance(own, bool) and own > 0
+             else float(RUNS_BY_BENCHMARK.get(bid, BENCHMARK_RUNS)))
+        for r in data.get("result") or []:
+            if r.get("benchmark") != bid or not r.get("model"):
+                continue
+            value = r.get("value")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                continue  # an edited table: no factor rather than no fit
+            model = canonical_model_id(str(r["model"]))
+            p = (min(max(float(value), 0.0), 1.0) * n + 0.5) / (n + 1)  # a rate outside [0, 1] as its bound
+            terms = _cancel(_model_terms(model, r.get("effort"), 1.0)) + [(f"bench:{bid}", None, 1.0)]
+            if transfer_sd > 0:
+                terms.append((f"btx:{bid}|{model}", None, 1.0))
+            if effort_sd > 0:
+                terms.append((f"btxe:{bid}|{model}|{r.get('effort') or 'default'}", None, 1.0))
+            out.append(FactorSpec("success", terms, gap_scale * math.log(p / (1 - p)),
+                                  gap_scale ** 2 / (n * p * (1 - p)) / alpha,
+                                  f"{bid}: {model} {r.get('effort') or 'default'} {float(r['value'])} of {n:g} runs "
+                                  f"(offset; {r.get('url', '')}, {r.get('date', '')})"))
+    return out
+
+
 def _cancel(terms: list[tuple[str, str | None, float]]) -> list[tuple[str, str | None, float]]:
     """Sum values per node and drop the nodes that cancel (shared provider or family)."""
     acc: dict[str, list] = {}

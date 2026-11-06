@@ -228,6 +228,88 @@ def test_e195_rule_names_refer_to_the_right_kinds():
     assert check(doc) == []  # a score the run has not reported yet
 
 
+HUGE = 10**400  # an integer JSON can write and no float can hold
+RULE = "$['run']['acceptance_rule']"
+
+
+def _e195(doc):
+    return [(f.path, f.message) for f in conformance.validate_doc(doc) if f.code == "E195"]
+
+
+def _scored(value, scale="linear"):
+    """The solo example with one more score signal, last in run.signals."""
+    doc = example("solo")
+    doc["run"]["signals"].append({"id": "sig_x", "kind": "score", "name": "quality", "value": value, "scale": scale,
+                                  "observed_at": "2026-09-23T11:00:00-07:00", "tier": "reported"})
+    return doc
+
+
+def _ruled(**change):
+    doc = example("solo")
+    doc["run"]["acceptance_rule"].update(change)
+    return doc
+
+
+@pytest.mark.parametrize("value", [0, 1e308, -1e308, 2**1000, -(2**1000)],
+                         ids=["zero", "largest float", "smallest float", "large integer", "large negative integer"])
+def test_e195_a_score_a_float_holds_is_fine(value):
+    assert check(_scored(value)) == []
+
+
+@pytest.mark.parametrize("value", [HUGE, -HUGE, float("inf"), float("nan")],
+                         ids=["huge", "huge negative", "infinite", "NaN"])
+@pytest.mark.parametrize("scale", ["linear", "fraction"])
+def test_e195_a_score_no_float_holds_is_refused_once_by_name(value, scale):
+    doc = _scored(value, scale)
+    at = f"$['run']['signals'][{len(doc['run']['signals']) - 1}]['value']"
+    assert _e195(doc) == [(at, f"score 'quality' has value {value!r}; a score is a number a float can hold, or null "
+                               "when declared and not measured yet")]
+
+
+@pytest.mark.parametrize("score", [
+    {"name": "heldout_perf", "target": 1e308, "better": "higher", "scale": "linear"},
+    {"name": "heldout_perf", "target": 1e308, "better": "higher", "scale": "log"},
+    {"name": "heldout_perf", "target": 1.5, "better": "higher"},
+    {"name": "pass_rate", "target": 0, "better": "higher", "scale": "fraction"},
+    {"name": "pass_rate", "target": 1, "better": "higher", "scale": "fraction"},
+], ids=["linear 1e308", "log 1e308", "no scale 1.5", "fraction 0", "fraction 1"])
+def test_e195_a_rule_target_a_float_holds_is_fine(score):
+    assert check(_ruled(score=score)) == []
+
+
+@pytest.mark.parametrize("score, message", [
+    ({"name": "heldout_perf", "target": HUGE, "better": "higher"},
+     f"the rule's score target {HUGE!r} is not a number a float can hold"),
+    ({"name": "pass_rate", "target": HUGE, "better": "higher", "scale": "fraction"},
+     f"the rule's score target {HUGE!r} is not a number a float can hold"),
+    ({"name": "pass_rate", "target": 1.5, "better": "higher", "scale": "fraction"},
+     "the rule's score has scale 'fraction' but target 1.5 is outside [0, 1]"),
+    ({"name": "pass_rate", "target": -0.1, "better": "higher", "scale": "fraction"},
+     "the rule's score has scale 'fraction' but target -0.1 is outside [0, 1]"),
+], ids=["huge", "huge fraction", "fraction 1.5", "fraction -0.1"])
+def test_e195_a_rule_target_out_of_bounds_is_refused_once(score, message):
+    assert _e195(_ruled(score=score)) == [(f"{RULE}['score']['target']", message)]
+
+
+@pytest.mark.parametrize("days", [0, 14, 999999999, 999999999.0])
+def test_e195_window_days_up_to_the_limit_is_fine(days):
+    assert check(_ruled(window_days=days)) == []
+
+
+@pytest.mark.parametrize("days", [1000000000, 1000000000.0, HUGE])
+def test_e195_window_days_past_the_limit_is_refused_by_name(days):
+    doc = _ruled(window_days=days)
+    assert check(doc) == ["E195"]
+    assert _e195(doc) == [(f"{RULE}['window_days']",
+                           f"the rule's window_days {days!r} is above 999999999, the most days a window can be")]
+
+
+@pytest.mark.parametrize("days", [-1, 1.5, 1e9 + 0.5, True, "x"])
+def test_e195_window_days_of_another_shape_is_the_schemas_alone(days):
+    pytest.importorskip("jsonschema")
+    assert check(_ruled(window_days=days)) == ["E010"]
+
+
 # W196, W182 and version gating ------------------------------------------------------------------
 
 def test_w196_pre_rename_producer_is_not_loopmath():

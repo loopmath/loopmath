@@ -1,0 +1,65 @@
+{
+ "cases": {
+  "adapter/atrium": {
+   "length": 1929,
+   "sha256": "f9f8f6808425d76edcc6767295e14a4b0e9ea0a33a371294c308e1b33716a1bd"
+  },
+  "adapter/bb": {
+   "length": 9204,
+   "sha256": "b99f720fb6e1d760ba42c4023c368fabdc4db6ee0b3d34f87720abae5b79c738"
+  },
+  "adapter/omp": {
+   "length": 5423,
+   "sha256": "5112f440b425d943619a0c809c474196e7575e514ae8ccb8ce05157d9be5d755"
+  },
+  "adapter/opencode": {
+   "length": 7066,
+   "sha256": "8fa11d42a270bdf2ba75472163db9eef9447ba0e2e66bb3814598a77522073b5"
+  },
+  "adapter/orca": {
+   "length": 3570,
+   "sha256": "6f2788d7542c5ff92eab50909ed220e1c557e54fadd610ccda86bd3563cfe9b7"
+  },
+  "adapter/otel-genai": {
+   "length": 7806,
+   "sha256": "c0eccc647112914f857257ebd8daade422efacbd90a3a11830e76828a85a3f75"
+  },
+  "adapter/paseo": {
+   "length": 2869,
+   "sha256": "8562a132b21c922fd98cb5b503f905ac5b4961564fead7d9e335dd79b81b3953"
+  },
+  "adapter/pi": {
+   "length": 5226,
+   "sha256": "d563067fbe09c4c27f718cf28a06d43fa0eb33b7986fd22f28a549d072d9d15c"
+  },
+  "harness2/rows": {
+   "length": 105221,
+   "sha256": "979f4785030e05b46399835acf7785177e63e2d67aedc449ce6a280de59c67cc"
+  },
+  "new_run/best_of_n": {
+   "length": 2171,
+   "sha256": "683e351f784976f3c6239ed6bf4ebf2b8154ea489ce12f885b02757ddbe558e5"
+  },
+  "new_run/implement_review": {
+   "length": 2161,
+   "sha256": "0a71393fa7e16b0c0d1e1fc9b9e56aa66a0e4151beddb61136cd321beab520fe"
+  },
+  "new_run/plan_implement": {
+   "length": 2134,
+   "sha256": "7117c83427154d7996bb35f892becbaeacaca1610fc626e91ba27b22688ba052"
+  },
+  "new_run/plan_implement_review": {
+   "length": 2670,
+   "sha256": "d7b7be4ee8ed004fccd4f1199d49038507822920a4d5d4bf03d927eca33b6e3b"
+  },
+  "new_run/solo": {
+   "length": 1705,
+   "sha256": "73e17f855639a663525d80473ad4723812775d1eba5df34b986d69c42e3bd081"
+  },
+  "new_run/swarm": {
+   "length": 2633,
+   "sha256": "b2cc950137776f734ffdecc4f068019f5d9f55dc2e38aedfaee241ef7cd84b3c"
+  }
+ },
+ "loopmath": "0.4.0rc1"
+}

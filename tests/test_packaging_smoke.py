@@ -83,6 +83,7 @@ OCP_INSTALLED_PROBE = textwrap.dedent(
         "0.1": schemas / "ocp-v0.schema.json",
         "0.2": schemas / "ocp-v0.2.schema.json",
         "0.3": schemas / "ocp-v0.3.schema.json",
+        "0.4": schemas / "ocp-v0.4.schema.json",
     }
     assert all(Path(value).is_file() for value in checker["SCHEMA_PATHS"].values())
     document = {

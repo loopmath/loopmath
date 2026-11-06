@@ -1,10 +1,12 @@
 """Migrate OCP v0.1 and v0.2 documents (and contract v3 run files) to v0.3 (spec 01 section 4).
 
 `migrate_doc` never mutates its input and is idempotent:
-migrating a migrated document returns an equal document. What it adds, each
-only when absent:
+migrating a migrated document returns an equal document. The target is 0.3
+by default; `target="0.4"` writes 0.4 instead and makes the same additions,
+as 0.4 is a strict superset of 0.3. An input newer than the target is
+refused. What it adds, each only when absent:
 
-- `ocp` becomes "0.3"; `run.ext["dev.loopmath.migration"] = {"from": <old>}`,
+- `ocp` becomes the target; `run.ext["dev.loopmath.migration"] = {"from": <old>}`,
   where <old> is the OCP version or `dagr/<n>` for a contract run file;
 - v0.1 only: an edge without a tier gets `reported` (v0.2 requires a tier and
   a producer-declared edge is reported, never upgraded);
@@ -32,6 +34,7 @@ from . import contractv3
 from .version import parse_version
 
 TARGET = "0.3"
+TARGETS = ("0.3", "0.4")
 MIGRATION_KEY = "dev.loopmath.migration"
 INFERRED_KEY = "dev.loopmath.inferred"
 
@@ -63,8 +66,11 @@ def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def migrate_doc(doc: dict[str, Any], *, infer: Infer | None = infer_configuration) -> dict[str, Any]:
-    """Return the v0.3 form of an OCP v0.1 or v0.2 document or a contract v3 run file."""
+def migrate_doc(doc: dict[str, Any], *, infer: Infer | None = infer_configuration,
+                target: str = TARGET) -> dict[str, Any]:
+    """Return the `target` form (0.3 or 0.4) of an OCP v0.1 to v0.4 document or a contract v3 run file."""
+    if target not in TARGETS:
+        raise MigrationError(f"cannot migrate to OCP {target!r}; targets: {', '.join(TARGETS)}")
     origin = None
     source = doc  # what inference reads: a contract run file keeps ext.experiment, which convert drops
     if contractv3.is_contract_run(doc):
@@ -79,19 +85,21 @@ def migrate_doc(doc: dict[str, Any], *, infer: Infer | None = infer_configuratio
         raise MigrationError("not an OCP document (no 'ocp' version field) or a contract run file")
     old = doc["ocp"]
     version = parse_version(old)
-    if version is None or version < (0, 1) or version > (0, 3):
-        raise MigrationError(f"cannot migrate OCP version {old!r}; known: 0.1, 0.2, 0.3")
+    if version is None or version < (0, 1) or version > (0, 4):
+        raise MigrationError(f"cannot migrate OCP version {old!r}; known: 0.1, 0.2, 0.3, 0.4")
+    if version > parse_version(target):
+        raise MigrationError(f"cannot migrate OCP {old} down to {target}; use --to {old}")
     out = copy.deepcopy(doc)
     if version == (0, 1):
         for edge in _list(out.get("edges")):
             if isinstance(edge, dict) and "tier" not in edge:
                 edge["tier"] = "reported"
-    out["ocp"] = TARGET
+    out["ocp"] = target
 
     run = out.get("run")
     if not isinstance(run, dict):
         return out
-    if old != TARGET:
+    if old != target:
         ext = run.setdefault("ext", {})
         if isinstance(ext, dict):
             ext.setdefault(MIGRATION_KEY, {"from": origin or old})

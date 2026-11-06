@@ -84,6 +84,35 @@ def utc_iso(value: datetime | str | None) -> str | None:
     return dt.replace(tzinfo=None).isoformat(timespec=spec) + "Z"
 
 
+_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})")
+
+
+def observed_iso(text: str | None, *, flag: str, need_offset: bool) -> str | None:
+    """A caller's observed time, read as `parse_ts` reads it, in the stored form `utc_iso` gives; None when absent.
+
+    Raises ValueError naming `flag` and the text when it cannot be read, states no offset and `need_offset`
+    asks for one, or cannot be held in UTC as OCP 0.4's timestamp (a year-edge time such as
+    `0001-01-01T00:00:00+01:00`). With no offset and `need_offset` false it is local time, as `parse_ts` reads it.
+    """
+    if text is None:
+        return None
+    raw = text.strip()
+    try:
+        read = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
+    except ValueError:
+        raise ValueError(f"{flag} {text!r} is not an ISO 8601 time") from None
+    if read.tzinfo is None and need_offset:
+        raise ValueError(f"{flag} {text!r} states no offset; give one, as in 2026-11-04T09:30:00-08:00 or a "
+                         "trailing Z")
+    try:
+        stored = utc_iso(read if read.tzinfo is not None else read.astimezone())
+    except (OverflowError, ValueError):
+        raise ValueError(f"{flag} {text!r} cannot be stored: it is past what a UTC time holds") from None
+    if stored is None or not _TIMESTAMP_RE.fullmatch(stored):
+        raise ValueError(f"{flag} {text!r} cannot be stored as an OCP 0.4 timestamp (it reads as {stored!r})")
+    return stored
+
+
 def fit_id(at: datetime | None = None) -> str:
     """`fit_YYYYmmddHHMMSS` in local time."""
     return "fit_" + (at or datetime.now().astimezone()).strftime("%Y%m%d%H%M%S")

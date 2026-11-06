@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from ..ocp import finite
 from ..output import (
     EXIT_NO_FIT, EXIT_NOT_FOUND, EXIT_OK, emit_json, fail, home as home_dir, html_path, write_html,
 )
@@ -66,7 +67,9 @@ def task_from_args(args: argparse.Namespace) -> tuple[Task, bool]:
         if not path.exists():
             raise NotFound(f"task file not found: {path}")
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = finite.loads(path.read_text(encoding="utf-8"))
+        except finite.NotFinite as exc:
+            raise UserError(f"{path}: {exc}") from None
         except json.JSONDecodeError as exc:
             raise UserError(f"task file is not JSON: {exc}") from None
         if not isinstance(data, dict):

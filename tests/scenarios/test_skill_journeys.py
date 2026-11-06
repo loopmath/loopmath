@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from loopmath.belief.design import OPT_IN_DESIGN_VERSION
 from tests.onboard.onboard_fixture import _claude_turn, _user, _write_jsonl, build_history
 from tests.scenarios.test_designed_import import REPO, TARGET, call, write_docs
 
@@ -352,7 +353,9 @@ def test_upgrade_status_says_the_fit_needs_a_refit(upgraded):
 def test_upgrade_one_fit_makes_recommend_work(upgraded):
     fit = as_json(upgraded["fit"])["fit"]
     assert fit["id"] != upgraded["old"]
-    assert json.loads((upgraded["home"] / "fits" / fit["id"] / "meta.json").read_text())["design_version"] == 4
+    # the store level, the default from 0.4.0, writes the opt-in version (0.3.5 refuses it)
+    meta = json.loads((upgraded["home"] / "fits" / fit["id"] / "meta.json").read_text())
+    assert meta["design_version"] == OPT_IN_DESIGN_VERSION
     code, out, err = upgraded["recommend_new"]
     assert code == 0 and "design version" not in err
     assert [c["key"] for c in json.loads(out)["choices"]][0] == "goal"

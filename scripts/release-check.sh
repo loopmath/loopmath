@@ -3,11 +3,13 @@
 # in their headers, twine check them, install the wheel into a fresh venv under /tmp, and run
 # the installed commands from outside the tree.
 #
-# No network. The venv gets the wheel's declared core dependencies and nothing else: uv
-# resolves them offline from its cache when it can; otherwise the build interpreter's
-# installed copies of those dependencies (and theirs) are repacked as wheels in a temp folder
-# and pip resolves the wheel against that folder alone (--no-index). No extra is installed and
-# nothing is borrowed, so the loop checks prove a plain `pip install loopmath` runs the loop.
+# No network. Every loopmath command runs with LOOPMATH_NO_UPDATE_CHECK=1, so the daily update
+# check never asks pypi.org (a final step checks that it wrote no update.json). The venv gets
+# the wheel's declared core dependencies and nothing else: uv resolves them offline from its
+# cache when it can; otherwise the build interpreter's installed copies of those dependencies
+# (and theirs) are repacked as wheels in a temp folder and pip resolves the wheel against that
+# folder alone (--no-index). No extra is installed and nothing is borrowed, so the loop checks
+# prove a plain `pip install loopmath` runs the loop.
 #
 # Online mode, after an upload: --online installs the published loopmath==VERSION into a fresh
 # venv with pip and the network (no cache), so the real published closure is what the same
@@ -40,7 +42,7 @@ while [ $# -gt 0 ]; do
     --online) online="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
     --prior-only) prior_only="$2"; shift 2 ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "release-check.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -80,7 +82,7 @@ check() {
   local title="$1"; shift
   step "$title"
   if out="$(cd "$work" && env -i PATH="$venv/bin:/usr/bin:/bin" HOME="$home" LOOPMATH_HOME="$work/store" \
-            LOOPMATH_CACHE_DIR="$work/cache" NO_COLOR=1 "$@" 2>&1)"; then
+            LOOPMATH_CACHE_DIR="$work/cache" LOOPMATH_NO_UPDATE_CHECK=1 NO_COLOR=1 "$@" 2>&1)"; then
     pass
   else
     fail "exit $?"
@@ -440,6 +442,8 @@ check "loopmath --help" loopmath --help
 check "loopmath task-types --json" loopmath task-types --json
 check "loopmath skill install --target both (temp HOME)" loopmath skill install --target both --json
 check "loopmath skill show" loopmath skill show
+check "loopmath guide" loopmath guide
+check "loopmath guide plan" loopmath guide plan
 check "loopmath doctor --json" loopmath doctor --json
 check "loopmath analyze on the committed fixture" loopmath analyze --logs "$fixture" --all --no-cache
 
@@ -470,9 +474,13 @@ fi
 # The research verbs need the [bayes] extra, which this venv lacks: they must say so.
 step "loopmath research fit names the missing [bayes] extra"
 out="$(cd "$work" && env -i PATH="$venv/bin:/usr/bin:/bin" HOME="$home" LOOPMATH_HOME="$work/store" \
-       LOOPMATH_CACHE_DIR="$work/cache" NO_COLOR=1 loopmath research fit 2>&1)"
+       LOOPMATH_CACHE_DIR="$work/cache" LOOPMATH_NO_UPDATE_CHECK=1 NO_COLOR=1 loopmath research fit 2>&1)"
 code=$?
 case "$code:$out" in 0:*) fail "exit 0" ;; *"loopmath[bayes]"*) pass "exit $code" ;; *) fail "exit $code: $(printf '%s' "$out" | tail -1)" ;; esac
+
+# Every command above ran with LOOPMATH_NO_UPDATE_CHECK=1, so none of them asked pypi.org.
+step "the update check stayed off (no update.json in the cache)"
+if [ -e "$work/cache/update.json" ] || [ -e "$home/.loopmath/update.json" ]; then fail "an update.json was written"; else pass; fi
 
 echo
 echo "dependencies: $deps"

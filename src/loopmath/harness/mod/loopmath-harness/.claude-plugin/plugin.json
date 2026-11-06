@@ -1,6 +1,6 @@
 {
   "name": "loopmath-harness",
-  "version": "0.4.0-rc.1",
+  "version": "0.4.0",
   "description": "Configure, start and watch a loopmath harness tune from Claude Code. Runs the loopmath CLI; makes no model call itself.",
   "author": { "name": "loopmath" },
   "types": "./types/index.d.ts",

@@ -109,12 +109,12 @@ def test_load_prices_packaged_table():
 def test_load_prices_packaged_table_shape_and_todo_count():
     # The authoritative table, five OpenCode-observed entries, the rows
     # checked on the provider pages on 2026-09-23, gpt-6.1-sol (2026-10-12) and
-    # the two unconfirmed Claude 5.5 rows: 30 entries, 7 still flagged todo (the
-    # placeholder sections), and the canonical short name resolves to the
-    # full-name table entry.
+    # the Claude 5.5 rows and gpt-6.1-terra (2026-11-03): 31 entries, 5 still
+    # flagged todo (the placeholder section), and the canonical short name
+    # resolves to the full-name table entry.
     table = load_prices()
-    assert len(table.rates) == 30
-    assert len(table.todo) == 7
+    assert len(table.rates) == 31
+    assert len(table.todo) == 5
 
     rates = table.rate("opus-5")
     assert rates is not None
@@ -928,7 +928,7 @@ def test_validate_prices_packaged_table_has_no_hard_error():
     result = validate_prices()
     assert result["errors"] == []
     assert result["ok"] is True
-    assert len(result["todo_models"]) == 7
+    assert len(result["todo_models"]) == 5
     assert [warning for warning in result["warnings"] if "rate(s) are zero" in warning] == []
 
 

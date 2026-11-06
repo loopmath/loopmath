@@ -61,6 +61,7 @@ def _docs(n: int = 200) -> list[dict]:
 @pytest.fixture(scope="module")
 def fitted(tmp_path_factory):
     home = tmp_path_factory.mktemp("v028_rate")
+    (home / "config.toml").write_text('[belief]\nlevel = "shared"\n', encoding="utf-8")  # 0.2.7's seeds and nodes
     path = F.fit(home, docs=_docs(), no_prior=True, now=NOW, bundle_dir=home / "no-bundle")
     meta = json.loads((path / "meta.json").read_text())
     design = json.loads((path / "design.json").read_text())

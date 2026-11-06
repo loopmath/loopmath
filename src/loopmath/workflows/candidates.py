@@ -283,7 +283,7 @@ def _dedupe(pairs: Iterable[tuple[Configuration, str]], skip: Iterable[str] = ()
 
 def twin_key(cfg: Configuration) -> tuple:
     """How a configuration runs: its pieces with their widths, settings and extras, the flow between pieces,
-    each gate with where it sends a failure (`on_fail`: repair or stop), the round cap and the control extras;
+    each gate and check with where it sends a failure (`on_fail`: repair or stop), the round cap and the control extras;
     everything the fit's design reads. Two ids with one key differ only in details such as an input artifact,
     the title or the workflow's `control.rescue`, which nothing prices (the rescue comes from the rule, spec 05
     section 2). RQ1: `solo: gpt-5.6-luna/xhigh` recorded and in the catalog."""
@@ -296,7 +296,8 @@ def twin_key(cfg: Configuration) -> tuple:
         s = cfg.settings.get(p.id)
         pieces.append((p.id, p.role, p.width, _stable(p.extra),
                        *((s.harness, s.model, s.effort) if s is not None else ())))
-    gates = tuple((g.after, g.rule, g.on_fail, _stable(g.extra)) for g in wf.control.gates)
+    # Gates, then OCP 0.4 checks, in order: a configuration without checks keeps its key
+    gates = tuple((g.after, g.rule, g.on_fail, _stable(g.extra)) for g in (*wf.control.gates, *wf.control.checks))
     return (wf.id, tuple(pieces), tuple(sorted(flow)), gates, wf.control.budget_rounds,
             _stable(wf.control.extra))
 

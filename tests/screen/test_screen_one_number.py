@@ -8,6 +8,8 @@ without `--screen` never imports it, and reading a screen writes nothing. One ot
 `loopmath.harness.tune` (its `design`, `effects` and `edits` modules), by four named lines inside functions.
 Nothing outside `harness/tune/` imports the tune package except the CLI registry's lazy handler strings
 (tests/gate/test_gate_one_number.py), so only the `harness` command or a caller's own `import` reaches it.
+The flow plan (`flows/plan.py`) is allowed too, by one named line inside the function that lays out its screen
+with the fold-over design.
 """
 
 from __future__ import annotations
@@ -46,6 +48,11 @@ TUNE_IMPORTS = {
     ("harness/tune/effects.py", "from ...screen import model"),
     ("harness/tune/edits.py", "from ...screen import edits as screen_edits"),
 }
+# The flow plan lays out its screen with the fold-over design, from inside that one function, so importing the
+# plan does not load the screen. Exact line, as above.
+FLOW_IMPORTS = {
+    ("flows/plan.py", "from ..screen import design as screen_design"),
+}
 
 
 def test_only_the_registry_and_the_screen_flag_reach_the_screen():
@@ -59,7 +66,7 @@ def test_only_the_registry_and_the_screen_flag_reach_the_screen():
                 continue
             if rel in ALLOWED and ALLOWED[rel].search(line.strip()):
                 continue
-            if (rel, line.strip()) in TUNE_IMPORTS:
+            if (rel, line.strip()) in TUNE_IMPORTS | FLOW_IMPORTS:
                 continue
             offenders.append(f"{rel}: {line.strip()}")
     assert offenders == []
@@ -67,7 +74,7 @@ def test_only_the_registry_and_the_screen_flag_reach_the_screen():
 
 def test_the_named_tune_imports_of_the_screen_are_still_there():
     # Keeps the allowance honest: an entry goes when its line goes.
-    for rel, line in TUNE_IMPORTS:
+    for rel, line in TUNE_IMPORTS | FLOW_IMPORTS:
         assert line in [x.strip() for x in (SRC / rel).read_text(encoding="utf-8").splitlines()], (rel, line)
 
 
@@ -83,7 +90,7 @@ def _imports_the_screen(node: ast.AST) -> bool:
 
 
 def test_the_tune_imports_of_the_screen_are_inside_functions():
-    for rel in {rel for rel, _ in TUNE_IMPORTS}:
+    for rel in {rel for rel, _ in TUNE_IMPORTS | FLOW_IMPORTS}:
         tree = ast.parse((SRC / rel).read_text(encoding="utf-8"))
         inside = {id(n) for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
                   for n in ast.walk(fn)}

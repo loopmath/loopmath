@@ -226,6 +226,10 @@ def index_row(doc: dict[str, Any]) -> dict[str, Any]:
         "state": FINISHED if finished else OPEN,
         "history": is_history(doc),  # additive (0.2.4): onboard's runs, apart from spend
     }
+    flow = run.get("flow")
+    if isinstance(flow, dict):  # additive (0.4): the flow a run belongs to and its arm, absent read as "base"
+        row["flow"] = flow.get("id")
+        row["arm"] = flow.get("arm") or "base"
     if finished:  # additive fields: budget and views read spend without opening every run file
         cost = run_cost(doc)
         row["cost_usd"] = cost["usd"]  # None unless every attempt is priced
@@ -364,6 +368,72 @@ def attempt_usd(a: dict[str, Any]) -> float | None:
         return None
     usd = cost.get("usd")
     return float(usd) if isinstance(usd, (int, float)) and not isinstance(usd, bool) else None
+
+
+def dollars_past_float(doc: dict[str, Any]) -> str | None:
+    """Where an attempt's dollars are an integer no float holds, which `attempt_usd` cannot convert: the path of the
+    first (`attempts[i].cost.usd`), or None. A finished run's index row reads its dollars, so a writer that finishes
+    a run checks this before it writes; readers keep `attempt_usd` as it is. `attempts` that is no list is not
+    walked (None), so the strict check names it."""
+    attempts = doc.get("attempts")
+    for i, a in enumerate(attempts if isinstance(attempts, list) else []):
+        usd = a["cost"].get("usd") if isinstance(a, dict) and isinstance(a.get("cost"), dict) else None
+        if isinstance(usd, int) and not isinstance(usd, bool):
+            try:
+                float(usd)
+            except OverflowError:
+                return f"attempts[{i}].cost.usd"
+    return None
+
+
+def flow_key(doc: dict[str, Any]) -> dict[str, Any] | None:
+    """The flow a run names, `{"id", "version"}` as the document holds them (a missing member None), or None when
+    `run.flow` is no object."""
+    run = doc.get("run") if isinstance(doc.get("run"), dict) else {}
+    flow = run.get("flow")
+    return {"id": flow.get("id"), "version": flow.get("version")} if isinstance(flow, dict) else None
+
+
+def same_flow(a: dict[str, Any] | None, b: dict[str, Any] | None) -> bool:
+    """Two `flow_key`s name the same flow: both None, or the ids the same JSON value (`_same_value`) and the
+    versions the same whole number (1 and 1.0 alike, compared as integers), else the same JSON value."""
+    if a is None or b is None:
+        return a is None and b is None
+    va, vb = _whole_version(a["version"]), _whole_version(b["version"])
+    same_version = va == vb if va is not None and vb is not None else _same_value(a["version"], b["version"])
+    return _same_value(a["id"], b["id"]) and same_version
+
+
+def _whole_version(value: Any) -> int | None:
+    """A flow version as `ocp.conformance._version_number` reads it: an int (a whole float through `int`, so no
+    integer goes through a float), or None for anything else, booleans included."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    return value
+
+
+def _same_value(a: Any, b: Any) -> bool:
+    """The same JSON value: the same type and, for an object or an array, the same members or items each the same
+    value in turn (so `true` is not 1 and `false` not 0 at any depth), else equal. Walked with a list, not by
+    recursion, so a deep value cannot raise RecursionError."""
+    pairs = [(a, b)]
+    while pairs:
+        x, y = pairs.pop()
+        if type(x) is not type(y):
+            return False
+        if isinstance(x, dict):
+            if x.keys() != y.keys():
+                return False
+            pairs.extend((x[k], y[k]) for k in x)
+        elif isinstance(x, list):
+            if len(x) != len(y):
+                return False
+            pairs.extend(zip(x, y))
+        elif x != y:
+            return False
+    return True
 
 
 def attempt_tokens(a: dict[str, Any]) -> int | None:

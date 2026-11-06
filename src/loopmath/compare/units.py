@@ -14,7 +14,7 @@ from statistics import fmean
 from typing import Any, Iterable
 
 from ..output import counted
-from . import Observation, _observations, _one_direction, _one_scale, score_rule
+from . import Observation, _flow_quality, _observations, _one_direction, _one_scale, score_rule
 
 UNITS = ("case", "run")
 
@@ -92,18 +92,22 @@ def _case(key: tuple[str | None, str], arm: str, runs: list[Observation]) -> Obs
         # no start: compare orders a task's runs by start, then id, and ids order cases alike on both arms
         started_at=None, experiment=runs[0].experiment,
         base_commit=_common(o.base_commit for o in runs), scale=_common(o.scale for o in runs),
-        better=_common(o.better for o in runs))
+        better=_common(o.better for o in runs), notes=tuple(w for o in runs for w in o.notes))
 
 
 def by_case(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, now: datetime | None = None,
             config: Any = None) -> tuple[list[Observation], list[Observation]]:
     """One observation per case per arm, for `paired`: the mean of the case's scored runs on that arm
     (unscored when none is scored), and their mean dollars and tokens per run (unknown when any run's is).
-    Every run must name a task. Cases pair on their task, so the pairs are the cases both arms ran."""
+    Every run must name a task. Cases pair on their task, so the pairs are the cases both arms ran. A case
+    carries every judge warning of its runs (`Observation.notes`), and the flow runs of both arms are read from
+    one fit of the judges."""
     if score_rule(rule) is None:
         raise ValueError("cases are compared on a score rule (score:NAME); acceptance rows are compared run by run")
-    base = _observations(base_runs, rule, now, config)
-    cand = _observations(cand_runs, rule, now, config)
+    base_runs, cand_runs = list(base_runs), list(cand_runs)
+    quality = _flow_quality(base_runs, cand_runs)
+    base = _observations(base_runs, rule, now, config, quality=quality)
+    cand = _observations(cand_runs, rule, now, config, quality=quality)
     _one_scale(base, cand)
     _one_direction(base, cand, rule)
     out: list[list[Observation]] = []

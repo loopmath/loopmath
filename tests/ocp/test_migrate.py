@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from loopmath.cli import main
 from loopmath.ocp import conformance, contractv3
 from loopmath.ocp.migrate import INFERRED_KEY, MIGRATION_KEY, MigrationError, migrate_doc
 
@@ -188,3 +189,69 @@ def test_migrated_goldens_are_stable_json():
     for path in INPUTS:
         text = expected_path(path).read_text()
         assert text == json.dumps(json.loads(text), indent=2, ensure_ascii=False) + "\n"
+
+
+@pytest.mark.parametrize("path", INPUTS, ids=lambda p: p.name)
+def test_migration_to_v04_is_the_v03_golden_raised(path):
+    out = migrate_doc(load(path), infer=None, target="0.4")
+    assert out == dict(load(expected_path(path)), ocp="0.4")
+    assert migrate_doc(out, infer=None, target="0.4") == out
+
+
+def test_v03_documents_raise_to_v04_with_the_migration_record():
+    doc = example("full-fields")
+    expected = dict(copy.deepcopy(doc), ocp="0.4")
+    expected["run"].setdefault("ext", {})[MIGRATION_KEY] = {"from": "0.3"}
+    assert migrate_doc(doc, target="0.4") == expected
+
+
+def test_v04_targets_and_inputs_are_refused_by_name():
+    with pytest.raises(MigrationError, match="targets: 0.3, 0.4"):
+        migrate_doc(example("solo"), target="0.5")
+    with pytest.raises(MigrationError, match="down to 0.3; use --to 0.4"):
+        migrate_doc(dict(example("solo"), ocp="0.4"))
+    raised = dict(example("solo"), ocp="0.4")
+    assert migrate_doc(raised, target="0.4") == raised
+
+
+def _cli(capsys, *argv):
+    code = main(list(argv))
+    out, err = capsys.readouterr()
+    return code, out, err
+
+
+@pytest.mark.parametrize("path", [EXAMPLES / "swarm-v02.ocp.json", EXAMPLES / "v0.3" / "full-fields.ocp.json"],
+                         ids=lambda p: p.name)
+def test_cli_migrate_to_v04_is_valid_and_idempotent(capsys, tmp_path, path):
+    code, out, err = _cli(capsys, "ocp", "migrate", "--to", "0.4", str(path))
+    assert code == 0, err
+    migrated = json.loads(out)
+    assert migrated["ocp"] == "0.4"
+    assert migrated["run"]["ext"][MIGRATION_KEY] == {"from": load(path)["ocp"]}
+    assert [f for f in conformance.validate_doc(migrated) if f.level == "error"] == []
+    again = tmp_path / "again.ocp.json"
+    again.write_text(out)
+    code, out, err = _cli(capsys, "ocp", "migrate", "--to", "0.4", str(again))
+    assert code == 0, err
+    assert json.loads(out) == migrated
+
+
+def test_cli_migrate_default_stays_v03_and_refuses_a_v04_input(capsys, tmp_path):
+    code, out, _ = _cli(capsys, "ocp", "migrate", str(EXAMPLES / "swarm-v02.ocp.json"))
+    assert code == 0 and json.loads(out)["ocp"] == "0.3"
+    newer = tmp_path / "newer.ocp.json"
+    newer.write_text(json.dumps(dict(example("solo"), ocp="0.4")))
+    code, out, err = _cli(capsys, "ocp", "migrate", str(newer))
+    assert code == 1 and out == ""
+    assert "--to 0.4" in err
+
+
+def test_cli_migrate_json_keeps_its_shape_for_v04(capsys):
+    path = str(EXAMPLES / "swarm-v02.ocp.json")
+    _, out_03, _ = _cli(capsys, "ocp", "migrate", "--json", path)
+    code, out_04, _ = _cli(capsys, "ocp", "migrate", "--json", "--to", "0.4", path)
+    at_03, at_04 = json.loads(out_03), json.loads(out_04)
+    assert code == 0 and at_04["schema"] == at_03["schema"] == "loopmath.ocp.migrate/1"
+    assert set(at_04) == set(at_03) and at_04["ok"] is True
+    assert [set(row) for row in at_04["files"]] == [set(row) for row in at_03["files"]]
+    assert at_04["files"][0]["doc"]["ocp"] == "0.4" and at_04["files"][0]["from"] == "0.2"

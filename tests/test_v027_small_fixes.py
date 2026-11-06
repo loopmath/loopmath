@@ -159,7 +159,7 @@ def test_the_window_rule_says_how_its_exceptions_count(capsys):
     with pytest.raises(SystemExit):
         cli_main(["run", "record", "--help"])
     texts = {"help": capsys.readouterr().out}
-    for rel in ("README.md", "src/loopmath/skill/skills/loopmath-record-run/SKILL.md", "src/loopmath/skill/skills/reference.md"):
+    for rel in ("README.md", "src/loopmath/skill/guides/record.md", "src/loopmath/skill/guides/reference.md"):
         texts[rel] = (ROOT / rel).read_text(encoding="utf-8")
     for where, text in texts.items():
         text = " ".join(text.split())

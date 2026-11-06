@@ -30,8 +30,25 @@ A workflow file (the catalog files in `catalog/` are complete examples):
     model = "claude-opus-5-5"
     effort = "high"
 
+Checks (OCP 0.4) state the same thing with an id each, and a piece may have
+several, each with its own rule; a file uses `[[control.checks]]` or
+`[[control.gates]]`, not both, and an empty `checks = []` or `gates = []` states
+its form too (`checks = []` alone is the checks form with no checks):
+
+    [[control.checks]]
+    id = "review-approves"    # unique in the workflow
+    after = "review"
+    rule = "review_approve"   # required: a check has no default rule
+    on_fail = "implement"     # omit to stop
+
+    [[control.checks]]
+    id = "tests-pass"
+    after = "review"
+    rule = "tests_pass"
+
 An edge is `"a -> b"` or `["a", "b"]`; one end is a piece and the other an
-artifact. Workflows are acyclic: repair loops are `control.gates`.
+artifact. Workflows are acyclic: repair loops are `control.gates` or
+`control.checks`.
 Unknown top-level keys are kept in `Workflow.extra` and written back.
 """
 
@@ -46,7 +63,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..types import Configuration, Control, Gate, Piece, Setting, Workflow
+from ..types import Check, Configuration, Control, Gate, Piece, Setting, Workflow
 from .models import normalize_role
 from .ocp import RECOMMENDED_KINDS, default_gate_rule, find_cycle
 
@@ -169,6 +186,9 @@ def workflow_file_from_dict(data: Mapping[str, Any], source: str = "<workflow>")
         errors.append("control: expected a table")
         raw_control = {}
     roles = {p.id: p.role for p in pieces}
+    if "gates" in raw_control and "checks" in raw_control:  # an empty list states its form too
+        errors.append("control: both gates and checks are given; a workflow states its checks as "
+                      "[[control.checks]] or as [[control.gates]], not both")
     gates = []
     for i, g in enumerate(_table_list(raw_control, "gates", errors)):
         where = f"control.gates[{i}]"
@@ -184,12 +204,25 @@ def workflow_file_from_dict(data: Mapping[str, Any], source: str = "<workflow>")
         gates.append(Gate(id=_str(g.get("id", f"g_{after}"), f"{where}.id", errors), after=after,
                           rule=_str(g.get("rule", default_gate_rule(roles.get(after))), f"{where}.rule", errors),
                           on_fail=on_fail, extra=extra))
+    checks = []
+    for i, c in enumerate(_table_list(raw_control, "checks", errors)):
+        where = f"control.checks[{i}]"
+        if not isinstance(c, dict):
+            errors.append(f"{where}: expected a table")
+            continue
+        item = {name: _str(c.get(name), f"{where}.{name}", errors) for name in ("id", "after", "rule")}
+        if "on_fail" in c:
+            item["on_fail"] = _str(c["on_fail"], f"{where}.on_fail", errors)
+        item.update({k: v for k, v in c.items() if k not in ("id", "after", "rule", "on_fail")})
+        checks.append(Check.from_dict(item))
     rescue = raw_control.get("rescue", "redo_usual")
     if not isinstance(rescue, (str, dict)):
         errors.append(f"control.rescue: expected one of {', '.join(RESCUES)} or an OCP rescue table, got {rescue!r}")
         rescue = "redo_usual"
-    control_extra = {k: v for k, v in raw_control.items() if k not in ("gates", "budget_rounds", "rescue")}
-    control = Control(gates=tuple(gates), rescue=rescue, extra=control_extra,
+    control_extra = {k: v for k, v in raw_control.items() if k not in ("gates", "checks", "budget_rounds", "rescue")}
+    if raw_control.get("checks") == []:  # the checks form with no checks, kept as written as the OCP reader keeps it
+        control_extra["checks"] = []
+    control = Control(gates=tuple(gates), rescue=rescue, extra=control_extra, checks=tuple(checks),
                       budget_rounds=_int(raw_control.get("budget_rounds", 1), "control.budget_rounds", errors))
 
     settings: dict[str, Setting] = {}
@@ -275,8 +308,12 @@ def _extra_lines(extra: Mapping[str, Any] | None, skip: tuple[str, ...] = ()) ->
     return [f"{_key(k)} = {_value(v)}" for k, v in (extra or {}).items() if k not in skip and v is not None]
 
 
-def dump_workflow(workflow: Workflow, settings: Mapping[str, Setting] | None = None) -> str:
-    """The TOML text of a workflow, with `[settings.<piece>]` tables when settings are given."""
+def dump_workflow(workflow: Workflow, settings: Mapping[str, Setting] | None = None, *,
+                  model_refs: bool = False, empty_gates: bool = False) -> str:
+    """The TOML text of a workflow, with `[settings.<piece>]` tables when settings are given. With `model_refs`,
+    a setting's kept model object (`extra["model_ref"]`) that says more than the model's name is written as
+    `model_ref`, which the reader keeps. With `empty_gates`, a workflow with neither gates nor checks is written
+    with `gates = []`, the reader's default. Without them the text is the same as before checks existed."""
     kinds = (workflow.extra or {}).get("artifact_kinds") or {}
     lines = [f"id = {_value(workflow.id)}", f"version = {workflow.version}", f"title = {_value(workflow.title)}"]
     lines += _extra_lines(workflow.extra, ("artifact_kinds",))
@@ -291,17 +328,28 @@ def dump_workflow(workflow: Workflow, settings: Mapping[str, Setting] | None = N
         lines += ["", "[[artifacts]]", f"id = {_value(a)}", f"kind = {_value(kind)}"]
     c = workflow.control
     lines += ["", "[control]", f"budget_rounds = {c.budget_rounds}", f"rescue = {_value(c.rescue)}"]
+    if empty_gates and not c.gates and not c.checks and "checks" not in (c.extra or {}):
+        lines.append("gates = []")
     lines += _extra_lines(c.extra)
     for g in c.gates:
         lines += ["", "[[control.gates]]", f"id = {_value(g.id)}", f"after = {_value(g.after)}", f"rule = {_value(g.rule)}"]
         if g.on_fail:
             lines.append(f"on_fail = {_value(g.on_fail)}")
         lines += _extra_lines(g.extra)
+    for k in c.checks:
+        lines += ["", "[[control.checks]]", f"id = {_value(k.id)}", f"after = {_value(k.after)}",
+                  f"rule = {_value(k.rule)}"]
+        if k.on_fail is not None:
+            lines.append(f"on_fail = {_value(k.on_fail)}")
+        lines += _extra_lines(k.extra)
     for pid, s in (settings or {}).items():
         lines += ["", f"[settings.{_key(pid)}]", f"harness = {_value(s.harness)}", f"model = {_value(s.model)}",
                   f"effort = {_value(s.effort)}", f"context_policy = {_value(s.context_policy)}"]
         if s.options:
             lines.append(f"options = {_value(dict(s.options))}")
+        ref = (s.extra or {}).get("model_ref")
+        if model_refs and isinstance(ref, Mapping) and dict(ref) != {"raw": s.model, "id": s.model}:
+            lines.append(f"model_ref = {_value(dict(ref))}")
         lines += _extra_lines(s.extra, ("model_ref",))
     return "\n".join(lines) + "\n"
 
@@ -357,6 +405,27 @@ def validate_workflow(workflow: Workflow) -> list[str]:
             errors.append(f"control.rescue {dict(c.rescue)!r}: a rescue table needs a kind")
     elif c.rescue not in RESCUES:
         errors.append(f"control.rescue {c.rescue!r}: expected one of {', '.join(RESCUES)}")
+    if c.gates and c.checks:
+        errors.append("a workflow states its checks as [[control.checks]] or as [[control.gates]], not both")
+    check_ids: set[str] = set()
+    check_rules: set[tuple[str, str]] = set()
+    for k in c.checks:
+        if k.id in check_ids:
+            errors.append(f"check id {k.id!r} appears twice")
+        check_ids.add(k.id)
+        if k.after not in pieces:
+            errors.append(f"check {k.id!r}: after {k.after!r} is not a piece")
+            continue
+        if not k.rule:
+            errors.append(f"check {k.id!r} has no rule")
+        elif (k.after, k.rule) in check_rules:
+            errors.append(f"check {k.id!r}: two checks after {k.after!r} have rule {k.rule!r}")
+        check_rules.add((k.after, k.rule))
+        if k.on_fail is not None:
+            if k.on_fail not in pieces:
+                errors.append(f"check {k.id!r}: on_fail {k.on_fail!r} is not a piece")
+            elif k.on_fail != k.after and k.on_fail not in _ancestors(workflow, k.after):
+                errors.append(f"check {k.id!r}: on_fail {k.on_fail!r} is not upstream of {k.after!r}")
     gate_ids: set[str] = set()
     gate_after: set[str] = set()
     for g in c.gates:

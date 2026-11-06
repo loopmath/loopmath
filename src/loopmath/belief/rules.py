@@ -25,7 +25,7 @@ from typing import Any
 
 from ..types import DEFAULT_RULE, AcceptanceRule, Evidence
 from .design import rule_from_doc
-from .outcome import _last, outcome_evidence
+from .outcome import _last, outcome_evidence, signal_list
 
 RULE_EXT = "dev.loopmath.rule"
 IMPORT_EXT = "dev.loopmath.import"
@@ -62,7 +62,7 @@ def review_rule_dict() -> dict[str, Any]:
 
 
 def _verdicts(doc: dict) -> list[dict]:
-    signals = (doc.get("run") or {}).get("signals") or []
+    signals = signal_list(doc.get("run") or {})
     return [s for s in signals if isinstance(s, dict) and s.get("kind") == "verdict"]
 
 
@@ -119,12 +119,14 @@ def resolve_rule_or_default(doc: dict) -> AcceptanceRule:
 
 
 def evidence(doc: dict, rule: AcceptanceRule, *, now: datetime,
-             q_by_tier: dict[str, float] | None = None) -> Evidence:
-    """The run's outcome under `rule`: the review reading for the review rule, `outcome_evidence` otherwise."""
+             q_by_tier: dict[str, float] | None = None,
+             quality: tuple[float | None, float | None] | None = None) -> Evidence:
+    """The run's outcome under `rule`: the review reading for the review rule, `outcome_evidence` otherwise.
+    `quality` is a flow run's combined quality, as `outcome_evidence` takes it."""
     if not is_review_rule(rule):
-        return outcome_evidence(doc, rule, now=now, q_by_tier=q_by_tier)
+        return outcome_evidence(doc, rule, now=now, q_by_tier=q_by_tier, quality=quality)
     run = doc.get("run") or {}
-    signals = [s for s in run.get("signals") or [] if isinstance(s, dict)]
+    signals = [s for s in signal_list(run) if isinstance(s, dict)]
     named = [s for s in signals if s.get("kind") == "verdict" and s.get("name") in REVIEW_NAMES]
     latest = _last(named)
     value = str(latest.get("value") or "").lower() if latest is not None else None
@@ -132,7 +134,8 @@ def evidence(doc: dict, rule: AcceptanceRule, *, now: datetime,
     kept = [s for s in signals if not (s.get("kind") == "verdict" and s.get("name") in REVIEW_NAMES)]
     if reading is not None:
         kept.append({**latest, "name": "review", "value": reading})
-    ev = outcome_evidence({**doc, "run": {**run, "signals": kept}}, rule, now=now, q_by_tier=q_by_tier)
+    ev = outcome_evidence({**doc, "run": {**run, "signals": kept}}, rule, now=now, q_by_tier=q_by_tier,
+                          quality=quality)
     if latest is not None and reading is None:
         reasons = tuple(f"unknown:review={value}" if r == "missing:review" else r for r in ev.reasons)
         ev = dataclasses.replace(ev, reasons=reasons)

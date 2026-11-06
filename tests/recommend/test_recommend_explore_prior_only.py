@@ -7,7 +7,8 @@ trying anything, so G clipped to 0 and no pair was offered on about one fit in s
 lost it when a fit's draws were seeded by its id; since 0.2.1 they are seeded by the fit's `seed_key`, a hash of
 its input rows, so each id gets its own pinned clock (and its own onboard and store): four clocks, four sets of
 rows, four seeds. The success update is now exact over the draws. The seeds leave out the shipped prior's repo
-salt (`salt_free_key`), so a rebuild of the prior with a new salt does not reseed them.
+salt (`salt_free_key`), so a rebuild of the prior with a new salt does not reseed them. Every test runs under
+both levels (`belief.level`): 0.3.5's `shared` and the default, `store`.
 """
 
 from __future__ import annotations
@@ -52,7 +53,12 @@ MANY_DRAWS = 8000
 # so the floor fell about 6x (0.0022 to about 0.00036) and the gain more: the four fits clear it 3.6 to 8.5 times
 # and 8000 draws 4.2, the same with the bundle's repos hashed under another salt (4.3 to 7.3 and 4.4 while the
 # salt still reseeded them), so 5, the bar before, sat inside that spread.
-PAIR_MARGIN = 3
+# Under the store level (the default from 0.4.0) the prior-only store's chances are lower and wider, so the goal
+# moves to a stronger and costlier workflow ($0.034 to $2.42 per accepted result on the second fit): the floor
+# rises about 71x and the pair's gain about 32x. The four fits clear it 1.54 to 3.92 times at 400 draws, and the
+# first 2.15 times at 8000.
+PAIR_MARGIN = {"shared": 3, "store": 1.25}
+MANY_MARGIN = {"shared": 3, "store": 2}
 LABELER = """\
 import json, sys
 req = json.load(sys.stdin)
@@ -126,8 +132,9 @@ def recommend_on(env: dict, fit_id: str, draws: int | None = None) -> dict:
     return {"rec": rec, "outcomes": outcomes, "variance": variance, "floor": floor, "seed_key": state.seed_key}
 
 
-def onboarded(tmp_path_factory, clock: dt.datetime) -> dict:
-    """Onboard the fixture dated from `clock` into a new store, as the dry run does; the environment to use it."""
+def onboarded(tmp_path_factory, clock: dt.datetime, level: str) -> dict:
+    """Onboard the fixture dated from `clock` into a new store, as the dry run does, under `level` (the default
+    unless `shared`); the environment to use it."""
     tmp = tmp_path_factory.mktemp("prior_only")
     hist = fixture.build_history(tmp, now=clock)
     home = tmp / "home"
@@ -137,20 +144,23 @@ def onboarded(tmp_path_factory, clock: dt.datetime) -> dict:
     (tmp / "labeler.py").write_text(LABELER, encoding="utf-8")
     env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "LOOPMATH_HOME": str(tmp / "store"),
            "LOOPMATH_CACHE_DIR": str(tmp / "cache"), "PYTHONPATH": str(SRC), "PYTHONDONTWRITEBYTECODE": "1",
-           "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8"}
+           "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8", "LOOPMATH_NO_UPDATE_CHECK": "1"}
     res = subprocess.run([sys.executable, "-m", "loopmath", "onboard", "--labeler",
                           f"command:{sys.executable} {tmp / 'labeler.py'}", "--since", "3650d", "--yes", "--json"],
                          env=env, cwd=tmp, text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
     assert res.returncode == 0, res.stderr[-800:]
+    if level == "shared":
+        assert main(["config", "set", "belief.level", "shared", "--home", env["LOOPMATH_HOME"]]) == 0
     return env
 
 
-@pytest.fixture(scope="module")
-def runs(tmp_path_factory):
-    """Onboard the fixture at each lost fit's clock and recommend on that fit, and on the first at MANY_DRAWS too."""
-    out = {}
+@pytest.fixture(scope="module", params=["shared", "store"])
+def runs(request, tmp_path_factory):
+    """Onboard the fixture at each lost fit's clock and recommend on that fit, and on the first at MANY_DRAWS too,
+    under each level."""
+    out = {"level": request.param}
     for fit_id in LOST:
-        env = onboarded(tmp_path_factory, CLOCKS[fit_id])
+        env = onboarded(tmp_path_factory, CLOCKS[fit_id], request.param)
         out[fit_id] = recommend_on(env, fit_id)
         if fit_id == LOST[0]:
             out["many"] = recommend_on(env, fit_id, MANY_DRAWS)
@@ -173,7 +183,7 @@ def test_the_four_fits_have_four_seeds(runs):
 def test_a_fit_that_lost_its_pair_offers_one(runs, fit_id):
     run = runs[fit_id]
     assert run["rec"]["goal"]["config"]
-    assert pair_pick(run)["gain_per_run"]["usd"] > PAIR_MARGIN * run["floor"]
+    assert pair_pick(run)["gain_per_run"]["usd"] > PAIR_MARGIN[runs["level"]] * run["floor"]
 
 
 @pytest.mark.parametrize("fit_id", LOST)
@@ -190,11 +200,14 @@ def test_the_success_update_is_exact_where_the_logit_variance_is_about_10(runs, 
 
 def test_the_pair_is_the_same_with_many_more_draws(runs):
     """Selection noise: the best of 50 draw-based gains does not clear the floor by chance. With 8000 draws
-    the pair is offered, with the same pick, and every screened gain is still positive."""
+    the pair is offered, with the same pick under `shared`, and every screened gain is still positive. Under the
+    store level the first fit's pick is a near tie (a gpt-6.1-sol/xhigh reviewer at 400 draws, all gpt-6-luna/max
+    at 8000), so the picks are not compared."""
     few, many = runs[LOST[0]], runs["many"]
     pick = pair_pick(many)
-    assert pick["candidate"]["config"] == pair_pick(few)["candidate"]["config"]
-    assert pick["gain_per_run"]["usd"] > PAIR_MARGIN * many["floor"]
+    if runs["level"] == "shared":
+        assert pick["candidate"]["config"] == pair_pick(few)["candidate"]["config"]
+    assert pick["gain_per_run"]["usd"] > MANY_MARGIN[runs["level"]] * many["floor"]
     for o in many["outcomes"]:
         np.testing.assert_allclose(o.pz @ o.g_after, o.g_now, rtol=1e-9, atol=0)
         assert o.raw_gain() > 0

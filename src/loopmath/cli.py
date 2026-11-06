@@ -14,9 +14,11 @@ Verbs:
   plan:    task-types  workflows  recommend  builder  plan
   record:  run start|record|import|attempt|artifact|finish|sessions  outcome  budget  config
   learn:   fit  onboard  share
-  view:    runs  posterior  status  report  doctor  skill  ocp
+  view:    runs  posterior  status  report  doctor  guide  skill  update  ocp
 
-No verb in this CLI connects to another machine; builder serves on 127.0.0.1 only.
+No verb in this CLI connects to another machine, except the daily update check (update.py): once a
+day, after any command, loopmath asks pypi.org for its latest version, sending only its own
+(LOOPMATH_NO_UPDATE_CHECK=1 or CI turns it off). builder serves on 127.0.0.1 only.
 Verbs write only to the store ($LOOPMATH_HOME, default ~/.loopmath, which also
 holds the parse cache and the fit --full compile folder), to the skill folders
 skill install names, and to paths the user names.
@@ -549,10 +551,46 @@ def _add_verify_receipts(sub) -> None:
     p.set_defaults(func=verify_receipts_verb)
 
 
+_NO_COMMAND_HINT = ("start with `loopmath onboard`; `loopmath skill install` teaches your coding agents to use "
+                    "loopmath, and `loopmath --help` says what each command does")
+
+
+def _no_command(names: list[str]) -> int:
+    """`loopmath` without a command: the commands and where to start, on stderr, exit 2 as for any usage error;
+    under --json the error object on stdout too."""
+    import textwrap
+
+    from .cli_errors import JsonErrorParser, emit_error
+
+    listed = ", ".join(names)
+    print("loopmath needs a command, one of:", file=sys.stderr)
+    print(textwrap.fill(listed, width=100, initial_indent="  ", subsequent_indent="  ", break_on_hyphens=False),
+          file=sys.stderr)
+    print(textwrap.fill(_NO_COMMAND_HINT, width=100, initial_indent="hint: ", subsequent_indent="      ",
+                        break_on_hyphens=False), file=sys.stderr)
+    if JsonErrorParser.json_mode:
+        emit_error("loopmath", f"loopmath needs a command, one of: {listed}", 2, _NO_COMMAND_HINT)
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
-    from .cli_errors import JsonErrorParser, run_guarded, wants_json
+    """Run one command, then the daily update check (update.py), which never changes the exit code or stdout.
+    A command that ends in an exception other than SystemExit, or in Ctrl-C, skips the check."""
+    from .update import after_command
 
     raw_args = sys.argv[1:] if argv is None else argv
+    try:
+        code = _main(raw_args)
+    except SystemExit:  # --help, --version and usage errors too
+        after_command(raw_args)
+        raise
+    after_command(raw_args)
+    return code
+
+
+def _main(raw_args: list[str]) -> int:
+    from .cli_errors import JsonErrorParser, run_guarded, wants_json
+
     JsonErrorParser.json_mode = wants_json(raw_args)  # under --json a usage error is a JSON object on stdout too
     JsonErrorParser.argv = list(raw_args)
     parser = JsonErrorParser(
@@ -598,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
             "Graphviz, or 'loopmath graph --format run' with the separate "
             "herdr-dagr viewer"
         )
+    if all(token == "--json" for token in raw_args):  # `loopmath` alone, or with only --json
+        return _no_command(_registry.command_names(sub))
     args = parser.parse_args(raw_args)
     if args.command == "graph" and not args.workspace and not args.ocp:
         parser.error("loopmath graph requires --workspace or --ocp")

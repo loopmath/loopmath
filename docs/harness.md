@@ -1,6 +1,6 @@
 # Tuning a Claude Code harness (experimental)
 
-`loopmath harness` is experimental in 0.4.0rc1: it has tests on stub binaries and a recorded event stream, and its
+`loopmath harness` is experimental in 0.4.0: it has tests on stub binaries and a recorded event stream, and its
 output may change. It follows the design measured in stream 1 of our harness2 study; this release has not been
 measured on its own yet.
 

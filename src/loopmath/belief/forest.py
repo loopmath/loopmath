@@ -9,10 +9,11 @@ data then predicts its parent's belief widened by `phi`, as the tree law says.
 Node ids are `level:key`. Keys nest along a chain so that each node has one parent:
 `type:feature`, `repo:feature/owner/name`, `subtype:feature/owner/name/api`, `task:<id>`;
 `provider:anthropic`, `family:opus`, `model:claude-opus-5-5`, `fsrc:opus|sweep`; `effort:high`,
-`family_effort:opus|high`; `role:reviewer`, `role_family:reviewer|opus`;
+`family_effort:opus|high`; `role:reviewer`, `role_family:reviewer|opus`, `step:lit-brief#critic|opus` (a flow's
+piece under its role and family, flow runs only);
 `topology:implement_review`, `position:implement_review#1`, `psrc:implement_review#1|sweep`;
 `feature:size=s`;
-`source:sweep`; `org:<org>` (crossed, since org is optional); `gate:<rule>`;
+`source:sweep`; `org:<org>` (crossed, since org is optional); `gate:<rule>`; `bench:<id>` (level.py);
 `hfactor:claude-code|skill:pdf`, a harness factor under `harness:claude-code` (`spec/harness.md`).
 Fixed effects (wide priors, no scale fit): `fixed:intercept`, `round:2`, `round:3+`,
 `control:budget`, `control:width`.
@@ -40,6 +41,7 @@ DEFAULT_SCALES: dict[str, tuple[float, float, float]] = {
     "harness": (0.3, 0.5, 0.5),
     "role": (0.5, 0.5, 0.5),
     "role_family": (0.3, 0.5, 0.5),
+    "step": (0.3, 0.5, 0.5),  # a flow's piece on a family, under its role_family node (SPEC 3.10)
     "topology": (0.5, 0.7, 0.7),
     "position": (0.2, 0.3, 0.3),
     "psrc": (0.7, 0.7, 0.7),  # position x source, on the cost and tokens heads only
@@ -58,6 +60,9 @@ FIXED_SD: dict[str, tuple[float, float, float]] = {
     "control": (1.0, 1.0, 1.0),
     "horizon": (10.0, 10.0, 10.0),  # wide: the informative prior is a FactorSpec in fit() (spec 04 section 1)
     "price": (10.0, 10.0, 10.0),  # wide: fit() holds `price:offset` at 1 by a FactorSpec (spec 04 section 2)
+    "bench": (10.0, 5.0, 5.0),  # a benchmark's own offset (level.py): free, so a benchmark never sets the level
+    "btx": (0.6, 0.6, 0.6),  # a model's transfer error on one benchmark (level.py); fit.make_prior sets it
+    "btxe": (0.5, 0.5, 0.5),  # an effort's own transfer error on one benchmark (level.py); fit.make_prior sets it
 }
 
 HYPER_SD = 0.7  # sd of the log-normal hyperprior on each phi, around the defaults above
@@ -70,6 +75,7 @@ PARENT_LEVEL = {
     "model": "family",
     "family_effort": "effort",
     "role_family": "role",
+    "step": "role_family",
     "position": "topology",
     "psrc": "position",
     "fsrc": "family",
@@ -80,7 +86,7 @@ PARENT_LEVEL = {
 LEVEL_ALIASES = {
     "model": ("provider", "family", "model", "fsrc"),
     "effort": ("effort", "family_effort"),
-    "role": ("role", "role_family"),
+    "role": ("role", "role_family", "step"),
     "topology": ("topology", "position", "psrc"),
     "harness": ("harness", "hfactor"),
 }

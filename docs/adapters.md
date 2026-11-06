@@ -498,6 +498,13 @@ The ext members the run importers write:
 | `harness-runs` | `dev.loopmath.adapter.harness-runs` | `row_ext` | run | object | The row's `ext`, kept whole (the harness2 reader's own members are listed below). |
 | `harness-runs` | `dev.loopmath.adapter.harness-runs` | `extra` | run | object | Unknown top-level row fields, kept whole. |
 | `harness-runs` | `dev.loopmath.adapter.harness-runs` | `retained_text` | run | array of strings | Where the run keeps text the row's writer chose (strings in unknown row fields, in ext namespaces not under `dev.loopmath.`, or in outcome fields beyond the known ones). Present only then, and the document's `privacy.profile` is then `full`. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `flow` | run | object | For a row naming a flow (spec/harness-runs.md section 10): the row's `flow` as given. The run's `run.flow` adds the flow's digest and the arm used. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `flow.id` | run | string | The flow's id. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `flow.version` | run | integer | The flow's version. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `flow.digest` | run | string or null | The flow's digest as the row gave it; absent when the row did not. When not null it is the flow's digest, or the row is refused. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `flow.arm` | run | string or null | The arm as the row gave it in `flow`; absent when the row gave it as `arm` or not at all. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `flow.plan` | run | string or null | The id of the plan that chose the arm, as given. |
+| `harness-runs` | `dev.loopmath.adapter.harness-runs` | `flow.split` | run | string or null | The part of the flow's inputs the task came from, as given. |
 | `harness-runs` | `dev.loopmath.adapter.harness-runs` | `cost` | attempt | object | How the attempt's cost was read: the marks below. |
 | `harness-runs` | `dev.loopmath.adapter.harness-runs` | `stage` | attempt | integer | For a row with `stages` (spec/harness-runs.md section 9): the attempt's stage, its index in `stages`. |
 | `harness-runs` | `dev.loopmath.adapter.harness-runs` | `role` | attempt | string | The stage's `role` word as given; the piece's role is its folded form. |
@@ -521,6 +528,7 @@ The ext members the run importers write:
 | `harness-runs` | `dev.loopmath.adapter.harness-runs` | `all_pass` | signal | boolean | Whether every criterion passed. |
 | `harness-runs` | `dev.loopmath.adapter.harness-runs` | `metric` | signal | string | The bench's grading metric as the judge named it. |
 | `harness-runs` | `dev.loopmath.adapter.harness-runs` | `error` | signal | string | The judge's error when it gave no score; the score stays null, never 0. |
+| `harness-runs` | `dev.loopmath.judge` | `range` | signal | array of numbers | On a flow run's score signal from a linear judge: the judge's range [lo, hi] from the flow, so a reader takes the raw value as a fraction of it. Absent for other judges. |
 | `harness2` | `dev.loopmath.adapter.harness-runs` | `detail` | signal | object | The judge's other members as the bench's grader wrote them; strings in it make the document `full`. |
 | `harness2` | `dev.loopmath.adapter.harness-runs` | `detail.criteria_passed` | signal | integer | JobBench: criteria passed over all rubrics (`benchmarks/jobbench.py:597`). |
 | `harness2` | `dev.loopmath.adapter.harness-runs` | `detail.criteria_count` | signal | integer | JobBench: criteria over all rubrics (`benchmarks/jobbench.py:596`). |

@@ -336,3 +336,48 @@ def test_the_spec_names_every_field():
         assert f"`{name}`" in text, name
     for name in ("score", "accepted", "judge", "recovered", "usd_source", "cache_read", "cache_write"):
         assert f"`{name}`" in text, name
+
+
+DIGEST_PROBLEM = "flow.digest: a flow digest (flw_ and 12 hex digits), or null"
+HEX = "774ab7a14c50"
+BAD_DIGESTS = [
+    (5, "number"),
+    ("", "empty"),
+    ("flw_XYZ", "not-hex"),
+    ("flw_" + HEX.upper(), "upper-case-hex"),
+    ("flw_" + HEX[:11], "11-digits"),
+    ("flw_" + HEX + "0", "13-digits"),
+    ("FLW_" + HEX, "upper-case-prefix"),
+    (True, "boolean"),
+    (["flw_" + HEX], "list"),
+    ({"digest": "flw_" + HEX}, "object"),
+    ("flw_" + HEX + "\n", "final-newline"),
+    (" flw_" + HEX, "leading-space"),
+    ("flw_" + HEX + " ", "trailing-space"),
+    ("flw_" + chr(0x661) * 12, "arabic-indic-digits"),
+    ("flw_" + HEX[:11] + chr(0xFF10), "fullwidth-digit"),
+]
+
+
+def _flow_row(digest) -> dict:
+    """_good naming the example flow with `digest` as its flow digest, its cost on its one stage."""
+    row = _good(flow={"id": "lit-brief", "version": 1, "digest": digest})
+    row["stages"] = [{"role": "worker", "piece": "scout", "cost": row.pop("cost")}]
+    return row
+
+
+def _schema_errors(row: dict) -> set[tuple]:
+    validator = jsonschema.Draft202012Validator(json.loads(SCHEMA_FILE.read_text(encoding="utf-8")))
+    return {tuple(error.absolute_path) for error in validator.iter_errors(row)}
+
+
+@pytest.mark.parametrize("digest", [d for d, _ in BAD_DIGESTS], ids=[n for _, n in BAD_DIGESTS])
+def test_a_flow_digest_that_is_not_one_is_refused_by_the_checks_and_the_schema(digest):
+    assert HR.check_row(_flow_row(digest)) == [DIGEST_PROBLEM]
+    assert _schema_errors(_flow_row(digest)) == {("flow", "digest")}
+
+
+@pytest.mark.parametrize("digest", ["flw_" + HEX, None], ids=["digest", "null"])
+def test_a_flow_digest_or_null_meets_the_checks_and_the_schema(digest):
+    assert HR.check_row(_flow_row(digest)) == []
+    assert _schema_errors(_flow_row(digest)) == set()

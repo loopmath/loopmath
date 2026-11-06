@@ -102,7 +102,8 @@ def test_unset_and_eb_fit_the_same(tmp_path):
     for m in (ma, mb):
         m.pop("seconds")
     assert ma == mb
-    assert "model_options" not in ma and ma["design_version"] == 4
+    assert ma["model_options"] == {"belief.level": "store", "belief.shipped_success": "drop",
+                                   "belief.benchmark_factors": "offset"} and ma["design_version"] == 5
     za, zb = np.load(a / "state.npz"), np.load(b / "state.npz")
     assert sorted(za.files) == sorted(zb.files)
     for name in za.files:
@@ -114,7 +115,8 @@ def test_meta_records_the_method(tmp_path):
     docs, *_ = paired_store(5, 40, 0.5)
     path = F.fit(_home(tmp_path, METHOD), docs=docs, no_prior=True, now=NOW)
     meta = json.loads((path / "meta.json").read_text())
-    assert meta["model_options"] == {KEY: METHOD}
+    assert meta["model_options"] == {KEY: METHOD, "belief.level": "store", "belief.shipped_success": "drop",
+                                     "belief.benchmark_factors": "offset"}
     assert meta["design_version"] == 5
     assert meta["heads"]["success"]["method"] == METHOD
     assert "method" not in meta["heads"]["cost"]  # only the success head changes
@@ -418,8 +420,8 @@ def test_any_non_centring_weight_is_the_same_posterior(tmp_path, monkeypatch):
     docs, *_ = paired_store(2, 30, 1.0)
     got, orig = {}, F.fit_head
 
-    def grab(hr, forest, specs, *, eb=True):
-        res = orig(hr, forest, specs, eb=eb)
+    def grab(hr, forest, specs, **kwargs):
+        res = orig(hr, forest, specs, **kwargs)
         got.setdefault(hr.name, res)
         return res
 

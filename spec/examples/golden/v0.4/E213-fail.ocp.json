@@ -1,0 +1,326 @@
+{
+  "ocp": "0.4",
+  "kind": "flow",
+  "producer": {
+    "name": "loopmath",
+    "version": "0.4.0rc1",
+    "capabilities": {
+      "flow": true,
+      "configuration": true
+    }
+  },
+  "privacy": {
+    "profile": "metadata_only"
+  },
+  "flow": {
+    "id": "lit-brief",
+    "version": 1,
+    "title": "Question to a one-page brief",
+    "configuration": {
+      "id": "cfg_9bc4f6e876f9",
+      "workflow": {
+        "id": "lit-brief",
+        "version": 1,
+        "title": "Question to a one-page brief",
+        "pieces": [
+          {
+            "id": "scout",
+            "role": "worker",
+            "width": 1
+          },
+          {
+            "id": "extract",
+            "role": "worker",
+            "width": 1
+          },
+          {
+            "id": "synthesize",
+            "role": "worker",
+            "width": 1
+          },
+          {
+            "id": "critic",
+            "role": "reviewer",
+            "width": 1
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "question",
+            "kind": "other"
+          },
+          {
+            "id": "sources",
+            "kind": "other"
+          },
+          {
+            "id": "claims",
+            "kind": "other"
+          },
+          {
+            "id": "brief",
+            "kind": "other"
+          },
+          {
+            "id": "verdict",
+            "kind": "verdict"
+          }
+        ],
+        "edges": [
+          [
+            "question",
+            "scout"
+          ],
+          [
+            "scout",
+            "sources"
+          ],
+          [
+            "sources",
+            "extract"
+          ],
+          [
+            "extract",
+            "claims"
+          ],
+          [
+            "claims",
+            "synthesize"
+          ],
+          [
+            "question",
+            "synthesize"
+          ],
+          [
+            "synthesize",
+            "brief"
+          ],
+          [
+            "brief",
+            "critic"
+          ],
+          [
+            "claims",
+            "critic"
+          ],
+          [
+            "critic",
+            "verdict"
+          ]
+        ],
+        "control": {
+          "gates": [
+            "extract",
+            "critic"
+          ],
+          "repair": {
+            "extract": "extract",
+            "critic": "synthesize"
+          },
+          "budget": 2,
+          "rescue": {
+            "kind": "configuration",
+            "ref": "usual"
+          },
+          "ext": {
+            "dev.loopmath.gate_rules": {
+              "extract": "command:claims-check"
+            }
+          }
+        }
+      },
+      "settings": {
+        "scout": {
+          "harness": "api",
+          "model": {
+            "raw": "claude-sonnet-5-5",
+            "id": "claude-sonnet-5-5"
+          },
+          "effort": "default",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "extract": {
+          "harness": "api",
+          "model": {
+            "raw": "claude-opus-5-5",
+            "id": "claude-opus-5-5"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "synthesize": {
+          "harness": "api",
+          "model": {
+            "raw": "gpt-6-astra",
+            "id": "gpt-6-astra"
+          },
+          "effort": "high",
+          "context_policy": "fresh",
+          "options": {}
+        },
+        "critic": {
+          "harness": "api",
+          "model": {
+            "raw": "claude-haiku-5-5",
+            "id": "claude-haiku-5-5"
+          },
+          "effort": "default",
+          "context_policy": "fresh",
+          "options": {}
+        }
+      },
+      "source": "usual"
+    },
+    "inputs": {
+      "ref": "questions.jsonl",
+      "type": "research",
+      "n": 20,
+      "ids": [
+        "q01",
+        "q02",
+        "q03",
+        "q04",
+        "q05",
+        "q06",
+        "q07",
+        "q08",
+        "q09",
+        "q10",
+        "q11",
+        "q12",
+        "q13",
+        "q14",
+        "q15",
+        "q16",
+        "q17",
+        "q18",
+        "q19",
+        "q20"
+      ],
+      "holdout": [
+        "q13",
+        "q14",
+        "q15",
+        "q16",
+        "q17",
+        "q18",
+        "q19",
+        "q20"
+      ]
+    },
+    "acceptance_rule": {
+      "name": "quality>=0.7+claims-check",
+      "definition": "quality at least 0.7 and the claims check passes",
+      "requires": [
+        "claims-check"
+      ],
+      "score": {
+        "name": "quality",
+        "target": 0.7,
+        "better": "higher",
+        "scale": "fraction"
+      }
+    },
+    "objective": {
+      "kind": "cheapest_within_margin",
+      "score": "quality",
+      "margin": 0.1,
+      "reference": "base"
+    },
+    "hypothesis": "extract can run on Sonnet without hurting the brief; the critic adds little",
+    "judges": [
+      {
+        "id": "j-claude",
+        "kind": "model",
+        "model": {
+          "id": "claude-sonnet-5-5"
+        },
+        "rubric": "rubric.md#v1"
+      },
+      {
+        "id": "j-astra",
+        "kind": "model",
+        "model": {
+          "id": "gpt-6-astra"
+        },
+        "rubric": "rubric.md#v1"
+      },
+      {
+        "id": "person",
+        "kind": "person",
+        "rate": 0.2
+      }
+    ],
+    "allow": {
+      "pieces": {
+        "extract": {
+          "models": [
+            {
+              "id": "claude-sonnet-5-5"
+            },
+            {
+              "id": "claude-haiku-5-5"
+            }
+          ]
+        },
+        "synthesize": {
+          "efforts": [
+            "medium",
+            "high"
+          ]
+        },
+        "critic": {
+          "drop": true
+        },
+        "scout": {
+          "widths": [
+            1,
+            2
+          ],
+          "select": {
+            "harness": "api",
+            "model": {
+              "id": "claude-haiku-5-5"
+            }
+          }
+        },
+        "writer": {
+          "efforts": [
+            "low",
+            "high"
+          ]
+        }
+      },
+      "budgets": [
+        1,
+        2,
+        3
+      ],
+      "merges": [
+        {
+          "id": "extract+synthesize",
+          "replace": [
+            "extract",
+            "synthesize"
+          ],
+          "into": {
+            "id": "extract_synthesize",
+            "role": "worker"
+          },
+          "setting": {
+            "harness": "api",
+            "model": {
+              "id": "claude-opus-5-5"
+            },
+            "effort": "high",
+            "options": {
+              "prompt": "merged-v1"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

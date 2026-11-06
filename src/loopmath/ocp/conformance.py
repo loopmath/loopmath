@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""OCP conformance checker (v0.1, v0.2 and v0.3 documents).
+"""OCP conformance checker (v0.1, v0.2, v0.3 and v0.4 documents).
 
 Moved into the package from spec/ocp_conformance.py (spec 01 section 3);
 spec/ocp_conformance.py is now a shim over this module.
 
-Checks an OCP run document twice over:
+Checks an OCP run document, or from v0.4 a flow document, twice over:
 
 1. Schema validation, when the `jsonschema` package is importable, against the
    schema the document's `ocp` field selects: "0.1" -> ocp-v0.schema.json,
-   "0.2" -> ocp-v0.2.schema.json, "0.3" -> ocp-v0.3.schema.json (package data
-   under loopmath/ocp/schema/). Any other version is an error (E003); the
-   referential checks below still run. Skipped (with a notice) when
-   jsonschema is missing.
+   "0.2" -> ocp-v0.2.schema.json, "0.3" -> ocp-v0.3.schema.json, "0.4" ->
+   ocp-v0.4.schema.json (package data under loopmath/ocp/schema/). Any other
+   version is an error (E003); the referential checks below still run.
+   Skipped (with a notice) when jsonschema is missing.
 2. Referential rules the JSON Schema cannot express, from the schemas' own
    descriptions:
      - edge endpoints and attempt.node name existing node ids
@@ -57,7 +57,9 @@ Checks an OCP run document twice over:
        cost.ext["dev.loopmath.logmatch"] is present with tier 'heuristic'
        (the store's heuristic log match), or with shared_session (a
        session several attempts name, its cost split among them; an object
-       or, in a shared record, true)
+       or, in a shared record, true). A second, v0.4 and later with
+       producer loopmath only: basis 'simulated' is allowed when
+       run.ext["dev.loopmath.simulate"] is an object (a simulated run)
      - producer.capabilities is recommended; its absence is a warning, and a
        capability declared false while its element is present is an error
    The v0.2 consistency rules are strict: every internal inconsistency
@@ -81,11 +83,60 @@ Checks an OCP run document twice over:
        base_commit; a preference's winner is a member or 'tie'; across
        files (validate_many), members of one slate share task.id and
        base_commit
-     - E195 signal values match their kind, only a score may be null,
-       fraction scores lie in [0, 1], the rule's score names no verdict or
-       event signal and its requires name no score or event signal
+     - E195 signal values match their kind, only a score may be null, a
+       score is a number a float can hold, fraction scores lie in [0, 1],
+       the rule's score names no verdict or event signal, its target is a
+       number a float can hold, its window_days is at most 999999999 and its
+       requires name no score or event signal
      - W196 run.receipt is present but producer.name is not loopmath
      - capabilities task, configuration, signals, slate and receipt join E180
+   v0.4 rules, run when `ocp` is at least "0.4" (OCP.md section 6.4). v0.4 is a
+   strict superset of v0.3: a v0.3 document raised to 0.4 gives the same
+   findings and keeps its configuration id.
+     - capability flow joins E180: a flow document (kind 'flow') or run.flow;
+       in a flow document, capability configuration reads flow.configuration
+     - E217 an inline workflow with control.checks has no gates, repair or
+       dev.loopmath.gate_rules; check ids are unique; every after and every
+       non-null on_fail names a piece; no two checks share after and rule.
+       Nested inline workflows are checked the same way. Below 0.4, checks is
+       an unknown field
+     - a flow document (kind 'flow') skips the run rules; E190 to E193 and
+       E217 run on flow.configuration as on run.configuration
+     - E212 flow.digest, when present, is the flow's digest
+       (loopmath.ocp.canonical.flow_digest)
+     - E213 flow.allow names pieces of the base workflow; a merge replaces 2 or
+       more base pieces, each joined to the next through an artifact, into a
+       new id, and merge ids are unique; checks.remove names a check id (or a
+       gate piece in the gates form); a width above 1 comes with select. The
+       parts that read the base workflow are skipped when a reference to it
+       does not resolve
+     - E214 judge ids are unique, rate lies in [0, 1], and a linear judge has
+       range [lo, hi], two finite numbers of absolute value at most 2**53
+       with lo < hi
+     - E215 cheapest_within_margin has score and margin, best_under_cost
+       has score and cost_cap_usd above 0, a margin or cost_cap_usd is a
+       number a float can hold, a margin of any kind is above 0 and within
+       the planner's pair limit at a first plan's assumed spreads
+       (flows.plan.margin_problem), no objective or judge score
+       names a verdict of acceptance_rule.requires, and the flow's
+       acceptance_rule has a score target a float can hold, in [0, 1] with
+       scale fraction, and window_days at most 999999999
+     - E216 inputs.ids and inputs.holdout have no duplicates, and holdout is
+       among ids when both are given
+     - E218 run.flow comes with run.configuration; across files
+       (validate_many), a run whose run.flow names the id and version of a
+       flow document in the set gives that flow's digest when it gives one,
+       and a task.id among flow.inputs.ids when the flow lists ids
+     - W219 across files, on such a run, a score signal whose source.kind is
+       judge or user names a judge id of the flow in source.ref
+     - W220 a judge or user score lies in the linear range it is read by:
+       alone, the range in its signal's ext["dev.loopmath.judge"] when its
+       scale is linear; across files, on such a run, the range of the linear
+       judge its source.ref names. A bound itself is in range, and a range
+       E214 refuses gives no warning
+     With several flow documents of one id and version in the set, each part
+     of E218, W219 and W220 passes when it holds for any of them. Below 0.4,
+     run.flow is an unknown field
 3. Extension namespace compatibility: an `ext` key beginning with a retired
    OCP or dagr producer prefix is an error naming the replacement prefix
    (E181). In v0.3 documents loopmath's namespace is 'dev.loopmath.' and a
@@ -93,7 +144,7 @@ Checks an OCP run document twice over:
 
 Library use:  findings = validate_file(path)      # or validate_doc(dict)
               errors = [f for f in findings if f.level == "error"]
-              findings = validate_many(docs)      # adds cross-file E194
+              findings = validate_many(docs)      # adds cross-file E194, E218, W219, W220
 CLI use:      python3 -m loopmath.ocp.conformance FILE [FILE ...]
               (or python3 spec/ocp_conformance.py FILE [FILE ...])
               exit 0 iff every file has zero errors (warnings do not fail).
@@ -104,13 +155,14 @@ Stdlib only; `jsonschema` is an optional extra.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from collections import namedtuple
 from datetime import datetime
 from pathlib import Path
 
-from .canonical import UnresolvedWorkflow, config_id, is_workflow_ref
+from .canonical import GATE_RULES_KEY, UnresolvedWorkflow, config_id, flow_digest, is_workflow_ref
 from .contractv3 import is_contract_run
 from .version import version_at_least
 
@@ -119,9 +171,10 @@ SCHEMA_PATHS = {
     "0.1": _HERE / "ocp-v0.schema.json",
     "0.2": _HERE / "ocp-v0.2.schema.json",
     "0.3": _HERE / "ocp-v0.3.schema.json",
+    "0.4": _HERE / "ocp-v0.4.schema.json",
 }
 SCHEMA_PATH = SCHEMA_PATHS["0.1"]  # kept for callers that pinned the v0.1 name
-CURRENT_VERSION = "0.3"
+CURRENT_VERSION = "0.4"
 
 TERMINAL_STATUSES = {
     "done", "failed", "rejected", "canceled", "settled_unverified", "lost",
@@ -179,6 +232,11 @@ RECOMMENDED_VOCABULARY_V03 = {
         "implementer", "tester", "referee", "worker",
     )),
 }
+# v0.4 additions (checked in v0.4 documents only).
+RECOMMENDED_VOCABULARY_V04 = {
+    # A simulated run's costs are drawn, not billed (E171 allows them under SIMULATE_KEY).
+    "cost.basis": RECOMMENDED_VOCABULARY["cost.basis"] | frozenset(("simulated",)),
+}
 VERDICT_VALUES = frozenset(("accept", "reject", "pass", "fail", "error"))
 V03_CAPABILITIES = ("task", "configuration", "signals", "slate", "receipt")
 # The extractor's own producer name; switches on the extractor-only rules.
@@ -187,6 +245,8 @@ _EXTRACTOR_NAME = re.compile(r"^(loopmath|dagr)(\W|$)")  # dagr: pre-rename prod
 _LOOPMATH_NAME = re.compile(r"^loopmath(\W|$)")
 # The store's log-match evidence on an allocated cost.
 LOGMATCH_KEY = "dev.loopmath.logmatch"
+# In run.ext: the mark of a simulated run, whose costs have basis 'simulated'.
+SIMULATE_KEY = "dev.loopmath.simulate"
 
 Finding = namedtuple("Finding", ["level", "code", "path", "message"])
 
@@ -223,6 +283,8 @@ def _recommended_findings(doc):
     vocabulary = dict(RECOMMENDED_VOCABULARY)
     if version_at_least(doc, "0.3"):
         vocabulary.update(RECOMMENDED_VOCABULARY_V03)
+    if version_at_least(doc, "0.4"):
+        vocabulary.update(RECOMMENDED_VOCABULARY_V04)
 
     def check(field, path, value):
         if isinstance(value, str) and value not in vocabulary[field]:
@@ -292,6 +354,13 @@ def _logmatch_allocation(cost):
         return False
     shared = match.get("shared_session")
     return match.get("tier") == "heuristic" or shared is True or (isinstance(shared, dict) and bool(shared))
+
+
+def _simulated_cost(doc, cost):
+    """A 'simulated' cost in a run that carries the simulation mark (run.ext[SIMULATE_KEY], an object)."""
+    run = doc.get("run")
+    ext = run.get("ext") if isinstance(run, dict) else None
+    return cost.get("basis") == "simulated" and isinstance(ext, dict) and isinstance(ext.get(SIMULATE_KEY), dict)
 
 
 def is_extractor_producer(doc):
@@ -428,6 +497,7 @@ def _referential_findings(doc):
     v02 = version_at_least(doc, "0.2")
     extractor = v02 and is_extractor_producer(doc)
     v03_loopmath = version_at_least(doc, "0.3") and _is_loopmath_producer(doc)
+    v04_loopmath = v03_loopmath and version_at_least(doc, "0.4")
 
     producer = doc.get("producer")
     capabilities = producer.get("capabilities") if isinstance(producer, dict) else None
@@ -517,6 +587,10 @@ def _referential_findings(doc):
                 "slate": "slate" in run,
                 "receipt": "receipt" in run,
             })
+            if version_at_least(doc, "0.4"):
+                present["flow"] = doc.get("kind") == "flow" or "flow" in run
+                flow = doc.get("flow") if doc.get("kind") == "flow" and isinstance(doc.get("flow"), dict) else {}
+                present["configuration"] = present["configuration"] or "configuration" in flow
         for capability, has_element in present.items():
             if capabilities.get(capability) is False and has_element:
                 findings.append(_err(
@@ -706,7 +780,7 @@ def _referential_findings(doc):
         cost = attempt.get("cost")
         if isinstance(cost, dict):
             if extractor and cost.get("basis") != "measured" and not (
-                    v03_loopmath and _logmatch_allocation(cost)):
+                    (v03_loopmath and _logmatch_allocation(cost)) or (v04_loopmath and _simulated_cost(doc, cost))):
                 findings.append(_err("E171", f"{loc}['cost']['basis']",
                                      f"attempt {aid!r}: cost.basis is {cost.get('basis')!r}; "
                                      "the extractor must emit 'measured'"))
@@ -816,8 +890,8 @@ def _records(value):
     return value if isinstance(value, list) else []
 
 
-def _workflow_findings(workflow, loc):
-    """E192 (typed, known, acyclic edges; unique vertex ids) and E193 (gates, repair)."""
+def _workflow_findings(workflow, loc, v04=False):
+    """E192 (typed, known, acyclic edges; unique vertex ids), E193 (gates, repair) and from 0.4 E217 (checks)."""
     findings = []
     vertex_type = {}
     for field, kind in (("pieces", "piece"), ("artifacts", "artifact")):
@@ -869,19 +943,53 @@ def _workflow_findings(workflow, loc):
                 if not isinstance(target, str) or vertex_type.get(target) != "piece":
                     findings.append(_err("E193", f"{loc}['control']['repair'][{gate!r}]",
                                          f"repair target {target!r} names no piece of the workflow"))
+        if v04 and "checks" in control:
+            findings.extend(_checks_findings(control, vertex_type, f"{loc}['control']"))
 
     for i, piece in enumerate(_records(workflow.get("pieces"))):
         nested = piece.get("workflow") if isinstance(piece, dict) else None
         if isinstance(nested, dict) and not is_workflow_ref(nested):
-            findings.extend(_workflow_findings(nested, f"{loc}['pieces'][{i}]['workflow']"))
+            findings.extend(_workflow_findings(nested, f"{loc}['pieces'][{i}]['workflow']", v04))
     return findings
 
 
-def _configuration_findings(configuration, resolve):
-    """E190 (id is the canonical hash), E191 (every piece has a setting), E192, E193."""
+def _checks_findings(control, vertex_type, loc):
+    """E217: control.checks stands alone, with unique ids, known pieces and no repeated after and rule."""
+    findings = []
+    ext = control.get("ext")
+    mixed = [name for name in ("gates", "repair") if name in control]
+    if isinstance(ext, dict) and GATE_RULES_KEY in ext:
+        mixed.append(GATE_RULES_KEY)
+    if mixed:
+        findings.append(_err("E217", loc, "control.checks is used with " + ", ".join(mixed)
+                             + "; a workflow states its checks as checks or as gates, not both"))
+    ids, pairs = set(), set()
+    for k, check in enumerate(_records(control.get("checks"))):
+        if not isinstance(check, dict):
+            continue  # the schema reports the shape
+        at = f"{loc}['checks'][{k}]"
+        cid = check.get("id")
+        if isinstance(cid, str):
+            if cid in ids:
+                findings.append(_err("E217", f"{at}['id']", f"check id {cid!r} is used twice"))
+            ids.add(cid)
+        for field in ("after", "on_fail"):
+            value = check.get(field)
+            if isinstance(value, str) and vertex_type.get(value) != "piece":
+                findings.append(_err("E217", f"{at}['{field}']",
+                                     f"check {field} {value!r} names no piece of the workflow"))
+        after, rule = check.get("after"), check.get("rule")
+        if isinstance(after, str) and isinstance(rule, str):
+            if (after, rule) in pairs:
+                findings.append(_err("E217", at, f"two checks after {after!r} have rule {rule!r}"))
+            pairs.add((after, rule))
+    return findings
+
+
+def _configuration_findings(configuration, resolve, v04=False, loc="$['run']['configuration']"):
+    """E190 (id is the canonical hash), E191 (every piece has a setting), E192, E193 and from 0.4 E217."""
     if not isinstance(configuration, dict):
         return []
-    loc = "$['run']['configuration']"
     workflow = configuration.get("workflow")
     if is_workflow_ref(workflow):
         workflow = resolve(workflow.get("ref"), workflow.get("version")) if resolve else None
@@ -890,7 +998,7 @@ def _configuration_findings(configuration, resolve):
         inline = True
     if not isinstance(workflow, dict):
         return []
-    findings = _workflow_findings(workflow, f"{loc}['workflow']") if inline else []
+    findings = _workflow_findings(workflow, f"{loc}['workflow']", v04) if inline else []
 
     settings = configuration.get("settings")
     settings = settings if isinstance(settings, dict) else {}
@@ -954,8 +1062,68 @@ def _is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _is_finite(value):
+    """A number that is not infinite or NaN. Every integer is finite, at any size, so only floats are tested."""
+    return _is_number(value) and (not isinstance(value, float) or math.isfinite(value))
+
+
+LINEAR_RANGE_LIMIT = 2**53  # every integer up to it is exact as a float, so a range's float order is its own order
+WINDOW_DAYS_LIMIT = 999999999  # the most days a window can be (datetime.timedelta's limit)
+JUDGE_KEY = "dev.loopmath.judge"  # a judge score signal's ext member; its range is the signal's linear range
+
+
+def _holds_float(value):
+    """A number a float can hold: float(value) neither overflows nor gives infinity or NaN."""
+    if not _is_number(value):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _linear_range(span):
+    """(lo, hi) for a range E214 accepts, else None: two finite numbers of absolute value at most
+    LINEAR_RANGE_LIMIT with float(lo) < float(hi). The limit is checked before any float conversion."""
+    if not (isinstance(span, list) and len(span) == 2
+            and all(_is_finite(v) and abs(v) <= LINEAR_RANGE_LIMIT for v in span)):
+        return None
+    lo, hi = span
+    return (lo, hi) if float(lo) < float(hi) else None
+
+
+def _outside(value, span):
+    """True when `value` lies below lo or above hi; a bound itself is in range. Compared as given, not as floats:
+    Python compares an int with a float exactly, so 2**53 + 1 is above 2**53, where its float is not."""
+    return value < span[0] or value > span[1]
+
+
+def _target_findings(code, loc, score):
+    """The rule's score target: a number a float can hold, then in [0, 1] when the score's scale is fraction."""
+    target = score.get("target") if isinstance(score, dict) else None
+    if not _is_number(target):
+        return []  # absent or another type: the schema reports the shape
+    if not _holds_float(target):
+        return [_err(code, f"{loc}['score']['target']", f"the rule's score target {target!r} is not a number "
+                     "a float can hold")]
+    if score.get("scale") == "fraction" and not 0 <= target <= 1:
+        return [_err(code, f"{loc}['score']['target']",
+                     f"the rule's score has scale 'fraction' but target {target!r} is outside [0, 1]")]
+    return []
+
+
+def _window_findings(code, loc, rule):
+    """The rule's window_days at most WINDOW_DAYS_LIMIT. Below 0 or not a whole number is the schema's (E010)."""
+    days = rule.get("window_days")
+    if _is_number(days) and (isinstance(days, int) or days.is_integer()) and days > WINDOW_DAYS_LIMIT:
+        return [_err(code, f"{loc}['window_days']", f"the rule's window_days {days!r} is above "
+                     f"{WINDOW_DAYS_LIMIT}, the most days a window can be")]
+    return []
+
+
 def _signal_findings(run):
-    """E195: signal values by kind, fraction range, and the rule's names by kind."""
+    """E195: signal values by kind, a score a float can hold, fraction range, the rule's names by kind, its
+    score target a float can hold and its window_days at most WINDOW_DAYS_LIMIT."""
     findings = []
     kinds_by_name = {}
     for i, signal in enumerate(_records(run.get("signals"))):
@@ -970,6 +1138,9 @@ def _signal_findings(run):
             if not _is_number(value):
                 findings.append(_err("E195", loc, f"score {name!r} has value {value!r}; a score is a number, "
                                      "or null when declared and not measured yet"))
+            elif not _holds_float(value):
+                findings.append(_err("E195", loc, f"score {name!r} has value {value!r}; a score is a number a "
+                                     "float can hold, or null when declared and not measured yet"))
             elif signal.get("scale") == "fraction" and not 0 <= value <= 1:
                 findings.append(_err("E195", loc, f"score {name!r} has scale 'fraction' but value {value!r} "
                                      "is outside [0, 1]"))
@@ -989,33 +1160,287 @@ def _signal_findings(run):
         if other:
             findings.append(_err("E195", "$['run']['acceptance_rule']['score']['name']",
                                  f"the rule's score {name!r} names a {' and '.join(other)} signal, not a score"))
-        target = score.get("target")
-        if score.get("scale") == "fraction" and _is_number(target) and not 0 <= target <= 1:
-            findings.append(_err("E195", "$['run']['acceptance_rule']['score']['target']",
-                                 f"the rule's score has scale 'fraction' but target {target!r} is outside [0, 1]"))
+        findings.extend(_target_findings("E195", "$['run']['acceptance_rule']", score))
     for j, name in enumerate(_records(rule.get("requires"))):
         other = sorted(kinds_by_name.get(name, set()) - {"verdict"}) if isinstance(name, str) else []
         if other:
             findings.append(_err("E195", f"$['run']['acceptance_rule']['requires'][{j}]",
                                  f"the rule requires {name!r}, which is a {' and '.join(other)} signal; "
                                  "requires names verdicts"))
+    findings.extend(_window_findings("E195", "$['run']['acceptance_rule']", rule))
+    return findings
+
+
+def _signal_range(signal):
+    """A judge or person score signal's own linear range (ext JUDGE_KEY range, as E214 accepts it), or None. Only
+    a signal whose value a float can hold has one."""
+    if not (isinstance(signal, dict) and signal.get("kind") == "score" and signal.get("scale") == "linear"
+            and _holds_float(signal.get("value"))):
+        return None
+    source = signal.get("source") if isinstance(signal.get("source"), dict) else {}
+    ext = signal.get("ext") if isinstance(signal.get("ext"), dict) else {}
+    member = ext.get(JUDGE_KEY) if isinstance(ext.get(JUDGE_KEY), dict) else {}
+    return _linear_range(member.get("range")) if source.get("kind") in ("judge", "user") else None
+
+
+def _range_findings(run):
+    """W220, a run alone: a judge or person score lies in the linear range its signal gives."""
+    findings = []
+    for i, signal in enumerate(_records(run.get("signals"))):
+        span = _signal_range(signal)
+        if span is not None and _outside(signal["value"], span):
+            findings.append(_warn("W220", f"$['run']['signals'][{i}]['value']",
+                                  f"score {signal.get('name')!r} has value {signal['value']!r}, outside the range "
+                                  f"[{span[0]!r}, {span[1]!r}] its signal gives"))
     return findings
 
 
 def _v03_findings(doc, resolve=None):
-    """Rules E190 to E195 and W196, for documents at version 0.3 or later."""
+    """Rules E190 to E195 and W196, for documents at version 0.3 or later, and E217, E218 and W220 from 0.4."""
     if not version_at_least(doc, "0.3"):
         return []
     run = _run_of(doc)
     findings = []
-    findings.extend(_configuration_findings(run.get("configuration"), resolve))
+    findings.extend(_configuration_findings(run.get("configuration"), resolve, version_at_least(doc, "0.4")))
     findings.extend(_slate_findings(run))
     findings.extend(_signal_findings(run))
+    if version_at_least(doc, "0.4") and isinstance(run.get("flow"), dict) and "configuration" not in run:
+        findings.append(_err("E218", "$['run']['flow']",
+                             "run.flow names a flow but the run has no run.configuration; a run of a flow "
+                             "carries the configuration it ran"))
+    if version_at_least(doc, "0.4"):
+        findings.extend(_range_findings(run))
     producer = doc.get("producer")
     name = producer.get("name") if isinstance(producer, dict) else None
     if "receipt" in run and not (isinstance(name, str) and _LOOPMATH_NAME.match(name)):
         findings.append(_warn("W196", "$['run']['receipt']",
                               f"run.receipt is written only by loopmath, but producer.name is {name!r}"))
+    return findings
+
+
+FLOW = "$['flow']"
+
+
+def _flow_findings(doc, resolve=None):
+    """A flow document's rules: E190 to E193 and E217 on flow.configuration, then E212 to E216."""
+    flow = doc.get("flow")
+    if not isinstance(flow, dict):
+        return []  # the schema reports the shape
+    findings = _configuration_findings(flow.get("configuration"), resolve, True, loc=f"{FLOW}['configuration']")
+    digest = flow.get("digest")
+    if isinstance(digest, str):
+        try:
+            expected = flow_digest(flow)
+        except (TypeError, ValueError):
+            expected = None  # not JSON: the schema findings say why
+        if expected is not None and digest != expected:
+            findings.append(_err("E212", f"{FLOW}['digest']",
+                                 f"flow digest {digest!r} is not the digest of the flow ({expected!r}); "
+                                 "see loopmath.ocp.canonical.flow_digest"))
+    findings.extend(_allow_findings(flow, resolve))
+    findings.extend(_judge_findings(flow))
+    findings.extend(_objective_findings(flow))
+    findings.extend(_inputs_findings(flow))
+    return findings
+
+
+def _ids(records):
+    return {r["id"] for r in _records(records) if isinstance(r, dict) and isinstance(r.get("id"), str)}
+
+
+def _base_workflow(configuration, resolve):
+    """The flow's base workflow as OCP JSON, or None when a reference to it does not resolve."""
+    workflow = configuration.get("workflow") if isinstance(configuration, dict) else None
+    if is_workflow_ref(workflow):
+        workflow = resolve(workflow.get("ref"), workflow.get("version")) if resolve else None
+    return workflow if isinstance(workflow, dict) else None
+
+
+def _allow_findings(flow, resolve):
+    """E213: the allowed edits name the base workflow's pieces, chains and checks."""
+    allow = flow.get("allow")
+    if not isinstance(allow, dict):
+        return []
+    loc = f"{FLOW}['allow']"
+    findings = []
+    workflow = _base_workflow(flow.get("configuration"), resolve)
+    pieces = artifacts = produces = consumes = None
+    if workflow is not None:
+        pieces, artifacts = (_ids(workflow.get(field)) for field in ("pieces", "artifacts"))
+        edges = [tuple(e) for e in _records(workflow.get("edges"))
+                 if isinstance(e, (list, tuple)) and len(e) == 2 and all(isinstance(v, str) for v in e)]
+        produces = {(frm, to) for frm, to in edges if frm in pieces and to in artifacts}
+        consumes = {(frm, to) for frm, to in edges if frm in artifacts and to in pieces}
+
+    piece_edits = allow.get("pieces")
+    for key, edits in (piece_edits.items() if isinstance(piece_edits, dict) else ()):
+        at = f"{loc}['pieces'][{key!r}]"
+        if pieces is not None and key not in pieces:
+            findings.append(_err("E213", at, f"allow.pieces names {key!r}, which is no piece of the base workflow"))
+        if not isinstance(edits, dict):
+            continue
+        widths = _records(edits.get("widths"))
+        if any(_is_number(w) and w > 1 for w in widths) and not isinstance(edits.get("select"), dict):
+            findings.append(_err("E213", f"{at}['widths']",
+                                 f"piece {key!r} may try a width above 1 but has no select setting for the referee"))
+
+    merge_ids = set()
+    for k, merge in enumerate(_records(allow.get("merges"))):
+        if not isinstance(merge, dict):
+            continue
+        at = f"{loc}['merges'][{k}]"
+        mid = merge.get("id")
+        if isinstance(mid, str):
+            if mid in merge_ids:
+                findings.append(_err("E213", f"{at}['id']", f"merge id {mid!r} is used twice"))
+            merge_ids.add(mid)
+        if pieces is None:
+            continue
+        replace = merge.get("replace")
+        if isinstance(replace, list):
+            if len(replace) < 2:
+                findings.append(_err("E213", f"{at}['replace']", "a merge replaces 2 or more pieces"))
+            for j, pid in enumerate(replace):
+                if not (isinstance(pid, str) and pid in pieces):
+                    findings.append(_err("E213", f"{at}['replace'][{j}]",
+                                         f"merge replaces {pid!r}, which is no piece of the base workflow"))
+                elif j and isinstance(replace[j - 1], str) and replace[j - 1] in pieces and not any(
+                        (replace[j - 1], a) in produces and (a, pid) in consumes for a in artifacts):
+                    findings.append(_err("E213", f"{at}['replace'][{j}]",
+                                         f"{pid!r} consumes no artifact that {replace[j - 1]!r} produces; a merge "
+                                         "replaces a chain"))
+        into = merge.get("into")
+        new_id = into.get("id") if isinstance(into, dict) else None
+        if isinstance(new_id, str) and (new_id in pieces or new_id in artifacts):
+            findings.append(_err("E213", f"{at}['into']['id']",
+                                 f"merged piece id {new_id!r} is already a piece or artifact of the base workflow"))
+
+    checks = allow.get("checks")
+    if isinstance(checks, dict) and workflow is not None:
+        # A base workflow without control has no gate and no check to remove
+        control = workflow.get("control") if isinstance(workflow.get("control"), dict) else {}
+        if isinstance(control.get("checks"), list):
+            known = _ids(control["checks"])
+            what = "check id"
+        else:
+            known = {g for g in _records(control.get("gates")) if isinstance(g, str)}
+            what = "gate piece"
+        for j, name in enumerate(_records(checks.get("remove"))):
+            if isinstance(name, str) and name not in known:
+                findings.append(_err("E213", f"{loc}['checks']['remove'][{j}]",
+                                     f"checks.remove names {name!r}, which is no {what} of the base workflow"))
+    return findings
+
+
+def _judge_findings(flow):
+    """E214: unique judge ids, rate in [0, 1], and a rising range of two finite numbers of absolute value at most
+    LINEAR_RANGE_LIMIT for a linear judge."""
+    findings = []
+    ids = set()
+    for i, judge in enumerate(_records(flow.get("judges"))):
+        if not isinstance(judge, dict):
+            continue
+        at = f"{FLOW}['judges'][{i}]"
+        jid = judge.get("id")
+        if isinstance(jid, str):
+            if jid in ids:
+                findings.append(_err("E214", f"{at}['id']", f"judge id {jid!r} is used twice"))
+            ids.add(jid)
+        rate = judge.get("rate")
+        if _is_number(rate) and not 0 <= rate <= 1:
+            findings.append(_err("E214", f"{at}['rate']", f"judge rate {rate!r} is outside [0, 1]"))
+        if judge.get("scale") == "linear":
+            span = judge.get("range")
+            if _linear_range(span) is None:
+                findings.append(_err("E214", f"{at}['range']" if "range" in judge else at,
+                                     "a linear judge has range [lo, hi], two finite numbers of absolute value at "
+                                     f"most 2**53 with lo < hi, not {span!r}"))
+    return findings
+
+
+def _objective_findings(flow):
+    """E215: the objective has what its kind needs, its margin and cost_cap_usd are numbers a float can hold, a
+    margin of any kind is one the planner takes (`_margin_findings`), no score names a required verdict, and the
+    acceptance rule's score target is a number a float can hold (in [0, 1] with scale fraction) and its window_days
+    at most WINDOW_DAYS_LIMIT."""
+    findings = []
+    objective = flow.get("objective")
+    objective = objective if isinstance(objective, dict) else {}
+    loc = f"{FLOW}['objective']"
+    kind = objective.get("kind")
+    needs = {"cheapest_within_margin": ("margin", "above 0", lambda v: True),  # its value: _margin_findings
+             "best_under_cost": ("cost_cap_usd", "above 0", lambda v: v > 0)}
+    need = needs.get(kind) if isinstance(kind, str) else None
+    if need:
+        if not isinstance(objective.get("score"), str):
+            findings.append(_err("E215", loc, f"objective {kind!r} has no score"))
+        member, bound, ok = need
+        value = objective.get(member)
+        if member not in objective:
+            findings.append(_err("E215", loc, f"objective {kind!r} has no {member}"))
+        elif _is_number(value) and not _holds_float(value):
+            findings.append(_err("E215", f"{loc}['{member}']", f"objective {kind!r} has {member} {value!r}; it is "
+                                 f"a number {bound} that a float can hold"))
+        elif not (_is_number(value) and ok(value)):
+            findings.append(_err("E215", f"{loc}['{member}']",
+                                 f"objective {kind!r} has {member} {value!r}; it is a number {bound}"))
+    named = f"objective {kind!r}" if isinstance(kind, str) else "the objective"
+    for member in ("margin", "cost_cap_usd"):
+        value = objective.get(member)
+        if not (need and member == need[0]) and _is_number(value) and not _holds_float(value):
+            findings.append(_err("E215", f"{loc}['{member}']",
+                                 f"{named} has {member} {value!r}; it is a number a float can hold"))
+    findings.extend(_margin_findings(flow, objective.get("margin"), named, f"{loc}['margin']"))
+    rule = flow.get("acceptance_rule")
+    requires = {r for r in _records(rule.get("requires")) if isinstance(r, str)} if isinstance(rule, dict) else set()
+    scores = [(f"{loc}['score']", "the objective", objective.get("score"))]
+    scores += [(f"{FLOW}['judges'][{i}]['score']", f"judge {judge.get('id')!r}", judge.get("score"))
+               for i, judge in enumerate(_records(flow.get("judges"))) if isinstance(judge, dict)]
+    for at, who, score in scores:
+        if isinstance(score, str) and score in requires:
+            findings.append(_err("E215", at, f"{who} reads score {score!r}, which acceptance_rule.requires "
+                                 "names as a verdict"))
+    if isinstance(rule, dict):
+        findings.extend(_target_findings("E215", f"{FLOW}['acceptance_rule']", rule.get("score")))
+        findings.extend(_window_findings("E215", f"{FLOW}['acceptance_rule']", rule))
+    return findings
+
+
+def _margin_findings(flow, margin, named, at):
+    """E215: a margin of any kind that a float can hold is one the planner takes. `flows.plan.margin_problem` at a
+    first plan's assumed spreads, with k the flow's judges that are not person judges, at least 1, so validation
+    refuses what a first plan refuses, in its words; a plan at fitted spreads may still refuse it. Imported here,
+    not at load, since `flows` imports this module."""
+    if not _holds_float(margin):
+        return []  # absent, not a number, or past what a float holds: `_objective_findings`
+    from ..flows.plan import margin_problem
+
+    k = max(1, sum(1 for j in _records(flow.get("judges")) if isinstance(j, dict) and j.get("kind") != "person"))
+    why = margin_problem(margin, k=k)
+    if why is None:
+        return []
+    return [_err("E215", at, f"{named}: {why}" + (" (at a first plan's assumed spreads)" if margin > 0 else ""))]
+
+
+def _inputs_findings(flow):
+    """E216: no duplicate input or holdout ids, and the holdout among the ids."""
+    findings = []
+    inputs = flow.get("inputs")
+    if not isinstance(inputs, dict):
+        return findings
+    loc = f"{FLOW}['inputs']"
+    ids = inputs.get("ids")
+    for field in ("ids", "holdout"):
+        seen = set()
+        for j, tid in enumerate(_records(inputs.get(field))):
+            if not isinstance(tid, str):
+                continue
+            if tid in seen:
+                findings.append(_err("E216", f"{loc}['{field}'][{j}]", f"inputs.{field} lists {tid!r} twice"))
+            elif field == "holdout" and isinstance(ids, list) and tid not in ids:
+                findings.append(_err("E216", f"{loc}['holdout'][{j}]",
+                                     f"holdout task {tid!r} is not among inputs.ids"))
+            seen.add(tid)
     return findings
 
 
@@ -1027,16 +1452,169 @@ def _slate_key(doc):
     return task.get("id"), commit
 
 
+def _version_number(value):
+    """A flow version as an int (1 and 1.0 alike), or None for anything else, booleans included."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    return value
+
+
+def _judge_ranges(flow):
+    """Judge id -> (lo, hi) for each linear judge of the flow whose range E214 accepts; the first of a repeated id."""
+    ranges = {}
+    for judge in _records(flow.get("judges")):
+        if isinstance(judge, dict) and isinstance(judge.get("id"), str) and judge.get("scale") == "linear":
+            span = _linear_range(judge.get("range"))
+            if span is not None:
+                ranges.setdefault(judge["id"], span)
+    return ranges
+
+
+def _flow_index(docs):
+    """(flow id, version) -> one (digest, input ids or None, judge ids, judge ranges) per flow document at 0.4 or
+    later in `docs`. The digest is computed (flow_digest), never the declared one; E212 checks that."""
+    index = {}
+    for doc in docs:
+        if not (isinstance(doc, dict) and doc.get("kind") == "flow" and version_at_least(doc, "0.4")):
+            continue
+        flow = doc.get("flow")
+        if not isinstance(flow, dict):
+            continue
+        fid, version = flow.get("id"), _version_number(flow.get("version"))
+        if not isinstance(fid, str) or version is None:
+            continue
+        try:
+            digest = flow_digest(flow)
+        except (TypeError, ValueError):
+            continue  # not JSON: the flow's own findings say why
+        inputs = flow.get("inputs") if isinstance(flow.get("inputs"), dict) else {}
+        ids = inputs.get("ids") if isinstance(inputs.get("ids"), list) else None
+        index.setdefault((fid, version), []).append((digest, ids, _ids(flow.get("judges")), _judge_ranges(flow)))
+    return index
+
+
+def _run_flow_findings(run, flows):
+    """E218, W219 and W220 for one run against the flow documents its run.flow names. With several flow documents
+    of that id and version, each part passes when it holds for any of them."""
+    ref = run.get("flow")
+    if not isinstance(ref, dict):
+        return []
+    fid, version = ref.get("id"), _version_number(ref.get("version"))
+    matches = flows.get((fid, version)) if isinstance(fid, str) and version is not None else None
+    if not matches:
+        return []
+    name = f"flow {fid!r} version {version}"
+    findings = []
+    digest = ref.get("digest")
+    if "digest" in ref and digest not in [d for d, _, _, _ in matches]:
+        expected = " or ".join(sorted({repr(d) for d, _, _, _ in matches}))
+        findings.append(_err("E218", "$['run']['flow']['digest']",
+                             f"run.flow.digest {digest!r} is not the digest of {name} ({expected})"))
+    task = run.get("task") if isinstance(run.get("task"), dict) else {}
+    tid = task.get("id")
+    if all(ids is not None and tid not in ids for _, ids, _, _ in matches):
+        count = " or ".join(sorted({str(len(ids)) for _, ids, _, _ in matches}))
+        findings.append(_err("E218", "$['run']['task']['id']",
+                             f"task.id {tid!r} is not among the inputs.ids of {name} ({count} ids)"))
+    judges = set().union(*(j for _, _, j, _ in matches))
+    for i, signal in enumerate(_records(run.get("signals"))):
+        if not isinstance(signal, dict) or signal.get("kind") != "score":
+            continue
+        source = signal.get("source") if isinstance(signal.get("source"), dict) else {}
+        kind, sref = source.get("kind"), source.get("ref")
+        if kind in ("judge", "user") and not (isinstance(sref, str) and any(sref in j for _, _, j, _ in matches)):
+            given = f"source.ref {sref!r}" if "ref" in source else "no source.ref"
+            known = ", ".join(sorted(judges)) or "none"
+            findings.append(_warn("W219", f"$['run']['signals'][{i}]['source']",
+                                  f"score signal {signal.get('id')!r} has source.kind {kind!r} and {given}, which "
+                                  f"names no judge of {name} (judges: {known})"))
+        value = signal.get("value")
+        if kind not in ("judge", "user") or not isinstance(sref, str) or not _holds_float(value):
+            continue
+        spans = [r[sref] for _, _, _, r in matches if sref in r]
+        if spans and all(_outside(value, span) for span in spans):
+            given = " or ".join(dict.fromkeys(f"[{lo!r}, {hi!r}]" for lo, hi in spans))
+            findings.append(_warn("W220", f"$['run']['signals'][{i}]['value']",
+                                  f"score {signal.get('name')!r} has value {value!r}, outside the range {given} "
+                                  f"of judge {sref!r} in {name}"))
+    return findings
+
+
+def _spelled(where):
+    """`$['a'][0]` for the (parent, key) links of _over_budget, spelled as the schema findings spell a path."""
+    keys = []
+    while where:
+        where, key = where
+        keys.append(f"[{key!r}]" if isinstance(key, str) else f"[{key}]")
+    return "$" + "".join(reversed(keys))
+
+
+def _over_budget(doc):
+    """E001 for each integer in `doc` with more decimal digits than this reader's active budget for a JSON
+    integer, `sys.get_int_max_str_digits()`, read at each call; at 0 there is no budget and so no finding. JSON
+    itself sets no such bound, but this reader cannot read such an integer from a file (`read_file` gives E001
+    too), nor write or show it, so a document built in code that holds one is refused by path.
+
+    One finding per such integer, in document order, at the path the schema findings spell. The input is read as a
+    JSON tree: dicts (a key is not checked), lists and scalars. A bool is not an integer here, and a float or a
+    string of digits never counts. The walk keeps its own stack, so a deep document needs no recursion here; a dict
+    or list met again inside itself is not walked again (such a document has no JSON form; the checks after this
+    one run on it as before). The document is not changed.
+    """
+    limit = sys.get_int_max_str_digits()
+    if not limit:
+        return []
+    findings, edge, inside = [], None, set()
+    stack = [((), doc)]  # (where, value): `where` is (the parent's where, key), spelled only for a finding
+    while stack:
+        where, value = stack.pop()
+        if where is None:  # leaving a dict or list
+            inside.discard(value)
+        elif isinstance(value, (dict, list)):
+            if id(value) in inside:
+                continue
+            inside.add(id(value))
+            stack.append((None, id(value)))
+            items = value.items() if isinstance(value, dict) else enumerate(value)
+            stack.extend(reversed([((where, key), child) for key, child in items]))
+        elif isinstance(value, int) and not isinstance(value, bool):
+            # under 2**(3 * limit + 1), an integer is under 10**limit, as a limit other than 0 is 640 or more; so
+            # 10**limit is built only for an integer about as long as it
+            if value.bit_length() <= 3 * limit + 1:
+                continue
+            if edge is None:
+                edge = 10 ** limit
+            if abs(value) >= edge:
+                digits = int(value.bit_length() * math.log10(2)) + 1
+                findings.append(_err("E001", _spelled(where),
+                                     f"{'a negative' if value < 0 else 'an'} integer of about {digits} digits, past "
+                                     f"this reader's active budget of {limit} digits for a JSON integer "
+                                     "(sys.get_int_max_str_digits()); JSON itself sets no such bound"))
+    return findings
+
+
 def validate_many(docs, schema_path=None, resolve=catalog_resolver):
-    """Validate several documents; adds the cross-file part of E194.
+    """Validate several documents; adds the cross-file part of E194, E218, W219 and W220.
 
     Returns one findings list per document, in order. Documents whose
     run.slate.id match are members of one slate: they must share task.id and
-    base_commit (task.base_commit, else slate.base_commit).
+    base_commit (task.base_commit, else slate.base_commit). A run at 0.4 or
+    later whose run.flow names the id and version of a flow document in the
+    set gives the flow's digest when it gives one and a task.id among
+    flow.inputs.ids when the flow lists ids (E218); its judge and user scores
+    name judges of the flow in source.ref (W219) and lie in the linear range
+    of the judge they name (W220).
     """
-    results = [validate_doc(doc, schema_path, resolve=resolve) for doc in docs]
+    refused, results = [], []
+    for doc in docs:  # one pass, as before: an iterator still gives each document its result
+        refused.append(_over_budget(doc) if isinstance(doc, dict) else [])
+        results.append(refused[-1] or _checked(doc, schema_path, resolve))
     by_slate = {}
     for index, doc in enumerate(docs):
+        if refused[index]:  # a refused document takes no part in the cross-file checks
+            continue
         if not isinstance(doc, dict) or not version_at_least(doc, "0.3"):
             continue
         slate = _run_of(doc).get("slate")
@@ -1056,6 +1634,13 @@ def validate_many(docs, schema_path=None, resolve=catalog_resolver):
                 results[index].append(_err("E194", "$['run']['task']['base_commit']",
                                            f"slate {slate_id!r}: base_commit {commit!r} differs from member "
                                            f"{other!r} ({first_commit!r}); pair members share base_commit"))
+    flows = _flow_index([doc for doc, found in zip(docs, refused) if not found])
+    if flows:
+        for index, doc in enumerate(docs):
+            if refused[index]:
+                continue
+            if isinstance(doc, dict) and doc.get("kind") != "flow" and version_at_least(doc, "0.4"):
+                results[index].extend(_run_flow_findings(_run_of(doc), flows))
     return results
 
 
@@ -1066,7 +1651,17 @@ def validate_doc(doc, schema_path=None, resolve=catalog_resolver):
     `resolve(ref, version)` returns an inline OCP workflow for a workflow
     reference (default: loopmath's catalog); None skips E190 and E191 for it.
     A document conforms when no finding has level 'error'.
+
+    An integer with more decimal digits than this reader's active budget (`sys.get_int_max_str_digits()`) is
+    refused first, by path (E001, as `read_file` refuses it in a file), and then no other check runs: JSON sets no
+    such bound, but this reader cannot read, write or show the number. Not covered: the module's own checks
+    called directly, which are not entry points.
     """
+    return (_over_budget(doc) if isinstance(doc, dict) else []) or _checked(doc, schema_path, resolve)
+
+
+def _checked(doc, schema_path, resolve):
+    """validate_doc's checks after the integer budget: E002 for a value that is not an object, else the rest."""
     if not isinstance(doc, dict):
         return [_err("E002", "$", "top-level JSON value is not an object")]
     findings = []
@@ -1085,7 +1680,10 @@ def validate_doc(doc, schema_path=None, resolve=catalog_resolver):
         findings.extend(_schema_findings(doc, schema_path))
     findings.extend(_extension_prefix_findings(doc))
     findings.extend(_referential_findings(doc))
-    findings.extend(_v03_findings(doc, resolve))
+    if doc.get("kind") == "flow" and version_at_least(doc, "0.4"):
+        findings.extend(_flow_findings(doc, resolve))  # a flow document has no run to check
+    else:
+        findings.extend(_v03_findings(doc, resolve))
     findings.extend(_recommended_findings(doc))
     return findings
 
@@ -1094,7 +1692,7 @@ def read_file(path):
     """(doc, None) for a readable JSON file, else (None, E001 finding)."""
     try:
         return json.loads(Path(path).read_text()), None
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (OSError, ValueError, UnicodeDecodeError) as exc:  # ValueError: malformed JSON, or an integer too long
         return None, _err("E001", "$", f"cannot read/parse {path}: {exc}")
 
 
@@ -1110,7 +1708,7 @@ def validate_file(path, schema_path=None, resolve=catalog_resolver):
 
 
 def validate_files(paths, schema_path=None, resolve=catalog_resolver):
-    """Validate several files together (cross-file E194). One findings list per path."""
+    """Validate several files together (cross-file E194, E218, W219 and W220). One findings list per path."""
     read = [read_file(path) for path in paths]
     readable = [i for i, (doc, error) in enumerate(read) if error is None]
     checked = validate_many([read[i][0] for i in readable], schema_path, resolve=resolve)

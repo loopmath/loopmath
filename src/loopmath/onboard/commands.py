@@ -127,7 +127,7 @@ def onboard(args: argparse.Namespace) -> int:
     print(f"onboard: reading Claude Code and Codex history, {_window_words(since)}"
           + ("" if H.parse_cache().is_file() else "; a large history can take several minutes on the first read"),
           file=sys.stderr, flush=True)
-    # Then, also when captured, what the answers start from, once (the skill shows this line to the user).
+    # Then, also when captured, what the answers start from, once (the onboard guide shows this line to the user).
     prior = starting_prior()
     print(prior["line"], file=sys.stderr, flush=True)
     hist = deps.load_history(since_days, logs=deps.logs, progress=_progress, stage=_stage)

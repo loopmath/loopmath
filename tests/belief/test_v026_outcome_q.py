@@ -31,7 +31,7 @@ def _docs():
 
 
 def _fit(home, *settings):
-    for key, value in settings:
+    for key, value in (("belief.level", "shared"),) + settings:  # 0.3.5's fit, whose seed keys are 0.2.5's
         assert main(["config", "set", key, value, "--home", str(home)]) == 0
     path = F.fit(home, docs=_docs(), no_prior=True, now=NOW, bundle_dir=home / "no-bundle")
     return json.loads((path / "meta.json").read_text()), load(path)

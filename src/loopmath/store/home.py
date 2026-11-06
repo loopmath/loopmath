@@ -23,6 +23,7 @@ Other modules use this class: run import (`import_run`), the belief model (`fini
 from __future__ import annotations
 
 import copy
+import json
 
 import os
 from datetime import datetime
@@ -55,6 +56,33 @@ class Conflict(StoreError):
 
 class EndBeforeStart(StoreError):
     """`--ended-at` before the attempt's `started_at` (exit code 2)."""
+
+
+class DollarsPastFloat(StoreError):
+    """A run to be finished whose dollars at `path` (`runs.dollars_past_float`) no float holds: its index row and
+    every price read them as a float, so a writer refuses it before it writes anything."""
+
+    def __init__(self, run: Any, path: str) -> None:
+        super().__init__(f"run {run}: {path} is past what a float holds, so the run cannot be finished; nothing was "
+                         "written")
+        self.run, self.path = run, path
+
+
+class FlowChanged(StoreError):
+    """A document for a stored run that names a flow (`runs.flow_key`) naming another flow id or version, or none:
+    the store does not replace a run of another flow, and no flag makes it. `stored` and `given` are the two keys as
+    the documents hold them (`given` None for no flow)."""
+
+    def __init__(self, run: Any, stored: dict[str, Any], given: dict[str, Any] | None) -> None:
+        def shown(key: dict[str, Any] | None) -> str:
+            if key is None:
+                return "no flow"
+            return (f"flow {json.dumps(key['id'], ensure_ascii=False)} version "
+                    f"{json.dumps(key['version'], ensure_ascii=False)}")
+
+        super().__init__(f"run {run} is stored for {shown(stored)}; this document names {shown(given)}: the store does "
+                         "not replace a run of another flow; nothing was written")
+        self.run, self.stored, self.given = run, stored, given
 
 
 class Store:
@@ -163,6 +191,14 @@ class Store:
                     continue
             yield row
 
+    def flow_runs(self, flow: str, arm: str | None = None) -> list[dict[str, Any]]:
+        """The index rows of one flow's runs (`run.flow.id`), of one arm when `arm` is given, oldest first by
+        start instant with ties in index order. Each row holds `flow` and `arm`; `run_doc(row["run"])` reads
+        the document."""
+        if not isinstance(flow, str) or not flow:
+            raise ValueError(f"flow: expected a flow id, got {flow!r}")
+        return list(self.runs(flow=flow, arm=arm))
+
     def finished_docs(self) -> Iterator[dict[str, Any]]:
         """Every finished run document (for `fit`), read from the run files themselves so a missing or
         stale index never drops a run; open runs are never yielded. Unreadable files are skipped."""
@@ -172,7 +208,7 @@ class Store:
         for path in sorted(folder.glob("*.ocp.json")):
             try:
                 doc = read_json(path)
-            except (OSError, ValueError):
+            except (OSError, ValueError, RecursionError):  # RecursionError: JSON nested past the reader's depth
                 continue
             if isinstance(doc, dict) and R.is_finished(doc):
                 yield doc
@@ -436,8 +472,12 @@ class Store:
 
         `doc` must already hold every pending signal: the caller folds them in before it computes
         evidence and the receipt. A signal appended since then (an open-run signal does not bump the
-        rev) raises Conflict, as does a changed rev with `expect_rev`, so the caller recomputes.
+        rev) raises Conflict, as does a changed rev with `expect_rev`, so the caller recomputes. Dollars no float
+        holds raise DollarsPastFloat, the run left as it is.
         """
+        path = R.dollars_past_float(doc)
+        if path is not None:
+            raise DollarsPastFloat(run, path)
         with self.lock():
             current = self._read(run)
             if R.is_finished(current):
@@ -460,15 +500,39 @@ class Store:
             if receipt is not None:
                 self.write_receipt(receipt)
 
-    def import_run(self, doc: dict[str, Any], *, finished: bool = True, check: bool = True) -> str:
-        """Store a whole OCP v0.3 document (strict check, atomic write, index row under the lock).
+    def refuse_other_flow(self, doc: dict[str, Any]) -> None:
+        """Refuse `doc` when its run id is stored for a flow (`runs.flow_key`) that `doc` does not name
+        (`runs.same_flow`): FlowChanged. A stored run that names no flow, or no stored run, passes; a stored run
+        file that cannot be read, or holds no JSON object, is refused by name. The run file is read alone (pending
+        signals hold no `run.flow`). Called under the store's lock."""
+        run = (doc.get("run") or {}).get("id")
+        try:
+            stored = self._read(run)
+        except NotFound:
+            return
+        except (ValueError, StoreError, RecursionError):  # RecursionError: JSON nested past the reader's depth
+            raise StoreError(f"run {run}: the stored run file cannot be read, so the store cannot tell which flow it "
+                             "holds; nothing was written") from None
+        key, given = R.flow_key(stored), R.flow_key(doc)
+        if key is not None and not R.same_flow(key, given):
+            raise FlowChanged(run, key, given)
 
-        A document with the same run id replaces the stored one. `finished=True` marks it finished as is
+    def import_run(self, doc: dict[str, Any], *, finished: bool = True, check: bool = True) -> str:
+        """Store a whole OCP v0.3 or v0.4 run document (strict check, atomic write, index row under the lock).
+
+        A document with the same run id replaces the stored one, unless the stored run names another flow
+        (`refuse_other_flow`: FlowChanged, with `check=False` too). `finished=True` marks it finished as is
         (no log matching; that is `run import --finish`). A document loopmath already finished (its store
-        ext says so, for example one copied from another home) stays finished either way.
+        ext says so, for example one copied from another home) stays finished either way. A flow document
+        is refused even with `check=False`: the store keeps runs, as is a run to be stored finished whose dollars
+        no float holds (DollarsPastFloat). The index row is made before the run file is written.
         """
+        from ..ocp.emit import is_flow_document
         from .finish import validate
 
+        if is_flow_document(doc):
+            raise StoreError("this is a flow document (kind 'flow'), not a run: the store keeps runs; give it to "
+                             "the flow commands")
         run = (doc.get("run") or {}).get("id")
         if run_names.file_stem(run) is None:
             raise StoreError(f"run.id {run!r} cannot be stored: a run id {run_names.RULE}")
@@ -476,10 +540,15 @@ class Store:
             result = validate(doc)
             if result["errors"]:
                 raise ValidationFailed(result)
+        finishing = finished or R.store_ext(doc).get("state") == R.FINISHED
+        path = R.dollars_past_float(doc) if finishing else None
+        if path is not None:
+            raise DollarsPastFloat(run, path)
         doc = copy.deepcopy(doc)
         self.ensure()
         with self.lock():
-            if finished or R.store_ext(doc).get("state") == R.FINISHED:
+            self.refuse_other_flow(doc)
+            if finishing:
                 doc.setdefault("run", {})
                 if not doc["run"].get("ended_at"):
                     ends = [a.get("ended_at") for a in doc.get("attempts") or [] if isinstance(a, dict) and a.get("ended_at")]
@@ -489,8 +558,9 @@ class Store:
                 R.set_store_ext(doc, state=R.FINISHED)
             else:
                 R.set_store_ext(doc, state=R.OPEN)
+            row = R.index_row(doc)
             self._write(doc)
-            self._index(doc)
+            append_line(self.index_path, row)
         return run
 
     # ------------------------------------------------------------ receipts, recs, re-scoring
@@ -593,4 +663,4 @@ class ValidationFailed(StoreError):
     def __init__(self, result: dict[str, Any]):
         self.result = result
         first = "; ".join(f"{e.get('code', '')} {e.get('message', '')}".strip() for e in result["errors"][:3])
-        super().__init__(f"OCP v0.3 check failed: {first}")
+        super().__init__(f"strict OCP check failed: {first}")

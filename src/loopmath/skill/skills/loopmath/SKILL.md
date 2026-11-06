@@ -1,35 +1,58 @@
 ---
 name: loopmath
-description: "Start here when the user mentions loopmath without naming a job, for example 'use loopmath', 'use the loopmath skill', 'what can loopmath do' or 'what next with loopmath'. Checks the store in one command and moves straight into the right job: onboarding, bringing existing runs, updating the fit, planning a task or recording a run."
-allowed-tools: Bash(loopmath:*)
+description: Use whenever the user mentions loopmath.
+allowed-tools: Bash(loopmath:*), Bash(git rev-parse:*), Bash(git remote get-url:*), Bash(open:*), Bash(xdg-open:*)
 ---
 
-# loopmath: start here
+# loopmath
 
-loopmath helps choose the workflow, models and effort for coding agent tasks, and learns from how the runs went. It predicts, records and refits. It never starts agents itself. Every command you need is in the loopmath skills and in `reference.md` next to this file; never run `--help`.
+## What loopmath is
 
-## Do this
+loopmath is a command line tool that helps choose how to run a coding agent task: which workflow, which models and how much effort. It does three things:
 
-1. Run `loopmath status --json`. Read `exists`, `counts.runs`, `open_runs[]`, `fit.latest`, `fit.usable`, `fit.problem`. If `loopmath` is not found, tell the user to install it (`pipx install loopmath` or `uv tool install loopmath`) and stop.
+- **Predicts.** For a task, it estimates each workflow's chance of meeting the task's tests or stated target, and what it costs.
+- **Records.** When a task is done, it stores what ran, what it cost and whether the result was accepted.
+- **Refits.** From every recorded run it updates its estimates, so the next prediction is better.
 
-2. Pick the job from what the user said, then from the store, and follow that skill at once without asking:
+Three words come up everywhere:
 
-   | The user said, or the store shows | Job (skill) |
-   |---|---|
-   | set up, onboard, start, try | `loopmath-onboard` |
-   | names OCP files, a folder of runs, an experiment's output | `loopmath-import-runs` |
-   | update, refresh or rerun the fit; what did loopmath learn | `loopmath-update-fit` |
-   | a task to do, which workflow, model or effort to use, or `option N: ...` pasted from a planning page | `loopmath-plan-task` |
-   | a task is done, or record, log or save a run | `loopmath-record-run` |
-   | nothing specific, and `exists` is false or `counts.runs` is 0 | `loopmath-onboard` |
-   | nothing specific, and `open_runs` is not empty | `loopmath-record-run` for those runs |
-   | nothing specific, and `fit.latest` is set but `fit.usable` is false (say `fit.problem` in one line) | `loopmath-update-fit` |
-   | nothing specific otherwise | tell the user in 3 lines what loopmath knows (`counts.runs` runs, fit `fit.latest`), then offer: plan the next task, bring existing runs, or see the results page (`loopmath posterior --html`) |
+- A **workflow** is how a task is done: a shape such as `solo`, `plan_implement` or `implement_review`, plus the agent, model and effort for each piece.
+- A **run** is one task done with one workflow: the agent sessions that did the work, their cost and the outcome.
+- A **fit** is loopmath's current estimate of each workflow's chance and cost, with ranges. It is built from the user's recorded runs plus a starting estimate that ships inside loopmath.
 
-3. When the job's skill is not loaded, read its `SKILL.md` in the sibling folder (for example `../loopmath-onboard/SKILL.md`) and follow it.
+loopmath never starts agents itself, except `loopmath harness` (experimental), which runs Claude Code sessions to tune a repo's harness once the user agrees to its cost; `loopmath harness skill` prints its instructions. Otherwise it recommends; you start the agents, and only for the workflow the user chose.
 
-## Never
+## How to learn each job
 
-- Do not start agents because loopmath said so, without the user's choice.
-- Do not edit files under `~/.loopmath` or `$LOOPMATH_HOME` by hand.
-- Do not record another person's sessions.
+The step by step instructions for each job come from the CLI: `loopmath guide <topic>`. A guide call only prints instructions; it never runs the job or changes anything. The guides ship inside the installed loopmath, so they always match its commands and JSON output, even after an upgrade. Read a job's guide in full before running the commands it names, then follow it. `loopmath guide` alone lists every topic.
+
+Do not run loopmath commands with `--help`: the help text is written for people at a terminal and lists options the guides leave out on purpose. If a guide seems to miss something, run `loopmath doctor --json` and tell the user.
+
+## What to do first
+
+1. Run `loopmath status --json`. If `loopmath` is not found, tell the user to install it with `uv tool install --python 3.12 loopmath`, and stop. If status shows update.available, tell the user in one line and offer the update.command; run it only if they agree.
+2. Pick the guide from what the user asked for:
+
+| When | Run and follow |
+|---|---|
+| set up, start or try loopmath | `loopmath guide onboard` |
+| OCP files or a folder of finished runs to bring in | `loopmath guide import` |
+| a task to do, or which workflow, model or effort to use | `loopmath guide plan` |
+| a task is done: record its run, or judge two runs blind | `loopmath guide record` |
+| update the fit, or what loopmath learned | `loopmath guide fit` |
+| an experiment on a fixed multi-step workflow (a flow) | `loopmath guide flow` |
+| a command, flag, JSON field or exit code you need | `loopmath guide reference` |
+
+   For example, if you need to onboard the user, run `loopmath guide onboard` and follow its output.
+
+3. If the user named no job, decide from the status, in this order:
+   - no store (`exists` false) or no runs (`counts.runs` 0): onboard;
+   - `open_runs` not empty: record, but only runs whose work is done;
+   - `fit.usable` false: fit, and say `fit.problem` in one line;
+   - otherwise say in three lines what loopmath knows (how many runs, which fit) and offer to plan the next task, bring in existing runs, or open the results page (`loopmath posterior --html`).
+
+## Rules that always hold
+
+- Never start agents or a run without the user's choice. A recommendation is advice, not a choice.
+- Never edit the store (`~/.loopmath`, or `$LOOPMATH_HOME`) by hand. Only loopmath commands write there.
+- Never record another person's sessions.

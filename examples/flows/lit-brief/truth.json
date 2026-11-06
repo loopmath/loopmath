@@ -1,0 +1,35 @@
+{
+  "schema": "loopmath.flow-truth/1",
+  "flow": "lit-brief",
+  "quality": {
+    "base": 0.6,
+    "run_sd": 0.12,
+    "input_sd": 0.1,
+    "input_seed": 1,
+    "effects": [
+      {"edit": {"kind": "model", "piece": "extract", "value": {"id": "claude-sonnet-5-5"}}, "quality": 0.0, "run_cost": -0.45},
+      {"edit": {"kind": "effort", "piece": "synthesize", "value": "medium"}, "quality": -0.03, "run_cost": -0.2},
+      {"edit": {"kind": "drop", "piece": "critic"}, "quality": -0.2, "run_cost": -0.15},
+      {"edit": {"kind": "width", "piece": "scout", "value": 2}, "quality": 0.01, "run_cost": 0.15},
+      {"edit": {"kind": "merge", "value": "extract+synthesize"}, "quality": -0.05, "run_cost": -0.3}
+    ]
+  },
+  "judges": {
+    "j-claude": {"bias": 0.05, "noise": 0.08},
+    "j-astra": {"bias": -0.03, "noise": 0.12},
+    "person": {"bias": 0.0, "noise": 0.03}
+  },
+  "cost": {
+    "noise": 0.25,
+    "effort": {"default": 1.0, "high": 1.0, "medium": 0.4},
+    "steps": {
+      "scout": {"claude-sonnet-5-5": 0.0637},
+      "extract": {"claude-opus-5-5": 0.4604, "claude-sonnet-5-5": 0.0691, "claude-haiku-5-5": 0.023},
+      "synthesize": {"gpt-6-astra": 0.2569},
+      "critic": {"claude-haiku-5-5": 0.0567},
+      "select_scout": {"claude-haiku-5-5": 0.0863},
+      "extract_synthesize": {"claude-opus-5-5": 0.3888}
+    }
+  },
+  "checks": {"command:claims-check": 0.85, "review_approve": 0.65}
+}

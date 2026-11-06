@@ -34,7 +34,7 @@ The JSON Schema is [`harness-runs-0.1.schema.json`](harness-runs-0.1.schema.json
 |---|---|---|---|
 | `schema` | yes | string | `loopmath.harness-runs/0.1`. Any other value, including `loopmath.harness-runs/0.2`, is refused by name. |
 | `task_id` | yes | non-empty string | The task the rollout ran. |
-| `id` | no | string | A stable row id. Default: `<tool.name>:<experiment>:<tool.run_id>` when `tool.name` and `tool.run_id` exist (`<tool.name>:<tool.run_id>` without an experiment), else SHA-256 of the row's canonical JSON. The imported run id derives from it, so importing the same row again changes nothing (section 6). |
+| `id` | no | string | A stable row id. Default: `<tool.name>:<experiment>:<tool.run_id>` when `tool.name` and `tool.run_id` exist (`<tool.name>:<tool.run_id>` without an experiment), else SHA-256 of the row's canonical JSON. The imported run id derives from it, so importing the same row again changes nothing (section 6). A row with `flow` whose `id` starts with `run_` keeps it as its run id (section 10). |
 | `task` | no | object | `type`, `repo`, `title`, `base_commit` and `source`, as OCP `run.task` has them. `type` is a loopmath task type (`loopmath task-types`: `bug_fix`, `feature`, `refactor`, `tests`, `docs`, `research`, `infra` or `data`); any other value is refused, naming the closest. A missing `type` is `research` unless `--type` says otherwise. |
 | `arm` | no | string | Which side of a comparison: `base`, `candidate`, `adopted`, or any label. It is imported as `run.labels.arm`. |
 | `pair` | no | string | The replicate pair key: `<task_id>#<j>`, or any stable id. Two rows with the same `pair` and different arms are one pair. |
@@ -51,12 +51,14 @@ The JSON Schema is [`harness-runs-0.1.schema.json`](harness-runs-0.1.schema.json
 | `ext` | no | object | Producer data, keyed by reverse-domain namespace. Kept whole. |
 | `stages` | no | non-empty array or null | The rollout's role sessions in time order (a planner, a developer, a reviewer), each with its own setting and cost. Section 9. A row with stages has no top-level `cost`. |
 | `workflow` | no | workflow id or null | The id of the shape the stages ran, for example `plan-dev-review`. Needs `stages`. Section 9. |
+| `flow` | no | object or null | The flow the rollout is a run of: `id` and `version`, and optionally `arm`, `plan` and `split`. Needs `stages`. Only an object names a flow; any other value is an unknown field (section 10). |
+| `slate` | no | object or null | On a row with `flow`, the slate the rollout ran in, as OCP's `run.slate`: `id`, `members` (run ids, this row's among them), and optionally `base_commit`, `isolated`, `blinded` and `ext`. Section 10. On any other row it is an unknown field. |
 
 Unknown top-level fields are kept, not refused: they land in the run's ext with the rest of the row.
 
 ## 3. `outcome`
 
-Exactly one of these shapes, or null:
+Exactly one of these shapes, or null. A row with `flow` may add `judges` to a score or a verdict, or give it alone; on any other row `judges` is an unknown member of the outcome:
 
 - **A score:** `{"name": "judge", "score": <number or null>, "judge": "<who scored>", "scale": "linear" | "log" | "fraction", "better": "higher" | "lower", "observed_at": "<RFC 3339>", ...}`.
   - `score` is required as a key. **null means the judge ran but gave no score.** It is never 0, and it imports as a declared signal with value null.
@@ -64,6 +66,7 @@ Exactly one of these shapes, or null:
   - A `fraction` score lies in [0, 1]; a reader refuses one outside it.
   - Other members (`n_passed`, `n_criteria`, `all_pass`) are kept in the signal's ext.
 - **A verdict:** `{"accepted": true | false, "by": "<who decided>", "observed_at": "<RFC 3339>"}`.
+- **Judges' scores** (a row with `flow`, section 10): `{"judges": [{"id": "<a judge of the flow>", "score": <number or null>, "observed_at": "<RFC 3339>"}, ...], "observed_at": "<RFC 3339>"}`, one item per score. Each item needs `id` and `score`; its other members are kept in its signal's ext.
 - **Unscored:** null or absent. A rollout nobody judged has no signal.
 
 `observed_at` defaults to `ended_at`, then `started_at`, then the rows file's modification time, so the same file always gives the same documents. These fallbacks set only when the score was observed: a run's `started_at` and `ended_at` come only from the row, and a row without them imports with none.
@@ -107,7 +110,11 @@ with harness_runs.locked(path) as log:       # the file's exclusive flock; other
 harness_runs.read(path)                      # every row, checked; ValueError("<path>:<line>: ...")
 harness_runs.rollout_cost(paths, kind, *, model=None)
 harness_runs.rollout_usage(paths, kind)
-harness_runs.to_ocp(row, *, base_dir=None, accept_at=None, observed_default=None, task_type=None, repo=None)
+harness_runs.to_ocp(row, *, base_dir=None, accept_at=None, observed_default=None, task_type=None, repo=None,
+                    unscored_rule=None, flow=None)   # flow: a loaded flow, for a row naming one (section 10)
+harness_runs.to_ocp_rows(rows, **kw)       # to_ocp of each row in one conversion; ValueError("row N: ...")
+harness_runs.run_id_for(row)               # the run id to_ocp gives the row
+harness_runs.flow_row_findings(row, flow)  # stage check ids the flow's arm lacks, one line each (section 10)
 ```
 
 ## 6. Import
@@ -128,7 +135,7 @@ loopmath run import ocp/ --finish                      # store them; the same do
   - An open run that `loopmath run start` made and `run import` never stored takes its first import as it is (an orchestrator writing the document for a run loopmath started). That import records its content even when the document is the one the run holds. From then on it holds imported content like any other.
   - A second harness2 runs folder with the same config makes the same run ids: adapt it with `--experiment` to keep both.
   - `--replace` takes the new copy and keeps the outcomes added after the import. It never overwrites one: a new copy that holds an outcome's id with another value is refused, naming the id. The record keeps the ids of the outcomes added after the import (`later`), so each stays kept through every later replace, even after a copy that carried it equal. A run stored before loopmath kept that record cannot tell them from imported ones; the outcomes it drops are counted.
-- Each row becomes one OCP v0.3 run with one attempt, configured as the catalog `solo` workflow with the row's `agent`, `model` and `effort`, so the run lands in the same configuration a `loopmath run start` with those settings would. A row with `stages` becomes one attempt per stage instead (section 9).
+- Each row becomes one OCP v0.3 run with one attempt, configured as the catalog `solo` workflow with the row's `agent`, `model` and `effort`, so the run lands in the same configuration a `loopmath run start` with those settings would. A row with `stages` becomes one attempt per stage instead (section 9). A row with `flow` is refused, by line: it converts only with its flow (section 10).
   - The harness record goes to `run.ext["dev.loopmath.harness"]`.
   - `arm` goes to `run.labels.arm`.
   - `pair` and `experiment` go to `run.ext["dev.loopmath.pair"]` as `{"pair": <pair or null>, "arm": <arm or null>, "experiment": <experiment or null>}`, written when the row has either. A null `pair` there means no pair key: runs pair on the task within the experiment.
@@ -176,9 +183,136 @@ A rollout that ran as several role sessions (a planner, then a developer, then a
 | `started_at`, `ended_at` | no | RFC 3339 time with an offset, or null | The stage's own times. |
 | `status` | no | `done` or `failed` | Default `done`, except the last stage, which takes the row's `status`. |
 | `ext` | no | object | Producer data for the stage, as the row's `ext`. |
+| `checks` | no | list of `{"id", "verdict"}` objects, or null | On a row with `flow`, the verdicts of the flow's checks this stage reports (section 10). On any other row it is an unknown field. |
 
 - **The run.** One piece per piece id, in the order the stages first reach it, with its role. A piece is as wide as its most stages in one round (two reviewers in round 1 make a `review` piece of width 2). Its setting is its first stage's.
 - **The workflow.** When the pieces and roles are those of a catalog workflow (`solo`, `plan_implement`, `implement_review`, `plan_implement_review`, `best_of_n`, `swarm`), the run uses that workflow's artifacts, edges and gates, with the stages' widths and a round budget of at least the stages' rounds. Otherwise the pieces form a chain: the issue and the repo feed every piece, each piece's output feeds the next, and a reviewer gates the nearest developer before it. The budget is the stages' rounds, and at least 3 when a reviewer gates. The workflow id is `workflow` when given, else the catalog id, else a derived id: `stages-` and the piece ids joined by `-` (for example `stages-plan-split-implement-review`), or, when that would pass 200 characters or a piece id has a `-`, the joined piece ids cut to fit, then `--` and the first 12 hex digits of the SHA-256 of the JSON list of piece ids (a plain join never has `--`, so it cannot spell a hashed id). A derived id is at most 200 characters, and two different lists of pieces get different ids. It names the pieces, not their roles: give `workflow` to tell apart shapes whose pieces share names. The topology level of `posterior` reads the workflow id. The chain's own artifacts (`issue`, `repo` and `<piece>.out`) and gates never take a piece's id: a name that a piece already has, or that would pass 200 characters, is cut to fit and takes `-` and 12 hex digits of its SHA-256, so any valid piece id converts.
 - **The attempts.** One per stage, in stage order, each with its piece, round, setting, status, times and cost. The outcome signal sits on the last stage's attempt. The attempt's ext keeps the stage's index, its role word as given, its `ext` (`stage_ext`) and its unknown fields (`extra`).
 - **Cost.** Each stage's cost is its own attempt's cost. A stage whose cost is unknown or incomplete leaves the run's cost unknown, never smaller. A top-level `cost` with `stages` is refused: it would count the stages twice or hide which stage spent it.
 - **Unchanged.** A row without `stages` gives the same document as before stages existed, byte for byte.
+
+## 10. Rows that name a flow
+
+A flow (an OCP 0.4 flow document) fixes the configuration a study runs, its judges and its acceptance rule. A
+rollout of one of its arms names the flow, and its stages say what ran. A row names a flow when its `flow` is an
+object. A row without `flow` is one whose `flow` is absent, null or not an object: its `flow`, `slate`,
+`outcome.judges` and stage `checks` are unknown members, kept as before rows could name a flow. This row ran the base arm of
+`examples/v0.4/lit-brief.flow.ocp.json`, with one send-back from the critic to synthesize:
+
+```json
+{"schema": "loopmath.harness-runs/0.1", "id": "q07-r2", "task_id": "q07", "arm": "base", "status": "done",
+ "workflow": "lit-brief", "flow": {"id": "lit-brief", "version": 1},
+ "stages": [
+  {"role": "worker", "piece": "scout", "model": "claude-sonnet-5-5", "cost": {"usd": 0.3}},
+  {"role": "worker", "piece": "extract", "model": "claude-opus-5-5", "effort": "high", "cost": {"usd": 1.0}},
+  {"role": "worker", "piece": "synthesize", "model": "gpt-6-astra", "effort": "high", "cost": {"usd": 0.6}},
+  {"role": "reviewer", "piece": "critic", "model": "claude-haiku-5-5", "cost": {"usd": 0.05}},
+  {"role": "worker", "piece": "synthesize", "model": "gpt-6-astra", "effort": "high", "round": 2, "cost": {"usd": 0.4}},
+  {"role": "reviewer", "piece": "critic", "model": "claude-haiku-5-5", "round": 2, "cost": {"usd": 0.05}}],
+ "outcome": {"judges": [{"id": "j-claude", "score": 0.80, "observed_at": "2026-11-03T11:07:00-08:00"},
+                        {"id": "j-astra", "score": 0.70, "observed_at": "2026-11-03T11:08:00-08:00"}]},
+ "started_at": "2026-11-03T11:00:00-08:00", "ended_at": "2026-11-03T11:06:00-08:00"}
+```
+
+| flow field | required | type | meaning |
+|---|---|---|---|
+| `id` | yes | string of 1 to 200 characters | The flow's id. |
+| `version` | yes | integer from 1 | The flow's version. As in JSON Schema, `1.0` is the integer 1. |
+| `arm` | no | string of at most 200 characters, or null | The arm the rollout ran: `base`, or an arm of the flow's `plan.json`. Default: the row's `arm`, else `base`. When the row gives both, they agree. |
+| `plan` | no | string of at most 200 characters, or null | The id of the plan that chose the arm. |
+| `split` | no | string of at most 100 characters, or null | The part of the flow's inputs the task came from, for example `train` or `holdout`. |
+| `digest` | no | `flw_` and 12 hex digits, or null | The digest of the flow the row was made for, as `flow next` gives it. When not null, it is the flow's digest, else the row is refused. |
+
+Unknown members of `flow` are kept.
+
+- **Converting.** `harness_runs.to_ocp(row, flow=loopmath.flows.load(PATH))`, or `to_ocp_rows` for several, gives
+  an OCP 0.4 run (`loopmath flow record FLOW --rows FILE` from the command line). Without the flow, or with a flow
+  of another id or version, the row is refused, naming the flow. `adapt harness-runs` takes no flow, so it
+  refuses such rows. A row whose `digest` is not null and not the flow's was made for another revision of the
+  flow, and is refused, with `--allow-unplanned` too. `accept_at` and `unscored_rule` are refused too: the
+  flow's acceptance rule applies.
+- **The configuration.** The run's configuration is the arm's, copied whole, and its id is the arm's: a rollout
+  with a send-back and one without are runs of one configuration. The acceptance rule is the flow's.
+  - Every stage's piece is a piece of that configuration; a stage without `piece` takes its role's piece
+    (section 9). Any other piece is refused by name, with the configuration's pieces listed.
+  - A `workflow`, when given, is the configuration's workflow id.
+  - Stage widths and rounds are not checked against the configuration. Rounds are kept as given, and the round
+    budget is the configuration's.
+- **The end.** A run of a flow is stored finished at its own end: `run.ended_at` is the row's `ended_at`, else its
+  last stage's. A row that gives neither converts with no `run.ended_at`, and `loopmath flow record` refuses it
+  by name.
+- **Unplanned rows.** With `to_ocp(row, flow=..., unplanned=True)` (`loopmath flow record --allow-unplanned`), a
+  row whose arm is `unplanned`, not an arm of the flow's current plan, or any arm but `base` when there is no plan
+  gives a run of arm `unplanned`. Its configuration is the row's own, built as for a row without `flow`, and the
+  arm the row named is kept in `run.flow.ext["dev.loopmath.flow"].named_arm`. A row whose own configuration is that
+  of `base` or a plan arm is refused, naming that arm. Under a stale `plan.json`, one made for another digest of
+  the flow, a row naming any arm but `base` is refused, with the flag or without: the refusal says the plan is
+  stale and asks for `loopmath flow plan`.
+- **Settings.** A stage's `agent`, `model` and `effort` default to the row's, then to the configuration's setting
+  for the stage's piece. Its tokens are priced with that model.
+- **`run.flow`** is `{"id", "version", "digest", "arm"}`, with `plan` and `split` when the row gives them; `digest`
+  is the flow's (`flw_` and 12 hex digits). `run.labels.arm` is the arm. The document says `"ocp": "0.4"` and
+  `producer.capabilities.flow` is true. The kept row in the run's ext has the row's `flow`.
+- **Judges.** On a row with `flow`, `outcome.judges` holds at most 9999 items. Each item becomes one score signal,
+  in order, at the last stage's attempt, with id `sig_<run id>_judge_<i>` (`i` from 0).
+  - When the score beside the judges already has that id (its name is `judge_<i>`), the judge's id is that id
+    followed by `-` and the first 12 hex digits of its SHA-256, the id cut so the whole stays within 200
+    characters. No two signals of a run share an id.
+  - Its name is the judge's score name, else the flow objective's score; its scale is the judge's.
+  - Its value is the score as given. For a `linear` judge, which has a range (E214), the signal also has
+    `ext["dev.loopmath.judge"].range`, the judge's `[lo, hi]` from the flow, so a reader takes the value
+    as a fraction of it. No other judge's signal has that member.
+  - Its source is `user` for a person judge, else `judge`, with `ref` the judge's id.
+  - Its `observed_at` is the item's, else the outcome's, else as in section 3.
+  - A `fraction` score outside [0, 1] is refused.
+  - An id that is not a judge of the flow still converts; checked with its flow, the run then warns W219.
+- **A score or a verdict beside the judges** converts as in section 3, as the run's first signal. Its `judge` or
+  `by` names a judge of the flow, or the run warns W219 when checked with its flow.
+- **Check verdicts.** On a row with `flow`, each item of a stage's `checks` is `{"id": "<1 to 200 characters>",
+  "verdict": "pass" or "fail"}`; its other members are kept in its signal's ext. A stage reports an id once: a
+  repeat is refused at `stages.N.checks.M.id`. The row reports at most 9999 items over all its stages; more are
+  refused at `stages`, naming the run id, the count and the bound. No member, null or an empty list gives no
+  verdict: a stage that reports no check says nothing about it, not that it passed.
+  - Each item becomes one verdict signal at its stage's attempt, in stage order and then item order, with id
+    `sig_<run id>_check_<k>` (`k` counting the run's items from 0). Like a judge's, it never takes the id of a
+    signal before it.
+  - The id names a check of the arm's configuration (`control.checks[].id`), else a piece a gate follows
+    (`control.gates[].after`). It is the signal's `source.ref`, with source kind `orchestrator`.
+  - Its name is the id when the flow's acceptance rule `requires` it. Otherwise it is the first of `<c>` (when
+    the check's rule is `command:<c>`) and the id that is not the name of a score of the flow: the acceptance
+    rule's score, the objective's or a judge's. When both are, it is `check:<id>`; cut to fit and followed by `-`
+    and the first 12 hex digits of its SHA-256 when that passes 200 characters or a score has that name too.
+    - So a verdict the rule does not require never takes the name of a score of the flow, and the rule's score
+      never names a verdict (E195).
+    - On `lit-brief` the extract gate (`command:claims-check`) gives `claims-check` and the critic gate gives
+      `critic`. A check `quality` with a non-command rule gives `check:quality`, since `quality` is the flow's
+      score; a check `quality-review` with rule `command:quality` gives `quality-review`.
+  - Its `observed_at` is the stage's `ended_at`, else as in section 3.
+  - The acceptance rule reads the last verdict of each name it requires by `observed_at`, and verdicts observed
+    at one time (or with none) in the order the stages give them. A check that failed in round 1 and passed in
+    round 2 is passed when round 2 ended later, or when the stages give no `ended_at`.
+  - An id that names neither still converts, named as a check with no rule (the id, else `check:<id>`);
+    `harness_runs.flow_row_findings(row, flow)` gives one line for each such item, and one line for a row whose
+    `flow` is not an object, which converts as a row without `flow`.
+- **The run id.** A row whose `id` starts with `run_` keeps it as its run id: `run_` and then letters, digits,
+  `.`, `_`, `:` or `-`, at most 185 characters in all (`harness_runs.MAX_KEPT_RUN_ID`). Any other id starting
+  with `run_` is refused by name, a longer one with its length and the cap; it is never replaced by a derived id.
+  Every other row gets the run id of section 6.
+  - Attempt and signal ids follow from the run id, whole: `att_`, the run id after `run_` and `_<i>` (`i` from
+    1); `sig_<run id>` and `_accepted`, `_<score name>`, `_judge_<i>` or `_check_<k>`.
+  - The cap is 200 less the longest addition: `sig_` and `_judge_9998` or `_check_9998`, 15 characters, since a
+    row holds at most 9999 judge scores and 9999 check verdicts (`harness_runs.MAX_ITEMS`). Stages have no
+    bound: at the cap an attempt id has room for a 14-digit `i`.
+  - A score name that would make `sig_<run id>_<name>` pass 200 characters is refused at `outcome.name`.
+  - `to_ocp_rows` refuses two rows that keep one run id, naming both.
+- **`slate`**, on a row with `flow`, is OCP's `run.slate`: `id` (1 to 200 characters), `members` (distinct run ids of at
+  most 200 characters, this row's among them), and optionally `base_commit` (equal to `task.base_commit` when
+  both are given), `isolated`, `blinded` and `ext`. Other members are kept. It is written to `run.slate` as given,
+  and `producer.capabilities.slate` is true.
+- **Simulated rows.** A row whose `ext` holds the object `dev.loopmath.simulate` (a rollout a simulator drew, not
+  billed) writes that object to `run.ext["dev.loopmath.simulate"]`, and `basis: simulated` on every attempt
+  cost. OCP 0.4 allows that basis from loopmath beside the mark (E171).
+- **Examples.** Converted with the flow, the row above gives `examples/v0.4/lit-brief.run-2.ocp.json` (its
+  agents and efforts are the configuration's). `lit-brief.run-1.ocp.json` is its twin without the send-back,
+  scored by the person too. Checked together with the flow, the three give no finding.
+- **Unchanged.** A row without `flow` gives the same document as before rows could name a flow, byte for byte.

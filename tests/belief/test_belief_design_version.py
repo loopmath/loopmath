@@ -34,11 +34,18 @@ def _set_version(home, version):
     return meta["fit"]
 
 
-def test_a_new_fit_records_the_design_version(home):
+def test_a_new_fit_records_the_design_version(home, tmp_path):
+    """The store level (the default from 0.4.0) writes version 5 with its options; `level = "shared"` writes 4."""
     meta = json.loads((S.fit_dir(home) / "meta.json").read_text())
+    assert meta["design_version"] == OPT_IN_DESIGN_VERSION and meta["model_options"]["belief.level"] == "store"
+    assert other_design(meta) is None and load_latest(home) is not None
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "config.toml").write_text('[belief]\nlevel = "shared"\n', encoding="utf-8")
+    docs, _ = simdata.simulate(60, seed=2, source="live", n_tasks=20)
+    meta = json.loads((F.fit(shared, docs=docs, no_prior=True, now=NOW) / "meta.json").read_text())
     assert meta["design_version"] == DESIGN_VERSION == 4
     assert "model_options" not in meta and other_design(meta) is None
-    assert load_latest(home) is not None
 
 
 def test_a_version_2_fit_without_the_reference_horizon_is_refused_in_the_same_line(home, capsys, monkeypatch):
@@ -262,7 +269,7 @@ def test_a_sampled_fit_still_loads(tmp_path, capsys, monkeypatch):
     docs, _ = simdata.simulate(60, seed=2, source="live", n_tasks=20)
     path = F.fit(tmp_path, docs=docs, no_prior=True, now=NOW)
     meta = json.loads((path / "meta.json").read_text())
-    assert meta["design_version"] == OPT_IN_DESIGN_VERSION and meta["model_options"] == {SUCCESS_HEAD: "sampled"}
+    assert meta["design_version"] == OPT_IN_DESIGN_VERSION and meta["model_options"][SUCCESS_HEAD] == "sampled"
     assert other_design(meta) is None and S.latest_problem(tmp_path) is None
     assert load_latest(tmp_path).fit_id == load_fit(tmp_path, meta["fit"]).fit_id == meta["fit"]
     assert fit_summary(tmp_path, meta["fit"])["problem"] is None

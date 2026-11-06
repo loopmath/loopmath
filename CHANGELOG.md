@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.4.0 (2026-11-06)
+
+0.4.0 follows 0.3.5 and the release candidate 0.4.0rc1. From 0.3.5, it adds what is below and all of 0.4.0rc1, `loopmath harness` among it (see 0.4.0rc1 further down). From 0.4.0rc1, it also adds 0.3.3, 0.3.4 and 0.3.5, which came out after it: one skill with each job's guide from `loopmath guide`, the daily update check with `loopmath update`, confirmed prices for Claude Sonnet 5.5 and Claude Haiku 5.5, and a row for GPT-6.1 Terra. 0.4.0rc1 has no update check, so an rc1 install does not say that 0.4.0 is out.
+
+### Each store learns its own pass rate
+
+What changes for you: until your store has runs of its own, loopmath no longer assumes your tasks pass as often as the runs it ships with, which are its own test tasks and pass 96.6% of the time. Predicted chances on a new or small store are usually lower and always wider, and your first runs move them more. Which models are stronger still comes from public benchmarks. To keep 0.3.5's numbers, run `loopmath config set belief.level shared` and then `loopmath fit`.
+
+- Your store's overall pass rate (its level) is its own, with a wide prior that only your runs move (`belief.level`, `store` by default). The shipped runs keep their cost and gate rows but give no success rows. On a fresh store tested against Terminal-Bench 4, 0.3.5 predicted 0.66 where agents pass 0.28; this version predicts 0.51, and its 80% band (0.16 to 0.86) contains 0.28. On DeepSWE the level is off by 0.10 logits, down from 0.46.
+- A public benchmark now says which models are stronger without also saying how hard your tasks are: each benchmark has its own offset, each model a transfer error between the benchmark and your tasks, and each effort a smaller one (`belief.benchmark_effort_sd`, 0.5), so a gap between two efforts on a benchmark is not taken as exact on your tasks.
+- Costs get a store level of their own, narrower than the success one (`belief.cost_level_sd`, 0.5), since run costs carry over between teams far better than pass rates. It is your store's deviation from the shipped runs' cost level, so a model whose provider has no runs is still priced at that level. On a fresh DeepSWE store, costs come out close to 0.3.5's: the typical run is predicted at 0.84 times the observed mean cost (0.96 in 0.3.5), and the predicted mean cost is 9.3 times the observed one (8.7 in 0.3.5). That overstatement does not come from long-tailed runs: it comes from how unsure the cost model is about a new store's own cost level and about a new task, and this version does not change it.
+- `loopmath config set` takes `belief.level` (`store` or `shared`), `belief.benchmark_effort_sd` (0 or more, 0 for none) and `belief.cost_level_sd` (more than 0). The two sds apply under `store`.
+- `belief.level = "shared"` gives 0.3.5's fit exactly, its random draws included. A fit you already have keeps working until the next fit, yours or the one loopmath starts in the background after a run or a late outcome, which is made under the store level. That fit is written as design version 5, which loopmath 0.3.5 and older refuse, asking for a new fit.
+- On a new or small store, `recommend`'s pick can move to a stronger and costlier workflow, and its cost per accepted result can rise many times, mostly through the expected rescue: a lower and wider chance makes a rescue likelier. On loopmath's test fixtures the day-one goal went from $0.034 to $2.42 per accepted result, and the rescue workflow from $1.32 to $14.46 a run.
+- `recommend`'s rules are unchanged: it does not yet propose a few probe runs when the top picks are close.
+
+### Flows: experiments on a fixed multi-step workflow (new)
+
+- New `loopmath flow` commands: `init`, `show`, `export`, `import`, `plan`, `next`, `record`, `score`, `status`, `check`, for experiments on a fixed multi-step workflow. `loopmath guide flow` teaches them.
+- `loopmath flow init` takes `--from-ocp FILE...` and `--from-rows FILE` and prefills from logged runs: the configuration they declare, taken whole with its checks and budget, or, when none declares one, the steps inferred from them. It prints what it took and keeps the run ids in `flow.ext["dev.loopmath.prefill"]`, outside the digest.
+- A flow keeps setting option values as JSON values wherever it is written. `flow init` keeps the values the runs give (`0.2`, `true`, `null`, lists and objects), from inferred runs as from declared ones. `flow.toml` holds option values as TOML values both ways (`stream = true` is imported as `true`); a value TOML cannot hold, such as `null`, is saved as a `[[document.keep]]` entry. Option values the answers give are strings, and a hand-written `flow.toml` with other values gets the configuration id over those values.
+- `loopmath flow record` takes OCP 0.4 run documents (`--ocp`) or harness-runs rows (`--rows`); it refuses a run with no end, a row of another flow version, an input not in the flow and a piece not in the arm, by name.
+- harness-runs rows: a row names a flow when `flow` is an object. A flow row's run gets its end from the row's `ended_at`, else its last stage's.
+- A harness-runs row naming a flow may state `flow.digest`, as `flow next`'s specs do. `flow record --rows` and the converter refuse by name a row stating another digest, made for another revision of the flow, with `--allow-unplanned` too; a value that is not `flw_` and 12 hex digits is a row problem.
+- `loopmath.harness_runs` exports `MAX_ITEMS` and `MAX_KEPT_RUN_ID`; a flow row's kept run id is capped at 185 characters.
+- The judges fit reads at most 13 judges with readings per score (`MAX_SCORED_JUDGES`), the person included; above that the fit is refused, those runs read no score (`too-many-judges:<n>`), and `flow status` and `flow check` warn on stderr.
+- The flow simulator refuses, before any draw, an arm whose check verdicts per run exceed `MAX_ITEMS` (9999) and a flow with more than 9999 judges; OCP 0.4's schema sets no such maximum.
+- A margin whose check would need more than 10**6 pairs is refused by name (E215), at `flow init` and `flow plan`; a plan near that limit is about 115 MB.
+
+### OCP 0.4
+
+- OCP 0.4 rules E212 to E218, W219 and W220. E214: a linear judge range is two finite numbers of absolute value at most 2**53, lo < hi. E215 also refuses a flow rule's fraction target outside [0, 1]. W220: a judge score outside the linear range it is read by (`ext["dev.loopmath.judge"].range` on the signal).
+- The strict OCP check's message reads "strict OCP check failed" (no "v0.3"); 0.4 for a run with a flow or checks.
+- `loopmath run import` takes OCP 0.4 runs that name a flow or state checks, and refuses flow documents by name. A user workflow whose gates use an id or extra fields is written as checks, as "0.4".
+- OCP validation refuses, by path (E001), a document built in code that holds an integer past the reader's digit limit.
+
+### Reading given files
+
+- A given run document, harness-runs row, task file, configuration file or flow document holding `NaN`, `Infinity`, `-Infinity` or a decimal number too large for a float, such as `1e400`, is refused by file and place (`run.ext["dev.example"].x: NaN is not a JSON number`), even where a later member of the same name replaces the value, and nothing is written: `run import`, `flow record --ocp` and `--rows`, `flow init --from-ocp` and `--from-rows`, `adapt harness-runs`, `gate --runs`, `gate winner --runs`, `tasks pick --runs`, `run start --task-file` and `--config`, `recommend --task-file`, and every flow command that reads `flow.ocp.json`. Runs and recommendations already stored are read as before.
+- `loopmath run import` and `loopmath flow record --ocp` refuse by name a run whose `run.signals` or `run.preferences` is not a list, or whose `producer` is not an object, where some of these raised before. The open-run hint keeps `--allow-simulated` when the import had it.
+- A harness-runs row whose score, judge score or dollars is an integer no float holds is refused by name, by `flow record --rows`, `adapt harness-runs` and the converter. `outcome --observed-at` at a year edge with no offset names the flag and the value.
+
+### Comparisons
+
+- `compare.paired` gives `p_cheaper` on every comparison, and `check-change status` and `check-change from-runs` print it under `comparison` with `--json`; `compare.paired` gains the `loss_margin` keyword.
+
+## 0.3.5 (2026-11-03)
+
+loopmath checks once a day whether a newer version is out and says how to upgrade; it never upgrades itself. Claude Sonnet 5.5, Claude Haiku 5.5 and GPT-6.1 Terra get price rows. Everything else is 0.3.4's.
+
+### The daily update check
+
+- Once a day, after any command, loopmath asks pypi.org for its latest version (`https://pypi.org/pypi/loopmath/json`). The request sends only loopmath's version, as its User-Agent, and uploads nothing, and loopmath waits at most 2 seconds for the answer. The answer is kept for 24 hours in `update.json` in the cache folder (`~/.loopmath`, `cache/` in a store you name, or `LOOPMATH_CACHE_DIR`) and a failed check for 6 hours, so an offline machine waits out the 2 seconds at most four times a day. A pre-release counts only when the installed loopmath is one.
+- When a newer version is known and stderr is a terminal, one line on stderr says so: `loopmath X.Y.Z is out (you have A.B.C): <upgrade command>, then loopmath skill install`. Nothing goes to stdout, so `--json` output is unchanged, and a failed or slow check never changes a command's output or exit code.
+- `LOOPMATH_NO_UPDATE_CHECK=1` (any value but empty) turns the check off, and it is off when `CI` is set. The README says so where it says loopmath connects to no other machine, which now names pypi.org as the one exception.
+- `loopmath status --json` has an `update` object: `latest`, `installed`, `available`, `command` (the upgrade command, then `loopmath skill install`) and `checked_at`, or null when the check is off or pypi.org has not answered yet. `loopmath guide reference` lists it. The skill has one sentence more: when `update.available` is true, the agent tells you in one line and offers `update.command`, and runs it only if you agree.
+
+### `loopmath update` (new)
+
+- `loopmath update` shows the installed and the latest version, a link to the latest version's changelog, and the upgrade command for how loopmath was installed: `uv tool upgrade loopmath` for a uv tool, `pipx upgrade loopmath` for pipx, otherwise `<python> -m pip install -U loopmath` with the Python loopmath runs on, each followed by `loopmath skill install`. It never upgrades.
+- `--refresh` asks pypi.org again instead of reusing the last answer, and `--json` prints `loopmath.update/1`. It exits 0 when the check worked, whether or not a newer version is out, and 1 when it failed. It asks pypi.org even when the daily check is off, since you asked for it by name.
+
+### `doctor`
+
+- A skill on disk that differs from the one this loopmath writes, as after an upgrade without `loopmath skill install`, now reads "has a loopmath skill that differs from the one loopmath 0.3.5 writes" (it said "is older than this loopmath"), with the same `loopmath skill install` command to fix it.
+
+### Prices
+
+- Claude Sonnet 5.5 (`claude-sonnet-5-5`) and Claude Haiku 5.5 (`claude-haiku-5-5`) now have confirmed prices, from Anthropic's price list, read on 2026-11-03: Sonnet 5.5 at $2 input, $4 1h cache write, $0.10 cache read and $10 output per million tokens, Haiku 5.5 at $0.10, $0.20, $0.01 and $0.50. Haiku 5.5 bills a prompt over 100,000 tokens at 5 times those rates, and loopmath prices it at these, so a Haiku 5.5 cost is a floor.
+- GPT-6.1 Terra (`gpt-6.1-terra`) is added, from its page on OpenAI's site, read on 2026-11-03: $1 input, $0.05 cached input, $1.25 cache write (30-minute retention) and $5 output per million tokens. A prompt over 272K input tokens bills more and is priced at these rates, so such a cost is a floor.
+- 0.3.4 had no row for any of the three, so it left their runs unpriced.
+
+### Tests
+
+- The suite and `scripts/release-check.sh` run with `LOOPMATH_NO_UPDATE_CHECK=1`, so they never ask pypi.org, and the release check fails if an `update.json` was written.
+
+## 0.3.4 (2026-11-03)
+
+loopmath installs one skill, `loopmath`, in place of six, and the instructions for each job come from the CLI: `loopmath guide <topic>`. Fits, predictions, recommendations and every other command are 0.3.3's.
+
+### One skill
+
+- `loopmath skill install` writes one skill, `loopmath`: `~/.claude/skills/loopmath/SKILL.md` for Claude Code, and `~/.codex/skills/loopmath/SKILL.md` for Codex, or `~/.codex/loopmath/loopmath/SKILL.md` with a one-entry block in `~/.codex/AGENTS.md` when Codex has no skills folder. Its description, the text an agent loads at start, is "Use whenever the user mentions loopmath." (40 characters; the six 0.3.3 descriptions came to 2,082). The skill has the agent check the store with `loopmath status --json`, pick the job, and run `loopmath guide <job>` and follow it. Codex gets the same text without `allowed-tools`.
+- Upgrading from 0.2.0 to 0.3.3 removes the five job skills those versions installed (`loopmath-onboard`, `loopmath-import-runs`, `loopmath-plan-task`, `loopmath-record-run` and `loopmath-update-fit`) and the `reference.md` copy in each of the six skill folders, where `.loopmath-skills.json` lists the file with the hash loopmath wrote. A listed file you changed is kept, with a note naming the guide that has its text now; a file loopmath did not write is left alone. A user install goes from 12 files to 1, besides the manifest. The 0.1 skill is still replaced when it is as 0.1 wrote it.
+- `skill install --dry-run` lists every file install would write, change or remove, the manifest among them. `skill uninstall` also removes a retired file loopmath still owns.
+- `skill show` prints the one skill. `skill show` with a retired name or `reference` exits 1 and names the guide to run instead.
+- `skill install --json` and `skill uninstall --json` print `loopmath.skill/3`: each result has no `reference` list, its `removed` list holds the retired files, and `manifest_action` says whether the manifest was created, updated, removed or left unchanged.
+
+### `loopmath guide` (new)
+
+- `loopmath guide` lists the topics, with one line on when to use each: `onboard`, `import`, `plan`, `record`, `fit` and `reference`. `loopmath guide TOPIC` prints one: 0.3.3's job skill or its `reference.md`, without frontmatter, with each pointer to another skill or to `reference.md` now a `loopmath guide` call. An unknown topic exits 2, names it and lists the topics.
+- A guide is plain text, as `skill show` is, so it has no `--json`. It needs no store and writes nothing.
+
+### `doctor`
+
+- `loopmath doctor` checks the one skill. It names any job skill folder an older loopmath left on disk, with the `loopmath skill install` command that removes it, and says when a file was kept because you changed it, or left alone because loopmath did not write it.
+
+### Tests
+
+- A `doctor` test that set a log's time from today's date, and so failed from late October 2026, now sets it from its fixed clock.
+
 ## 0.4.0rc1 (2026-10-26)
 
 `loopmath harness` is new, and experimental: it tunes a repo's Claude Code harness (CLAUDE.md, skills and agents) on a task you run again and again and can score. Editor sessions propose small edits, a screening design of task runs measures each one against your score, and the kept edits are delivered only when they beat the base; otherwise the base is delivered. It comes with `/harness` in Claude Code, a herdr runner and a guide an agent can follow to drive it. No session of a tune runs a hook, an MCP server or a skill's `!` line, and each run works in its own clone of the repo. Every other command gives 0.3.2's output. This is a release candidate: the tune has tests on stub binaries and a recorded event stream, and has had few real runs.

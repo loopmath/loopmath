@@ -51,6 +51,7 @@ def _docs(other_ext: bool) -> list[dict]:
 
 @pytest.mark.parametrize("other_ext", [False, True])
 def test_a_store_without_records_fits_on_0_2_8_rows(tmp_path, other_ext):
+    (tmp_path / "config.toml").write_text('[belief]\nlevel = "shared"\n', encoding="utf-8")  # 0.3.5's fit
     path = Path(F.fit(tmp_path, docs=_docs(other_ext), no_prior=True, now=NOW))
     meta = json.loads((path / "meta.json").read_text())
     design = json.loads((path / "design.json").read_text())
@@ -154,6 +155,10 @@ def _collect(src: Path, store: Path | None, root: Path) -> dict:
         shutil.copytree(store, home, symlinks=True, ignore=shutil.ignore_patterns("views", "lock"))
     else:
         home.mkdir(parents=True)
+    if src == HERE:  # 0.2.8's numbers are this loopmath's under `level = "shared"`, the default before 0.4.0
+        from loopmath.cli import main
+
+        assert main(["config", "set", "belief.level", "shared", "--home", str(home)]) == 0
     cache = root / "cache"
     out = {"fit": _run(src, home, cache, "fit"), "recommend": _run(src, home, cache, "recommend", *TASK),
            "posterior": _run(src, home, cache, "posterior", "--type", "bug_fix", "--repo", "acme/api")}

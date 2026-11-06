@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from ..ocp import finite
+from ..ocp.conformance import SIMULATE_KEY
 from ..output import (EXIT_LOCKED, EXIT_NOT_FOUND, EXIT_OK, EXIT_USER, emit_json, fmt_time, fmt_usd, html_path,
                       write_html)
 from ..taskmodel import BUILTIN_FEATURES, HORIZON_KEY, FeatureSet, horizon_value, parse_horizon
@@ -25,8 +27,8 @@ from ..types import TASK_TYPE_IDS, TIERS, AcceptanceRule, Configuration, Setting
 from . import run_names
 from . import runs as R
 from .config import KNOWN_ROOTS, ConfigError, coerce, split_key
-from .home import EndBeforeStart, NotFound, Store, StoreError, ValidationFailed
-from .ids import new_id, normalize_ts, now_iso, parse_since, utc_iso
+from .home import DollarsPastFloat, EndBeforeStart, FlowChanged, NotFound, Store, StoreError, ValidationFailed
+from .ids import new_id, normalize_ts, now_iso, observed_iso, parse_since, parse_ts
 from .lock import StoreLocked
 
 VERDICTS = ("accept", "reject", "pass", "fail", "error")
@@ -149,9 +151,11 @@ def task_from_args(args: argparse.Namespace, org: str | None, loaded: dict[str, 
         data = dict(loaded.get("task") if isinstance(loaded.get("task"), dict) else loaded)
     elif args.task_file:
         try:
-            source = from_file = json.loads(Path(args.task_file).expanduser().read_text(encoding="utf-8"))
+            source = from_file = finite.loads(Path(args.task_file).expanduser().read_text(encoding="utf-8"))
         except FileNotFoundError:
             raise NotFound(f"no task file {args.task_file}") from None
+        except finite.NotFinite as exc:
+            raise UserError(f"{args.task_file}: {exc}") from None
         except ValueError as exc:
             raise UserError(f"{args.task_file}: not JSON: {exc}") from None
         if not isinstance(from_file, dict):
@@ -219,7 +223,9 @@ def resolve_config(store: Store, value: str, rec: str | None) -> Configuration |
     path = Path(value).expanduser()
     if value.endswith(".json") and path.is_file():
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = finite.loads(path.read_text(encoding="utf-8"))
+        except finite.NotFinite as exc:
+            raise UserError(f"{value}: {exc}") from None
         except ValueError as exc:
             raise UserError(f"{value}: not JSON: {exc}") from None
         if isinstance(data, dict) and isinstance(data.get("config"), dict):
@@ -721,6 +727,15 @@ class ImportRefused(UserError):
         self.run, self.differs, self.harness2 = run, differs, harness2
 
 
+class SimulatedRefused(UserError):
+    """A simulated run (`is_simulated`) without --allow-simulated: a simulated run never reaches a fit unasked."""
+
+    def __init__(self, label: str, run: Any) -> None:
+        super().__init__(f"{label}: run {run} is simulated (run.ext[{SIMULATE_KEY!r}]); not imported: pass "
+                         "--allow-simulated to store simulated runs")
+        self.run = run
+
+
 class ReplaceRefused(UserError):
     """`--replace` of a run whose new copy holds an outcome recorded after the import, under the same id, with
     another value: a later outcome is never overwritten."""
@@ -883,38 +898,117 @@ def _record_later(doc: dict[str, Any], record: dict[str, Any], signals: list[dic
         _mark_import(doc, {**record, "later": later})
 
 
-def _read_import(store: Store, path: Path, label: str, *, replace: bool = False) -> dict[str, Any]:
-    """Read, migrate when needed and store one document:
-    `{run, path, migrated_from, state, already_in_store, import, finished: None}`, `import` being new, unchanged
-    or replaced. A document whose run is in the store with the same imported content changes nothing; with
-    different content it is refused (ImportRefused) unless `replace`."""
+def is_simulated(doc: dict[str, Any]) -> bool:
+    """Whether a run document is simulated: its `run.ext["dev.loopmath.simulate"]` is an object (`{}` too). The
+    marker is read, not the costs' `basis`."""
+    run = doc.get("run")
+    ext = run.get("ext") if isinstance(run, dict) else None
+    return isinstance(ext, dict) and isinstance(ext.get(SIMULATE_KEY), dict)
+
+
+def _load_import(path: Path, label: str) -> dict[str, Any]:
+    """One document file as a JSON object."""
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = finite.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise NotFound(f"no file {label}") from None
+    except finite.NotFinite as exc:
+        raise UserError(f"{label}: {exc}") from None
     except ValueError as exc:
         raise UserError(f"{label}: not JSON: {exc}") from None
     if not isinstance(doc, dict):
         raise UserError(f"{label}: an OCP document is a JSON object")
+    return doc
+
+
+def _prepare_import(store: Store, doc: dict[str, Any], label: str) -> dict[str, Any]:
+    """What `run import` does to one document before storing it, writing nothing and leaving `doc` as it is: the
+    version checks (0.1 and 0.2 migrated), the record of the producer's content, and a copy with the store's
+    capabilities lifted and the import mark. `{doc, content, record, run, migrated_from, existed, differs}`:
+    `doc` the copy to store, `existed` whether its run id is in the store, `differs` what `_differs` gives for
+    that stored run (None for a run not there)."""
+    from ..ocp.emit import is_flow_document, run_uses_v04
+
+    if is_flow_document(doc):
+        raise UserError(f"{label} is a flow document (kind 'flow'), not a run: the store keeps runs; give it to "
+                        "the flow commands as FLOW")
     version = str(doc.get("ocp", ""))
     migrated = False
     if version in ("0.1", "0.2"):
         from ..ocp.migrate import migrate_doc
-        doc = migrate_doc(doc)
+        doc = migrate_doc(copy.deepcopy(doc))
         migrated = True
-    elif version != "0.3":
-        raise UserError(f"{label} declares OCP {version!r}; run import reads 0.3 (0.1 and 0.2 are migrated)")
+    elif version == "0.4" and not run_uses_v04(doc):
+        raise UserError(f"{label} declares OCP '0.4' but names no flow (run.flow) and states no control.checks; "
+                        "run import reads 0.3, and 0.4 runs that do either")
+    elif version not in ("0.3", "0.4"):
+        raise UserError(f"{label} declares OCP {version!r}; run import reads 0.3, and 0.4 runs that name a flow or "
+                        "state checks (0.1 and 0.2 are migrated)")
+    else:
+        doc = copy.deepcopy(doc)
 
+    shape = _shape_problem(doc)
+    if shape is not None:
+        raise UserError(shape)
     content = _imported_content(doc)
     record = _content_record(content)
     _lift_store_capabilities(doc)
     _mark_import(doc, record)
     given = (doc.get("run") or {}).get("id")
-    entry = {"migrated_from": version if migrated else None, "finished": None}
+    existed = run_names.file_stem(given) is not None and store.exists(given)
+    differs = None
+    if existed:
+        try:
+            stored = store.run_doc(given)
+        except RecursionError:
+            raise StoreError(f"run {given}: the stored run file {store.run_path(given)} nests deeper than the JSON "
+                             "reader can read; nothing was written") from None
+        differs = _differs(stored, record, doc)
+    return {"doc": doc, "content": content, "record": record, "run": given,
+            "migrated_from": version if migrated else None, "existed": existed, "differs": differs}
+
+
+def _shape_problem(doc: dict[str, Any]) -> str | None:
+    """A member `_prepare_import` reads before the strict check, in a shape it cannot read: `run.signals` or
+    `run.preferences` that is not a list, or `producer` that is not an object. A null one is left to the strict
+    check, which names it. The words name the member and its JSON type, as E104 does; None when each can be read."""
+    run = doc.get("run") if isinstance(doc.get("run"), dict) else {}
+    for name, value, want, words in (("run.signals", run.get("signals"), list, "a list"),
+                                     ("run.preferences", run.get("preferences"), list, "a list"),
+                                     ("producer", doc.get("producer"), dict, "an object")):
+        if value is not None and not isinstance(value, want):
+            return f"{name} is {type(value).__name__}, not {words}"
+    return None
+
+
+def _read_import(store: Store, path: Path, label: str, *, replace: bool = False,
+                 allow_simulated: bool = False, finish: bool = False) -> dict[str, Any]:
+    """Read, migrate when needed and store one document:
+    `{run, path, migrated_from, state, already_in_store, import, finished: None}`, `import` being new, unchanged
+    or replaced. A document whose run is in the store with the same imported content changes nothing; with
+    different content it is refused (ImportRefused) unless `replace`. A simulated run is refused
+    (SimulatedRefused) unless `allow_simulated`. A run to be finished (`finish`, or its store ext says finished)
+    whose dollars no float holds is refused (DollarsPastFloat) before it is stored open. A document for a stored
+    run of another flow is refused (FlowChanged), `replace` or not."""
+    prepared = _prepare_import(store, _load_import(path, label), label)
+    if is_simulated(prepared["doc"]) and not allow_simulated:
+        raise SimulatedRefused(label, prepared["run"])
+    where = R.dollars_past_float(prepared["doc"])
+    if where is not None and (finish or R.store_ext(prepared["doc"]).get("state") == R.FINISHED):
+        raise DollarsPastFloat(prepared["run"], where)
+    return _store_import(store, prepared, label, replace=replace)
+
+
+def _store_import(store: Store, prepared: dict[str, Any], label: str, *, replace: bool = False) -> dict[str, Any]:
+    """Store a document `_prepare_import` gave, comparing it again with the store under the store's lock. A stored
+    run of another flow is refused first, so it never gets ImportRefused's offer of --replace."""
+    doc, content, record, given = prepared["doc"], prepared["content"], prepared["record"], prepared["run"]
+    entry = {"migrated_from": prepared["migrated_from"], "finished": None}
     with store.lock():
         existed = run_names.file_stem(given) is not None and store.exists(given)
         kept = dropped = 0
         if existed:
+            store.refuse_other_flow(doc)
             stored = store.run_doc(given)
             differs = _differs(stored, record, doc)
             done = R.is_finished(stored)
@@ -1018,7 +1112,8 @@ def run_import(args: argparse.Namespace) -> int:
     if len(args.files) != 1 or Path(args.files[0]).expanduser().is_dir() or _brief(args):
         return _import_many(args, store, _import_items(args.files))
     try:
-        payload = _read_import(store, Path(args.files[0]).expanduser(), args.files[0], replace=args.replace)
+        payload = _read_import(store, Path(args.files[0]).expanduser(), args.files[0], replace=args.replace,
+                               allow_simulated=args.allow_simulated, finish=args.finish)
     except ImportRefused as exc:
         raise UserError(f"{exc}; {_refused_hint(exc.harness2)}") from None
     run = payload["run"]
@@ -1035,7 +1130,8 @@ def run_import(args: argparse.Namespace) -> int:
         payload["finished"] = res
         lines += _finish_lines(res)
     elif payload["state"] == R.OPEN:
-        lines.append(f"next: stored open: import again with --finish to finish it ({_again(list(args.files))}); "
+        lines.append(f"next: stored open: import again with --finish to finish it "
+                     f"({_again(list(args.files), allow_simulated=args.allow_simulated)}); "
                      "outcomes added since are kept")
     return _out(args, "run.import", payload, lines)
 
@@ -1063,26 +1159,27 @@ def _brief(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "brief", False) and args.json)
 
 
-def _again(files: list[str]) -> str:
+def _again(files: list[str], *, allow_simulated: bool) -> str:
+    """The import to run again to finish the runs it stored open, with --allow-simulated when this one had it."""
     shown = " ".join(files[:3]) + (" ..." if len(files) > 3 else "")
-    return f"loopmath run import {shown} --finish"
+    return f"loopmath run import {shown} --finish" + (" --allow-simulated" if allow_simulated else "")
 
 
-def _import_next(payload: dict[str, Any], files: list[str]) -> str:
+def _import_next(payload: dict[str, Any], files: list[str], *, allow_simulated: bool) -> str:
     """The one step to take after an import, for `--brief`."""
     if not payload["imported"]:
         return "nothing was imported: fix the failed files and import them again"
     open_runs = sum(1 for f in payload["files"] if f["ok"] and f.get("state") == R.OPEN)
     if open_runs:
         return (f"{_count(open_runs, 'run')} stored open: import again with --finish to finish them "
-                f"({_again(files)}); outcomes added since are kept")
+                f"({_again(files, allow_simulated=allow_simulated)}); outcomes added since are kept")
     if payload["fit"].get("started"):
         return "loopmath posterior --html once the background fit ends (loopmath status --json: fit.running)"
     return "loopmath fit --json"
 
 
 def _import_brief(payload: dict[str, Any], failed: list[dict[str, Any]], note: str | None,
-                  files: list[str]) -> dict[str, Any]:
+                  files: list[str], *, allow_simulated: bool) -> dict[str, Any]:
     """Counts, failures (file and error), the overlap with the shipped prior and the next step."""
     fit = payload["fit"]
     return {"imported": payload["imported"], "new": payload["new"], "unchanged": payload["unchanged"],
@@ -1092,7 +1189,8 @@ def _import_brief(payload: dict[str, Any], failed: list[dict[str, Any]], note: s
             "more_failures": max(0, len(failed) - FAILED_SHOWN),
             "shipped_overlap": payload["shipped_overlap"], "overlap_note": note,
             "fit": {k: fit[k] for k in ("started", "reason") if k in fit},
-            "next": _import_next(payload, files), **({"hint": payload["hint"]} if payload.get("hint") else {})}
+            "next": _import_next(payload, files, allow_simulated=allow_simulated),
+            **({"hint": payload["hint"]} if payload.get("hint") else {})}
 
 
 def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, Path | None]]) -> int:
@@ -1110,7 +1208,8 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
         try:
             if path is None:
                 raise NotFound(f"no *.ocp.json files in {label}")
-            entry.update(_read_import(store, path, label, replace=args.replace))
+            entry.update(_read_import(store, path, label, replace=args.replace, allow_simulated=args.allow_simulated,
+                                      finish=args.finish))
             if args.finish and entry["state"] == R.FINISHED:
                 already += 1
             elif args.finish:
@@ -1128,6 +1227,13 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
                          harness2=exc.harness2)
         except ReplaceRefused as exc:
             entry.update(ok=False, error=str(exc), exit=EXIT_USER, refused={"run": exc.run, "outcomes": exc.outcomes})
+        except SimulatedRefused as exc:
+            entry.update(ok=False, error=str(exc), exit=EXIT_USER, refused={"run": exc.run, "simulated": True})
+        except DollarsPastFloat as exc:
+            entry.update(ok=False, error=str(exc), exit=EXIT_USER, refused={"run": exc.run, "past_float": exc.path})
+        except FlowChanged as exc:
+            entry.update(ok=False, error=str(exc), exit=EXIT_USER,
+                         refused={"run": exc.run, "flow": {"stored": exc.stored, "given": exc.given}})
         except ValidationFailed as exc:
             first = (exc.result.get("errors") or [{}])[0] if isinstance(exc.result, dict) else {}
             detail = f": {first.get('code', '')} {first.get('path', '')} {first.get('message', '')}".rstrip() if first else ""
@@ -1159,7 +1265,8 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
     payload["shipped_overlap"] = shipped_overlap(imported_runs)  # once for the whole import
     code = EXIT_NOT_FOUND if any(f["exit"] == EXIT_NOT_FOUND for f in failed) else EXIT_USER if failed else EXIT_OK
     if _brief(args):
-        brief = _import_brief(payload, failed, overlap_note(payload["shipped_overlap"]), list(args.files))
+        brief = _import_brief(payload, failed, overlap_note(payload["shipped_overlap"]), list(args.files),
+                              allow_simulated=args.allow_simulated)
         emit_json(_schema("run.import"), brief)
         return code
     if args.json:
@@ -1178,7 +1285,7 @@ def _import_many(args: argparse.Namespace, store: Store, items: list[tuple[str, 
     lines += [summary, _fit_line(fit)]
     lines += [n for n in [overlap_note(payload["shipped_overlap"])] if n]
     if any(f.get("state") == R.OPEN for f in ok):
-        lines.append(f"next: {_import_next(payload, list(args.files))}")
+        lines.append(f"next: {_import_next(payload, list(args.files), allow_simulated=args.allow_simulated)}")
     if payload.get("hint"):
         lines.append(f"hint: {payload['hint']}")
     dropped =sum(f.get("dropped_outcomes") or 0 for f in ok)
@@ -1216,6 +1323,19 @@ def _signal_value(kind: str, raw: str, scale: str) -> float | str | None:
     return raw.strip()
 
 
+def _observed_at(text: str | None) -> str | None:
+    """`--observed-at` in its stored form (`observed_iso`). Text that is no ISO 8601 time keeps `normalize_ts`'s
+    words; a naive time that local time cannot hold in UTC (a year edge, which `parse_ts` raises on) gets
+    `observed_iso`'s, which name the flag and the value."""
+    try:
+        parse_ts(text)
+    except (OverflowError, ValueError):
+        pass
+    else:
+        normalize_ts(text)
+    return observed_iso(text, flag="--observed-at", need_offset=False)
+
+
 def _build_signal(args: argparse.Namespace, run: str, *, tier: str | None = None,
                   source_ref: str | None = None) -> Signal:
     if not args.signal or "=" not in args.signal:
@@ -1233,7 +1353,8 @@ def _build_signal(args: argparse.Namespace, run: str, *, tier: str | None = None
                   better=args.better if args.kind == "score" else None,
                   target=args.target if args.kind == "score" else None,
                   scale=args.scale if args.kind == "score" else "linear",
-                  at_attempt=args.at_attempt, observed_at=utc_iso(normalize_ts(args.observed_at)) or now_iso(),
+                  at_attempt=args.at_attempt,
+                  observed_at=_observed_at(args.observed_at) or now_iso(),
                   source=source, tier=tier or args.tier)
 
 
@@ -1376,7 +1497,7 @@ def outcome(args: argparse.Namespace) -> int:
         winner = None if args.prefer == "tie" else args.prefer
         judge = args.judge or "referee"
         pref = store.add_preference(args.slate, winner, judge, args.blinded,
-                                    observed_at=utc_iso(normalize_ts(args.observed_at)), tier=args.tier)
+                                    observed_at=_observed_at(args.observed_at), tier=args.tier)
         members = [r["run"] for r in store.runs(slate=args.slate)]
         payload = {"slate": args.slate, "preference": pref, "winner": args.prefer, "members": members, "judge": judge,
                    "blinded": bool(args.blinded)}
@@ -1576,6 +1697,7 @@ def config_unset(args: argparse.Namespace) -> int:
 # ================================================================ status, report
 @handler("status")
 def status(args: argparse.Namespace) -> int:
+    from ..update import status_object
     from .status import status_payload, status_lines
 
     store = _store(args)
@@ -1583,6 +1705,7 @@ def status(args: argparse.Namespace) -> int:
     payload = status_payload(store)
     if reindexed is not None:
         payload["reindex"] = reindexed
+    payload["update"] = status_object()  # the daily check, here so the first status of the day has it
     return _out(args, "status", payload, status_lines(payload))
 
 

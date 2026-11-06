@@ -96,8 +96,8 @@ def test_fit_records_the_weights_and_reads_the_config_override(tmp_path):
                        / "meta.json").read_text())
     assert meta["options"]["benchmark_prior_weight"] is None
     assert meta["options"]["benchmark_weights"] == {"tb": 2.0, "tb-tokens": 5.0}
-    assert len(meta["heads"]["success"]["factors"]) == 6
-    assert main(["config", "set", "benchmark_prior_weight", "0", "--home", str(home)]) == 0
+    assert len(meta["heads"]["success"]["factors"]) == 7  # the store level: one per result, the reference's too
+    assert main(["config", "set", "benchmark_prior_weight", "0", "--home", str(home)]) == 0  # off, offset ones too
     meta = json.loads((F.fit(home, docs=docs, benchmarks=path, now=NOW, bundle_dir=tmp_path / "none")
                        / "meta.json").read_text())
     assert meta["options"]["benchmark_prior_weight"] == 0.0

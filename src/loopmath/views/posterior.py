@@ -550,9 +550,10 @@ def resolve_config(home: Path, cfg: str) -> Configuration | None:
     runs = sorted((home / "runs").glob("*.ocp.json")) if (home / "runs").is_dir() else []
     for path in [*_json_files(home / "recs"), *runs]:
         try:
-            found = _find_config_dict(json.loads(path.read_text(encoding="utf-8")), cfg)
-        except (OSError, json.JSONDecodeError):
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):  # ValueError: not JSON, or an integer too long to read
             continue
+        found = _find_config_dict(doc, cfg)
         if found is not None:
             config = _read_config(found)
             if config is not None:
@@ -757,7 +758,7 @@ def recommended_task(home: Path, cfg: str | None, task_type: str | None = None,
     for path in _json_files(home / "recs"):
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             continue
         t = rec.get("task") if isinstance(rec, dict) else None
         if (not isinstance(t, dict) or t.get("type") not in TASK_TYPE_IDS or not t.get("repo")
@@ -779,7 +780,7 @@ def recommend_task(home: Path, task: Task, fit_id: str, rule: Any = None) -> dic
     for path in _json_files(home / "recs"):
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             continue
         t = rec.get("task") if isinstance(rec, dict) else None
         if (not isinstance(t, dict) or t.get("type") != task.type or t.get("repo") != task.repo
@@ -870,7 +871,7 @@ def choose_target(home: Path, task: Task, head: str | None, present: list[str]) 
     for path in _json_files(home / "recs"):
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             continue
         if not isinstance(rec, dict) or (rec.get("task") or {}).get("type") not in (None, task.type):
             continue
@@ -1055,6 +1056,11 @@ def _rec_rule(rec: dict[str, Any]) -> Any:
     score = rule.get("score") if isinstance(rule.get("score"), dict) else None
     if not score or not score.get("name") or not isinstance(score.get("target"), (int, float)):
         return None
+    try:  # a target no float holds is no usable rule (OCP E195): every later read converts it
+        if not math.isfinite(float(score["target"])):
+            return None
+    except OverflowError:
+        return None
     try:
         return AcceptanceRule.from_dict(rule)
     except (TypeError, ValueError, KeyError):
@@ -1081,7 +1087,7 @@ def results_target(home: Path, task: Task, text: str | None) -> tuple[Any, dict[
     for path in _json_files(home / "recs"):
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             continue
         task_of = rec.get("task") if isinstance(rec, dict) and isinstance(rec.get("task"), dict) else None
         if not task_of or task_of.get("type") != task.type or task_of.get("repo") != task.repo:

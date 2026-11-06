@@ -1,6 +1,6 @@
 """Spec 07 section 3: a scripted dry run of every skill's job, with fake agents.
 
-The dry run types the commands the six skills show, as an agent following them would, on the
+The dry run types the commands the skill and its guides show, as an agent following them would, on the
 synthetic history of tests/onboard/onboard_fixture.py: onboard with a `command:` labeller, plan a
 task and start the pair it offers, record both runs from the folders they worked in, judge the
 pair blind, report a late incident, refit, bring the two runs into a second store as OCP files,
@@ -9,9 +9,9 @@ starts the goal.
 Every command runs as `python -m loopmath` with HOME, the store and the caches in
 tmp_path, so no real session is ever read.
 
-Then every JSON field a skill or the reference tells the agent to read ("Read `a`, `b[]` (`c`)")
-must be in the output of the command shown before it, and every field a skill reads must be in
-the reference.
+Then every JSON field the skill, a guide or the reference tells the agent to read ("Read `a`,
+`b[]` (`c`)") must be in the output of the command shown before it, and every field a job guide
+reads must be in the reference.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 import loopmath
-from loopmath.skill import install as inst
+from loopmath.skill import guide
 from skill_texts import key, names, parser, read_fields, resolve, texts
 
 _spec = importlib.util.spec_from_file_location(
@@ -88,7 +88,8 @@ class Agent:
         self.tmp, self.top, self.seen = tmp, parser(), {}
         self.env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp / "home"), "LOOPMATH_HOME": str(store),
                     "LOOPMATH_CACHE_DIR": str(tmp / "cache"), "PYTHONPATH": str(SRC),
-                    "PYTHONDONTWRITEBYTECODE": "1", "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8"}
+                    "PYTHONDONTWRITEBYTECODE": "1", "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8",
+                    "LOOPMATH_NO_UPDATE_CHECK": "1"}
 
     def __call__(self, *argv: str, ok: tuple[int, ...] = (0,), pin: str | None = None):
         res = self.run(*argv, pin=pin)
@@ -160,10 +161,10 @@ def journey(tmp_path_factory) -> dict[str, list]:
     lm = _new_user(tmp_path)
     pids: list[int] = []
     try:
-        # loopmath: the router's one command, on an empty machine.
+        # The skill: its one command, on an empty machine.
         assert lm("status", "--json")["exists"] is False
 
-        # loopmath-onboard: look, then onboard with the user's labeller, then the results page.
+        # guide onboard: look, then onboard with the user's labeller, then the results page.
         dry = lm("onboard", "--dry-run", "--json")
         assert dry["groups"]["to_label"] == 2 and [o["spec"] for o in dry["labeler"]["options"]] == ["none"]
         done = lm("onboard", "--labeler", f"command:{sys.executable} {tmp_path / 'labeler.py'}", "--yes", "--json")
@@ -172,7 +173,7 @@ def journey(tmp_path_factory) -> dict[str, list]:
         assert lm("fit", "--json", pin=f"fit_id={PAIR_FIT}")["fit"]["id"] == PAIR_FIT
         _page(lm("posterior", "--html"))
 
-        # loopmath-plan-task: a repo at its base commit, recommend, start the pair.
+        # guide plan: a repo at its base commit, recommend, start the pair.
         repo, base = _base_repo(lm)
         rec = lm(*RECOMMEND, "--base-commit", base, "--json", "--brief", "--html")
         _page(rec["page"])
@@ -190,7 +191,7 @@ def journey(tmp_path_factory) -> dict[str, list]:
         assert "cx-review-1" in [s["session"] for s in listed["sessions"]] and listed["more"] == 0
         assert all(s["harness"] in ("claude-code", "codex") and s["session"] for s in listed["sessions"])
 
-        # loopmath-record-run: each run worked in its own clone. The first run's implementer is the
+        # guide record: each run worked in its own clone. The first run's implementer is the
         # fixture's Claude Code session lead-1 (it ended before the run, so it counts whole and the run's
         # start moves back, with a note; its log ran another model than configured, a second note);
         # every other piece had no session id, so it is recorded by its folder and stays uncosted.
@@ -221,13 +222,13 @@ def journey(tmp_path_factory) -> dict[str, list]:
         lm("outcome", "--commit", shas[0], "--signal", "incident=INC-1", "--kind", "event", "--source", "user",
            "--json")
 
-        # loopmath-update-fit, once the refits the records started are done.
+        # guide fit, once the refits the records started are done.
         _wait(pids)
         fit = lm("fit", "--json")
         assert fit["fit"]["n_runs"]["user"] == 4, fit["fit"]
         _page(lm("posterior", "--html"))
 
-        # loopmath-import-runs: the two runs as OCP files, and one broken file, into a second store.
+        # guide import: the two runs as OCP files, and one broken file, into a second store.
         folder = tmp_path / "ocp"
         folder.mkdir()
         for run in runs:
@@ -246,7 +247,7 @@ def journey(tmp_path_factory) -> dict[str, list]:
         lm.env["LOOPMATH_HOME"] = str(tmp_path / "store3")  # the whole folder: each file says how it went
         got = lm("run", "import", str(folder), "--finish", "--no-fit", "--json", ok=(1,))
         assert got["imported"] == 2 and [f["error"] for f in got["files"] if not f["ok"]]
-        lm.env["LOOPMATH_HOME"] = str(tmp_path / "store4")  # the short form the import skill reads
+        lm.env["LOOPMATH_HOME"] = str(tmp_path / "store4")  # the short form the import guide reads
         got = lm("run", "import", str(folder), "--finish", "--no-fit", "--json", "--brief", ok=(1,))
         assert got["imported"] == 2 and got["failed"] == 1 and got["failures"][0]["file"].endswith("broken.ocp.json")
         assert got["next"] == "loopmath fit --json" and got["overlap_note"] is None
@@ -313,9 +314,9 @@ def test_every_field_a_skill_reads_is_in_the_output_of_its_command(journey):
     assert len(pending) <= len(PENDING), pending
 
 
-def test_every_field_a_skill_reads_is_in_the_reference():
-    top, ref = parser(), inst.reference_text()
-    missing = {f"{name}: `{field}`" for name in inst.SKILLS
-               for _, tree in read_fields(inst.skill_text(name), top)
+def test_every_field_a_skill_or_guide_reads_is_in_the_reference():
+    top, ref = parser(), guide.text("reference")
+    missing = {f"{name}: `{field}`" for name, text in texts().items() if name != "reference"
+               for _, tree in read_fields(text, top)
                for field in names(tree) if f"`{field}`" not in ref}
     assert not missing, sorted(missing)

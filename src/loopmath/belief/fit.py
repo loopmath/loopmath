@@ -39,6 +39,8 @@ from .forest import Forest, default_scale, fixed_sd, scale_group
 from .pricing import PRICE_NODE, PRICE_PRIOR_SD, STREAMS, fit_offsets, price_term, rate_floors
 from .gaussian import N_DRAWS, Factors, GaussianHead, HeadFit, LogisticHead, Prior
 from .integrated import SUCCESS_HEAD_KEY, integrate_success, success_method
+from .level import INTERCEPT_SD, USER_LEVEL, LevelSettings, level_settings, shipped
+from .outcome import unreadable_signals
 from .state import SCORE_CLAMP, inverse_transform, transform  # noqa: F401  (re-exported)
 
 FIT_LOCK = ".fit.lock"
@@ -72,6 +74,7 @@ class UnknownFit(LookupError):
 FIXED_SOURCES = ("benchmark", "shared", "user")
 
 SHIPPED_COPY = "shipped copy of a stored run"
+RUN_NOT_OBJECT = "unreadable: run not an object"
 
 REASON_NOTES = {
     "attempt without usable cost": "crashed or no usage reported",
@@ -189,10 +192,70 @@ def _excluded(source: str, without: tuple[str, ...]) -> bool:
     return False
 
 
+def admitted(docs: Iterable[dict | tuple[str | None, dict]], *, without: tuple[str, ...] = (),
+             now: datetime | None = None, q_by_tier: dict[str, float] | None = None,
+             dropped: Counter | None = None, overlap: Counter | None = None):
+    """The documents `collect_rows` reads, as `(origin, document, ParsedRun)` in order, with its admission rules:
+    origins in `without`, the store's copy over a shipped one, unusable documents, repeated run ids and sources in
+    `without`. `dropped` and `overlap` take the counts `collect_rows` reports. A flow run is parsed with no
+    combined quality (`quality=(None, None)`), so admission fits nothing. A document or `run` that is not an
+    object is unreadable before any rule reads its run id; a run whose signals no reader can walk
+    (`outcome.unreadable_signals`) is unreadable before it is parsed."""
+    dropped = Counter() if dropped is None else dropped
+    overlap = Counter() if overlap is None else overlap
+    now = now or datetime.now().astimezone()
+    seen: set[str] = set()
+    stored: set[str] = set()  # run ids of the user's store, whose copy wins
+    for item in docs:
+        origin, doc = item if isinstance(item, tuple) else (None, item)
+        if not isinstance(doc, dict) or not isinstance(doc.get("run", {}), dict):
+            dropped[RUN_NOT_OBJECT] += 1  # no run id to read, so before every rule that reads one
+            continue
+        if origin is not None and _excluded(origin, without):
+            if origin != "user" and prior_data.run_id_of(doc) in stored:
+                overlap[origin] += 1
+            dropped[f"without {origin}"] += 1  # counted, not parsed; `--without user` frees the shipped copies
+            continue
+        if origin == "user":
+            stored.add(prior_data.run_id_of(doc))
+        elif origin is not None:
+            if prior_data.run_id_of(doc) in stored:
+                overlap[origin] += 1
+                dropped[SHIPPED_COPY] += 1
+                continue
+        shape = unreadable_signals(doc)
+        if shape is not None:
+            dropped[shape] += 1
+            continue
+        try:
+            pr = parse_run(doc, now=now, origin=origin, q_by_tier=q_by_tier, quality=(None, None))
+        except Unusable as exc:
+            dropped[str(exc)] += 1
+            continue
+        except (KeyError, TypeError, ValueError) as exc:
+            dropped[f"unreadable: {type(exc).__name__}"] += 1
+            continue
+        if pr.run_id in seen:
+            dropped["duplicate run id"] += 1
+            continue
+        seen.add(pr.run_id)
+        if _excluded(pr.source, without):
+            dropped[f"without {pr.source}"] += 1
+            continue
+        yield origin, doc, pr
+
+
+def _flow_run(doc: dict) -> bool:
+    return isinstance((doc.get("run") or {}).get("flow"), dict)
+
+
 def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tuple[str, ...] = (),
                  now: datetime | None = None, features: FeatureSet | None = None,
-                 q_by_tier: dict[str, float] | None = None):
+                 q_by_tier: dict[str, float] | None = None, own_success: bool = False):
     """Rows of every head from run documents, plus counts of what was used and dropped.
+
+    `own_success` (config `belief.shipped_success = "drop"`): shipped runs give no success or score rows, so
+    the success level comes from the user's runs and shared imports only (`level.py`).
 
     `docs` yields documents, or `(origin, document)` pairs from `fit()`: `user` for the store
     (read first), the manifest source for a shipped run, None to read the document's label
@@ -208,6 +271,13 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
     built-ins by default); only admitted values keep their `feature:` terms, and `tally`
     (features.FeatureTally) holds the support, the admitted values and the recorded horizons.
     `q_by_tier` (`outcome.q.<tier>` from config.toml) reaches each run's outcome; None is the built-in q.
+
+    Runs are admitted by `admitted`. A flow run's success and score rows follow the other runs' rows: its score
+    is its unpooled estimate under the current judges fit of the admitted flow runs (`flows.judges.quality_map`),
+    the numbers `flows.judges.current_quality` gives every other reader. Each judge score the reader skips is
+    counted under its reason's count (`flows.judges.DROP_COUNTS`: unranged, unattributed, outside-range,
+    nonfinite and nonnumeric), one per judge, or per signal when unattributed, and a run whose fit was refused for
+    its number of judges as `judge scores of a fit refused for too many judges`.
     """
     now = now or datetime.now().astimezone()
     features = features or FeatureSet()
@@ -221,42 +291,14 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
     checks: Counter = Counter()
     runs_by_source: Counter = Counter()
     config_support: dict[str, Counter] = defaultdict(Counter)
-    seen: set[str] = set()
-    stored: set[str] = set()  # run ids of the user's store, whose copy wins
     overlap: Counter = Counter()
     labels: Counter = Counter()
     model_runs: dict[str, set[str]] = defaultdict(set)  # the price offset's inputs (spec 04 section 2)
     model_streams: dict[str, list[float]] = defaultdict(lambda: [0.0] * len(STREAMS))
     variants: dict[str, dict] = {}  # the harness records read, by digest (`spec/harness.md`)
-    for item in docs:
-        origin, doc = item if isinstance(item, tuple) else (None, item)
-        if origin is not None and _excluded(origin, without):
-            if origin != "user" and prior_data.run_id_of(doc) in stored:
-                overlap[origin] += 1
-            dropped[f"without {origin}"] += 1  # counted, not parsed; `--without user` frees the shipped copies
-            continue
-        if origin == "user":
-            stored.add(prior_data.run_id_of(doc))
-        elif origin is not None:
-            if prior_data.run_id_of(doc) in stored:
-                overlap[origin] += 1
-                dropped[SHIPPED_COPY] += 1
-                continue
-        try:
-            pr = parse_run(doc, now=now, origin=origin, q_by_tier=q_by_tier)
-        except Unusable as exc:
-            dropped[str(exc)] += 1
-            continue
-        except (KeyError, TypeError, ValueError) as exc:
-            dropped[f"unreadable: {type(exc).__name__}"] += 1
-            continue
-        if pr.run_id in seen:
-            dropped["duplicate run id"] += 1
-            continue
-        seen.add(pr.run_id)
-        if _excluded(pr.source, without):
-            dropped[f"without {pr.source}"] += 1
-            continue
+    flow_runs: list[tuple] = []  # (document, ParsedRun, run row, task type): success and score rows come last
+    for _, doc, pr in admitted(docs, without=without, now=now, q_by_tier=q_by_tier, dropped=dropped,
+                               overlap=overlap):
         if pr.source == "user" and pr.task.extra.get("source_label"):
             labels[pr.task.extra["source_label"]] += 1
         for reason, n in pr.dropped.items():
@@ -266,7 +308,7 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
         tally.add(pr.task, task_features(pr.task, features), pr.run_id, pr.source)
         chain = [n for n, _, _ in task_terms(pr.task, pr.source) if n.split(":", 1)[0] in TASK_LEVELS]
         config_support[pr.config.id].update(chain + ["all"])
-        st = structure(pr.config, pr.factors)
+        st = structure(pr.config, pr.factors, pr.flow)
         if pr.harness is not None:
             _add_variant(variants, pr, st)
         ttype = pr.task.type
@@ -288,7 +330,12 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
             heads["gate"].add(gate_row(pr.task, pr.source, st, st.gates[gi], k, features), 1.0 if passed else 0.0,
                               1.0, pr.run_id, pr.source, ttype)
         row = run_row(pr.task, pr.source, st, features)
+        if _flow_run(doc):
+            flow_runs.append((doc, pr, row, ttype))
+            continue
         ev = pr.evidence
+        if own_success and shipped(pr.source):
+            ev = None
         if ev is not None and ev.z is not None:
             heads["success"].add(row, float(ev.z), float(ev.q), pr.run_id, pr.source, ttype)
             if configured_q:  # z and the tier do not depend on q, so this read differs from `ev` in q only
@@ -297,6 +344,30 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
             meta = pr.score_meta.get(name) or {}
             score_meta[name][(meta.get("scale") or "linear", meta.get("better") or "higher", meta.get("unit"))] += 1
             score_raw[name].append((row, float(value), pr.run_id, pr.source, ttype))
+    if flow_runs:
+        from ..flows import judges
+
+        quality = judges.quality_map([(doc, pr.rule) for doc, pr, _, _ in flow_runs])
+        for doc, pr, row, ttype in flow_runs:
+            if own_success and shipped(pr.source):
+                continue  # as for every other shipped run: no success or score rows
+            value = quality.get(pr.run_id, (None, None))
+            ev = design_rows.run_evidence(doc, pr.rule, now=now, q_by_tier=q_by_tier, quality=value)
+            for reason in judges.judged(doc, pr.rule.score.name).reasons if pr.rule.score is not None else ():
+                dropped[judges.DROP_COUNTS[reason.split(":", 1)[0]]] += 1
+            if getattr(value, "reason", None):
+                dropped[judges.REFUSED] += 1
+            if ev.z is not None:
+                heads["success"].add(row, float(ev.z), float(ev.q), pr.run_id, pr.source, ttype)
+                if configured_q:
+                    heads["success"].seed_w.append(
+                        float(design_rows.run_evidence(doc, pr.rule, now=now, quality=value).q))
+            metas = design_rows.run_score_meta(doc, ev, pr.rule)
+            for name, v in (ev.scores or {}).items():
+                meta = metas.get(name) or {}
+                score_meta[name][(meta.get("scale") or "linear", meta.get("better") or "higher",
+                                  meta.get("unit"))] += 1
+                score_raw[name].append((row, float(v), pr.run_id, pr.source, ttype))
     for name, items in score_raw.items():
         scale, better, unit = score_meta[name].most_common(1)[0][0]
         hr = HeadRows(f"score:{name}", "gaussian", "score")
@@ -394,11 +465,28 @@ def build_matrix(rows: list[list[Term]], forest: Forest, extra_nodes: Iterable[t
     return X, list(local)
 
 
-def make_prior(node_ids: list[str], kind: str) -> Prior:
+def make_prior(node_ids: list[str], kind: str, level: LevelSettings | None = None) -> Prior:
+    """Under a store level (`level.py`) every `source:` node is fixed at sd `level_sd`, and the intercept is held at 0
+    on the logit and score heads. The cost-kind heads (cost, rate) keep 0.3.5's free intercept, which carries the
+    shipped runs' level of log dollars and log dollars per token, so each source node is a deviation from it and a
+    provider with no runs is priced at that level, not at e^0."""
     groups: list[str] = []
     gidx = np.full(len(node_ids), -1, dtype=np.int64)
     fvar = np.ones(len(node_ids))
+    store = level is not None and level.store
     for j, node in enumerate(node_ids):
+        if store and node.startswith("source:"):
+            fvar[j] = level.level_sd ** 2
+            continue
+        if store and node == "fixed:intercept" and kind != "cost":
+            fvar[j] = INTERCEPT_SD ** 2
+            continue
+        if level is not None and node.startswith("btx:"):  # the transfer error, tempered with the benchmark
+            fvar[j] = (level.gap_scale * level.transfer_sd) ** 2 / max(level.alpha, 1e-9)
+            continue
+        if level is not None and node.startswith("btxe:"):  # an effort's own transfer error
+            fvar[j] = (level.gap_scale * level.effort_sd) ** 2 / max(level.alpha, 1e-9)
+            continue
         g = scale_group(node)
         if g is None:
             fvar[j] = fixed_sd(node, kind) ** 2
@@ -479,11 +567,15 @@ def input_key(heads_rows: dict[str, HeadRows], specs: list, settings: dict) -> s
     return h.hexdigest()
 
 
-def fit_head(hr: HeadRows, forest: Forest, factor_specs: list, *, eb: bool = True) -> dict:
-    """Fit one head; returns arrays and metadata for the state files."""
+def fit_head(hr: HeadRows, forest: Forest, factor_specs: list, *, eb: bool = True,
+             level: LevelSettings | None = None) -> dict:
+    """Fit one head; returns arrays and metadata for the state files. Under a store level the head always
+    holds `source:user`, so a store without runs predicts at its wide prior level."""
     extra = [(n, p) for spec in factor_specs for n, p, _ in spec.terms]
+    if level is not None and level.store:
+        extra.append((USER_LEVEL, None))
     X, node_ids = build_matrix(hr.rows, forest, extra)
-    prior = make_prior(node_ids, hr.kind)
+    prior = make_prior(node_ids, hr.kind, level)
     factors = make_factors(factor_specs, node_ids)
     # leaves first (block.py): no two of the leading nodes share a row or a factor, so the stored
     # precision's Cholesky factor is the block factor, rebuilt in O(c^3) by the state
@@ -628,6 +720,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
 
         # `outcome.q.<tier>`, read as `run finish` reads it; unset, the built-in q (0.2.6, fix (1))
         q_by_tier = {tier: Config(home / "config.toml", config).q_for_tier(tier) for tier in TIER_Q}
+        level = level_settings(config)
 
         def all_docs() -> Iterator[dict | tuple[str | None, dict]]:
             if docs is not None:
@@ -641,7 +734,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
 
         (heads_rows, score_info, dropped, runs_by_source, config_support, checks, overlap,
          labels, tally, variants) = collect_rows(all_docs(), without=without, now=now, features=features,
-                                                 q_by_tier=q_by_tier)
+                                                 q_by_tier=q_by_tier, own_success=level.own_success)
         removed = {k[len("without "):] for k in dropped if k.startswith("without ")}
         unknown, known = unknown_sources(without, set(runs_by_source) | removed, bundle_dir)
         if unknown:
@@ -652,13 +745,19 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         if not no_prior and "benchmark" not in without:
             specs = prior_data.benchmark_factors(benchmarks, weight=weight)
             bench_weights = prior_data.benchmark_weights(benchmarks, weight=weight)
-        seed_key = input_key(heads_rows, specs, {"no_prior": no_prior, "without": sorted(without), "eb": eb,
-                                                  "benchmark_prior_weight": weight})
+            if level.benchmarks == "offset":  # success factors by offset and scale; cost and tokens as before
+                specs = [s for s in specs if s.head != "success"] + prior_data.benchmark_offset_factors(
+                    benchmarks, alpha=level.alpha, gap_scale=level.gap_scale, transfer_sd=level.transfer_sd,
+                    effort_sd=level.effort_sd, weight=weight)
+        key_settings = {"no_prior": no_prior, "without": sorted(without), "eb": eb, "benchmark_prior_weight": weight}
+        if level.key():  # 0.3.5's defaults keep 0.3.5's seed keys
+            key_settings["level"] = repr(sorted(level.key().items()))
+        seed_key = input_key(heads_rows, specs, key_settings)
         forest = Forest()
         fitted = {}
         for name, hr in heads_rows.items():
             head_specs = [s for s in specs if s.head == name]
-            if not hr.rows:
+            if not hr.rows and not (level.store and name == "success"):  # a store level fits success unseen
                 continue
             nodes = horizon_nodes(hr.rows)
             if nodes:  # the horizon priors, --no-prior included (spec 04 section 1)
@@ -668,7 +767,9 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             if name in KEY_ONLY:  # 0.2.7's tokens head: its nodes enter the index where they did, unfitted
                 build_matrix(hr.rows, forest, [(n, p) for spec in head_specs for n, p, _ in spec.terms])
                 continue
-            fitted[name] = fit_head(hr, forest, head_specs, eb=eb)
+            # 0.3.5's call when no level key is set
+            fitted[name] = (fit_head(hr, forest, head_specs, eb=eb, level=level.for_head(name)) if level.key()
+                            else fit_head(hr, forest, head_specs, eb=eb))
         fit_id = new_fit_id(fits, now)
         partial = fits / f"{fit_id}.partial"
         partial.mkdir(parents=True)
@@ -751,6 +852,12 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             meta.setdefault("model_options", {})[SUCCESS_HEAD_KEY] = success_head
             if "success" in fitted:
                 meta["heads"]["success"]["method"] = success_head
+        if level.key():  # a store level or benchmark transfer: older loopmath refuses the fit (design version 5)
+            meta["design_version"] = design_rows.OPT_IN_DESIGN_VERSION
+            meta.setdefault("model_options", {}).update({"belief.level": level.level,
+                                                         "belief.shipped_success": level.shipped_success,
+                                                         "belief.benchmark_factors": level.benchmarks})
+            meta["options"]["level"] = level.key()
         meta["seconds"] = round(time.monotonic() - started, 3)
         _atomic_json(partial / "meta.json", meta)
         final = fits / fit_id

@@ -85,7 +85,7 @@ def test_tokens_factors_enter_no_head(tmp_path):
     now = datetime.fromisoformat("2026-09-23T12:00:00-07:00")
     fitted = F.fit(tmp_path / "with", docs=docs, benchmarks=path, now=now, bundle_dir=tmp_path / "none")
     meta = json.loads((fitted / "meta.json").read_text())
-    assert "tokens" not in meta["heads"] and len(meta["heads"]["success"]["factors"]) == 1
+    assert "tokens" not in meta["heads"] and len(meta["heads"]["success"]["factors"]) == 2  # offset: the reference too
     assert all(meta["heads"][h]["factors"] == [] for h in ("cost", "rate", "gate"))
     assert [f.head for f in benchmark_factors(path)].count("tokens") == 1
     plain = load(F.fit(tmp_path / "without", docs=docs, benchmarks=tmp_path / "missing.toml", now=now,

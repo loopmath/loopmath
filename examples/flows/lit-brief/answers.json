@@ -1,0 +1,237 @@
+{
+  "purpose": {
+    "id": "lit-brief",
+    "title": "Question to a one-page brief",
+    "example_input": "Stub question 1."
+  },
+  "steps": [
+    {
+      "id": "scout",
+      "role": "worker",
+      "model": "claude-sonnet-5-5",
+      "harness": "api",
+      "effort": "default",
+      "reads": [
+        "question"
+      ],
+      "writes": [
+        "sources"
+      ]
+    },
+    {
+      "id": "extract",
+      "role": "worker",
+      "model": "claude-opus-5-5",
+      "harness": "api",
+      "effort": "high",
+      "reads": [
+        "sources"
+      ],
+      "writes": [
+        "claims"
+      ]
+    },
+    {
+      "id": "synthesize",
+      "role": "worker",
+      "model": "gpt-6-astra",
+      "harness": "api",
+      "effort": "high",
+      "reads": [
+        "claims",
+        "question"
+      ],
+      "writes": [
+        "brief"
+      ]
+    },
+    {
+      "id": "critic",
+      "role": "reviewer",
+      "model": "claude-haiku-5-5",
+      "harness": "api",
+      "effort": "default",
+      "reads": [
+        "brief",
+        "claims"
+      ],
+      "writes": [
+        {
+          "id": "verdict",
+          "kind": "verdict"
+        }
+      ]
+    }
+  ],
+  "checks": {
+    "gates": [
+      {
+        "after": "extract",
+        "rule": "command:claims-check",
+        "on_fail": "extract"
+      },
+      {
+        "after": "critic",
+        "on_fail": "synthesize"
+      }
+    ],
+    "budget_rounds": 2,
+    "rescue": "redo_usual"
+  },
+  "judging": {
+    "judges": [
+      {
+        "id": "j-claude",
+        "kind": "model",
+        "model": {
+          "id": "claude-sonnet-5-5"
+        },
+        "rubric": "rubric.md#v1"
+      },
+      {
+        "id": "j-astra",
+        "kind": "model",
+        "model": {
+          "id": "gpt-6-astra"
+        },
+        "rubric": "rubric.md#v1"
+      },
+      {
+        "id": "person",
+        "kind": "person",
+        "rate": 0.2
+      }
+    ],
+    "accept": {
+      "name": "quality>=0.7+claims-check",
+      "definition": "quality at least 0.7 and the claims check passes",
+      "requires": [
+        "claims-check"
+      ],
+      "score": {
+        "name": "quality",
+        "target": 0.7,
+        "better": "higher",
+        "scale": "fraction"
+      }
+    }
+  },
+  "objective": {
+    "score": "quality"
+  },
+  "hypothesis": {
+    "text": "extract can run on Sonnet without hurting the brief; the critic adds little",
+    "edits": [
+      {
+        "kind": "model",
+        "piece": "extract",
+        "value": {
+          "id": "claude-sonnet-5-5"
+        }
+      },
+      {
+        "kind": "drop",
+        "piece": "critic"
+      }
+    ]
+  },
+  "allow": {
+    "pieces": {
+      "extract": {
+        "models": [
+          {
+            "id": "claude-sonnet-5-5"
+          },
+          {
+            "id": "claude-haiku-5-5"
+          }
+        ]
+      },
+      "synthesize": {
+        "efforts": [
+          "medium",
+          "high"
+        ]
+      },
+      "critic": {
+        "drop": true
+      },
+      "scout": {
+        "widths": [
+          1,
+          2
+        ],
+        "select": {
+          "harness": "api",
+          "model": {
+            "id": "claude-haiku-5-5"
+          }
+        }
+      }
+    },
+    "budgets": [
+      1,
+      2,
+      3
+    ],
+    "merges": [
+      {
+        "id": "extract+synthesize",
+        "replace": [
+          "extract",
+          "synthesize"
+        ],
+        "into": {
+          "id": "extract_synthesize",
+          "role": "worker"
+        },
+        "setting": {
+          "harness": "api",
+          "model": {
+            "id": "claude-opus-5-5"
+          },
+          "effort": "high",
+          "options": {
+            "prompt": "merged-v1"
+          }
+        }
+      }
+    ]
+  },
+  "inputs": {
+    "ref": "questions.jsonl",
+    "type": "research",
+    "ids": [
+      "q01",
+      "q02",
+      "q03",
+      "q04",
+      "q05",
+      "q06",
+      "q07",
+      "q08",
+      "q09",
+      "q10",
+      "q11",
+      "q12",
+      "q13",
+      "q14",
+      "q15",
+      "q16",
+      "q17",
+      "q18",
+      "q19",
+      "q20"
+    ],
+    "holdout": [
+      "q13",
+      "q14",
+      "q15",
+      "q16",
+      "q17",
+      "q18",
+      "q19",
+      "q20"
+    ]
+  }
+}

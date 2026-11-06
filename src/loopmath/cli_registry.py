@@ -340,7 +340,7 @@ def _add_recording(sub) -> None:
     p = sub.add_parser("run", help="record a run: start, record, import, attempt, artifact, finish, sessions")
     rs = p.add_subparsers(dest="run_command", required=True)
 
-    q = rs.add_parser("start", help="open a run (OCP v0.3 skeleton in the store)")
+    q = rs.add_parser("start", help="open a run (OCP v0.3 skeleton in the store; v0.4 when the workflow states checks)")
     _task_args(q)
     q.add_argument("--config", default=None, metavar="CFG", help="configuration id from recommend")
     q.add_argument("--workflow", default=None, metavar="FILE.toml", help="a workflow TOML file, a catalog name or a workflow in "
@@ -397,13 +397,16 @@ def _add_recording(sub) -> None:
     _common(q)
     q.set_defaults(func=_lazy("loopmath.store.commands:run_finish"))
 
-    q = rs.add_parser("import", help="store OCP v0.3 runs written by the orchestrator (files or a directory)")
+    q = rs.add_parser("import", help="store OCP v0.3 runs written by the orchestrator, or v0.4 runs that name a "
+                                     "flow or state checks (files or a directory)")
     q.add_argument("files", nargs="+", metavar="FILE.ocp.json|DIR", help="OCP documents, or a directory of *.ocp.json files")
     q.add_argument("--finish", action="store_true", help="also finish each run once stored; one background refit at the end")
     q.add_argument("--no-fit", action="store_true", help="do not start the background refit")
     q.add_argument("--replace", action="store_true", help="take this copy of a run already in the store with different "
                    "content (without it such a run is refused); outcomes added after the import are kept, and a "
                    "copy that changes one is refused")
+    q.add_argument("--allow-simulated", action="store_true", help="also store simulated runs (run.ext "
+                   "dev.loopmath.simulate); without it they are refused")
     q.add_argument("--brief", action="store_true", help="with --json: a short object for agents (counts, failures with "
                    "file and error, the overlap with the shipped prior, the next step)")
     _common(q)
@@ -502,7 +505,8 @@ def _add_recording(sub) -> None:
                       description="Sets one key in config.toml. benchmark_prior_weight is unset by default: each "
                                   "benchmark in the shipped benchmarks.toml has its own weight, in runs, shared by "
                                   "a model's results on it; a number here is one weight for every benchmark, and 0 "
-                                  "turns benchmark priors off.")
+                                  "turns benchmark priors off. belief.level is store by default: the store's pass "
+                                  "rate is learned from its own runs only; shared is 0.3.5's fit.")
     q.add_argument("key", metavar="KEY")
     q.add_argument("value", metavar="VALUE")
     _common(q)
@@ -633,9 +637,23 @@ def _add_viewing(sub) -> None:
     _common(p)
     p.set_defaults(func=_lazy("loopmath.skill.commands:doctor"))
 
-    p = sub.add_parser("skill", help="install, remove or print the orchestrator skills")
+    p = sub.add_parser("guide", help="print the instructions for one job (onboard, import, plan, record, fit) or "
+                       "the command reference, for an agent to follow; read only")
+    p.add_argument("topic", nargs="?", default=None, metavar="TOPIC",
+                   help="onboard, import, plan, record, fit or reference (default: list them, with when to use each)")
+    p.set_defaults(func=_lazy("loopmath.skill.guide:command"))
+
+    p = sub.add_parser("update", help="is a newer loopmath out? the installed and latest versions and the upgrade "
+                       "command; never upgrades")
+    p.add_argument("--refresh", action="store_true", help="ask pypi.org now, instead of reusing the last answer "
+                   "(kept for 24 h, a failed check for 6 h)")
+    _common(p)
+    p.set_defaults(func=_lazy("loopmath.update:command"))
+
+    p = sub.add_parser("skill", help="install, remove or print the loopmath skill")
     ss = p.add_subparsers(dest="skill_command", required=True)
-    for verb, helptext in (("install", "write the six skills for Claude Code, Codex or both"),
+    for verb, helptext in (("install", "write the loopmath skill for Claude Code, Codex or both, and remove the job "
+                                       "skills 0.3.3 and older installed"),
                            ("uninstall", "remove what install wrote")):
         q = ss.add_parser(verb, help=helptext)
         q.add_argument("--target", default="auto", choices=["auto", "claude-code", "codex", "both"],
@@ -645,14 +663,12 @@ def _add_viewing(sub) -> None:
         q.add_argument("--dir", default=None, metavar="PATH", help="the project folder for --scope project "
                        "(default: this folder)")
         if verb == "install":
-            q.add_argument("--dry-run", action="store_true", help="print every file install would write or "
-                           "change, and write nothing")
+            q.add_argument("--dry-run", action="store_true", help="print every file install would write, change "
+                           "or remove, and write nothing")
         _common(q)
         q.set_defaults(func=_lazy(f"loopmath.skill.commands:{verb}"))
-    q = ss.add_parser("show", help="print one skill (default loopmath, the start-here skill) or the shared reference")
-    q.add_argument("name", nargs="?", default="loopmath", metavar="NAME",
-                   help="loopmath, loopmath-onboard, loopmath-import-runs, loopmath-update-fit, loopmath-plan-task, "
-                   "loopmath-record-run, or reference")
+    q = ss.add_parser("show", help="print the loopmath skill (the job guides are `loopmath guide`)")
+    q.add_argument("name", nargs="?", default="loopmath", metavar="NAME", help="loopmath, the one skill")
     q.set_defaults(func=_lazy("loopmath.skill.commands:show"))
 
     p = sub.add_parser("ocp", help="validate or migrate OCP documents")
@@ -661,9 +677,10 @@ def _add_viewing(sub) -> None:
     q.add_argument("files", nargs="+", metavar="FILE")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.ocp.commands:validate"))
-    q = os_.add_parser("migrate", help="convert OCP v0.1 and v0.2 documents and contract v3 run files to v0.3 (inputs are never changed)")
+    q = os_.add_parser("migrate", help="convert OCP v0.1 and v0.2 documents and contract v3 run files to v0.3, or with --to 0.4 to v0.4 (inputs are never changed)")
     q.add_argument("files", nargs="+", metavar="FILE")
     q.add_argument("--out", default=None, metavar="DIR", help="write each result to DIR as NAME.ocp.json; a result with errors is never written (needed for several files unless --json)")
+    q.add_argument("--to", default="0.3", choices=("0.3", "0.4"), help="the OCP version to write (default 0.3; 0.4 also takes v0.3 and v0.4 inputs)")
     _common(q)
     q.set_defaults(func=_lazy("loopmath.ocp.commands:migrate"))
 
@@ -671,9 +688,14 @@ def _add_viewing(sub) -> None:
 HIDDEN = frozenset({"plan", "analyze-e0", "scan", "research"})  # callable, but not listed by `loopmath --help`
 
 
+def command_names(sub) -> list[str]:
+    """The listed commands, in help order, without the hidden ones."""
+    return [name for name in sub.choices if name not in HIDDEN]
+
+
 def command_metavar(sub) -> str:
     """The `{a,b,...}` command list for usage lines, without the hidden commands."""
-    return "{" + ",".join(name for name in sub.choices if name not in HIDDEN) + "}"
+    return "{" + ",".join(command_names(sub)) + "}"
 
 
 def _add_gate(sub) -> None:
@@ -1066,6 +1088,116 @@ def _add_harness(sub) -> None:
     q.set_defaults(func=_lazy(target + "session_verb"), json=False)
 
 
+FLOW_VERBS = ("init", "import", "export", "show", "plan", "next", "record", "score", "status", "check")
+FLOW_SAVING = ("Saving writes the TOML view in a standard form, so comments and shorthand spellings are not kept, "
+               "and gates that need check features are saved as checks; the flow itself does not change.")
+
+
+def _add_flow(sub) -> None:
+    target = "loopmath.flows.commands:"
+    p = sub.add_parser("flow", help="run a flow experiment: a fixed workflow, edits to try, judges and a margin",
+                       description="Experiments on a fixed multi-step workflow: a flow names the base "
+                                   "configuration, the inputs, the acceptance rule, the objective, the judges and the "
+                                   "edits to try. No command runs a model or spends.")
+    fs = p.add_subparsers(dest="flow_command", required=True, metavar="{" + ",".join(FLOW_VERBS) + "}")
+    flow_help = "the flow: a folder holding flow.ocp.json, a flow.ocp.json or a flow.toml"
+
+    q = fs.add_parser("init", help="ask the questions that make a flow; write flow.ocp.json, an inputs skeleton "
+                      "and the first plan.json")
+    q.add_argument("dir", nargs="?", default=None, metavar="DIR", help="the flow folder (default: here)")
+    q.add_argument("--answers", default=None, metavar="FILE", help="take the answers from FILE instead of asking")
+    q.add_argument("--from-ocp", nargs="+", default=None, metavar="FILE",
+                   help="prefill from run documents of the workflow")
+    q.add_argument("--from-rows", default=None, metavar="FILE", help="prefill from rows of runs")
+    q.add_argument("--toml", action="store_true", help="also write flow.toml")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "init_verb"))
+
+    q = fs.add_parser("import", help="write flow.ocp.json from a TOML view; a file that does not validate is "
+                      "refused", description="Write flow.ocp.json from a TOML view (flow export writes one; see "
+                      "its help for what saving keeps). A file that does not validate is refused, and nothing is "
+                      "written.")
+    q.add_argument("file", metavar="FILE", help="the flow.toml to read")
+    q.add_argument("dir", nargs="?", default=None, metavar="DIR", help="where to write flow.ocp.json "
+                   "(default: beside FILE)")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "import_verb"))
+
+    q = fs.add_parser("export", help="write the TOML view of a flow",
+                      description="Write the TOML view of a flow, flow.toml beside it unless --out names another "
+                      "file. " + FLOW_SAVING)
+    q.add_argument("flow", metavar="FLOW", help=flow_help)
+    q.add_argument("--out", default=None, metavar="FILE", help="where to write it (default: flow.toml beside it)")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "export_verb"))
+
+    q = fs.add_parser("show", help="steps, settings, checks, judges, objective, hypothesis, allowed edits and "
+                      "digest, after the checker's findings")
+    q.add_argument("flow", metavar="FLOW", help=flow_help)
+    _common(q)
+    q.set_defaults(func=_lazy(target + "show_verb"))
+
+    q = fs.add_parser("plan", help="the experiments with their runs and price, and the margin price table; "
+                      "writes plan.json")
+    q.add_argument("flow", metavar="FLOW", help=flow_help)
+    q.add_argument("--budget-usd", type=float, default=None, metavar="X", help="dollars to spend on the plan")
+    q.add_argument("--margin", type=float, default=None, metavar="M",
+                   help="the quality a change may lose and still be adopted, in the score's units")
+    q.add_argument("--replace", action="store_true", help="write the new plan even when runs of the current one "
+                   "are recorded, keeping the current one as plan.<its id>.json")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "plan_verb"))
+
+    q = fs.add_parser("next", help="the next runs as specs: run id, input, arm, settings, slate, judges, "
+                      "person score and how to record it")
+    q.add_argument("flow", metavar="FLOW", help=flow_help)
+    q.add_argument("--n", type=int, default=2, metavar="N", help="how many runs (default: 2, one pair)")
+    q.add_argument("--seed", type=int, default=0, metavar="S", help="the seed; the same plan state and seed "
+                   "give the same runs (default: 0)")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "next_verb"))
+
+    q = fs.add_parser("record", help="record finished runs of the flow, from rows or run documents")
+    q.add_argument("flow", metavar="FLOW", help=flow_help)
+    source = q.add_mutually_exclusive_group(required=True)
+    source.add_argument("--rows", default=None, metavar="FILE", help="rows of runs, one JSON object per line")
+    source.add_argument("--ocp", nargs="+", default=None, metavar="FILE", help="OCP run documents")
+    q.add_argument("--allow-unplanned", action="store_true", help="also record runs the plan did not ask for")
+    q.add_argument("--allow-simulated", action="store_true", help="also record simulated runs (run.ext "
+                   "dev.loopmath.simulate); without it they are refused")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "record_verb"))
+
+    q = fs.add_parser("score", help="record one judge's score of a recorded run of the flow",
+                      description="Record one judge's score of a recorded run of the flow: pending while the run "
+                      "is open, a late signal once it is finished (its receipts re-scored, one refit in the "
+                      "background). A second score of the run by the same judge is refused unless --replace.")
+    q.add_argument("flow", metavar="FLOW", help=flow_help)
+    q.add_argument("--run", required=True, metavar="RUN", help="the recorded run")
+    q.add_argument("--judge", required=True, nargs=2, metavar=("ID", "VALUE"),
+                   help="a judge of the flow and its score: a number, in [0, 1] for a fraction judge, within the "
+                   "range of a linear judge that has one")
+    q.add_argument("--replace", action="store_true", help="add this score as the newest reading when the judge "
+                   "has scored the run before; the earlier scores are kept")
+    q.add_argument("--observed-at", default=None, metavar="TS", help="when the score was given, ISO 8601 with an "
+                   "offset (default: now); with --replace, later than the earlier scores")
+    q.add_argument("--at-attempt", default=None, metavar="ATT", help="the attempt scored (default: the run's last)")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "score_verb"))
+
+    q = fs.add_parser("status", help="cost per step and model, pass rate per check, quality per arm, the judges, "
+                      "each experiment's state and dollars so far")
+    q.add_argument("flow", metavar="FLOW", help=flow_help)
+    _common(q)
+    q.set_defaults(func=_lazy(target + "status_verb"))
+
+    q = fs.add_parser("check", help="one change against the base: adopt, reject, or how many more pairs")
+    q.add_argument("flow", metavar="FLOW", help=flow_help)
+    q.add_argument("--arm", required=True, metavar="ARM", help="the arm to check")
+    _common(q)
+    q.set_defaults(func=_lazy(target + "check_verb"))
+
+
 def register(sub) -> None:
     """Add every 0.1.0 command to the top-level subparsers."""
     _add_planning(sub)
@@ -1078,6 +1210,7 @@ def register(sub) -> None:
     _add_gate(sub)
     _add_tasks(sub)
     _add_harness(sub)
+    _add_flow(sub)
 
 
 # Handler targets, for the registry test: every one must import and be callable.

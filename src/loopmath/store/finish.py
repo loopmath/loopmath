@@ -8,7 +8,8 @@ Order:
 2. attempts never settled by the orchestrator become `settled_unverified`;
 3. pending signals are folded in and the run is closed (`ended_at`, `run_finished`);
 4. the after-receipt (`recommend.receipts.after_receipt`, pure; the store writes it);
-5. strict OCP v0.3 validation (`ocp.emit.validate_strict`); a failure leaves the run open;
+5. strict OCP validation (`ocp.emit.validate_strict`: 0.3, or 0.4 for a run with a flow or checks); a
+   failure leaves the run open;
 6. the store writes the finished run, then the receipt file, then starts a background refit.
 
 The OCP, log matching, workflows, belief and receipt modules are called directly.
@@ -30,7 +31,7 @@ from ..recommend import receipts as receipts_core
 from ..types import AcceptanceRule, Configuration, Evidence, Receipt, Task
 from ..workflows.ocp import configuration_from_ocp
 from . import runs as R
-from .home import Conflict, NotFound, Store, StoreError, ValidationFailed
+from .home import Conflict, DollarsPastFloat, NotFound, Store, StoreError, ValidationFailed
 from .ids import now_iso, parse_ts, utc_iso
 from .lock import read_json
 
@@ -41,7 +42,7 @@ SETTLED = ("settled", "0.2.7 rule reading")  # in a corrected receipt of a run 0
 
 # ---------------------------------------------------------------- validation
 def validate(doc: dict[str, Any]) -> dict[str, Any]:
-    """{ok, errors, warnings, checker}: the strict OCP v0.3 check."""
+    """{ok, errors, warnings, checker}: the strict OCP check (0.3, or 0.4 for a run with a flow or checks)."""
     findings = validate_strict(doc)
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -139,11 +140,55 @@ def _shared_sessions(summary: Any, doc: dict[str, Any]) -> list[dict[str, Any]]:
 Q_DEFAULT = TIER_Q  # q per evidence tier; `outcome.q.<tier>` in config.toml overrides each
 
 
+Quality = tuple[float | None, float | None]  # a flow run's value and its sd from the judges fit
+
+
 def evidence_for(doc: dict[str, Any], rule: AcceptanceRule, *, now: datetime | None = None,
-                 q_by_tier: dict[str, float] | None = None) -> Evidence:
+                 q_by_tier: dict[str, float] | None = None, quality: Quality | None = None) -> Evidence:
+    """`quality`: a flow run's value from the judges fit (`_flow_quality`, `_loop_quality`); None for a run
+    without `run.flow`, which reads as it always has."""
     from ..belief.rules import evidence
 
-    return evidence(doc, rule, now=now or datetime.now().astimezone(), q_by_tier=q_by_tier)
+    return evidence(doc, rule, now=now or datetime.now().astimezone(), q_by_tier=q_by_tier, quality=quality)
+
+
+def _flow_run(doc: dict[str, Any]) -> bool:
+    return isinstance((doc.get("run") or {}).get("flow"), dict)
+
+
+def _flow_docs(store: Store) -> list[dict[str, Any]]:
+    """The store's finished flow runs: the only runs the judges fit admits, so the only ones it is given."""
+    return [d for d in store.finished_docs() if _flow_run(d)]
+
+
+def _flow_quality(store: Store, doc: dict[str, Any]) -> Quality | None:
+    """A flow run's quality: its value in one judges fit of it and the store's finished flow runs
+    (`flows.judges.current_quality`), its own copy first so a stored copy never wins over it. `(None, None)`, no
+    score, when the fit leaves the run out; a refused fit's value is passed on as it is, with its reason. None for a
+    run without `run.flow`, with no other run file read."""
+    if not _flow_run(doc):
+        return None
+    from ..flows.judges import current_quality
+
+    return current_quality([doc, *_flow_docs(store)]).get(doc["run"].get("id"), (None, None))
+
+
+def _loop_quality(store: Store) -> Callable[[dict[str, Any]], Quality | None]:
+    """For a loop over the store's runs: each run's quality as `_flow_quality` gives it, from one judges fit of
+    every finished flow run in the store, made at the first flow run the loop reads. A loop that reads no flow run
+    fits nothing, and a loop over some runs reads them as the whole store does."""
+    fitted: list[dict[str, Quality]] = []
+
+    def quality(doc: dict[str, Any]) -> Quality | None:
+        if not _flow_run(doc):
+            return None
+        if not fitted:
+            from ..flows.judges import current_quality
+
+            fitted.append(current_quality(_flow_docs(store)))
+        return fitted[0].get(doc["run"].get("id"), (None, None))
+
+    return quality
 
 
 # ---------------------------------------------------------------- receipts
@@ -260,13 +305,34 @@ def _point_run_at(store: Store, run: str, doc: dict[str, Any], receipt: dict[str
     store._update(run, apply)
 
 
+def _unscored(r: dict[str, Any], doc: dict[str, Any], ev: Evidence) -> dict[str, Any]:
+    """`r` without the value its `after.scores` holds for the rule's score, when `doc` is a flow run a judge scored
+    under that name and `ev` has no value for it now (the judges fit leaves the run out or is refused):
+    `rescore` keeps each score name the evidence does not hold, so the value read before would stay. Any other
+    score name, and any other run, is left as it is."""
+    after = r.get("after")
+    scores = after.get("scores") if isinstance(after, dict) else None
+    if not _flow_run(doc) or not isinstance(scores, dict):
+        return r
+    rule = rule_of(doc)
+    name = rule.score.name if rule.score is not None else None
+    if name is None or name not in scores or name in ev.scores:
+        return r
+    from ..flows.judges import judged
+
+    if not any(judged(doc, name)):  # no judge scored it: read raw, as before (`belief.outcome`)
+        return r
+    return {**r, "after": {**after, "scores": {k: v for k, v in scores.items() if k != name}}}
+
+
 def _rescored(r: dict[str, Any], doc: dict[str, Any], ev: Evidence) -> dict[str, Any] | None:
     """The receipt re-scored against the run as it is now, flag cleared; None when its fields cannot be scored.
     Every correction goes through here. A receipt of a run whose rule `run finish` read otherwise before 0.2.7
     gets the `SETTLED` mark with it, whoever writes it, so the next fit's settlement adds its note and points the
-    run file at it (`settle_rule_receipts`, steps 2 and 3)."""
+    run file at it (`settle_rule_receipts`, steps 2 and 3). A flow run's rule score the judges fit gives no value
+    now is dropped first (`_unscored`)."""
     try:
-        new = rescore(r, doc, ev)
+        new = rescore(_unscored(r, doc, ev), doc, ev)
     except (TypeError, ValueError, KeyError):
         return None
     out = {**r, **new.to_dict(), "rescore": False, "rescored_at": now_iso()}
@@ -284,7 +350,8 @@ def rescore_run(store: Store, run: str, receipts: list[dict[str, Any]] | None = 
     with store.lock():
         doc = store.run_doc(run)
         conf = store.config()
-        ev = evidence_for(doc, rule_of(doc), q_by_tier={t: conf.q_for_tier(t) for t in Q_DEFAULT})
+        ev = evidence_for(doc, rule_of(doc), q_by_tier={t: conf.q_for_tier(t) for t in Q_DEFAULT},
+                          quality=_flow_quality(store, doc))
         rescored: list[str] = []
         for r in store.receipts_for(run) if receipts is None else receipts:
             if not r.get("after") or not r.get("rescore"):
@@ -394,12 +461,14 @@ def scored_receipts(store: Store, docs: dict[str, dict[str, Any]]
     return out, failed
 
 
-def unsettled(doc: dict[str, Any], receipts: list[dict[str, Any]], q_by_tier: dict[str, float]) -> list[dict[str, Any]]:
+def unsettled(doc: dict[str, Any], receipts: list[dict[str, Any]], q_by_tier: dict[str, float], *,
+              quality: Quality | None = None) -> list[dict[str, Any]]:
     """The run's scored receipts still to re-score, when its rule was read otherwise before 0.2.7 (else none): each
-    whose stored z differs from the z the run has now, and each still flagged `rescore`. `report` counts these."""
+    whose stored z differs from the z the run has now, and each still flagged `rescore`. `report` counts these.
+    `quality` as `evidence_for` takes it."""
     if not read_otherwise_before_027(doc):
         return []
-    z = evidence_for(doc, rule_of(doc), q_by_tier=q_by_tier).z
+    z = evidence_for(doc, rule_of(doc), q_by_tier=q_by_tier, quality=quality).z
     return [r for r in receipts if isinstance(r.get("after"), dict) and (r.get("rescore") or r["after"].get("z") != z)]
 
 
@@ -446,13 +515,14 @@ def settle_rule_receipts(store: Store) -> dict[str, Any]:
     with store.lock():
         conf = store.config()
         q = {t: conf.q_for_tier(t) for t in Q_DEFAULT}
+        quality = _loop_quality(store)  # fits the store's flow runs once, at the first one, under the lock
         held, unread = scored_receipts(store, runs)
         for run in sorted(runs):
             problems = list(unread.get(run, []))
             marked: list[dict[str, Any]] = []
             try:
                 doc = store.run_doc(run)
-                ev = evidence_for(doc, rule_of(doc), q_by_tier=q)
+                ev = evidence_for(doc, rule_of(doc), q_by_tier=q, quality=quality(doc))
             except (OSError, ValueError, StoreError) as exc:
                 failed.append(f"run {run}, {_why(exc)}")
                 continue
@@ -586,6 +656,9 @@ def finish_run(store: Store, run: str, *, settle: Settle | None = None, no_fit: 
     _settle_leftovers(doc, now)
     R.merge_signals(doc, store.pending_signals(run))
     _close(doc, now)
+    path = R.dollars_past_float(doc)  # before the receipt, which reads the attempts' dollars too
+    if path is not None:
+        raise DollarsPastFloat(run, path)
     recorded = record_harness(doc, harness, default=harness_default)
     note = recorded.pop("note") if recorded is not None and "note" in recorded else None
     recorded = recorded or None
@@ -594,7 +667,8 @@ def finish_run(store: Store, run: str, *, settle: Settle | None = None, no_fit: 
     rec_id = cfg.get("rec")
     rec = store.rec(rec_id) if isinstance(rec_id, str) and R.valid_run_id(rec_id) else None
     conf = store.config()
-    evidence = evidence_for(doc, rule_of(doc), q_by_tier={t: conf.q_for_tier(t) for t in Q_DEFAULT})
+    evidence = evidence_for(doc, rule_of(doc), q_by_tier={t: conf.q_for_tier(t) for t in Q_DEFAULT},
+                            quality=_flow_quality(store, doc))
     opened = [r for r in store.receipts_for(run) if not r.get("after")]
     stored = opened[-1] if opened else {}  # written by `run start --rec`: keeps its id and before
     receipt = after_receipt(doc, rec, evidence, ((rec or {}).get("fit") or {}).get("id"), receipt=stored or None)

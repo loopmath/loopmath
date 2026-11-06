@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import hashlib
 
+from ..belief.outcome import signal_list
 from . import ocpdoc
 from .registry import PUBLIC_REPOS
 
@@ -63,7 +64,8 @@ def _rekey(run: dict, cfg: dict, original: dict) -> None:
 
 
 def reduce_for_bundle(doc: dict, *, salt: str) -> dict:
-    """A reduced copy of one OCP v0.3 run document. The input is not changed."""
+    """A reduced copy of one OCP v0.3 run document. The input is not changed. A signal that is not an object
+    (or signals that are not a list) is kept as it is, unread: validation names the run."""
     out = copy.deepcopy(doc)
     out["privacy"] = {"profile": "metadata_only",
                       "note": "loopmath prior bundle; share reduction (spec 03 section 7) applied"}
@@ -96,7 +98,9 @@ def reduce_for_bundle(doc: dict, *, salt: str) -> dict:
         if isinstance(control, dict):
             _ext(control)
     _rekey(run, cfg, (doc.get("run") or {}).get("configuration") or {})
-    for sig in run.get("signals") or []:
+    for sig in signal_list(run):
+        if not isinstance(sig, dict):
+            continue
         src = sig.get("source")
         if isinstance(src, dict) and str(src.get("ref", "")).startswith(("/", "~")):
             src.pop("ref", None)

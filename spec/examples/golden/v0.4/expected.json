@@ -1,0 +1,42 @@
+{
+  "E171-fail.ocp.json": [
+    "E171"
+  ],
+  "E171-pass.ocp.json": [],
+  "E212-fail.ocp.json": [
+    "E212"
+  ],
+  "E212-pass.ocp.json": [],
+  "E213-fail.ocp.json": [
+    "E213"
+  ],
+  "E213-pass.ocp.json": [],
+  "E214-fail.ocp.json": [
+    "E214"
+  ],
+  "E214-pass.ocp.json": [],
+  "E215-fail.ocp.json": [
+    "E215"
+  ],
+  "E215-pass.ocp.json": [],
+  "E216-fail.ocp.json": [
+    "E216"
+  ],
+  "E216-pass.ocp.json": [],
+  "E217-fail.ocp.json": [
+    "E217"
+  ],
+  "E217-pass.ocp.json": [],
+  "E218-fail.ocp.json": [
+    "E218"
+  ],
+  "E218-pass.ocp.json": [],
+  "W219-fail.ocp.json": [
+    "W219"
+  ],
+  "W219-pass.ocp.json": [],
+  "W220-fail.ocp.json": [
+    "W220"
+  ],
+  "W220-pass.ocp.json": []
+}

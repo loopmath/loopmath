@@ -14,7 +14,9 @@ verbatim (`research.sweep_dir`, `research.e0_corpus`), and the
 declared task features `features.<key>` with `features.min_tasks`
 (taskmodel.FeatureSet; spec 04 section 1), and `belief.success_head` (unset or
 `eb`, 0.3.1's success head; `sampled` opts in to the success head by NUTS over
-its effects and scales, belief.integrated and belief.sampled).
+its effects and scales, belief.integrated and belief.sampled), and `belief.level` (unset or `store`, from 0.4.0:
+each store's own success level, benchmarks by offset; `shared` is 0.3.5's fit, belief.level) with its two sds,
+`belief.benchmark_effort_sd` and `belief.cost_level_sd` (0.5 each under `store`).
 
 Reading uses `tomllib` (Python 3.11+), else a reader for the
 subset this module writes. The writer emits plain tables and JSON-compatible
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -56,14 +59,16 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "harness.record": ("none", "auto"),
     # unset or `eb`: 0.3.1's success head; `sampled` opts in (belief.integrated, belief.sampled)
     "belief.success_head": ("eb", "sampled"),
+    "belief.level": ("store", "shared"),  # unset: `store` (0.4.0); `shared` is 0.3.5's fit (belief.level)
 }
 LABELER_KINDS = ("claude", "codex", "command")
 LABELER_KEYS = ("onboard.labeler", "labeler")  # `labeler` is the spec 02 name; D39 stores `onboard.labeler`
 LIST_KEYS = ("models.allowed", "harnesses", "subtypes")
 NUMBER_KEYS = ("rescue.person_usd_per_hour", "rescue.hours", "benchmark_prior_weight",
-               "explore.auto_payback_runs", "budget.usd", "plan.time_budget_s")
-POSITIVE_KEYS = ("plan.time_budget_s",)
-NONNEGATIVE_KEYS = ("benchmark_prior_weight",)  # 0 turns the benchmark factors off
+               "explore.auto_payback_runs", "budget.usd", "plan.time_budget_s", "belief.benchmark_effort_sd",
+               "belief.cost_level_sd")
+POSITIVE_KEYS = ("plan.time_budget_s", "belief.cost_level_sd")
+NONNEGATIVE_KEYS = ("benchmark_prior_weight", "belief.benchmark_effort_sd")  # 0: no benchmark factors, no effort term
 COUNT_KEYS = ("plan.exact_picks",)  # whole numbers >= 0; the recommender owns the defaults of the plan keys
 RESCUE_KEYS = ("rescue.decay", "rescue.max_attempts", "rescue.min_chance")  # `check_rescue`
 KNOWN_ROOTS = ("org", "acceptance_rule", "rules", "goal", "rescue", "models", "harnesses", "subtypes", "belief",
@@ -74,7 +79,8 @@ STRING_ROOTS = ("research",)  # values stored as given, never parsed as JSON
 # `config set` refuses a key that is none of these nor a table above one (such as `rescue`).
 KEYS = ("org", "acceptance_rule", "rules.<name>", "goal", "rescue.kind", "rescue.person_usd_per_hour",
         "rescue.hours", "rescue.decay", "rescue.max_attempts", "rescue.min_chance", "models.allowed", "harnesses",
-        "subtypes", "benchmark_prior_weight", "belief.success_head", "explore.default_pick",
+        "subtypes", "benchmark_prior_weight", "belief.success_head", "belief.level", "belief.benchmark_effort_sd",
+        "belief.cost_level_sd", "explore.default_pick",
         "explore.auto_payback_runs", "referee.model",
         "budget.usd", "budget.period", "outcome.q.<tier>", "onboard.labeler", "onboard.skip",
         "usual.<type>.<repo>", "usual_meta.<type>.<repo>", "research.sweep_dir", "research.e0_corpus",
@@ -305,6 +311,13 @@ def check_rescue(key: str, value: Any) -> Any:
     return int(value) if key == "rescue.max_attempts" else value
 
 
+def _finite(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an int too large for a float
+        return False
+
+
 def coerce(key: str, value: str) -> Any:
     """A `config set` value: JSON when it parses, comma lists for list keys, numbers for number keys."""
     parts = split_key(key)
@@ -335,6 +348,8 @@ def coerce(key: str, value: str) -> Any:
     if dotted in NUMBER_KEYS and parsed is not None:
         if isinstance(parsed, bool) or not isinstance(parsed, (int, float)):
             raise ConfigError(f"{dotted} takes a number, got {value!r}")
+        if dotted.startswith("belief.") and not _finite(parsed):  # the fit would keep the default anyway
+            raise ConfigError(f"{dotted} takes a finite number, got {value!r}")
     if dotted in POSITIVE_KEYS and parsed is not None and parsed <= 0:
         raise ConfigError(f"{dotted} takes a number above 0, got {value!r}")
     if dotted in NONNEGATIVE_KEYS and parsed is not None and parsed < 0:

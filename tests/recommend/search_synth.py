@@ -55,6 +55,9 @@ def build(home: Path, n_runs: int = 1600, seed: int = 11) -> None:
     docs, _ = SD.simulate(n_runs, seed=seed, configs=configs, score=SCORE)
     from loopmath.belief import fit as fitmod
 
+    # the runs carry the shipped source `sweep`, whose success and score rows the store level (the default from
+    # 0.4.0) leaves out; the search is checked on 0.3.5's fit of them
+    (home / "config.toml").write_text('[belief]\nlevel = "shared"\n', encoding="utf-8")
     fitmod.fit(home, docs=docs, no_prior=True, now=NOW)
 
 

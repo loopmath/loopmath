@@ -50,6 +50,7 @@ wheel, not the source tree or an editable install, into a genuinely fresh
 virtual environment under `/tmp`. In that environment `loopmath --version`,
 `loop --version`, `loopmath --help`, `loopmath task-types --json`,
 `loopmath skill install` into a temporary home, `loopmath skill show`,
+`loopmath guide`, `loopmath guide plan`,
 `loopmath doctor --json` and `loopmath analyze` on the committed synthetic
 fixture must succeed, and so must the loop on a temporary store:
 `loopmath workflows list --json`, `loopmath prior show --json`,
@@ -61,14 +62,16 @@ fixture must succeed, and so must the loop on a temporary store:
 on the Claude Code mod in the wheel, under a throwaway `CLAUDE_CONFIG_DIR`, with
 no model or network call. `claude` must be on `PATH`; without it the check fails.
 This check catches a missing console entry point or package data, including
-`loopmath/prices.toml`, the six skills under `loopmath/skill/skills/`, the OCP schemas, the
+`loopmath/prices.toml`, the skill under `loopmath/skill/skills/`, the guides under
+`loopmath/skill/guides/`, the OCP schemas, the
 workflow catalog, the prior bundle, the view pages and the Claude Code mod.
 The environment holds the wheel's declared core dependencies and nothing else:
 no extra, and nothing borrowed from another environment, so these checks show
 that a plain `pip install loopmath` runs the loop. The check also confirms that
 the extras' packages (PyMC, PyTensor, ArviZ, Matplotlib) are absent and that
 `loopmath research fit` names the missing `[bayes]` extra.
-The check makes no network requests. uv resolves the dependencies offline from
+The check makes no network requests: every loopmath command in it runs with
+`LOOPMATH_NO_UPDATE_CHECK=1`, so the daily update check stays off. uv resolves the dependencies offline from
 its cache when it can. Otherwise the build interpreter's installed copies of the
 declared core dependencies, and of their own dependencies, are repacked as
 wheels in a temporary folder, and pip resolves the wheel against that folder

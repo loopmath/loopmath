@@ -23,7 +23,17 @@ statistics are in `compare/model.py`; the adopt threshold, calibrated for a look
 A failed run (no attempt done, at least one failed, lost or canceled, and no outcome) counts as not
 accepted under an acceptance rule, and its cost counts. A run whose outcome cannot be read (no verdict, an
 `error` verdict, a failed judge) is unscored, not zero, as harness2 keeps a failed judge
-(`harness2/core/spec.py:200-250`); its cost still counts.
+(`harness2/core/spec.py:200-250`); its cost still counts. A run document whose `run.signals` is not a list is
+read as one with no signals (`belief.outcome.signal_list`), named in `reasons` (`unreadable:signals`).
+
+A flow run (one with `run.flow`) that a judge scored under its own rule's score name reads that score as the
+judges' unpooled estimate on the fraction scale, from one fit of the judges over the runs of both arms
+(`flows.judges.current_quality`), never a judge's raw score or the pooled combined quality; an acceptance rule
+with that score name reads it too. When the judges give the run no unpooled estimate, the score is not read
+(under a score rule the run is unscored). The run's judge warnings (`Observation.notes`), with an unpooled
+estimate or without one, are named in `reasons`. Compare reads the fit when it is called and stores nothing.
+Members of a flow run's `run.signals` list that are not objects are left out of the fit, as the plan's fit
+leaves them out. A flow run no judge scored under that name, and any other score name, read as above.
 """
 
 from __future__ import annotations
@@ -78,6 +88,13 @@ class Observation:
     scale: str | None = None  # the selected score's scale as written (linear, log, fraction); None: not stated
     better: str | None = None  # the selected score's direction as stated (higher, lower); None: not stated
     source: str | None = None  # the harness-runs row the run came from (its row id), when it came from one
+    # a flow run's judge warnings on its score reading, as the outcome reader gives them: `unranged:<judge>` and
+    # `outside-range:<judge>` per judge left out, `unattributed:<signal id>` per score that names no judge,
+    # `nonfinite:<judge>` per judge with a score no float holds, `nonnumeric:<judge>` per judge with a score that is
+    # not a number, and the reason it has no unpooled estimate (`unfitted:<name>`, `too-many-judges:<n>`, or
+    # `rule:<reason>` when the resolver refuses the run's stored rule); then, for any run document, `unreadable:signals`
+    # when its `run.signals` is not a list, read as no signals; a case carries each of its runs' warnings
+    notes: tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass
@@ -120,6 +137,8 @@ class Comparison:
     outcomes_only: bool = False  # a cost is unknown, so the answer is on the outcomes alone (the gain, no lookahead)
     value: dict | None = None  # the next pairs' value and its plan (`compare.value.PairValue.to_dict`), or None
     pair_price: float | None = None  # the price per pair given for the value (0 on a subscription), or None: its cost
+    p_cheaper: float | None = None  # P(the candidate's mean cost per run < the base's), from the joint cost draws;
+    #                                 None when a cost is unknown (outcomes_only) or an arm has no cost range
 
     def to_dict(self) -> dict[str, Any]:
         out = {"schema": SCHEMA}
@@ -195,9 +214,9 @@ def last_score_signal(doc: dict, name: str) -> dict | None:
     keeps: the last with a finite value by `observed_at`, ties and missing times in document order. A null
     or nonfinite value is passed over. The value and the scale both come from this one signal; None when
     the run has no such score."""
-    from ..belief.outcome import _last
+    from ..belief.outcome import _last, signal_list
 
-    signals = [s for s in (doc.get("run") or {}).get("signals") or []
+    signals = [s for s in signal_list(doc.get("run") or {})
                if isinstance(s, dict) and s.get("kind") == "score" and s.get("name") == name
                and _number(s.get("value")) is not None]
     return _last(signals)
@@ -254,19 +273,115 @@ def _is_doc(x: Any) -> bool:
     return isinstance(x, dict) and isinstance(x.get("run"), dict)
 
 
-def _own(base_runs: Iterable[Any], cand_runs: Iterable[Any]) -> dict[str, tuple[Any, list[int]]]:
+def _is_flow(x: Any) -> bool:
+    return _is_doc(x) and isinstance(x["run"].get("flow"), dict)
+
+
+def _flow_quality(*sides: list[Any]) -> dict:
+    """Run id to the unpooled estimate the judges give each flow run among `sides`, from one fit over all of
+    them: `flows.judges.current_quality` on every run document, which admits them first and then fits the flow
+    runs. A flow run whose `run.signals` list holds members that are not objects goes in as a copy without them
+    (`_object_members`), so it is fitted as the plan's fit reads it. {} with no flow run, and then nothing is
+    called."""
+    docs = [_object_members(x) for side in sides for x in side if _is_doc(x)]
+    if not any(_is_flow(x) for x in docs):
+        return {}
+    from ..flows import judges
+
+    return judges.current_quality(docs)
+
+
+def _object_members(doc: dict) -> dict:
+    """`doc` itself, unless it is a flow run whose `run.signals` list holds a member that is not an object: then a
+    copy whose list keeps only the object members, in order, as the plan's fit reads them. Any other document, a
+    run that is not a flow run included, goes in as it is; `doc` is never changed."""
+    if not _is_flow(doc):
+        return doc
+    signals = doc["run"].get("signals")
+    if not isinstance(signals, list) or all(isinstance(s, dict) for s in signals):
+        return doc
+    return {**doc, "run": {**doc["run"], "signals": [s for s in signals if isinstance(s, dict)]}}
+
+
+def _flow_reading(doc: dict, name: str, quality: dict | None):
+    """(the quality entry, the unpooled value or None, the judge warnings, the direction) for a flow run that a
+    judge scored under `name`, its own rule's score name; None for any other run, which reads as before.
+
+    The entry is `quality.get(run id, (None, None))`, as given (a refused fit's entry keeps its reason), and
+    with no map the one run is fitted alone. A missing entry, no unpooled value or no usable reading is no
+    score: the reading never falls back on a judge's raw score. The warnings are the reader's reasons for the
+    judge scores (`flows.judges.Judged.reasons`), then the reason for no value when there is none.
+
+    A run whose stored rule the resolver refuses has no rule to name its score, so it is read by `name` alone:
+    judged under it, it has no score and no direction, its warnings the judge reasons then `rule:<the
+    resolver's reason>` (`rule:unreadable` for a malformed rule the resolver gives no reason for), and the map
+    is not read."""
+    from ..flows import judges
+
+    rule, refused = _run_rule(doc)
+    own = None if rule is None else rule.score
+    if refused is None and (own is None or own.name != name):
+        return None
+    judged = judges.judged(doc, name)
+    if not any(judged):  # judged under `name` when any of its fields is not empty
+        return None
+    if refused is not None:
+        return (None, None), None, (*judged.reasons, refused), None
+    run_id = doc["run"].get("id")
+    entry = (_flow_quality([doc]) if quality is None else quality).get(run_id, (None, None))
+    value = _number(entry[0]) if judged.usable else None
+    notes = list(judged.reasons)
+    if value is None:
+        notes.append(getattr(entry, "reason", None) or f"unfitted:{name}")
+    return entry, value, tuple(notes), own.better  # the reader's reasons, in its order
+
+
+def _run_rule(doc: dict) -> tuple[Any, str | None]:
+    """(the run's rule by the resolver, None), or (None, `rule:<reason>`) when the resolver refuses its stored
+    rule: the resolver's named refusal (`belief.design.Unusable`), else `rule:unreadable` for a malformed rule it
+    gives no reason for (the fit's word for such a run). Only the resolver's call is guarded."""
+    from ..belief.design import Unusable
+    from ..belief.rules import resolve_rule as run_rule
+
+    try:
+        return run_rule(doc), None
+    except Unusable as exc:  # the resolver's named refusal
+        return None, f"rule:{exc}"
+    except (TypeError, ValueError):
+        return None, "rule:unreadable"
+
+
+def _own(base_runs: Iterable[Any], cand_runs: Iterable[Any],
+         refused: dict[str, list[int]] | None = None) -> dict[str, tuple[Any, list[int]]]:
     """{rule: (rule, [base runs, candidate runs])}: the rule each OCP run document is judged by, by the resolver
     `runs` and `recommend` use (`belief.rules.resolve_rule`), keyed by its full content as sorted JSON, so two
-    rules of one name that differ are two rules. Harness-runs rows and Observations carry none."""
+    rules of one name that differ are two rules. Harness-runs rows and Observations carry none. A stored rule
+    the resolver refuses raises, unless `refused` is given: then the run is left out and counted there under
+    its reason (`_run_rule`), `{reason: [base runs, candidate runs]}`."""
     from ..belief.rules import resolve_rule as run_rule
 
     seen: dict[str, tuple[Any, list[int]]] = {}
     for i, runs in enumerate((base_runs, cand_runs)):
         for x in runs:
             if _is_doc(x):
-                r = run_rule(x)
+                if refused is None:
+                    r = run_rule(x)
+                else:
+                    r, why = _run_rule(x)
+                    if r is None:
+                        refused.setdefault(why, [0, 0])[i] += 1
+                        continue
                 seen.setdefault(json.dumps(r.to_dict(), sort_keys=True, default=str), (r, [0, 0]))[1][i] += 1
     return seen
+
+
+def _refused_rules(refused: dict[str, list[int]]) -> list[str]:
+    """One entry per reason in `refused` (`_own`), for a list of the rules that score the runs."""
+    out = []
+    for why, (nb, nc) in sorted(refused.items()):
+        n = nb + nc
+        out.append(f"none for {n} run{'s' if n != 1 else ''} whose stored rule is refused: {why}")
+    return out
 
 
 def own_rules(base_runs: Iterable[Any], cand_runs: Iterable[Any]) -> dict[str, list[int]]:
@@ -327,11 +442,13 @@ def _names(runs: Iterable[Any]) -> tuple[list[str], dict[str, str | None]]:
     signal the score reader selects (`last_score_signal`, `_row_score`), never an earlier one. A score's
     direction is higher, lower, None when no selected signal states one, mixed when they disagree, or invalid
     when one states neither; no score rule reads a mixed or invalid score."""
+    from ..belief.outcome import signal_list
+
     verdicts: list[str] = []
     ways: dict[str, set[str | None]] = {}
     for x in runs:
         if _is_doc(x):
-            for s in x["run"].get("signals") or []:
+            for s in signal_list(x["run"]):
                 if not isinstance(s, dict) or not isinstance(s.get("name"), str):
                     continue
                 if s.get("kind") == "verdict" and s["name"] not in verdicts:
@@ -378,6 +495,7 @@ def _rules_that_score(runs: list[Any], config: Any = None) -> list[str]:
     `accept` is the runs' own rule, so it is named once, by the spelling that reads as that rule."""
     own = [r for r, _ in _own(runs, []).values()]
     own_rule = own[0] if len(own) == 1 else None
+    quality = _flow_quality(runs)  # one fit for every rule
     found = []
     for r in rule_choices(runs, [], config):
         if score_rule(r) is not None:
@@ -385,7 +503,8 @@ def _rules_that_score(runs: list[Any], config: Any = None) -> list[str]:
         try:
             if r == ACCEPT:
                 _one_rule(runs, [], config)
-            if any(o.outcome is not None for o in _observations(runs, r, None, config, costs=False)):
+            if any(o.outcome is not None for o in _observations(runs, r, None, config, costs=False,
+                                                                 quality=quality)):
                 found.append(r)
         except (TypeError, ValueError):
             continue
@@ -455,7 +574,11 @@ def _pair_ext(ext: dict) -> dict[str, str | None] | None:
     return None
 
 
-def _observe_ocp(doc: dict, rule: Any, now: datetime | None, config: Any) -> Observation:
+def _observe_ocp(doc: dict, rule: Any, now: datetime | None, config: Any, *,
+                 quality: dict | None = None) -> Observation:
+    """`quality` is the flow runs' unpooled estimate by run id (`_flow_quality`); None fits a flow run alone. A run
+    whose `run.signals` is not a list is read as one with no signals and carries `unreadable:signals` last."""
+    from ..belief.outcome import SIGNALS_NOT_LIST, unreadable_signals
     from ..belief.rules import evidence
     from ..belief.rules import resolve_rule as run_rule
     from ..store.runs import run_cost
@@ -478,18 +601,29 @@ def _observe_ocp(doc: dict, rule: Any, now: datetime | None, config: Any) -> Obs
                   experiment=key.get("experiment"),
                   base_commit=_text(task.get("base_commit")) or _text(slate.get("base_commit")),
                   source=_text(adapted.get("row_id")))
+    unread = ("unreadable:signals",) if unreadable_signals(doc) == SIGNALS_NOT_LIST else ()
+    flow = isinstance(run.get("flow"), dict)
     sr = score_rule(rule)
     if sr is not None:
+        reading = _flow_reading(doc, sr[0], quality) if flow else None
+        if reading is not None:
+            _, value, notes, way = reading
+            return Observation(outcome=value, scale=None if value is None else "fraction",
+                               better=None if value is None else _way(way, sr[0]), notes=notes + unread, **common)
         sig = last_score_signal(doc, sr[0])
         return Observation(outcome=None if sig is None else _number(sig.get("value")),
                            scale=None if sig is None else _text(sig.get("scale")),
-                           better=None if sig is None else _way(sig.get("better"), sr[0]), **common)
+                           better=None if sig is None else _way(sig.get("better"), sr[0]), notes=unread, **common)
     ar = run_rule(doc) if rule == ACCEPT else resolve_rule(rule, config)
-    ev = evidence(doc, ar, now=now or datetime.now().astimezone())
+    reading = _flow_reading(doc, ar.score.name, quality) if flow and ar.score is not None else None
+    if reading is None:
+        ev, notes = evidence(doc, ar, now=now or datetime.now().astimezone()), ()
+    else:
+        ev, notes = evidence(doc, ar, now=now or datetime.now().astimezone(), quality=reading[0]), reading[2]
     accepted = None if ev.z is None else bool(ev.z >= 0.5)
     if accepted is None and failed:
         accepted = False
-    return Observation(outcome=accepted, **common)
+    return Observation(outcome=accepted, notes=notes + unread, **common)
 
 
 def _tokens(v: Any) -> int | None:
@@ -548,11 +682,11 @@ def _observe_harness_runs(rec: dict, rule: Any) -> Observation:
                        source=row_id(rec))
 
 
-def _observe(x: Any, rule: Any, now: datetime | None, config: Any) -> Observation:
+def _observe(x: Any, rule: Any, now: datetime | None, config: Any, *, quality: dict | None = None) -> Observation:
     if isinstance(x, Observation):
         return x
     if _is_doc(x):
-        return _observe_ocp(x, rule, now, config)
+        return _observe_ocp(x, rule, now, config, quality=quality)
     if isinstance(x, dict) and x.get("schema") == HARNESS_RUNS_SCHEMA:
         return _observe_harness_runs(x, rule)
     raise TypeError(f"each run is an OCP run document, a {HARNESS_RUNS_SCHEMA} record or an Observation")
@@ -618,7 +752,8 @@ def _costs(x: Any, o: Observation) -> Observation:
 def observe(x: Any, rule: Any = ACCEPT, *, now: datetime | None = None, config: Any = None) -> Observation:
     """An `Observation` from an OCP run document, a harness-runs record or an `Observation` (returned as is).
     Under a score rule, a score whose stated direction disagrees with the rule's is refused. A negative dollar
-    cost or token count is refused, and a NaN or infinite dollar cost is no dollar cost (`_costs`)."""
+    cost or token count is refused, and a NaN or infinite dollar cost is no dollar cost (`_costs`). A flow run
+    the judges scored is fitted alone (see the module docstring)."""
     o = _costs(x, _observe(x, rule, now, config))
     if score_rule(rule) is not None and not isinstance(x, Observation):
         _one_direction([o], [], rule)
@@ -626,11 +761,15 @@ def observe(x: Any, rule: Any = ACCEPT, *, now: datetime | None = None, config: 
 
 
 def _observations(runs: Iterable[Any], rule: Any, now: datetime | None, config: Any, *,
-                  costs: bool = True) -> list[Observation]:
-    """Each run read under `rule`, its costs checked (`_costs`) unless `costs` is False."""
+                  costs: bool = True, quality: dict | None = None) -> list[Observation]:
+    """Each run read under `rule`, its costs checked (`_costs`) unless `costs` is False. `quality` is the flow
+    runs' map (`_flow_quality`), one for both arms of a comparison; None fits these runs' flow runs once."""
+    runs = list(runs)
+    if quality is None:
+        quality = _flow_quality(runs)
     out = []
     for r in runs:
-        o = _observe(r, rule, now, config)
+        o = _observe(r, rule, now, config, quality=quality)
         out.append(_costs(r, o) if costs else o)
     score = score_rule(rule) is not None
     for o in out:
@@ -731,7 +870,8 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
            horizon_runs: float = M.HORIZON_RUNS, value_usd: float | None = None, spent_usd: float | None = None,
            seed: int = 0, now: datetime | None = None, config: Any = None, lookahead: bool = True,
            max_pairs: int | None = None, min_pairs: int | None = None, value_stop: bool = False,
-           pair_price: float | None = None, continuation: Any = None) -> Comparison:
+           pair_price: float | None = None, continuation: Any = None,
+           loss_margin: float | None = None) -> Comparison:
     """Compare the candidate arm with the base arm on paired tasks. See the module docstring and
     `compare/model.py` for the models, and `compare/calibration.py` for the adopt threshold.
 
@@ -763,7 +903,13 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     An unknown cost is never a reason to reject. When a run has no dollar cost, or the cost model states no
     range for an arm, the answer is on the outcomes alone (`outcomes_only`): the objective is the gain, which
     needs no cost, and the next pair's value is off. A budget, or objective cpar asked for by name, needs every
-    run's dollar cost, and refuses naming the runs without one."""
+    run's dollar cost, and refuses naming the runs without one.
+
+    `loss_margin` (a score rule only, above 0, under 1 on the fraction scale, never with `floor`) lets the
+    candidate count as better when it is worse by less than it: P(better) reads P(candidate minus base >
+    -loss_margin), and the floor is -loss_margin. The calibration states no bound under a floor of 0, so the
+    caller shows the error rate of its own rule. `p_cheaper` is P(the candidate's mean cost per run is under the
+    base's), whatever the rule."""
     from . import calibration
 
     base_runs, cand_runs = list(base_runs), list(cand_runs)
@@ -779,9 +925,19 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
         raise ValueError("min_pairs: at least 1")
     if score and objective == "cpar":
         raise ValueError("a score rule has no accepted result: use objective gain, or a target rule such as NAME>=X")
-    if floor is None:
-        floor = M.FLOOR_SCORE if score else (M.FLOOR_CPAR if objective == "cpar" else M.FLOOR_GAIN)
-    check_floor(floor, objective, score)
+    if loss_margin is not None:
+        if not score:
+            raise ValueError("loss_margin is for a score rule: P(candidate minus base > -loss_margin)")
+        if floor_given:
+            raise ValueError("give floor or loss_margin, not both: loss_margin sets the floor to -loss_margin")
+        if isinstance(loss_margin, bool) or not isinstance(loss_margin, (int, float)) \
+                or not math.isfinite(loss_margin) or loss_margin <= 0:
+            raise ValueError(f"loss_margin {loss_margin!r}: the score loss the candidate may have, a number above 0")
+        floor = -float(loss_margin)
+    else:
+        if floor is None:
+            floor = M.FLOOR_SCORE if score else (M.FLOOR_CPAR if objective == "cpar" else M.FLOOR_GAIN)
+        check_floor(floor, objective, score)
     if not 0.5 < confidence < 1.0:
         raise ValueError("confidence: between 0.5 and 1")
     if max_pairs is not None and max_pairs < 1:
@@ -796,13 +952,17 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
         resolve_rule(rule, config)  # a bad rule fails here, before any run is read
     if rule == ACCEPT:
         _one_rule(base_runs, cand_runs, config)
-    base = _observations(base_runs, rule, now, config)
-    cand = _observations(cand_runs, rule, now, config)
+    quality = _flow_quality(base_runs, cand_runs)  # one fit of the judges for both arms
+    base = _observations(base_runs, rule, now, config, quality=quality)
+    cand = _observations(cand_runs, rule, now, config, quality=quality)
     if score:
         _one_scale(base, cand)
         _one_direction(base, cand, rule)
         if {o.scale for o in base + cand if o.outcome is not None} == {"fraction"}:
-            check_floor(floor, objective, score, scale="fraction")
+            if loss_margin is None:
+                check_floor(floor, objective, score, scale="fraction")
+            elif loss_margin >= 1:
+                raise ValueError(f"loss_margin {loss_margin:g}: a fraction score moves by less than 1")
     pairs, lone_b, lone_c = pair_up(base, cand)
     reasons: list[str] = []
 
@@ -927,6 +1087,7 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
                        + ("" if score else ", and the scored run counts for its own arm"))
     if both_unscored:
         reasons.append(some(both_unscored).format("both runs unscored") + " left out")
+    reasons += _judge_warnings(base, cand)
     if lone_b or lone_c:
         reasons.append(f"{arm_runs(len(lone_b), len(lone_c), nonzero=True)} {_have(len(lone_b) + len(lone_c))} "
                        "no partner")
@@ -953,6 +1114,9 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
             if data.successes(arm) == 0 and cpar is not None:  # with no cpar range, there is nothing to stand
                 reasons.append(f"no {word} run is accepted yet, so its mean cost per accepted result does not "
                                f"exist; the median and ranges stand")
+    if loss_margin is not None:
+        reasons.append(f"the loss margin is {loss_margin:g}: the candidate counts as better when it is worse by "
+                       f"less than that, so P(better) reads P(candidate minus base > {floor:g})")
     reasons.append(cal["why"])
 
     eb = float(np.mean(d.cost_base)) if d.cost_base is not None else None
@@ -965,7 +1129,7 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
     thr = st.threshold
     unpaired = None
     if pairs and not n_pairs:
-        scoring = _scoring_rules(base_runs, cand_runs, rule, now, config)
+        scoring = _scoring_rules(base_runs, cand_runs, rule, now, config, quality=quality)
         own = sorted(own_rules(base_runs, cand_runs)) if rule == ACCEPT else []
         where = (f"under the rule {rule_label(rule)}" if rule != ACCEPT else
                  f"in mode accept, by the runs' rule {', '.join(own)}" if own else
@@ -1052,6 +1216,8 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
 
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
         ratio = d.cost_cand / d.cost_base if d.cost_base is not None and d.cost_cand is not None else None
+    p_cheaper = (None if ratio is None or alone is not None
+                 else round(float(np.mean(d.cost_cand < d.cost_base)), 6))
     ok = d.mean_ok
     return Comparison(
         rule=rule_label(rule), kind=kind, objective=objective, floor=floor, confidence=confidence, n_pairs=n_pairs,
@@ -1069,7 +1235,8 @@ def paired(base_runs: Iterable[Any], cand_runs: Iterable[Any], *, rule: Any, bud
         pairs=[{"key": k, "base": b.run, "cand": c.run} for k, b, c in pairs],
         adopt_threshold=round(thr, 6), max_pairs=cal["cap"], bound=cal["bound"], stop=stop,
         decided=stop == "decided", min_pairs=min_pairs, value_stop=bool(value_stop),
-        outcomes_only=alone is not None, value=pv_out, pair_price=None if pair_price is None else float(pair_price))
+        outcomes_only=alone is not None, value=pv_out, pair_price=None if pair_price is None else float(pair_price),
+        p_cheaper=p_cheaper)
 
 
 def arm_runs(nb: int, nc: int, *, nonzero: bool = False) -> str:
@@ -1082,6 +1249,59 @@ def arm_runs(nb: int, nc: int, *, nonzero: bool = False) -> str:
 
 def _have(n: int) -> str:
     return "has" if n == 1 else "have"
+
+
+JUDGE_WARNINGS = {  # a judge warning's kind, and what it means for the run's score
+    "unfitted": "no unpooled estimate from the judges fit",
+    "too-many-judges": "more judges with readings than the judges fit takes",
+    "rule": "the run's stored rule is refused, so no score is read from its judges",
+}
+
+
+def _judge_warnings(base: list[Observation], cand: list[Observation]) -> list[str]:
+    """One line per judge warning on the runs (`Observation.notes`), with the runs per arm that carry it; a case
+    counts each of its runs. A run read without an unranged judge, or one whose newest score lies outside its
+    range, can still have a score from the others. A score no float holds, or one that is not a number, is no
+    reading, so its judge is read from its other scores when it has any. The scores that name no judge share one
+    line, counted per arm, since each has its own signal id. A run whose `run.signals` is not a list is read with
+    no signals."""
+    seen: dict[str, list[int]] = {}
+    for i, runs in enumerate((base, cand)):
+        for o in runs:
+            for w in o.notes:
+                seen.setdefault(w, [0, 0])[i] += 1
+    anon = sorted(w for w in seen if w.startswith("unattributed:"))
+    out = []
+    for w, (nb, nc) in sorted(seen.items()):
+        kind, _, what = w.partition(":")
+        runs = arm_runs(nb, nc, nonzero=True)
+        if kind == "unranged":
+            out.append(f"{runs} read without judge {what}, whose linear score has no range: {w}")
+        elif kind == "outside-range":
+            out.append(f"{runs} read without judge {what}, whose newest score lies outside its range: {w}")
+        elif kind == "nonfinite":
+            out.append(f"{runs} read without the scores of judge {what} that are not finite as a float: {w}")
+        elif kind == "nonnumeric":
+            out.append(f"{runs} read without the scores of judge {what} that are not numbers: {w}")
+        elif kind == "unreadable":
+            out.append(f"{runs} read with no signals: run.signals is not a list: {w}")
+        elif kind == "unattributed":
+            if w == anon[0]:
+                out.append(_unattributed_line(anon, seen))
+        else:
+            why = JUDGE_WARNINGS.get(kind)
+            out.append(f"{runs} {'gets' if nb + nc == 1 else 'get'} no score from the judges: {w}"
+                       + (f" ({why})" if why else ""))
+    return out
+
+
+def _unattributed_line(warnings: list[str], seen: dict[str, list[int]], most: int = 5) -> str:
+    """The line for the judge scores that name no judge (`unattributed:<signal id>`), each warning one score."""
+    nb, nc = (sum(seen[w][i] for w in warnings) for i in (0, 1))
+    where = " and ".join(f"{n} in {arm} runs" for n, arm in ((nb, "base"), (nc, "candidate")) if n)
+    named = ", ".join(warnings[:most]) + (f" and {len(warnings) - most} more" if len(warnings) > most else "")
+    return (f"judge scores that name no judge are not read ({where}): {named}; record a judge's score with "
+            "loopmath flow score")
 
 
 def _has(xs: list[Any]) -> str:
@@ -1108,11 +1328,16 @@ def _reads_as(spelling: str, rule: Any, config: Any) -> bool:
 
 
 def _scoring_rules(base_runs: list[Any], cand_runs: list[Any], rule: Any, now: datetime | None,
-                   config: Any) -> list[str]:
+                   config: Any, *, quality: dict | None = None) -> list[str]:
     """Each of `rule_choices` but `rule` under which at least one pair is scored, with its count, one name per
-    rule: `accept` is the runs' own rule, so it is named once, by the spelling that reads as that rule."""
-    own = [r for r, _ in _own(base_runs, cand_runs).values()]
+    rule: `accept` is the runs' own rule, so it is named once, by the spelling that reads as that rule.
+    `quality` is the arms' flow run map (`_flow_quality`); None fits it once for every rule. Runs whose stored
+    rule the resolver refuses are named last, by reason."""
+    refused: dict[str, list[int]] = {}
+    own = [r for r, _ in _own(base_runs, cand_runs, refused).values()]
     own_rule = own[0] if len(own) == 1 else None
+    if quality is None:
+        quality = _flow_quality(base_runs, cand_runs)
     found: list[tuple[str, int, int]] = []
     for r in rule_choices(base_runs, cand_runs, config):
         if r == rule:
@@ -1120,7 +1345,8 @@ def _scoring_rules(base_runs: list[Any], cand_runs: list[Any], rule: Any, now: d
         try:
             if r == ACCEPT:
                 _one_rule(base_runs, cand_runs, config)
-            b, c = _observations(base_runs, r, now, config), _observations(cand_runs, r, now, config)
+            b = _observations(base_runs, r, now, config, quality=quality)
+            c = _observations(cand_runs, r, now, config, quality=quality)
             if score_rule(r) is not None:
                 _one_scale(b, c)
                 _one_direction(b, c, r)
@@ -1146,7 +1372,7 @@ def _scoring_rules(base_runs: list[Any], cand_runs: list[Any], rule: Any, now: d
             out.append(f"accept ({n} of {total} pairs{mark})")
         else:
             out.append(f"{r} ({n} of {total} pairs)")
-    return out
+    return out + _refused_rules(refused)
 
 
 __all__ = ["ACCEPT", "CHECK_EXT", "Comparison", "HARNESS_RUNS_SCHEMA", "Observation", "PAIR_EXT", "SCHEMA",

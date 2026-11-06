@@ -29,6 +29,14 @@ os.environ["NO_COLOR"] = "1"
 os.environ["PYTHON_COLORS"] = "0"
 
 
+# Offline. After each command loopmath asks pypi.org, once a day, whether a newer loopmath is out
+# (loopmath/update.py). The suite never does: the check is off here, at import, for every test and
+# every subprocess that inherits os.environ. A test that builds an environment from scratch sets
+# LOOPMATH_NO_UPDATE_CHECK=1 in it too, and tests/test_update_check.py turns the check on with the
+# request faked.
+os.environ["LOOPMATH_NO_UPDATE_CHECK"] = "1"
+
+
 # Tests that need parts of the private development tree. The public export
 # (scripts/export-public.sh) leaves these paths out, so there
 # the tests skip, and the not-run line below names them.

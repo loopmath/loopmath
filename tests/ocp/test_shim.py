@@ -31,7 +31,7 @@ def test_shim_reexports_the_package_checker():
     for name in ("validate_file", "validate_doc", "validate_many", "main", "Finding", "RECOMMENDED_VOCABULARY"):
         assert getattr(shim, name) is getattr(conformance, name), name
     assert shim.SCHEMA_PATHS == conformance.SCHEMA_PATHS
-    assert shim.CURRENT_VERSION == "0.3"
+    assert shim.CURRENT_VERSION == "0.4"
 
 
 def test_shim_runs_as_a_script():

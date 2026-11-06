@@ -6,9 +6,11 @@ Six checks, each `ok`, `warn` or `fail`:
   store    the store root exists and is writable
   fit      `fits/latest` present, and its age
   prices   every model seen in the scan window has a price
-  skill    where the skill set is installed (and which Codex form), and whether it is whole and current
+  skill    where the loopmath skill is installed (and which Codex form), whether it is the one this
+           loopmath writes, and the job skills 0.3.3 and older installed that are still on disk
 
-Nothing here opens a network connection. Log files are read through the
+Nothing here opens a network connection (the daily update check runs after the command, from
+cli.main). Log files are read through the
 parse cache, which doctor keeps up to date in the store's cache folder (the
 report's `cache` says where and how large); it writes nothing else there, and
 creates the store folder only when it is missing. Codex auth files are never
@@ -28,6 +30,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable, Mapping
 
+from .. import __version__
 from ..belief.design import other_design
 from . import install as _install
 
@@ -189,28 +192,52 @@ def _install_cmd(place: dict) -> str:
     return f"loopmath skill install --target {place['target']} --scope {place['scope']}"
 
 
+def _folders(paths: list[str]) -> str:
+    """The retired files, by the skill folder each is in (`loopmath/reference.md` by its name)."""
+    names = []
+    for path in paths:
+        folder, file = Path(path).parent.name, Path(path).name
+        name = f"{folder}/{file}" if folder == "loopmath" else folder
+        if name not in names:
+            names.append(name)
+    return ", ".join(names)
+
+
 def check_skill(cwd: Path | None, env: Mapping[str, str] | None) -> dict:
-    """`ok` when the full set is installed and current for some target, with nothing old or partial
-    left anywhere; else a warning with the exact install command."""
+    """`ok` when the skill is installed and current for some target, with nothing old, partial or
+    retired left anywhere; else a warning with the exact install command. Retired files loopmath still
+    owns go with that command; the others were kept, and the warning says why."""
     places = _install.status(cwd=cwd, env=env)
-    n = len(_install.SKILLS)
     seen = [p for p in places if p["any"]]
     if not seen:
         return _check("skill", "warn", "not installed: run `loopmath skill install`", places=places)
     problems = []
     for p in seen:
         where = f"{p['target']} {p['scope']}"
+        retired = p["retired"]
         if p["old"]:
             problems.append(f"{where} still has the 0.1 single skill: run `{_install_cmd(p)}`")
         elif p["missing"]:
-            problems.append(f"{where} lacks {', '.join(p['missing'])}: run `{_install_cmd(p)}`")
+            problems.append(f"{where} lacks the loopmath skill: run `{_install_cmd(p)}`")
         elif not p["current"]:
-            problems.append(f"{where} is older than this loopmath: run `{_install_cmd(p)}`")
+            problems.append(f"{where} has a loopmath skill that differs from the one loopmath {__version__} writes: "
+                            f"run `{_install_cmd(p)}`")
+        if retired["owned"]:
+            problems.append(f"{where} still has the job skills 0.3.3 and older installed "
+                            f"({_folders(retired['owned'])}): run `{_install_cmd(p)}` to remove them")
+        if retired["changed"]:
+            problems.append(f"{where} kept {', '.join(retired['changed'])}: changed since loopmath wrote "
+                            f"{'them' if len(retired['changed']) > 1 else 'it'}; move "
+                            f"{'them' if len(retired['changed']) > 1 else 'it'} aside when no longer needed")
+        if retired["foreign"]:
+            problems.append(f"{where} has {', '.join(retired['foreign'])}, where 0.3.3 and older put job skills, "
+                            "but loopmath did not write "
+                            f"{'them' if len(retired['foreign']) > 1 else 'it'}: left alone")
     if problems:
         return _check("skill", "warn", "; ".join(problems), places=places)
     parts = [f"{p['target']} {p['scope']} ({'AGENTS.md block' if p['method'] == 'agents_block' else 'skills'})"
              for p in seen]
-    return _check("skill", "ok", f"{n} skills: " + ", ".join(parts), places=places)
+    return _check("skill", "ok", "the loopmath skill: " + ", ".join(parts), places=places)
 
 
 def run_checks(home: Path, *, env: Mapping[str, str] | None = None, cwd: Path | None = None,

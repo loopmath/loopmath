@@ -1,4 +1,4 @@
-"""Build OCP v0.3 documents and records for the store (spec 01, spec 03 section 4).
+"""Build OCP v0.3 and v0.4 documents and records for the store (spec 01, spec 03 section 4).
 
 Every helper accepts a `loopmath.types` dataclass or its
 `to_dict()` form and returns plain JSON-ready dicts. Unknown keys a `types`
@@ -14,6 +14,12 @@ The `types` to OCP mapping:
   `control.ext["dev.loopmath.gate_rules"]`; `budget` is `budget_rounds`
   (rounds including the first); `rescue` `redo_usual` is
   `{kind: configuration, ref: usual}`;
+- `Control.checks` are written as OCP 0.4 `control.checks`, alone: no `gates`,
+  `repair` or gate rules beside them unless the control also has gates (E217
+  then names the mix). Gates with a non-default id (`g_<after>`) or extras, or
+  two gates after one piece, are written as checks too, so nothing is lost;
+  the config id does not move (`canonical`). A run whose workflow has checks
+  is an OCP 0.4 document, every other run 0.3;
 - settings `{harness, model: {raw, id}, effort, context_policy, options}`, with
   `context_policy` always written;
 - a cyclic workflow raises `WorkflowCycleError` (repair loops live in control).
@@ -26,13 +32,13 @@ from datetime import datetime
 from typing import Any
 
 from .. import __version__
-from .canonical import GATE_RULES_KEY, config_id
+from .canonical import DEFAULT_GATE_RULE, GATE_RULES_KEY, config_id
 from .version import version_at_least
 
 OCP_VERSION = "0.3"
+FLOW_VERSION = "0.4"  # a run with run.flow or control.checks, and a flow document
 PRODUCER_NAME = "loopmath"
 ARTIFACT_KINDS = ("issue", "repo", "plan", "spec", "diff", "review", "verdict", "test_record", "report", "other")
-DEFAULT_GATE_RULE = {"reviewer": "review_approve", "referee": "referee_pick", "tester": "tests_pass"}
 RESCUE_TO_OCP = {
     "redo_usual": {"kind": "configuration", "ref": "usual"},
     "person": {"kind": "person"},
@@ -141,8 +147,15 @@ def workflow_to_ocp(workflow: Any) -> dict[str, Any]:
         artifacts.append({"id": artifact, "kind": kind})
 
     control_in = w.get("control") if isinstance(w.get("control"), dict) else {}
+    gates_in = [_as_dict(g) for g in control_in.get("gates") or []]
+    if "checks" not in control_in and _gates_as_checks(gates_in):
+        control_in = {k: v for k, v in control_in.items() if k != "gates"}
+        control_in["checks"] = [_gate_check(g, roles) for g in gates_in if g.get("after") is not None]
+        gates_in = []
+    if "checks" in control_in and not gates_in:
+        return _with_control(w, pieces, artifacts, known, _checks_form(control_in))
     gates, repair, rules = [], {}, {}
-    for gate in control_in.get("gates") or []:
+    for gate in gates_in:
         g = _as_dict(gate)
         piece = g.get("after")
         if piece is None:
@@ -166,7 +179,46 @@ def workflow_to_ocp(workflow: Any) -> dict[str, Any]:
     control.update(extras)
     if ext:
         control["ext"] = ext
+    return _with_control(w, pieces, artifacts, known, control)
 
+
+def _gates_as_checks(gates: list[dict[str, Any]]) -> bool:
+    """Gates the gates form cannot carry: a non-default id, extra fields, or two after one piece."""
+    afters = [g.get("after") for g in gates]
+    return len(set(afters)) < len(afters) or any(
+        g.get("id", f"g_{g.get('after')}") != f"g_{g.get('after')}" or set(g) - {"id", "after", "rule", "on_fail"}
+        for g in gates)
+
+
+def _gate_check(gate: dict[str, Any], roles: dict[str, str]) -> dict[str, Any]:
+    """A gate as an OCP check, keeping its id and extras: the same id as the gates form gives (`canonical`)."""
+    after = gate["after"]
+    out: dict[str, Any] = {"id": gate.get("id", f"g_{after}"), "after": after,
+                           "rule": gate.get("rule") or DEFAULT_GATE_RULE.get(roles.get(after, ""), "review_approve")}
+    if gate.get("on_fail"):
+        out["on_fail"] = gate["on_fail"]
+    out.update({k: copy.deepcopy(v) for k, v in gate.items() if k not in ("id", "after", "rule", "on_fail")})
+    return out
+
+
+def _checks_form(control_in: dict[str, Any]) -> dict[str, Any]:
+    """The checks form: the checks, budget, rescue and the control's other members, with no gates, repair or
+    gate rules."""
+    control: dict[str, Any] = {"checks": copy.deepcopy(control_in["checks"]),
+                               "budget": control_in.get("budget_rounds", 1)}
+    rescue = control_in.get("rescue", "redo_usual")
+    control["rescue"] = copy.deepcopy(RESCUE_TO_OCP.get(rescue, {"kind": rescue})) if isinstance(rescue, str) \
+        else copy.deepcopy(rescue)
+    control.update({k: copy.deepcopy(v) for k, v in control_in.items()
+                    if k not in ("gates", "checks", "budget_rounds", "rescue", "ext")})
+    ext = {k: copy.deepcopy(v) for k, v in (control_in.get("ext") or {}).items() if k != GATE_RULES_KEY}
+    if ext:
+        control["ext"] = ext
+    return control
+
+
+def _with_control(w: dict[str, Any], pieces: list, artifacts: list, known: set[str],
+                  control: dict[str, Any]) -> dict[str, Any]:
     out = {
         "id": w.get("id"),
         "version": w.get("version"),
@@ -351,7 +403,7 @@ def _slate(value: Any, run_id: str, base_commit: str | None) -> dict[str, Any]:
 def new_run_doc(*, run_id: str, task: Any, configuration: Any, acceptance_rule: Any, provenance: Any,
                 slate: Any = None, source: str | None = None, rec: str | None = None,
                 started_at: str | None = None, profile: str = "metadata_only") -> dict[str, Any]:
-    """The OCP v0.3 skeleton `loopmath run start` writes (spec 02).
+    """The OCP skeleton `loopmath run start` writes (spec 02): v0.4 when the workflow has checks, else v0.3.
 
     producer loopmath, privacy `metadata_only`, run with task, configuration,
     provenance, acceptance rule and slate, one node per piece vertex (node id =
@@ -376,11 +428,13 @@ def new_run_doc(*, run_id: str, task: Any, configuration: Any, acceptance_rule: 
 
     workflow = config_ocp["workflow"]
     piece_ids = [p["id"] for p in workflow.get("pieces", [])]
-    gates = (workflow.get("control") or {}).get("gates", [])
+    control = workflow.get("control") or {}
+    checks = control.get("checks") if isinstance(control.get("checks"), list) else []
+    checked = set(control.get("gates", [])) | {c.get("after") for c in checks if isinstance(c, dict)}
     nodes = []
     for piece in workflow.get("pieces", []):
         kind = NODE_KIND_BY_ROLE.get(piece.get("role", ""), "task")
-        if piece["id"] in gates and kind not in ("review", "test"):
+        if piece["id"] in checked and kind not in ("review", "test"):
             kind = "gate"
         nodes.append({"id": piece["id"], "kind": kind, "vertex": piece["id"], "state": "queued"})
     producers: dict[str, list[str]] = {}
@@ -399,7 +453,7 @@ def new_run_doc(*, run_id: str, task: Any, configuration: Any, acceptance_rule: 
                     edges.append({"from": maker, "to": user, "kind": "dep", "tier": "reported"})
 
     return {
-        "ocp": OCP_VERSION,
+        "ocp": FLOW_VERSION if "checks" in control else OCP_VERSION,
         "producer": {"name": PRODUCER_NAME, "version": __version__, "emitted_at": at,
                      "capabilities": dict(CAPABILITIES)},
         "privacy": {"profile": profile},
@@ -415,15 +469,46 @@ def new_run_doc(*, run_id: str, task: Any, configuration: Any, acceptance_rule: 
 def validate_strict(doc: dict[str, Any]) -> list[dict[str, Any]]:
     """Every finding as a dict {level, code, path, message}; the caller fails on any 'error'.
 
-    Strict means the document must declare OCP 0.3 (E005, a loopmath store
-    rule, not an OCP rule) on top of every conformance rule.
+    Strict means a run document the store keeps (E005, a loopmath store rule,
+    not an OCP rule) on top of every conformance rule: OCP 0.3, or 0.4 when the
+    run names a flow (`run.flow`) or its workflow states `control.checks`. A
+    flow document is refused by name: the flow commands read it.
     """
     from .conformance import validate_doc
 
     findings = [f._asdict() for f in validate_doc(doc)]
-    if not isinstance(doc, dict) or doc.get("ocp") != OCP_VERSION:
-        version = doc.get("ocp") if isinstance(doc, dict) else None
-        hint = " (run 'loopmath ocp migrate')" if version_at_least(version, "0.1") else ""
-        findings.insert(0, {"level": "error", "code": "E005", "path": "$['ocp']",
-                            "message": f"the store takes OCP {OCP_VERSION} documents, got {version!r}{hint}"})
+    message = _store_version_problem(doc)
+    if message:
+        findings.insert(0, {"level": "error", "code": "E005", "path": "$['ocp']", "message": message})
     return findings
+
+
+def is_flow_document(doc: Any) -> bool:
+    return isinstance(doc, dict) and doc.get("kind") == "flow"
+
+
+def run_uses_v04(doc: Any) -> bool:
+    """A run document with `run.flow`, or with `control.checks` in its inline workflow."""
+    run = doc.get("run") if isinstance(doc, dict) else None
+    if not isinstance(run, dict):
+        return False
+    configuration = run.get("configuration")
+    workflow = configuration.get("workflow") if isinstance(configuration, dict) else None
+    control = workflow.get("control") if isinstance(workflow, dict) else None
+    return "flow" in run or (isinstance(control, dict) and "checks" in control)
+
+
+def _store_version_problem(doc: Any) -> str | None:
+    if is_flow_document(doc):
+        return ("the store takes run documents; this is a flow document (kind 'flow'), which the flow commands "
+                "read")
+    version = doc.get("ocp") if isinstance(doc, dict) else None
+    if version == OCP_VERSION:
+        return None
+    if version == FLOW_VERSION:
+        if run_uses_v04(doc):
+            return None
+        return (f"the store takes OCP {FLOW_VERSION} run documents that name a flow (run.flow) or state "
+                f"control.checks; this one does neither, so write it as OCP {OCP_VERSION}")
+    hint = " (run 'loopmath ocp migrate')" if version_at_least(version, "0.1") else ""
+    return f"the store takes OCP {OCP_VERSION} documents, got {version!r}{hint}"

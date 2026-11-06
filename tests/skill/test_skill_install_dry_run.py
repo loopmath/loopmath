@@ -33,7 +33,7 @@ def _tree(root: Path) -> dict[str, bytes | None]:
 
 
 def _actions(results: list[dict]) -> list:
-    return [(r["target"], r["method"], [e["action"] for e in r["skills"] + r["reference"]],
+    return [(r["target"], r["method"], [e["action"] for e in r["skills"]], r["manifest_action"],
              [e["path"] for e in r["removed"]], r["block"]) for r in results]
 
 
@@ -44,11 +44,16 @@ def test_dry_run_writes_nothing_and_matches_install(env, capsys):
     assert cli.main(["skill", "install", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert _tree(env["tmp"]) == before
-    lines = out.splitlines()
-    assert lines[0].startswith("dry run: nothing written.")
-    assert lines[1] == f"claude-code user: 6 skills in {env['home'] / '.claude' / 'skills'}: 6 to write"
-    assert "a copy of the shared reference.md (6 to write)" in out and ".loopmath-skills.json" in out
-    assert f"AGENTS.md block to write in {env['home'] / '.codex' / 'AGENTS.md'}" in out
+    claude, codex = env["home"] / ".claude" / "skills", env["home"] / ".codex" / "loopmath"
+    assert out.splitlines() == [
+        "dry run: nothing written. loopmath skill install (same options, without --dry-run) would do this:",
+        "claude-code user:",
+        f"  to write {claude / 'loopmath' / 'SKILL.md'}, the loopmath skill",
+        f"  to write {claude / '.loopmath-skills.json'}, the list of the files install wrote",
+        "codex user (AGENTS.md block):",
+        f"  to write {codex / 'loopmath' / 'SKILL.md'}, the loopmath skill",
+        f"  to write {codex / '.loopmath-skills.json'}, the list of the files install wrote",
+        f"  AGENTS.md block to write in {env['home'] / '.codex' / 'AGENTS.md'}"]
 
     assert cli.main(["skill", "install", "--dry-run", "--json"]) == 0
     dry = json.loads(capsys.readouterr().out)["results"]
@@ -57,7 +62,9 @@ def test_dry_run_writes_nothing_and_matches_install(env, capsys):
     assert _actions(dry) == _actions(real) and not any("dry_run" in r for r in real)
 
     assert cli.main(["skill", "install", "--dry-run"]) == 0
-    assert "6 unchanged" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"  unchanged {claude / 'loopmath' / 'SKILL.md'}, the loopmath skill\n" in out
+    assert "to write" not in out and "to remove" not in out
 
 
 def test_dry_run_when_codex_gained_skills(env):
@@ -68,12 +75,12 @@ def test_dry_run_when_codex_gained_skills(env):
     before = _tree(env["tmp"])
     dry = inst.install("codex", dry_run=True)
     assert _tree(env["tmp"]) == before
-    assert dry[0]["block"] == "removed" and len(dry[0]["removed"]) == 12
+    assert dry[0]["block"] == "removed" and len(dry[0]["removed"]) == 1  # the block form's one skill file
     assert _actions(dry) == _actions(inst.install("codex"))
 
 
 def test_dry_run_with_a_file_in_the_way(env, capsys):
-    skill = env["home"] / ".claude" / "skills" / "loopmath-plan-task"
+    skill = env["home"] / ".claude" / "skills" / "loopmath"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("mine\n")
     before = _tree(env["tmp"])
@@ -89,8 +96,8 @@ def test_uninstall_says_plainly_what_it_did(env, capsys):
     inst.install("codex")
     assert cli.main(["skill", "uninstall", "--target", "codex"]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("codex user: removed 6 skills and the reference.md beside each from ")
-    assert "None" not in out and "absent" not in out
+    skill = env["home"] / ".codex" / "skills" / "loopmath" / "SKILL.md"
+    assert out == f"codex user:\n  removed {skill}, the loopmath skill\n"
 
     (env["home"] / ".codex" / "skills").rmdir()
     inst.install("codex")  # the AGENTS.md block form

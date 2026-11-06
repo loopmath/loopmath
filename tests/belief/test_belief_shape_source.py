@@ -1,6 +1,9 @@
 """Shapes, position x source and role groups (spec 04 sections 1 and 2).
 
 Synthetic bundles only: a graph run in one data source and solo in another, as the shipped bundle has them.
+The fits are 0.3.5's (`[belief] level = "shared"`): the store level, the default from 0.4.0, gives every source its
+own level and drops the shipped sources' success and score rows, so the source gap these tests guard against is
+taken by the source nodes there (test_store_level.py).
 """
 
 from __future__ import annotations
@@ -74,6 +77,7 @@ BEFORE_02 = ("psrc:", "fsrc:")
 
 def _fit(tmp_path_factory, docs):
     home = tmp_path_factory.mktemp("home")
+    (home / "config.toml").write_text('[belief]\nlevel = "shared"\n', encoding="utf-8")
     F.fit(home, docs=docs, no_prior=True, now=NOW)
     return load_latest(home)
 

@@ -16,7 +16,7 @@ import json
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Sequence
 
@@ -40,7 +40,11 @@ OPT_IN_DESIGN_VERSION = 5
 # The model options this loopmath's `fit` writes, each with the values it writes there (unset or `eb` writes
 # version 4, with no options). A version 5 fit with any other key or value was made by a loopmath with an option
 # this one has no nodes for: it is refused, as 0.3.1 refuses version 5, rather than read without them.
-MODEL_OPTIONS: dict[str, tuple[Any, ...]] = {"belief.success_head": ("sampled",)}
+MODEL_OPTIONS: dict[str, tuple[Any, ...]] = {"belief.success_head": ("sampled",),
+                                             # the store level and benchmark transfer (level.py)
+                                             "belief.level": ("shared", "store"),
+                                             "belief.shipped_success": ("keep", "drop"),
+                                             "belief.benchmark_factors": ("reference", "offset")}
 # The version the seed key hashes (spec 04 section 3). It stays 3 from 0.2.8: the same data seeds the same
 # draws as in 0.2.7, so every number that is not a token count is 0.2.7's.
 SEED_VERSION = 3
@@ -200,6 +204,27 @@ def role_terms(role: str, model: str, weight: float = 1.0) -> tuple[Term, ...]:
     return ((f"role:{role}", None, weight), (f"role_family:{role}|{fam}", f"role:{role}", weight))
 
 
+def _step_key(text: str) -> str:
+    return text.replace("%", "%25").replace("#", "%23").replace("|", "%7C")
+
+
+def step_node(flow: str, piece: str, family: str) -> str:
+    """The node of a flow's piece on a model family (SPEC 3.10): `step:<flow>#<piece>|<family>`, with `%`, `#` and
+    `|` in the flow and piece ids written `%25`, `%23` and `%7C`, so two (flow, piece) pairs never share a node.
+    Ids without those characters read as written."""
+    return f"step:{_step_key(flow)}#{_step_key(piece)}|{family}"
+
+
+@lru_cache(maxsize=65536)
+def step_terms(flow: str, piece: str, role: str, model: str, weight: float = 1.0) -> tuple[Term, ...]:
+    """The step term of a flow run's piece, a child of the piece's `role_family` node (`role_terms`), at that
+    node's weight. Empty outside a flow (`flow` empty), so a run without `run.flow` keeps its rows."""
+    if not flow:
+        return ()
+    fam = model_path(model)[1]
+    return ((step_node(flow, piece, fam), f"role_family:{role}|{fam}", weight),)
+
+
 def _s(setting: Setting) -> tuple[str, str, str]:
     return (setting.harness or "unknown", canonical_model_id(setting.model), (setting.effort or "default").lower())
 
@@ -232,6 +257,7 @@ class Structure:
     shape: str = ""  # topology and position key (`shape_key`); empty means the workflow id
     copies: dict[str, int] = field(default_factory=dict)  # piece -> copies in its group (`copy_groups`)
     factors: tuple[str, ...] = ()  # the run's harness factors, sorted (`spec/harness.md`); () without a record
+    flow: str = ""  # the run's flow id (`run.flow.id`), for the step terms (SPEC 3.10); empty outside a flow
 
 
 def topological_pieces(workflow: Workflow) -> list[str]:
@@ -315,8 +341,9 @@ def default_gate_rule(role: str) -> str:
     return {"reviewer": "review_approve", "tester": "tests_pass", "referee": "referee_pick"}.get(role, "gate")
 
 
-def structure(config: Configuration, factors: Iterable[str] = ()) -> Structure:
-    """The configuration's structure; `factors` are the harness factors every piece runs with (sorted, unique)."""
+def structure(config: Configuration, factors: Iterable[str] = (), flow: str | None = None) -> Structure:
+    """The configuration's structure; `factors` are the harness factors every piece runs with (sorted, unique), and
+    `flow` the run's flow id (`ParsedRun.flow`; None outside a flow)."""
     wf = config.workflow
     order = topological_pieces(wf)
     roles = {p.id: canonical_role(p.role) for p in wf.pieces}
@@ -362,7 +389,8 @@ def structure(config: Configuration, factors: Iterable[str] = ()) -> Structure:
         for i in gidx:
             gate_loop[i] = len(loops) - 1
     return Structure(wf.id, order, roles, settings, widths, gates, loops, k_max, piece_loop, gate_loop,
-                     shape_key(wf.id, roles.values()), copy_groups(order, roles, reach), tuple(sorted(set(factors))))
+                     shape_key(wf.id, roles.values()), copy_groups(order, roles, reach), tuple(sorted(set(factors))),
+                     flow or "")
 
 
 # ---------------------------------------------------------------- rows
@@ -384,12 +412,12 @@ def _effort_scaled(terms: tuple[Term, ...], weight: float) -> tuple[Term, ...]:
 def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None, *,
               source: str | None = None, effort: float = 1.0,
               prices: Mapping[str, float] | None = None) -> tuple[Term, ...]:
-    """Cost and tokens rows without the task part: setting, role, topology, position, round, control,
-    and with a `source` the position x source node `psrc:<shape>#<pos>|<source>` and the family x source
-    node `fsrc:<family>|<source>` (spec 04 section 1); the structure's harness factors under the piece's
-    harness, at 1 (`factor_terms`). `effort` is the value of the terms a timebox caps, the
-    effort and shape (topology, position) terms (`effort_weight`: below 1 under a timebox); the role, psrc and
-    fsrc terms stay at 1. `prices` is a fit's price offsets (`FitState.price_offsets`, spec 04 section 2): the
+    """Cost and tokens rows without the task part: setting, role (and in a flow run its step term, `step_terms`),
+    topology, position, round, control, and with a `source` the position x source node
+    `psrc:<shape>#<pos>|<source>` and the family x source node `fsrc:<family>|<source>` (spec 04 section 1); the
+    structure's harness factors under the piece's harness, at 1 (`factor_terms`). `effort` is the value of the
+    terms a timebox caps, the effort and shape (topology, position) terms (`effort_weight`: below 1 under a
+    timebox); the role, step, psrc and fsrc terms stay at 1. `prices` is a fit's price offsets (`FitState.price_offsets`, spec 04 section 2): the
     model's `price:offset` term goes last. The cost head has that node and the tokens head does not, so a
     prediction's shared row prices only its cost."""
     s = setting or st.settings[piece]
@@ -400,7 +428,8 @@ def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None,
     shape_terms = ((f"topology:{shape}", None, 1.0), (f"position:{position}", f"topology:{shape}", 1.0))
     if effort != 1.0:
         st_terms, shape_terms = _effort_scaled(st_terms, float(effort)), _effort_scaled(shape_terms, float(effort))
-    terms = st_terms + role_terms(st.roles[piece], m) + shape_terms
+    role = st.roles[piece]
+    terms = st_terms + role_terms(role, m) + step_terms(st.flow, piece, role, m) + shape_terms
     if st.factors:
         terms += factor_terms(h, st.factors)
     if source is not None:
@@ -412,17 +441,19 @@ def cost_rest(st: Structure, piece: str, k: int, setting: Setting | None = None,
 
 
 def gate_rest(st: Structure, gate: GateInfo, k: int) -> tuple[Term, ...]:
-    """Gate rows without the task part: gate rule, round, and the judged piece's setting and role."""
+    """Gate rows without the task part: gate rule, round, and the judged piece's setting and role, with its step
+    term in a flow run (`step_terms`)."""
     h, m, e = _s(st.settings[gate.judged])
+    role = st.roles[gate.judged]
     return (((f"gate:{gate.rule}", None, 1.0),) + tuple(round_terms(k)) + setting_terms(h, m, e, 1.0, False)
-            + role_terms(st.roles[gate.judged], m))
+            + role_terms(role, m) + step_terms(st.flow, gate.judged, role, m))
 
 
 def run_rest(st: Structure) -> tuple[Term, ...]:
     """Success and score rows without the task part: topology, control, and per piece its model chain,
     effort and harness (weight 1/n) with its harness factors at that weight, plus its role and role x family
     (weight 1/g, g the copies in its group, so parallel copies carry the role effect once, as one wide piece
-    does)."""
+    does), and in a flow run its step term at the role x family weight (`step_terms`)."""
     terms: list[Term] = [(f"topology:{st.shape or st.workflow_id}", None, 1.0)]
     terms += _control_terms(st.k_max, max(st.widths.values() or [1]))
     n = max(1, len(st.pieces))
@@ -431,7 +462,8 @@ def run_rest(st: Structure) -> tuple[Term, ...]:
         terms += setting_terms(h, m, e, 1.0 / n)
         if st.factors:
             terms += factor_terms(h, st.factors, 1.0 / n)
-        terms += role_terms(st.roles[piece], m, 1.0 / (st.copies.get(piece) or 1))
+        g = 1.0 / (st.copies.get(piece) or 1)
+        terms += role_terms(st.roles[piece], m, g) + step_terms(st.flow, piece, st.roles[piece], m, g)
     return tuple(terms)
 
 
@@ -507,6 +539,7 @@ class ParsedRun:
     dropped: dict[str, int] = field(default_factory=dict)
     checks: dict[str, int] = field(default_factory=dict)  # check name -> attempts that ran no model
     harness: dict | None = None  # the run's harness record (`harness.run_record`), None without one
+    flow: str | None = None  # the run's flow id (`run.flow.id`), None without `run.flow`
 
     @property
     def factors(self) -> tuple[str, ...]:
@@ -667,18 +700,44 @@ def config_from_doc(cfg: dict) -> Configuration:
 
 
 def rule_from_doc(doc: dict, default: AcceptanceRule = DEFAULT_RULE) -> AcceptanceRule:
+    """The run's stored rule. A score target no finite float holds, or a `window_days` no timedelta holds, is
+    refused by name (`Unusable`, a ValueError, which every reader of a malformed rule catches); any other
+    malformed score raises ValueError or TypeError as before."""
     r = (doc.get("run") or {}).get("acceptance_rule")
     if not isinstance(r, dict) or not r.get("name"):
         return default
     score = r.get("score")
     st = None
     if isinstance(score, dict) and score.get("name") and score.get("target") is not None:
-        st = ScoreTarget(name=str(score["name"]), target=float(score["target"]),
+        st = ScoreTarget(name=str(score["name"]), target=_rule_target(score["target"]),
                          better=str(score.get("better") or "higher"), scale=str(score.get("scale") or "linear"))
     return AcceptanceRule(name=str(r["name"]), definition=str(r.get("definition") or r["name"]),
                           requires=tuple(r.get("requires") if r.get("requires") is not None else ("tests",)),
                           score=st, excludes_events=tuple(r.get("excludes_events") or ("revert", "incident")),
-                          window_days=int(r.get("window_days") or 14))
+                          window_days=_rule_window(r.get("window_days")))
+
+
+def _rule_target(value: Any) -> float:
+    """A stored score target as a float; one past the float range, infinite or NaN is refused by name."""
+    try:
+        target = float(value)
+    except OverflowError:
+        target = math.inf
+    if not math.isfinite(target):
+        raise Unusable("score target not a finite number")
+    return target
+
+
+def _rule_window(value: Any) -> int:
+    """A stored `window_days` (0 or none: 14); a day count past 999999999 either way (`timedelta.max.days`), or
+    an infinite float, is refused by name."""
+    try:
+        days = int(value or 14)
+    except OverflowError:
+        raise Unusable("window_days past 999999999") from None
+    if abs(days) > timedelta.max.days:
+        raise Unusable("window_days past 999999999")
+    return days
 
 
 _PRICES = None
@@ -792,19 +851,23 @@ def _check_name(a: dict, node: dict) -> str | None:
 
 
 def run_evidence(doc: dict, rule: AcceptanceRule, *, now: datetime,
-                 q_by_tier: dict[str, float] | None = None) -> Evidence:
-    """The run's outcome as the fit reads it: `rules.evidence` under `rule` (None `q_by_tier`: the built-in q)."""
+                 q_by_tier: dict[str, float] | None = None,
+                 quality: tuple[float | None, float | None] | None = None) -> Evidence:
+    """The run's outcome as the fit reads it: `rules.evidence` under `rule` (None `q_by_tier`: the built-in q;
+    `quality`: a flow run's combined quality, as `outcome_evidence` takes it)."""
     from . import rules
 
-    return rules.evidence(doc, rule, now=now, q_by_tier=q_by_tier)
+    return rules.evidence(doc, rule, now=now, q_by_tier=q_by_tier, quality=quality)
 
 
 def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | None = None,
-              origin: str | None = None, q_by_tier: dict[str, float] | None = None) -> ParsedRun:
+              origin: str | None = None, q_by_tier: dict[str, float] | None = None,
+              quality: tuple[float | None, float | None] | None = None) -> ParsedRun:
     """Everything the fit needs from one finished OCP v0.3 run document. Raises Unusable.
 
     `origin` is where the fit found the document (`data_source`); None reads its label. `q_by_tier` is
-    `outcome.q.<tier>` from config.toml, passed to `outcome_evidence` (None: the built-in q).
+    `outcome.q.<tier>` from config.toml, passed to `outcome_evidence` (None: the built-in q), and so is
+    `quality`, a flow run's combined quality.
     """
     run = doc.get("run") or {}
     cfg = run.get("configuration")
@@ -869,7 +932,19 @@ def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | 
     from .rules import resolve_rule
 
     use_rule = rule or resolve_rule(doc)  # one resolver for every reader (0.2.7); raises on a malformed score
-    evidence = run_evidence(doc, use_rule, now=now or datetime.now().astimezone(), q_by_tier=q_by_tier)
+    evidence = run_evidence(doc, use_rule, now=now or datetime.now().astimezone(), q_by_tier=q_by_tier,
+                            quality=quality)
+    flow = (run.get("flow") or {}).get("id") if isinstance(run.get("flow"), dict) else None
+    return ParsedRun(str(run.get("id") or task.id), task, config, source, attempts, gates, evidence,
+                     run_score_meta(doc, evidence, use_rule), use_rule, dropped, checks, harness,
+                     flow if isinstance(flow, str) and flow else None)
+
+
+def run_score_meta(doc: dict, evidence: Evidence, rule: AcceptanceRule) -> dict[str, dict]:
+    """Each score's unit, direction and scale, from the run's first signal of that name. A flow run's combined
+    quality (`outcome_evidence`) is a fraction in the rule's direction; a score name a judge scored with no
+    combined value has no entry."""
+    run = doc.get("run") or {}
     score_meta: dict[str, dict] = {}
     for s in run.get("signals") or []:
         if s.get("kind") == "score" and isinstance(s.get("value"), (int, float)) and not isinstance(s.get("value"), bool):
@@ -881,8 +956,14 @@ def parse_run(doc: dict, *, now: datetime | None = None, rule: AcceptanceRule | 
             score_meta.setdefault(str(name), dict(meta))
         for name in (evidence.scores or {}):
             score_meta.setdefault(str(name), {"unit": None, "better": "higher", "scale": "linear"})
-    return ParsedRun(str(run.get("id") or task.id), task, config, source, attempts, gates, evidence,
-                     score_meta, use_rule, dropped, checks, harness)
+    elif isinstance(run.get("flow"), dict) and rule.score is not None:
+        from ..flows import judges
+
+        if any(judges.judged(doc, rule.score.name)):
+            score_meta.pop(rule.score.name, None)
+            if rule.score.name in (evidence.scores or {}):
+                score_meta[rule.score.name] = {"unit": None, "better": rule.score.better, "scale": "fraction"}
+    return score_meta
 
 
 def _gate_observations(doc: dict, st: Structure, by_piece_round: dict) -> list[tuple[int, int, bool]]:
@@ -951,7 +1032,7 @@ def _gate_observations(doc: dict, st: Structure, by_piece_round: dict) -> list[t
 def rows_for_run(run_doc: dict) -> dict:
     """Fitting rows for one run document: {cost, tokens, gate, success, scores} plus its structure."""
     pr = parse_run(run_doc)
-    st = structure(pr.config, pr.factors)
+    st = structure(pr.config, pr.factors, pr.flow)
     out: dict[str, Any] = {"run": pr.run_id, "source": pr.source, "structure": st,
                            "cost": [], "tokens": [], "gate": [], "success": None, "scores": {}}
     for a in pr.attempts:

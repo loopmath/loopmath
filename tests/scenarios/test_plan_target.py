@@ -22,6 +22,7 @@ import re
 
 import pytest
 
+from loopmath.recommend.commands import DEFAULT_MODELS
 from tests.scenarios.test_designed_import import REPO, TARGET, call, call_json, write_docs
 
 TITLE = "Feature task in example/bench to reach heldout_perf >= 2400"
@@ -49,6 +50,31 @@ def plan(tmp_path_factory):
         steps["rec"] = steps["recommend"][1]
         steps["stored"] = json.loads((root / "home" / "recs" / f"{steps['rec']['rec']}.json").read_text())
         yield steps
+
+
+@pytest.fixture(scope="module", params=["store", "shared"])
+def offered_plan(request, tmp_path_factory):
+    """The plan under each level with the recorded workflow's model offered, so that the recorded workflow is in
+    the rescue's pool: by default its model is retired, the rescue comes from the catalog, whose workflows are not
+    in the stored candidates, and nothing stored bounds it."""
+    root = tmp_path_factory.mktemp(f"plan-offered-{request.param}")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("LOOPMATH_HOME", str(root / "home"))
+        mp.setenv("LOOPMATH_CACHE_DIR", str(root / "cache"))
+        mp.setenv("CLAUDE_CONFIG_DIR", str(root / "logs" / "claude"))
+        mp.setenv("CODEX_HOME", str(root / "logs" / "codex"))
+        (root / "docs").mkdir()
+        docs = write_docs(root / "docs")
+        code, out, err = call("run", "import", str(root / "docs"), "--finish", "--no-fit")
+        assert code == 0, err
+        code, out, err = call("config", "set", "belief.level", request.param)
+        assert code == 0, err
+        fit = call_json("fit")["fit"]["id"]
+        recorded = {s["model"]["id"] for d in docs for s in
+                    json.loads(d.read_text())["run"]["configuration"]["settings"].values()}
+        models = ",".join(dict.fromkeys([*DEFAULT_MODELS, *sorted(recorded)]))
+        rec = call_json(*PLAN, "--fit", fit, "--models", models)
+        yield {"rec": rec, "stored": json.loads((root / "home" / "recs" / f"{rec['rec']}.json").read_text())}
 
 
 def chance(numbers: dict | None) -> float:
@@ -103,9 +129,20 @@ def test_the_rescue_retries_the_cheapest_workflow_with_a_chance_of_at_least_70_p
     sure = [c for c in candidates if c.get("origin") == "recorded" and chance(c.get("numbers")) >= 0.7]
     assert sure, "the synthetic store should hold a recorded workflow with a chance of at least 0.7"
     assert rescue["chance"]["mean"] >= 0.7
-    cheapest = min(c["numbers"]["run_cost_usd"]["mean"] for c in sure)
-    assert rescue["run_cost_usd"] <= cheapest + 1e-6
+    # the store's one recorded workflow is on a retired model, which is never the rescue (engine.RESCUE_POOL);
+    # `test_the_rescue_is_no_dearer_than_an_offered_recorded_workflow` offers its model
+    retired = {c["config"]["id"] for c in candidates if "(retired model)" in c.get("label", "")}
+    assert rescue["config"] not in retired
     assert 0.0 < rescue["p_accepted"] <= 1.0
+
+
+def test_the_rescue_is_no_dearer_than_an_offered_recorded_workflow(offered_plan):
+    rescue, candidates = offered_plan["rec"]["rescue"], offered_plan["stored"]["candidates"]
+    assert rescue["kind"] == "retry" and rescue["chance"]["mean"] >= 0.7
+    sure = [c for c in candidates if c.get("origin") == "recorded" and chance(c.get("numbers")) >= 0.7
+            and "(retired model)" not in c.get("label", "")]
+    assert sure, "with its model offered, the recorded workflow should be a candidate with a chance of at least 0.7"
+    assert rescue["run_cost_usd"] <= min(c["numbers"]["run_cost_usd"]["mean"] for c in sure) + 1e-6
 
 
 def test_every_choice_has_the_chance_within_the_attempts(plan):

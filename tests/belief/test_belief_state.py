@@ -118,11 +118,17 @@ def test_misclassification_widens_the_success_head(tmp_path):
     task = task_from_doc(docs[0])
     for cfg in simdata.all_configs()[:6]:
         assert _success_eta_var(unsure, task, cfg) > _success_eta_var(sure, task, cfg)
-    # node-averaged sd in closed form: 0.5525 versus 0.5519 here, well inside the 400-draw noise
+    # node-averaged sd in closed form, on 0.3.5's fit: 0.5525 versus 0.5519 here, well inside the 400-draw noise.
+    # Under the store level the user's wide level node is in the average and the two are 0.5416 and 0.5418.
     def node_sd(state):
         return np.sqrt(np.sum(np.asarray(state.heads["success"].U) ** 2, axis=1)).mean()
 
-    assert node_sd(unsure) > node_sd(sure)
+    shared = {}
+    for name, rows in (("sure", docs), ("unsure", noisy)):
+        (tmp_path / f"shared-{name}").mkdir()
+        (tmp_path / f"shared-{name}" / "config.toml").write_text('[belief]\nlevel = "shared"\n', encoding="utf-8")
+        shared[name] = load(F.fit(tmp_path / f"shared-{name}", docs=rows, no_prior=True, now=now))
+    assert node_sd(shared["unsure"]) > node_sd(shared["sure"])
 
 
 def test_score_rule_switch(s, task):

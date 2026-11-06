@@ -3,7 +3,8 @@
 - `ocp validate FILE...`: every rule for each file, plus the cross-file slate
   check (E194) over the set. Exit 0 when no file has an error, 1 when one
   does, 2 when a file is missing.
-- `ocp migrate FILE... [--out DIR]`: v0.1, v0.2 or contract v3 to v0.3. With
+- `ocp migrate FILE... [--out DIR] [--to 0.3|0.4]`: v0.1, v0.2 or contract v3
+  to v0.3, or with `--to 0.4` any of those or v0.3 to v0.4. With
   `--out` each result is written to DIR (never over an input); without it a
   single result goes to stdout. `--json` reports each file, and without
   `--out` carries the migrated documents. A result with a conformance error
@@ -147,7 +148,7 @@ def migrate(args: argparse.Namespace) -> int:
             continue
         row["from"] = doc.get("ocp", "contract") if isinstance(doc, dict) else None
         try:
-            migrated = migrate_doc(doc)
+            migrated = migrate_doc(doc, target=args.to)
         except (MigrationError, ValueError) as exc:
             row["error"] = str(exc)
             rows.append(row)

@@ -1,0 +1,1450 @@
+{
+ "rows": {
+  "stages/plan-dev-review": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "planner",
+     "agent": "codex",
+     "model": "gpt-6-astra",
+     "effort": "xhigh",
+     "cost": {
+      "tokens": {
+       "input": 1000,
+       "cache_read": 800,
+       "output": 200
+      }
+     }
+    },
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "tokens": {
+       "input": 5000,
+       "cache_read": 4000,
+       "output": 900
+      }
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "round": 1,
+     "cost": {
+      "usd": 0.01,
+      "usd_source": "test"
+     }
+    },
+    {
+     "role": "developer",
+     "piece": "implement",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "round": 2,
+     "cost": {
+      "usd": 0.05,
+      "usd_source": "test"
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "round": 2,
+     "cost": {
+      "usd": 0.02,
+      "usd_source": "test"
+     }
+    }
+   ],
+   "workflow": "plan-dev-review"
+  },
+  "stages/no-workflow": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "planner",
+     "agent": "codex",
+     "model": "gpt-6-astra",
+     "effort": "xhigh",
+     "cost": {
+      "tokens": {
+       "input": 1000,
+       "cache_read": 800,
+       "output": 200
+      }
+     }
+    },
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "tokens": {
+       "input": 5000,
+       "cache_read": 4000,
+       "output": 900
+      }
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "round": 1,
+     "cost": {
+      "usd": 0.01,
+      "usd_source": "test"
+     }
+    },
+    {
+     "role": "developer",
+     "piece": "implement",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "round": 2,
+     "cost": {
+      "usd": 0.05,
+      "usd_source": "test"
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "round": 2,
+     "cost": {
+      "usd": 0.02,
+      "usd_source": "test"
+     }
+    }
+   ]
+  },
+  "stages/named-like-the-chain/0": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "worker",
+     "piece": "issue"
+    }
+   ]
+  },
+  "stages/named-like-the-chain/1": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "worker",
+     "piece": "repo"
+    },
+    {
+     "role": "reviewer",
+     "piece": "issue"
+    }
+   ]
+  },
+  "stages/named-like-the-chain/2": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "developer",
+     "piece": "a"
+    },
+    {
+     "role": "reviewer",
+     "piece": "a.out"
+    }
+   ]
+  },
+  "stages/named-like-the-chain/3": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "developer",
+     "piece": "issue.out"
+    },
+    {
+     "role": "reviewer",
+     "piece": "issue"
+    }
+   ]
+  },
+  "stages/named-like-the-chain/4": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "developer",
+     "piece": "g_review"
+    },
+    {
+     "role": "reviewer"
+    }
+   ]
+  },
+  "stages/long/0": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "developer",
+     "piece": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+     "role": "reviewer"
+    }
+   ]
+  },
+  "stages/long/1": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "developer",
+     "piece": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+     "role": "reviewer",
+     "piece": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+    }
+   ]
+  },
+  "stages/long/2": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "developer",
+     "piece": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+     "role": "reviewer",
+     "piece": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+    }
+   ]
+  },
+  "stages/pair/c0:r0": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool0.1234567",
+   "pair": "acme-tool0.1234567#0",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c0:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.3,
+    "scale": "fraction"
+   }
+  },
+  "stages/pair/c0:final": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool0.1234567",
+   "pair": "acme-tool0.1234567#0",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c0:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.4,
+    "scale": "fraction"
+   }
+  },
+  "stages/pair/c1:r0": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool1.1234567",
+   "pair": "acme-tool1.1234567#1",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c1:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.35,
+    "scale": "fraction"
+   }
+  },
+  "stages/pair/c1:final": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool1.1234567",
+   "pair": "acme-tool1.1234567#1",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c1:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.44999999999999996,
+    "scale": "fraction"
+   }
+  },
+  "stages/pair/c2:r0": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool2.1234567",
+   "pair": "acme-tool2.1234567#2",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c2:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.4,
+    "scale": "fraction"
+   }
+  },
+  "stages/pair/c2:final": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool2.1234567",
+   "pair": "acme-tool2.1234567#2",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c2:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.5,
+    "scale": "fraction"
+   }
+  },
+  "stages/pair/c3:r0": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool3.1234567",
+   "pair": "acme-tool3.1234567#3",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c3:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.45,
+    "scale": "fraction"
+   }
+  },
+  "stages/pair/c3:final": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool3.1234567",
+   "pair": "acme-tool3.1234567#3",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c3:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.55,
+    "scale": "fraction"
+   }
+  },
+  "stages/adversarial/0": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool1.1234567",
+   "pair": "acme-tool1.1234567#1",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c1:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.35,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T22:00:00-07:00"
+  },
+  "stages/adversarial/1": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool3.1234567",
+   "pair": "acme-tool3.1234567#11",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c11:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.35,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T12:00:00-07:00"
+  },
+  "stages/adversarial/2": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool3.1234567",
+   "pair": "acme-tool3.1234567#3",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c3:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.45,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T20:00:00-07:00"
+  },
+  "stages/adversarial/3": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool2.1234567",
+   "pair": "acme-tool2.1234567#10",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c10:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.3,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T13:00:00-07:00"
+  },
+  "stages/adversarial/4": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool1.1234567",
+   "pair": "acme-tool1.1234567#9",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c9:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.5,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T14:00:00-07:00"
+  },
+  "stages/adversarial/5": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool0.1234567",
+   "pair": "acme-tool0.1234567#4",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c04:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.5,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T19:00:00-07:00"
+  },
+  "stages/adversarial/6": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool0.1234567",
+   "pair": "acme-tool0.1234567#8",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c8:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.45,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T15:00:00-07:00"
+  },
+  "stages/adversarial/7": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool0.1234567",
+   "pair": "acme-tool0.1234567#0",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c0:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.3,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T23:00:00-07:00"
+  },
+  "stages/adversarial/8": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool3.1234567",
+   "pair": "acme-tool3.1234567#7",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c7:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.4,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T16:00:00-07:00"
+  },
+  "stages/adversarial/9": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool2.1234567",
+   "pair": "acme-tool2.1234567#2",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c2:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.4,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T21:00:00-07:00"
+  },
+  "stages/adversarial/10": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool1.1234567",
+   "pair": "acme-tool1.1234567#5",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c5:r0",
+   "arm": "unreviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    }
+   ],
+   "workflow": "dev-only",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.3,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T18:00:00-07:00"
+  },
+  "stages/adversarial/11": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool1.1234567",
+   "pair": "acme-tool1.1234567#1",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c1:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.28,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T01:00:00-07:00"
+  },
+  "stages/adversarial/12": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool2.1234567",
+   "pair": "acme-tool2.1234567#2",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c2:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.36,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T02:00:00-07:00"
+  },
+  "stages/adversarial/13": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool3.1234567",
+   "pair": "acme-tool3.1234567#3",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c3:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.44,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T03:00:00-07:00"
+  },
+  "stages/adversarial/14": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool0.1234567",
+   "pair": "acme-tool0.1234567#4",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c04:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.52,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T04:00:00-07:00"
+  },
+  "stages/adversarial/15": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool2.1234567",
+   "pair": "acme-tool2.1234567#6",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c6:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.43,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T06:00:00-07:00"
+  },
+  "stages/adversarial/16": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool3.1234567",
+   "pair": "acme-tool3.1234567#7",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c7:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.51,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T07:00:00-07:00"
+  },
+  "stages/adversarial/17": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool0.1234567",
+   "pair": "acme-tool0.1234567#8",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c8:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.59,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T08:00:00-07:00"
+  },
+  "stages/adversarial/18": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool1.1234567",
+   "pair": "acme-tool1.1234567#9",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c9:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.67,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T09:00:00-07:00"
+  },
+  "stages/adversarial/19": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool2.1234567",
+   "pair": "acme-tool2.1234567#10",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c10:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.5,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T10:00:00-07:00"
+  },
+  "stages/adversarial/20": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool3.1234567",
+   "pair": "acme-tool3.1234567#11",
+   "experiment": "stage-test",
+   "task": {
+    "type": "feature",
+    "repo": "acme/tool"
+   },
+   "id": "c11:final",
+   "arm": "reviewed",
+   "stages": [
+    {
+     "role": "developer",
+     "agent": "codex",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "agent": "codex",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "dev-review",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.58,
+    "scale": "fraction"
+   },
+   "started_at": "2026-10-18T11:00:00-07:00"
+  },
+  "stages/two-reviewers": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "developer",
+     "model": "gpt-6-sol",
+     "effort": "high",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "model": "gpt-6-luna",
+     "effort": "low",
+     "cost": {
+      "usd": 0.1
+     }
+    },
+    {
+     "role": "reviewer",
+     "model": "gpt-6-astra",
+     "effort": "max",
+     "cost": {
+      "usd": 0.2
+     }
+    }
+   ],
+   "workflow": "two-reviewers"
+  },
+  "stages/chain": {
+   "schema": "loopmath.harness-runs/0.1",
+   "task_id": "acme-tool.1234567",
+   "arm": "plan-review",
+   "agent": "codex",
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "pair": "acme-tool.1234567#77",
+   "experiment": "stage-test",
+   "started_at": "2026-10-18T17:10:00-07:00",
+   "ended_at": "2026-10-18T17:14:02-07:00",
+   "outcome": {
+    "name": "pass_rate",
+    "score": 0.62,
+    "scale": "fraction"
+   },
+   "stages": [
+    {
+     "role": "planner",
+     "piece": "plan"
+    },
+    {
+     "role": "planner",
+     "piece": "split"
+    },
+    {
+     "role": "developer",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "developer",
+     "cost": {
+      "usd": 1.0
+     }
+    },
+    {
+     "role": "reviewer",
+     "cost": {
+      "usd": 0.1
+     }
+    }
+   ]
+  }
+ }
+}

@@ -9,6 +9,7 @@ tier and a time.
 
 from __future__ import annotations
 
+from ..belief.outcome import signal_list
 from ..ocp import conformance
 from ..taskmodel import TASK_TYPES
 
@@ -39,7 +40,9 @@ def local_checks(doc: dict) -> list[dict]:
         f.append(_finding("error", "L005", "$.run.configuration", "every bundled run needs an inline workflow"))
 
     ids: set[str] = set()
-    for i, s in enumerate(run.get("signals") or []):
+    for i, s in enumerate(signal_list(run)):
+        if not isinstance(s, dict):  # the OCP checker names it (E010)
+            continue
         path = f"$.run.signals[{i}]"
         if s.get("id") in ids:
             f.append(_finding("error", "L006", path, "duplicate signal id"))
