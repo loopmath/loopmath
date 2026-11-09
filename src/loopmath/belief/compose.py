@@ -90,7 +90,7 @@ def inv_rate_mean(m, v, floor: float | None) -> np.ndarray:
     return np.where(certain, np.exp(-np.maximum(m, lf)), spread)
 
 
-def compose(st: Structure, cost_eta: dict, rate_eta: dict, gate_eta: dict, *, sigma_usd: float,
+def compose(st: Structure, cost_eta: dict, rate_eta: dict, gate_eta: dict, *, sigma_usd: float | Mapping,
             sigma_rate: float, floors: Mapping[str, float] | None = None, rate_var: Mapping | None = None,
             rng: np.random.Generator | None) -> RunDraws:
     """Compose one configuration. `cost_eta[(piece, k)]`, `rate_eta[(piece, k)]` and `gate_eta[(gate index, k)]`
@@ -99,7 +99,7 @@ def compose(st: Structure, cost_eta: dict, rate_eta: dict, gate_eta: dict, *, si
     path passes the rate rows' known parts and adds their unseen variance there). With `rng` None nothing is
     simulated: the `sim_*` arrays stay zero."""
     n = len(next(iter(cost_eta.values())))
-    half_u, var_r = 0.5 * sigma_usd ** 2, sigma_rate ** 2
+    var_r = sigma_rate ** 2
     floors = floors or {}
     exp_u, exp_t = np.zeros(n), np.zeros(n)
     sim_u, sim_t = np.zeros(n), np.zeros(n)
@@ -120,6 +120,8 @@ def compose(st: Structure, cost_eta: dict, rate_eta: dict, gate_eta: dict, *, si
     def run_piece(piece: str, k: int, weight: np.ndarray, alive: np.ndarray):
         w = st.widths[piece]
         eu, er = cost_eta[(piece, k)], rate_eta[(piece, k)]
+        sigma_u = sigma_usd[(piece, k)] if isinstance(sigma_usd, Mapping) else sigma_usd
+        half_u = .5 * sigma_u ** 2
         f = float(floors.get(piece) or 0.0)
         cu = w * np.exp(eu + half_u)
         ct = cu * inv_rate_mean(er, var_r if rate_var is None else rate_var[(piece, k)], f)
@@ -129,7 +131,7 @@ def compose(st: Structure, cost_eta: dict, rate_eta: dict, gate_eta: dict, *, si
         su = np.zeros(n)
         stt = np.zeros(n)
         for _ in range(w if rng is not None else 0):
-            u = np.exp(eu + sigma_usd * rng.standard_normal(n))
+            u = np.exp(eu + sigma_u * rng.standard_normal(n))
             r = np.exp(er + sigma_rate * rng.standard_normal(n))
             su += u
             stt += u / (np.maximum(r, f) if f > 0 else r)

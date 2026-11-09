@@ -755,6 +755,13 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         seed_key = input_key(heads_rows, specs, key_settings)
         forest = Forest()
         fitted = {}
+        from .cost_recipe import fit_recipe
+
+        # Explicit legacy/shared, custom-factor and no-prior fits retain their
+        # original cost law. The default source-backed store uses FrontierCost.
+        setting_cost = (not no_prior and "benchmark" not in without and benchmarks is None
+                        and level.store and level.cost_level == "store" and level.cost_level_sd == .5
+                        and not any(s.head == "cost" for s in specs))
         for name, hr in heads_rows.items():
             head_specs = [s for s in specs if s.head == name]
             if not hr.rows and not (level.store and name == "success"):  # a store level fits success unseen
@@ -767,9 +774,17 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             if name in KEY_ONLY:  # 0.2.7's tokens head: its nodes enter the index where they did, unfitted
                 build_matrix(hr.rows, forest, [(n, p) for spec in head_specs for n, p, _ in spec.terms])
                 continue
+            if name == "cost" and setting_cost:
+                # Register the original nodes in their original order before the
+                # other heads: their arrays and random streams stay identical.
+                build_matrix(hr.rows, forest, [(n, p) for spec in head_specs for n, p, _ in spec.terms]
+                             + [(USER_LEVEL, None)])
+                continue
             # 0.3.5's call when no level key is set
             fitted[name] = (fit_head(hr, forest, head_specs, eb=eb, level=level.for_head(name)) if level.key()
                             else fit_head(hr, forest, head_specs, eb=eb))
+        if setting_cost and heads_rows["cost"].rows:
+            fitted["cost"] = fit_recipe(heads_rows["cost"], forest, eb=eb)
         fit_id = new_fit_id(fits, now)
         partial = fits / f"{fit_id}.partial"
         partial.mkdir(parents=True)
@@ -831,6 +846,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
                              "center": h["center"], "scale": h["scale"], "baseline": h["baseline"],
                              "iterations": h["fit"].iterations, "optimizer": h["fit"].info,
                              "log_evidence": _finite(h["fit"].log_evidence), "factors": h["factors"],
+                             **({"recipe": h["recipe"]} if "recipe" in h else {}),
                              "seed": seed_for(seed_key, name)}
                       for name, h in fitted.items()},
             "scores": score_info,
@@ -843,7 +859,9 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
             "rate_floors": rate_floors(design_rows._price_table()),
         }
         if full:
-            meta["full"] = _full_check(fitted)
+            meta["full"] = _full_check({n: h for n, h in fitted.items() if "recipe" not in h})
+            if setting_cost:
+                meta["full"]["cost_note"] = "FrontierCost setting-mean Gaussian law; hierarchical PyMC check not applicable"
             table = meta["full"].pop("table", None)
             if table is not None:
                 _atomic_json(partial / "pymc_check.json", table)
@@ -858,6 +876,11 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
                                                          "belief.shipped_success": level.shipped_success,
                                                          "belief.benchmark_factors": level.benchmarks})
             meta["options"]["level"] = level.key()
+        if "recipe" in fitted.get("cost", {}):
+            from .cost_recipe import METHOD, OPTION
+
+            meta["design_version"] = design_rows.OPT_IN_DESIGN_VERSION
+            meta.setdefault("model_options", {})[OPTION] = METHOD
         meta["seconds"] = round(time.monotonic() - started, 3)
         _atomic_json(partial / "meta.json", meta)
         final = fits / fit_id

@@ -41,6 +41,7 @@ OPT_IN_DESIGN_VERSION = 5
 # version 4, with no options). A version 5 fit with any other key or value was made by a loopmath with an option
 # this one has no nodes for: it is refused, as 0.3.1 refuses version 5, rather than read without them.
 MODEL_OPTIONS: dict[str, tuple[Any, ...]] = {"belief.success_head": ("sampled",),
+                                             "belief.cost_recipe": ("frontier-setting-v1",),
                                              # the store level and benchmark transfer (level.py)
                                              "belief.level": ("shared", "store"),
                                              "belief.shipped_success": ("keep", "drop"),

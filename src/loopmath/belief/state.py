@@ -200,6 +200,7 @@ class HeadState:
         self.phi: dict[str, float] = dict(meta.get("phi") or {})
         self.seed = int(meta.get("seed", 0))
         self.meta = meta
+        self.recipe = meta.get("recipe") if name == "cost" else None
         self.fit_id = fit_id
         self.seed_key = seed_key or fit_id  # spec 04 section 3: the fit's input hash; the fit id before 0.2.1
         self.nodes = list(nodes)
@@ -281,10 +282,28 @@ class HeadState:
         return self._unit
 
     def node_scale(self, node: str) -> float:
+        if self.recipe is not None:
+            from .cost_recipe import PREFIXES
+
+            return 1.0 if node.startswith(PREFIXES) else 0.0
         group = scale_group(node)
         if group is None:
             return 0.0
         return float(self.phi.get(group, default_scale(group, self.kind)))
+
+    def row_terms(self, terms):
+        if self.recipe is None:
+            return terms
+        from .cost_recipe import row_terms
+
+        return row_terms(self.recipe, terms)
+
+    def noise_variance(self, terms) -> float:
+        if self.recipe is None:
+            return self.sigma ** 2
+        from .cost_recipe import noise_variance
+
+        return noise_variance(self.recipe, terms)
 
     # the opt-in success head (`belief.success_head`, integrated.py): each draw's scales and the display arrays;
     # a fit without them reads as 0.3.1's
@@ -336,6 +355,8 @@ class HeadState:
 
         A row of a task the head has fitted gets no virtual feature node: its task node already
         holds what the task is (spec 04 section 1, rule M4 item 4)."""
+        if self.recipe is not None:
+            rows = [self.row_terms(row) for row in rows]
         n = len(rows)
         ri, ci, vals, vr, vc, vv = [], [], [], [], [], []
         vindex: dict[str, int] = {}
@@ -663,7 +684,7 @@ class FitState:
         hit = self._cache.get(key)
         if hit is None:
             load: dict[str, float] = {}
-            for node, _parent, value in rest:
+            for node, _parent, value in head.row_terms(rest):
                 if node not in head.index and scale_group(node) is not None:
                     load[node] = load.get(node, 0.0) + value * head.node_scale(node)
             hit = self._cache[key] = tuple(sorted((n, b) for n, b in load.items() if b != 0.0))
@@ -764,11 +785,16 @@ class FitState:
             gate = {k: (v[None, :] + shift).ravel() for k, v in gate.items()}
             cost = {k: np.tile(v, nodes) for k, v in cost.items()}
             rate = {k: np.tile(v, nodes) for k, v in rate.items()}
-        run = compose(st, cost, rate, gate, sigma_usd=heads["cost"].sigma, sigma_rate=heads["rate"].sigma,
+        run = compose(st, cost, rate, gate, sigma_usd=self._cost_sigma(plan), sigma_rate=heads["rate"].sigma,
                       floors=plan["floors"], rate_var=rate_var, rng=None)
         if nodes == 1:
             return run, lambda a: a
         return run, lambda a: _GW @ np.reshape(a, (nodes, -1))
+
+    def _cost_sigma(self, plan: dict):
+        head = self.heads["cost"]
+        return ({k: math.sqrt(head.noise_variance(row)) for k, row in plan["cost"].items()}
+                if head.recipe is not None else head.sigma)
 
     def _tokens_per_usd(self, plan: dict, tparts: dict, mr: RunDraws) -> np.ndarray:
         """`E[T_run / C_run]` per entry of the mean composition `mr`, every unseen cost and rate effect
@@ -812,7 +838,7 @@ class FitState:
         rate_eta = {k: self._eta(heads["rate"], tparts["rate"], r)[1] for k, r in plan["cost"].items()}
         gate_eta = {k: self._eta(heads["gate"], tparts["gate"], r)[1] for k, r in plan["gate"].items()}
         rng = np.random.default_rng(self.sim_seed)
-        rd: RunDraws = compose(st, cost_eta, rate_eta, gate_eta, sigma_usd=heads["cost"].sigma,
+        rd: RunDraws = compose(st, cost_eta, rate_eta, gate_eta, sigma_usd=self._cost_sigma(plan),
                                sigma_rate=heads["rate"].sigma, floors=plan["floors"], rng=rng)
         _, s_eta = self._eta(heads["success"], tparts["success"], plan["run"])
         g = expit(s_eta)

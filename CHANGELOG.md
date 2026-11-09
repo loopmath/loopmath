@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.1 (2026-11-09)
+
+0.4.1 follows 0.4.0. It adds `loopmath frontier` (experimental) and gives `recommend` better cost estimates on a new store. Everything else is 0.4.0's.
+
+### `loopmath frontier` (experimental)
+
+- New `loopmath frontier` commands, `init`, `next`, `record` and `report`, look for the cost and pass-rate frontier on your own benchmark: `next` says which setting and task to run, `record` takes the result back.
+- `report` shows each setting's pass rate, cost per run and place on the frontier, with P, a model probability that is not yet checked for calibration.
+- Experimental. On simulated fresh DeepSWE runs (three worlds fitted to 31,462 recorded outcomes, 30 runs each) it found the right frontier in about a quarter of runs at a $8,000 budget (21 of 90), level with the study design it is ported from (22 of 90), and in fewer at $5,000 (7 of 90, the study 11). Right means every setting on the true frontier has a returned setting within 10% of its cost and 3.5 points of its pass rate. P is not yet calibrated: in those runs it never went above 0.49, and in its lowest range the event it scores happened more often than it said. Do not stop on P.
+
+### `recommend` cost estimates on a new store
+
+- The average cost per run that `recommend` acts on now comes from the per-setting cost law `loopmath frontier` uses. On a fresh DeepSWE store the predicted average is 1.23 times the observed one (9.35 in 0.4.0), the order of settings by cost agrees far better (rank score 0.74, from 0.31), and 80% intervals hold the observed average for 83% of settings.
+- The typical-run (median) figure reads about a third low against the observed average (0.64); this release accepts that. Models with no Terminal-Bench cost data read much lower (16 settings: median 0.27, average 0.83), and per model the average ranges from 0.19 to 4.1 times the observed one, so errors partly cancel in the totals.
+
 ## 0.4.0 (2026-11-06)
 
 0.4.0 follows 0.3.5 and the release candidate 0.4.0rc1. From 0.3.5, it adds what is below and all of 0.4.0rc1, `loopmath harness` among it (see 0.4.0rc1 further down). From 0.4.0rc1, it also adds 0.3.3, 0.3.4 and 0.3.5, which came out after it: one skill with each job's guide from `loopmath guide`, the daily update check with `loopmath update`, confirmed prices for Claude Sonnet 5.5 and Claude Haiku 5.5, and a row for GPT-6.1 Terra. 0.4.0rc1 has no update check, so an rc1 install does not say that 0.4.0 is out.

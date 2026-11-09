@@ -1,6 +1,7 @@
 """The `loopmath flow` command group: its arguments, its handlers, and its place on the command list. No other
 CLI output moves: the stored outputs from before the group gain only `flow` (in the command lists, the usage line
-and one help entry), `loopmath --version` is pinned, and the unknown-command error gains only `'flow'`."""
+and one help entry), `loopmath --version` is pinned, and the unknown-command error gains only `'flow'`. The later
+`frontier` group is added to the stored outputs the same way first."""
 
 from __future__ import annotations
 
@@ -29,6 +30,12 @@ HARNESS_ENTRY = ("    harness             experimental: tune a Claude Code harne
                  "                        run, watch, show, apply\n")
 FLOW_ENTRY = ("    flow                run a flow experiment: a fixed workflow, edits to try,\n"
               "                        judges and a margin\n")
+# `loopmath frontier` came after the group: it joins the lists after `screen`, and its help entry precedes builder's.
+BUILDER_ENTRY = "    builder             build your own workflow on a local page and see its\n"
+FRONTIER_ENTRY = ("    frontier            experimental: find a cost and pass-rate frontier with\n"
+                  "                        ask and tell\n")
+FRONTIER = ((",screen,builder,", ",screen,frontier,builder,"), (", screen, builder", ", screen, frontier, builder"),
+            ("'screen', 'builder'", "'screen', 'frontier', 'builder'"), (BUILDER_ENTRY, FRONTIER_ENTRY + BUILDER_ENTRY))
 DROP = ("PYTHONPATH", "COLUMNS", "LINES", "FORCE_COLOR", "PYTHON_COLORS", "NO_COLOR")
 
 
@@ -155,6 +162,15 @@ def _stored(key: str) -> dict:
     return {k: stored[k] for k in ("exit", "stdout", "stderr")}
 
 
+def _with_frontier(stored: dict) -> dict:
+    """The stored output with `frontier` added, once per command list it should join."""
+    out = dict(stored)
+    for name in ("stdout", "stderr"):
+        for old, new in FRONTIER:
+            out[name] = out[name].replace(old, new)
+    return out
+
+
 def test_stored_cli_outputs_cover_the_six_commands():
     assert CLI == ["cli/loopmath", "cli/loopmath --help", "cli/loopmath --json", "cli/loopmath --version",
                    "cli/loopmath not-a-command", "cli/loopmath not-a-command --json"]
@@ -170,7 +186,7 @@ def test_cli_output_is_unchanged(key, tmp_path):
 def test_cli_output_gains_only_flow(key, tmp_path):
     """`flow` joins the command lists after `harness`, and `--help` gains its entry after harness's. The usage
     line keeps its wrapping (argparse does not break the braces), so the comparison is exact."""
-    stored = _stored(key)
+    stored = _with_frontier(_stored(key))
     expected = dict(stored)
     if key.endswith("--help"):
         assert stored["exit"] == 0 and stored["stderr"] == ""
@@ -191,7 +207,7 @@ def test_cli_output_gains_only_flow(key, tmp_path):
 @pytest.mark.parametrize("key", UNKNOWN)
 def test_unknown_command_error_gains_only_flow(key, tmp_path):
     """`'flow'` joins the choices, and, now that it is listed, the usage braces."""
-    stored = _stored(key)
+    stored = _with_frontier(_stored(key))
     assert stored["exit"] == 2 and stored["stderr"].count("'harness'") == 1
     assert stored["stderr"].count(",harness}") == 2
     expected = dict(stored, stderr=stored["stderr"].replace("'harness'", "'harness', 'flow'")

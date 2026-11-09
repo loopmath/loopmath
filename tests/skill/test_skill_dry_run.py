@@ -91,8 +91,8 @@ class Agent:
                     "PYTHONDONTWRITEBYTECODE": "1", "NO_COLOR": "1", "PYTHON_COLORS": "0", "LANG": "en_US.UTF-8",
                     "LOOPMATH_NO_UPDATE_CHECK": "1"}
 
-    def __call__(self, *argv: str, ok: tuple[int, ...] = (0,), pin: str | None = None):
-        res = self.run(*argv, pin=pin)
+    def __call__(self, *argv: str, ok: tuple[int, ...] = (0,), pin: str | None = None, cwd: Path | None = None):
+        res = self.run(*argv, pin=pin, cwd=cwd)
         assert res.returncode in ok, f"loopmath {' '.join(argv)} exited {res.returncode}: {res.stderr[-800:]}"
         if "--json" not in argv:
             return res.stdout.strip()
@@ -100,10 +100,10 @@ class Agent:
         self.seen.setdefault(key(self.top, list(argv)), []).append(obj)
         return obj
 
-    def run(self, *argv: str, pin: str | None = None) -> subprocess.CompletedProcess:
+    def run(self, *argv: str, pin: str | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess:
         """`python -m loopmath ARGV`, or with PIN the same with that seam pinned (see PINNED)."""
         how = ["-m", "loopmath"] if pin is None else ["-c", PINNED, pin]
-        return subprocess.run([sys.executable, *how, *argv], env=self.env, cwd=self.tmp, text=True,
+        return subprocess.run([sys.executable, *how, *argv], env=self.env, cwd=cwd or self.tmp, text=True,
                               capture_output=True, stdin=subprocess.DEVNULL, timeout=FIT_WAIT_S)
 
     def git(self, *argv: str, cwd: Path) -> str:
@@ -193,7 +193,7 @@ def journey(tmp_path_factory) -> dict[str, list]:
 
         # guide record: each run worked in its own clone. The first run's implementer is the
         # fixture's Claude Code session lead-1 (it ended before the run, so it counts whole and the run's
-        # start moves back, with a note; its log ran another model than configured, a second note);
+        # start moves back, with a note; a different configured model adds a mismatch note);
         # every other piece had no session id, so it is recorded by its folder and stays uncosted.
         shas = []
         for i, run in enumerate(runs):
@@ -204,10 +204,19 @@ def journey(tmp_path_factory) -> dict[str, list]:
             shas.append(lm.git("rev-parse", "HEAD", cwd=wt))
             how = [("--session", f"{s['piece']}=lead-1") if i == 0 and s["piece"] == "implement"
                    else ("--cwd", f"{s['piece']}={wt}") for s in run["piece_settings"]]
+            # A solo run can have only the named historical session, whose cwd
+            # is the fixture's old repo. Record from the clone that made this
+            # commit so base..HEAD discovery does not rely on an extra piece.
             out = lm("run", "record", "--run", run["run"], *[w for pair in how for w in pair], "--verified",
-                     "tests=pass", "--json")
+                     "tests=pass", "--json", cwd=wt)
             assert out["outcome"] == "accepted" and [c["sha"] for c in out["commits"]] == [shas[-1]]
-            assert (out["cost"]["attempts_costed"], len(out["notes"])) == ((1, 2) if i == 0 else (0, 0)), out
+            assert out["cost"]["attempts_costed"] == (1 if i == 0 else 0), out
+            if i == 0:
+                assert sum("ended before run start" in n for n in out["notes"]) == 1, out
+                others = [n for n in out["notes"] if "ended before run start" not in n]
+                assert len(others) <= 1 and all("the log ran" in n for n in others), out
+            else:
+                assert out["notes"] == [], out
             assert out["receipt"]["line"].startswith("predicted $")
             if out["fit"]["started"]:  # a refit already running takes this run too
                 pids.append(out["fit"]["pid"])

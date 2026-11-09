@@ -79,6 +79,7 @@ class _Rows:
     vcol: dict[str, int]
     vphi2: np.ndarray  # (q,)
     var: np.ndarray  # (n,)
+    noise: np.ndarray | None = None  # per-row physical run variance (setting cost law)
 
     @classmethod
     def build(cls, head: HeadState, rows: Sequence[Sequence[tuple]]) -> "_Rows":
@@ -87,11 +88,13 @@ class _Rows:
         B = np.asarray(Xk @ head.U) if head.nodes else np.zeros((len(rows), 0))
         vphi2 = vphi ** 2
         var = np.sum(B * B, axis=1) + np.asarray(Xv.multiply(Xv) @ vphi2).ravel()
-        return cls(head, mu, B, Xv.tocsc(), {v: i for i, v in enumerate(vnodes)}, vphi2, var)
+        return cls(head, mu, B, Xv.tocsc(), {v: i for i, v in enumerate(vnodes)}, vphi2, var,
+                   np.array([head.noise_variance(row) for row in rows]))
 
     def observation(self, terms: Sequence[tuple]) -> tuple[float, float, np.ndarray]:
         """Mean, variance, and covariance with every row, of one observation row `x'b`."""
         head = self.head
+        terms = head.row_terms(terms)
         kx = np.zeros(len(head.nodes))
         vpart: dict[str, float] = {}
         for node, _parent, value in terms:
@@ -195,7 +198,8 @@ def _prepare(state: FitState, task: Task, configs: list[Configuration], rule: Ac
     return prep
 
 
-def _explore_cost_obs(state: FitState, task: Task, config: Configuration) -> tuple[list[tuple], int]:
+def _explore_cost_obs(state: FitState, task: Task, config: Configuration, *, head: HeadState | None = None
+                      ) -> tuple[list[tuple], int]:
     """Composite observation: the mean of the round-1 cost rows of the configuration's pieces,
     and the number of pieces (the observation's noise variance is sigma^2 / n)."""
     plan = state._plan(config, state.effort_for(task))
@@ -203,14 +207,25 @@ def _explore_cost_obs(state: FitState, task: Task, config: Configuration) -> tup
     tt = state.task_terms(task)
     acc: dict[str, list] = {}
     n = len(st.pieces)
+    head = head or state.heads["cost"]
     for piece in st.pieces:
-        for node, parent, value in tt + list(cost_rest(st, piece, 1, source=PREDICT_SOURCE)):
+        raw = tt + list(plan["cost"][(piece, 1)]) if head.recipe is not None else (
+            tt + list(cost_rest(st, piece, 1, source=PREDICT_SOURCE)))
+        for node, parent, value in head.row_terms(raw):
             if node in acc:
                 acc[node][1] += value / n
             else:
                 acc[node] = [parent, value / n]
     terms = [(node, p, v) for node, (p, v) in acc.items()]
     return terms, n
+
+
+def _cost_observation_noise(state: FitState, task: Task, config: Configuration, n: int) -> float:
+    head = state.heads["cost"]
+    if head.recipe is None:
+        return head.sigma ** 2 / n
+    plan = state._plan(config, state.effort_for(task))
+    return sum(head.noise_variance(plan["cost"][(p, 1)]) for p in plan["st"].pieces) / n ** 2
 
 
 def _score_g(state: FitState, rows: _Rows, name: str, rule: AcceptanceRule, mu, var) -> np.ndarray:
@@ -258,7 +273,7 @@ def _outcomes(state: FitState, task: Task, explore: Configuration, goal: Configu
     prep = _prepare(state, task, configs, rule)
     R = float(rescue_usd or 0.0)
     cost = prep.cost
-    sig2 = cost.head.sigma ** 2
+    sig2 = cost.noise if cost.head.recipe is not None else cost.head.sigma ** 2
 
     def expected_cost(mu, var):
         """Expected cost per candidate; a 2-D `mu` (rows, k), one column per outcome, gives (k, candidates)."""
@@ -269,7 +284,7 @@ def _outcomes(state: FitState, task: Task, explore: Configuration, goal: Configu
     # the observation of explore's cost
     obs_terms, n_obs = _explore_cost_obs(state, task, explore)
     _, o_var, kappa = cost.observation(obs_terms)
-    s_c = o_var + sig2 / n_obs
+    s_c = o_var + _cost_observation_noise(state, task, explore, n_obs)
     var_after_c = cost.var - kappa * kappa / s_c
     cost_now = expected_cost(cost.mu, cost.var)
     cost_after = expected_cost(cost.mu[:, None] + np.outer(kappa, _QX) / math.sqrt(s_c), var_after_c)  # (x, c)
@@ -358,6 +373,7 @@ def _condition_head(head: HeadState, terms: Sequence[tuple], tau2: float) -> Hea
     each new node drawn at its draw's own scales as a prediction draws it, with the draws' covariance in U's place:
     the draws keep their means, their scales and their joint shape, and nodes still unseen keep a scale per draw.
     U is updated as for any head (only `_Rows`, whose success rows give `conditioned` its mean, reads it)."""
+    terms = head.row_terms(terms)
     kx: dict[int, float] = {}
     new_nodes: list[str] = []
     new_vals: list[float] = []
@@ -414,9 +430,11 @@ def _condition_head(head: HeadState, terms: Sequence[tuple], tau2: float) -> Hea
 
 def conditioned(state: FitState, task: Task, config: Configuration, rule: AcceptanceRule | None = None) -> FitState:
     heads = dict(state.heads)
-    terms, n_obs = _explore_cost_obs(state, task, config)
     for name in ("cost", "rate"):
-        heads[name] = _condition_head(state.heads[name], terms, state.heads[name].sigma ** 2 / n_obs)
+        terms, n_obs = _explore_cost_obs(state, task, config, head=state.heads[name])
+        tau2 = (_cost_observation_noise(state, task, config, n_obs) if name == "cost"
+                else state.heads[name].sigma ** 2 / n_obs)
+        heads[name] = _condition_head(state.heads[name], terms, tau2)
     run_terms = state.task_terms(task) + list(state._plan(config)["run"])
     succ = state.heads["success"]
     heads["success"] = _condition_head(succ, run_terms, 1.0 / _info(float(_Rows.build(succ, [run_terms]).mu[0])))

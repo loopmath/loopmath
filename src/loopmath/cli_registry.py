@@ -166,6 +166,38 @@ status says stop. Then check the best subset against the base on other tasks:
 the screen's ranges guide the choice, the check decides it."""
 
 
+def _add_frontier(sub) -> None:
+    p = sub.add_parser("frontier", help="experimental: find a cost and pass-rate frontier with ask and tell")
+    cs = p.add_subparsers(dest="frontier_command", required=True)
+    q = cs.add_parser("init", help="declare tasks, settings and a USD budget")
+    q.add_argument("--tasks", required=True, metavar="FILE.jsonl")
+    q.add_argument("--settings", required=True, metavar="FILE.toml")
+    q.add_argument("--budget", type=float, required=True)
+    q.add_argument("--seed", type=int, default=0)
+    q.add_argument("--strategy", default="kg+random")
+    q.add_argument("--prices", default="shipped")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.frontier.commands:frontier_init"))
+    q = cs.add_parser("next", help="issue trials, or return the outstanding trials after a restart")
+    q.add_argument("frontier", nargs="?", default=None, metavar="FRN")
+    q.add_argument("--k", type=int, default=1, help="distinct settings to issue in parallel")
+    q.add_argument("--strategy", default=None)
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.frontier.commands:frontier_next"))
+    q = cs.add_parser("record", help="record a trial result once")
+    q.add_argument("trial", metavar="TRL")
+    q.add_argument("--frontier", default=None, metavar="FRN")
+    q.add_argument("--passed", type=int, choices=[0, 1], default=None)
+    q.add_argument("--usd", type=float, default=None)
+    q.add_argument("--rows", default=None, metavar="FILE.jsonl")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.frontier.commands:frontier_record"))
+    q = cs.add_parser("report", help="frontier probabilities, pass rates, costs and 80%% intervals")
+    q.add_argument("frontier", nargs="?", default=None, metavar="FRN")
+    _common(q)
+    q.set_defaults(func=_lazy("loopmath.frontier.commands:frontier_report"))
+
+
 def _add_screen(sub) -> None:
     p = sub.add_parser("screen", help="experimental: fold-over screen of harness edits: start, next, status, apply",
                        description=SCREEN_DESCRIPTION, epilog=SCREEN_FLOW,
@@ -1206,6 +1238,7 @@ def register(sub) -> None:
     _add_viewing(sub)
     _add_compare(sub)
     _add_screen(sub)
+    _add_frontier(sub)
     importlib.import_module("loopmath.builder.cli").add(sub)  # `builder` (0.2.1)
     _add_gate(sub)
     _add_tasks(sub)

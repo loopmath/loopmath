@@ -59,6 +59,11 @@ MANY_DRAWS = 8000
 # first 2.15 times at 8000.
 PAIR_MARGIN = {"shared": 3, "store": 1.25}
 MANY_MARGIN = {"shared": 3, "store": 2}
+# TB-anchored costs change the screened cohort under the store level: across
+# the four clocks its median success variance is 7.61 to 7.82 (formerly 8.11
+# to 8.12). The success posterior is identical for fixed candidates. Keep a
+# broad high-variance check, and test the exact update below on every candidate.
+SCREEN_VARIANCE_RANGE = {"shared": (8.0, 13.0), "store": (7.0, 13.0)}
 LABELER = """\
 import json, sys
 req = json.load(sys.stdin)
@@ -191,11 +196,16 @@ def test_the_success_update_is_exact_where_the_logit_variance_is_about_10(runs, 
     """For every screened candidate: each configuration's g after the simulated verdict, averaged over it, is its
     g now to float precision, and the gain before its clip at 0 is not negative."""
     run = runs[fit_id]
-    assert 8.0 < float(np.median(run["variance"])) < 13.0
+    low, high = SCREEN_VARIANCE_RANGE[runs["level"]]
+    assert low < float(np.median(run["variance"])) < high
     for o in run["outcomes"]:
         np.testing.assert_allclose(o.pz @ o.g_after, o.g_now, rtol=1e-9, atol=0)
         assert o.raw_gain() >= -1e-12
-    assert min(o.raw_gain() for o in run["outcomes"]) > run["floor"]
+    # The cost screen can include useful contenders below the pair's qualifying
+    # floor. Every screened gain stays positive; the pair-pick tests above still
+    # require the selected pick to clear PAIR_MARGIN times that same floor.
+    minimum = run["floor"] if runs["level"] == "shared" else 0.0
+    assert min(o.raw_gain() for o in run["outcomes"]) > minimum
 
 
 def test_the_pair_is_the_same_with_many_more_draws(runs):

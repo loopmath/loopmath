@@ -1,0 +1,42 @@
+bench,model,harness,effort,n,acc,cost,source
+2.1,claude-opus-4-7,claude-code,max,447,0.6890000000000001,1.3412080536912752,w293 tb21 leaderboard means
+2.1,claude-opus-4-7,terminus-2,max,445,0.6607,1.3084494382022471,w293 tb21 leaderboard means
+2.1,gemini-3-pro-preview,gemini-cli,high,445,0.6584,0.5567640449438203,w293 tb21 leaderboard means
+2.1,gemini-3-pro-preview,terminus-2,high,445,0.7393000000000001,0.5043595505617977,w293 tb21 leaderboard means
+2.1,glm-5-1,claude-code,max,445,0.5865,0.6227865168539326,w293 tb21 leaderboard means
+2.1,gpt-5-5,codex,xhigh,445,0.8315,4.627393258426967,w293 tb21 leaderboard means
+2.1,gpt-5-5,terminus-2,xhigh,445,0.7798,1.1097752808988766,w293 tb21 leaderboard means
+2.1,gemini-3-1-pro-preview,gemini-cli,high,445,0.6584,0.5314382022471911,w293 tb21 leaderboard means
+2.1,gemini-3-1-pro-preview,terminus-2,high,445,0.6562,0.5168314606741573,w293 tb21 leaderboard means
+2.1,claude-fable-5,terminus-2,high,445,0.8045,0.9857078651685393,w293 tb21 leaderboard means
+2.1,claude-fable-5,claude-code,xhigh,445,0.8382,1.2419550561797752,w293 tb21 leaderboard means
+2.1,claude-opus-4-8,claude-code,high,445,0.7888,0.6448089887640449,w293 tb21 leaderboard means
+2.1,claude-sonnet-5,claude-code,high,445,0.7461,0.6475955056179775,w293 tb21 leaderboard means
+2.1,grok-4-5,cursor-cli,,445,0.7933,0.3013258426966292,w293 tb21 leaderboard means
+2.1,muse-spark-1-1,mini-swe-agent,xhigh,445,0.7618,0.4450561797752809,w293 tb21 leaderboard means
+2.1,gpt-5-6-luna,codex,max,445,0.7123999999999999,0.4905168539325842,w293 tb21 leaderboard means
+2.1,gpt-5-6-sol,codex,max,445,0.7618,1.2914157303370786,w293 tb21 leaderboard means
+2.1,gpt-5-6-terra,codex,max,445,0.7437999999999999,0.901191011235955,w293 tb21 leaderboard means
+2.1,gpt-5-6-luna,codex,max,445,0.7573000000000001,0.5425842696629213,w293 tb21 leaderboard means
+2.1,gpt-5-6-terra,codex,max,445,0.7843000000000001,0.9464044943820225,w293 tb21 leaderboard means
+4.0,claude-fable-5,claude-code,max,330,0.44545454545454544,25.838643880303028,tb-data maintainer
+4.0,claude-fable-5-1,claude-code,max,330,0.5787878787878787,18.91970523409091,tb-data maintainer
+4.0,claude-opus-4-8,claude-code,max,330,0.23636363636363636,19.63806658939394,tb-data maintainer
+4.0,claude-opus-5,claude-code,max,329,0.5258358662613982,18.34191547568389,tb-data maintainer
+4.0,claude-opus-5-5,claude-code,max,329,0.6504559270516718,14.255380195136778,tb-data maintainer
+4.0,claude-sonnet-5,claude-code,max,329,0.12462006079027356,29.258980316717327,tb-data maintainer
+4.0,claude-sonnet-5-5,claude-code,max,330,0.6181818181818182,22.223164032575756,tb-data maintainer
+4.0,gemini-3-7-flash,mini-swe-agent,high,330,0.11212121212121212,3.823847704772727,tb-data maintainer
+4.0,gemini-3-8-flash,mini-swe-agent,high,330,0.19090909090909092,5.5417199177272725,tb-data maintainer
+4.0,glm-5-3,claude-code,max,329,0.4194528875379939,8.315938534146342,tb-data maintainer
+4.0,glm-5-3-flash,claude-code,none,330,0.3575757575757576,0.18211276760736195,tb-data maintainer
+4.0,gpt-5-6-luna,codex,max,329,0.17325227963525835,1.029309718902439,tb-data maintainer
+4.0,gpt-5-6-sol,codex,max,330,0.37272727272727274,7.670741187878788,tb-data maintainer
+4.0,gpt-5-6-terra,codex,max,328,0.21646341463414634,5.141570762804879,tb-data maintainer
+4.0,gpt-6-1-sol,codex,max,328,0.5853658536585366,1.9199409225609758,tb-data maintainer
+4.0,gpt-6-luna,codex,max,329,0.1641337386018237,0.21916352250759874,tb-data maintainer
+4.0,gpt-6-sol,codex,max,329,0.49544072948328266,4.411293506990881,tb-data maintainer
+4.0,grok-4-5,grok-build,none,328,0.125,6.313196300613497,tb-data maintainer
+4.0,grok-4-6,grok-build,none,329,0.20364741641337386,7.033945136778115,tb-data maintainer
+4.0,muse-spark-1-3,muse-code,xhigh,318,0.1509433962264151,6.291954541324921,tb-data maintainer
+4.0,qwen3-8-max,claude-code,max,329,0.270516717325228,4.071706390126183,tb-data maintainer
