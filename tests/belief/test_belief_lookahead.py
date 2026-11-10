@@ -155,7 +155,7 @@ def test_one_verdict_moves_a_candidate_through_a_shared_unseen_node(small, monke
     state = _known_at_means(load(state.path))
     new_x, new_y = Setting("claude-code", "claude-fable-9-5", "medium"), Setting("codex", "gpt-9-astra-2", "xhigh")
     explore = simdata.config(simdata.SOLO, new_x)
-    shared = simdata.config(simdata.IR, new_y, new_x)
+    shared = simdata.config(simdata.IR, new_x, new_y)  # the shared model writes, so its node is at weight 1
     apart = simdata.config(simdata.SOLO, new_y)
     prep = L._prepare(state, task, [explore, shared, apart], None)
     assert state._task_parts(task)["success"].s2 == 0  # a known task: no unseen task effect, equal weights

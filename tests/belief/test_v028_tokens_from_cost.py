@@ -45,7 +45,7 @@ REL = 1e-9  # float rounding of u / max(r, f) * f
 def _docs(n: int = 200) -> list[dict]:
     """Priced runs whose bigger attempts are mostly cache reads, as in real logs: the dollars come from the token
     fields at the packaged prices, so every attempt bills at or above its model's cache-read rate."""
-    docs, _ = simdata.simulate(n, seed=41, source="live", configs=CONFIGS)
+    docs, _ = simdata.simulate(n, seed=41, source="live", configs=CONFIGS, seats="average")  # 0.2.7's world
     rng = np.random.default_rng(42)
     for doc in docs:
         for a in doc["attempts"]:

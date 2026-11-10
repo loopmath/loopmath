@@ -77,8 +77,8 @@ def test_a_shared_level_is_035s_fit(tmp_path):
             '[[result]]\nbenchmark = "tb"\nmodel = "gpt-9-astra"\neffort = "high"\nvalue = 0.7\n']
     table = tmp_path / "benchmarks.toml"
     table.write_text("\n".join(rows), encoding="utf-8")
-    user, _ = simdata.simulate(60, seed=5, source="live")
-    sweep, _ = simdata.simulate(60, seed=6, source="sweep")
+    user, _ = simdata.simulate(60, seed=5, source="live", seats="average")  # the 1/n world of the golden numbers
+    sweep, _ = simdata.simulate(60, seed=6, source="sweep", seats="average")
     fits = {}
     unread = {"level": "shared", "level_sd": 2.0, "cost_level": "shared", "cost_level_sd": 0.7,
               "benchmark_effort_sd": 0.5, "benchmark_alpha": 0.5, "transfer_sd": 0.3}  # read only under store/offset
@@ -143,7 +143,7 @@ def test_store_level_drops_shipped_success_rows_and_keeps_their_cost_rows(tmp_pa
     assert "sweep" in new["heads"]["cost"]["rows_by_source"]
     assert new["design_version"] == 5 and other_design(new) is None
     assert new["model_options"] == {"belief.level": "store", "belief.shipped_success": "drop",
-                                    "belief.benchmark_factors": "offset"}
+                                    "belief.benchmark_factors": "offset", "belief.seat_weights": "role-v1"}
     assert new["options"]["level"]["level_sd"] == 1.5
     assert old["seed_key"] != new["seed_key"]
     st = load(fit)

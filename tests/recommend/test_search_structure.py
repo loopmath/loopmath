@@ -111,7 +111,7 @@ def test_tables_give_each_configurations_mean_cost_and_u(fs):
         cost = sum(tab["cout"][p][0][pick[p]] for p in case.st.pieces)
         u = tab["u0"][0] + sum(tab["u"][p][0][pick[p]] for p in case.st.pieces)
         pred = fs.predict(H.TASK, cfg, H.RULE)
-        row = fs._cached(fs.heads["success"], [S.run_rest(structure(cfg))])[0]
+        row = fs._cached(fs.heads["success"], [S.run_rest(structure(cfg), fs.seat_rule)])[0]
         assert cost == pytest.approx(pred.cost.usd.mean, rel=1e-9)
         assert u == pytest.approx(tp.mu + row.mu, rel=1e-12, abs=1e-12)
 

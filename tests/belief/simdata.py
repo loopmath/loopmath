@@ -3,6 +3,9 @@
 Effects are drawn from the model's own prior (the default level scales), then runs are
 simulated through the same term builders the fit and the prediction use. Model ids are
 fictional (`claude-opus-9`, `gpt-9-astra`) so that the price table never reprices them.
+
+`seats` is the seat rule of the simulated world (`design.seat_weights`): the default fit's, or `"average"`, the
+1/n world that the numbers pinned to 0.4.1 and older releases were made on.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from loopmath.belief.design import rows_for_config, structure
+from loopmath.belief.design import SEAT_RULE, rows_for_config, structure
 from loopmath.belief.forest import default_scale, scale_group
 from loopmath.types import Configuration, Control, Gate, Piece, Setting, Task, Workflow
 from loopmath.workflows.ids import config_id
@@ -160,13 +163,13 @@ def make_task(rng: np.random.Generator, i: int, *, n_tasks: int = 60, ttype: str
 def simulate_run(truth: Truth, task: Task, cfg: Configuration, run_id: str, rng: np.random.Generator, *,
                  source: str = "sweep", q: float = 0.98, tier: str = "verified",
                  score: dict | None = None, rule: dict | None = None, sim_source: str | None = None,
-                 harness: dict | None = None) -> dict:
+                 harness: dict | None = None, seats: str = SEAT_RULE) -> dict:
     """One finished OCP v0.3 run document. `score`: {name, scale, better, unit}. `harness`: a harness record,
     written to `run.ext` and simulated through its factors' true effects."""
     from loopmath.harness import EXT_KEY, factors
 
     src = sim_source or source
-    rows = rows_for_config(task, cfg, src, factors=factors(harness))
+    rows = rows_for_config(task, cfg, src, factors=factors(harness), seats=seats)
     st = structure(cfg, factors(harness))
     attempts, nodes, signals = [], [], []
     for p in st.pieces:
@@ -240,7 +243,7 @@ def simulate_run(truth: Truth, task: Task, cfg: Configuration, run_id: str, rng:
 
 def simulate(n_runs: int, *, seed: int = 0, truth: Truth | None = None, configs=None, source: str = "sweep",
              n_tasks: int = 60, score: dict | None = None, q: float = 0.98, tier: str = "verified",
-             prefix: str = "run_sim") -> tuple[list[dict], Truth]:
+             prefix: str = "run_sim", seats: str = SEAT_RULE) -> tuple[list[dict], Truth]:
     rng = np.random.default_rng(seed)
     truth = truth or Truth(np.random.default_rng(seed + 7919))
     configs = configs or all_configs()
@@ -249,5 +252,5 @@ def simulate(n_runs: int, *, seed: int = 0, truth: Truth | None = None, configs=
         task = make_task(rng, i, n_tasks=n_tasks)
         cfg = configs[int(rng.integers(len(configs)))]
         docs.append(simulate_run(truth, task, cfg, f"{prefix}{seed}_{i:05d}", rng, source=source, score=score,
-                                 q=q, tier=tier))
+                                 q=q, tier=tier, seats=seats))
     return docs, truth

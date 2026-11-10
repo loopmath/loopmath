@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.2 (2026-11-09)
+
+0.4.2 follows 0.4.1. It changes how much each piece of a multi-piece workflow counts in the predicted chance of success and score. Everything else is 0.4.1's.
+
+### Seat weights: the writer counts most in a multi-piece workflow
+
+What changes for you: in a workflow with several pieces, the model, effort and harness of the piece that writes the change now count for most of the predicted chance of success and score, and the planner's and reviewers' count for much less. Until now every piece counted the same. A workflow with a strong writer and a cheap reviewer is predicted higher than before, and one with a cheap writer and a strong reviewer lower, so `recommend` can pick differently. Solo workflows are unchanged, to the digit.
+
+- The success and score rows of a run carry each piece's setting (provider, model family, model, effort, harness and harness factors) at a weight by role: the writer (`implementer`) at 1, the planner at 0.22 and the reviewers at 0.11 between them, so two reviewers count 0.055 each. The weights are relative to the writer and do not sum to 1. In 0.4.1 each of `n` pieces counted `1/n`.
+- **The three numbers are a placeholder.** They come from one experiment on 8 coding tasks with models of two vendors, and they are fixed, not learned from your runs. The reviewer weight is loose (a rough 95% range of 0.03 to 0.18; the planner's is 0.16 to 0.29), and the experiment could not tell this rule from one that counts the writer only. Expect them to change.
+- The rule covers a workflow whose pieces are all writers, planners or reviewers, with at least one writer: of the catalog, `solo`, `implement_review`, `plan_implement` and `plan_implement_review`. Role words fold as elsewhere (`dev` or `fix` is a writer, `critic` a reviewer, `architect` a planner). Several pieces of one role share its weight (two writer pieces count 0.5 each). Any other workflow keeps `1/n` for every piece, as in 0.4.1: one with a piece of another role (`tester`, `referee`, `worker`, a piece with no role, or a role word of your own), so `best_of_n` and `swarm`, and one with no writer.
+- Only those setting terms move. The role terms, the workflow shape, the round and width terms, a flow's step terms, and the cost and gate rows are as in 0.4.1.
+- To keep 0.4.1's rule, run `loopmath config set belief.seat_weights average` and then `loopmath fit`. The key takes `role` or `average`; unset, it is `role`, and `average` under `belief.level = "shared"`, which stays 0.3.5's fit exactly.
+- A fit you already have keeps predicting with `1/n` until the next fit, yours or the one loopmath starts in the background after a run or a late outcome. That fit is made under the new rule and says so in its `meta.json` (`model_options`, `belief.seat_weights` = `role-v1`); loopmath 0.4.1 and older refuse it by name and ask for a new fit.
+- A store with solo runs only gets the same fit as in 0.4.1, its random draws included.
+
 ## 0.4.1 (2026-11-09)
 
 0.4.1 follows 0.4.0. It adds `loopmath frontier` (experimental) and gives `recommend` better cost estimates on a new store. Everything else is 0.4.0's.

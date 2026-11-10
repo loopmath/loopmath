@@ -36,7 +36,7 @@ from typing import Any, Callable, Iterable, Sequence
 import numpy as np
 from scipy.special import expit, ndtr
 
-from ..belief.design import Structure, _piece_reach, cost_rest, gate_rest, run_rest, structure
+from ..belief.design import SEAT_RULE, Structure, _piece_reach, cost_rest, gate_rest, run_rest, structure
 from ..belief.forest import canonical_model_id
 from ..belief.state import MEAN_NODES, MIN_SCORE_SWITCH, N_DRAWS, PREDICT_SOURCE, _GW, _GX, transform
 from ..types import AcceptanceRule, Configuration, Piece, Prediction, Setting, Task, Workflow
@@ -454,6 +454,7 @@ class Tables:
         self.tp = fs._task_parts(task)
         self.effort = fs.effort_for(task) if hasattr(fs, "effort_for") else 1.0  # spec 04 section 1, under a timebox
         self.prices = getattr(fs, "price_offsets", None)  # spec 04 section 2, the price offset per model
+        self.seats = getattr(fs, "seat_rule", SEAT_RULE)  # the fit's seat rule, as its own predictions use it
         self.half_u = 0.5 * fs.heads["cost"].sigma ** 2
         self.draw_idx = draw_idx
         tg = self.tp["gate"]
@@ -544,7 +545,7 @@ class Tables:
         """The run row as a case part plus one setting part per piece: {piece: parts}, case terms.
         Cases with the same pieces and flow share the per-piece parts; a hit is checked on the last setting."""
         st = case.st
-        r0 = run_rest(st)
+        r0 = run_rest(st, self.seats)
         mkey = (st.workflow_id, tuple(st.pieces), tuple(st.roles[p] for p in st.pieces),
                 tuple(sorted(case.workflow.edges)), len(r0))
         hit = self._run_memo.get(mkey)
@@ -552,7 +553,7 @@ class Tables:
             vary, parts = hit
             for p in st.pieces:
                 with _Varied(st, p, self.settings[-1]) as v:
-                    row = run_rest(v)
+                    row = run_rest(v, self.seats)
                 want = list(r0)
                 for i, t in zip(vary[p], parts[p][-1]):
                     want[i] = t
@@ -565,7 +566,7 @@ class Tables:
                 rows = []
                 for s in self.settings:
                     with _Varied(st, p, s) as v:
-                        rows.append(run_rest(v))
+                        rows.append(run_rest(v, self.seats))
                 if any(len(r) != len(r0) for r in rows):
                     raise NotExact("run rows change length with a setting")
                 vary[p] = [i for i in range(len(r0)) if any(r[i] != r0[i] for r in rows)]

@@ -251,8 +251,11 @@ def _flow_run(doc: dict) -> bool:
 
 def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tuple[str, ...] = (),
                  now: datetime | None = None, features: FeatureSet | None = None,
-                 q_by_tier: dict[str, float] | None = None, own_success: bool = False):
+                 q_by_tier: dict[str, float] | None = None, own_success: bool = False,
+                 seats: str = design_rows.SEAT_RULE):
     """Rows of every head from run documents, plus counts of what was used and dropped.
+
+    `seats` (config `belief.seat_weights`, `design.seat_rule`): the seat rule of the success and score rows.
 
     `own_success` (config `belief.shipped_success = "drop"`): shipped runs give no success or score rows, so
     the success level comes from the user's runs and shared imports only (`level.py`).
@@ -329,7 +332,7 @@ def collect_rows(docs: Iterable[dict | tuple[str | None, dict]], *, without: tup
         for gi, k, passed in pr.gates:
             heads["gate"].add(gate_row(pr.task, pr.source, st, st.gates[gi], k, features), 1.0 if passed else 0.0,
                               1.0, pr.run_id, pr.source, ttype)
-        row = run_row(pr.task, pr.source, st, features)
+        row = run_row(pr.task, pr.source, st, features, seats)
         if _flow_run(doc):
             flow_runs.append((doc, pr, row, ttype))
             continue
@@ -721,6 +724,7 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
         # `outcome.q.<tier>`, read as `run finish` reads it; unset, the built-in q (0.2.6, fix (1))
         q_by_tier = {tier: Config(home / "config.toml", config).q_for_tier(tier) for tier in TIER_Q}
         level = level_settings(config)
+        seats = design_rows.seat_rule(config)  # `belief.seat_weights`: by role, or `average` (1/n, 0.4.1's rows)
 
         def all_docs() -> Iterator[dict | tuple[str | None, dict]]:
             if docs is not None:
@@ -734,7 +738,8 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
 
         (heads_rows, score_info, dropped, runs_by_source, config_support, checks, overlap,
          labels, tally, variants) = collect_rows(all_docs(), without=without, now=now, features=features,
-                                                 q_by_tier=q_by_tier, own_success=level.own_success)
+                                                 q_by_tier=q_by_tier, own_success=level.own_success,
+                                                 seats=seats)
         removed = {k[len("without "):] for k in dropped if k.startswith("without ")}
         unknown, known = unknown_sources(without, set(runs_by_source) | removed, bundle_dir)
         if unknown:
@@ -876,6 +881,9 @@ def fit(home: Path, *, no_prior: bool = False, without: tuple[str, ...] = (), fu
                                                          "belief.shipped_success": level.shipped_success,
                                                          "belief.benchmark_factors": level.benchmarks})
             meta["options"]["level"] = level.key()
+        if seats != design_rows.SEAT_AVERAGE:  # rows by a role rule: 0.4.1 and older refuse the fit by name
+            meta["design_version"] = design_rows.OPT_IN_DESIGN_VERSION
+            meta.setdefault("model_options", {})[design_rows.SEAT_KEY] = seats
         if "recipe" in fitted.get("cost", {}):
             from .cost_recipe import METHOD, OPTION
 

@@ -40,7 +40,7 @@ PIN_028 = {"seed_key": "13dbca953f2169503a46fb35fdc638e2dcbcbe4e6d3c1725c2e878d1
 
 
 def _docs(other_ext: bool) -> list[dict]:
-    docs = simdata.simulate(240, seed=19, source="user", n_tasks=60)[0]
+    docs = simdata.simulate(240, seed=19, source="user", n_tasks=60, seats="average")[0]  # 0.2.8's world
     if other_ext:
         docs = copy.deepcopy(docs)
         for i, d in enumerate(docs):  # a third party's ext keys, and a name close to the record's

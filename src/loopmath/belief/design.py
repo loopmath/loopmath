@@ -45,7 +45,20 @@ MODEL_OPTIONS: dict[str, tuple[Any, ...]] = {"belief.success_head": ("sampled",)
                                              # the store level and benchmark transfer (level.py)
                                              "belief.level": ("shared", "store"),
                                              "belief.shipped_success": ("keep", "drop"),
-                                             "belief.benchmark_factors": ("reference", "offset")}
+                                             "belief.benchmark_factors": ("reference", "offset"),
+                                             # the seat weights of the success and score rows (`seat_weights`)
+                                             "belief.seat_weights": ("role-v1",)}
+# Seat weights (0.4.2): how much each piece's model chain, effort and harness counts in a success or score row
+# (`run_rest`). `average` is the rule up to 0.4.1: every piece at 1/n. A role rule gives each role one weight,
+# relative to the writer and not rescaled to sum to 1, shared equally by the pieces of that role. `role-v1`: the
+# writer (`implementer`) 1, the planner 0.22, the reviewers 0.11. These three numbers are a placeholder from one
+# experiment on 8 coding tasks and will change. A fit records its rule in `model_options` under SEAT_KEY (nothing
+# under `average`), so a fit is always read with the rule it was made under.
+SEAT_KEY = "belief.seat_weights"
+SEAT_AVERAGE = "average"
+SEAT_RULE = "role-v1"  # what the config value `role` means in this loopmath
+SEAT_WRITER = "implementer"
+SEAT_RULES: dict[str, dict[str, float]] = {"role-v1": {SEAT_WRITER: 1.0, "planner": 0.22, "reviewer": 0.11}}
 # The version the seed key hashes (spec 04 section 3). It stays 3 from 0.2.8: the same data seeds the same
 # draws as in 0.2.7, so every number that is not a token count is 0.2.7's.
 SEED_VERSION = 3
@@ -450,19 +463,59 @@ def gate_rest(st: Structure, gate: GateInfo, k: int) -> tuple[Term, ...]:
             + role_terms(role, m) + step_terms(st.flow, gate.judged, role, m))
 
 
-def run_rest(st: Structure) -> tuple[Term, ...]:
+def seat_rule(config: Mapping[str, Any] | None) -> str:
+    """The seat rule a fit is made under, from a config.toml table: `[belief] seat_weights`, `"role"` (SEAT_RULE)
+    or `"average"`. Unset or malformed, it follows the level as `shipped_success` does (level.py): the role rule
+    under the store level, and `average` under `level = "shared"`, which stays 0.3.5's fit exactly."""
+    b = (config or {}).get("belief")
+    b = b if isinstance(b, Mapping) else {}
+    value = b.get("seat_weights")
+    if value == "role":
+        return SEAT_RULE
+    if value == SEAT_AVERAGE:
+        return SEAT_AVERAGE
+    return SEAT_AVERAGE if b.get("level") == "shared" else SEAT_RULE
+
+
+def fit_seat_rule(meta: Mapping[str, Any]) -> str:
+    """The seat rule a fit was made under, from its meta.json: `model_options[SEAT_KEY]`, else `average` (every
+    fit before 0.4.2, and a later fit under `average`, which writes no option)."""
+    options = meta.get("model_options")
+    value = options.get(SEAT_KEY) if isinstance(options, Mapping) else None
+    return value if isinstance(value, str) and value in SEAT_RULES else SEAT_AVERAGE
+
+
+def seat_weights(st: Structure, seats: str = SEAT_RULE) -> dict[str, float]:
+    """piece -> the weight of its model chain, effort and harness in the success and score rows (`run_rest`).
+
+    Under a role rule (SEAT_RULES) each role has one weight, shared equally by the pieces of that role: one
+    writer counts 1, one planner 0.22, one reviewer 0.11 and each of two reviewers 0.055. The weights are
+    relative to the writer and do not sum to 1. The rule covers workflows made of writers, planners and
+    reviewers with at least one writer. Any other workflow (a piece of another role such as `tester`, `referee`
+    or `worker`, or no writer) keeps `average`, 1/n for each of its n pieces, as does every workflow under
+    `seats = "average"`. A workflow of one piece is at 1 under every rule."""
+    n = max(1, len(st.pieces))
+    weights = SEAT_RULES.get(seats)
+    roles = [st.roles[p] for p in st.pieces]
+    if weights is None or SEAT_WRITER not in roles or any(r not in weights for r in roles):
+        return {p: 1.0 / n for p in st.pieces}
+    return {p: weights[r] / roles.count(r) for p, r in zip(st.pieces, roles)}
+
+
+def run_rest(st: Structure, seats: str = SEAT_RULE) -> tuple[Term, ...]:
     """Success and score rows without the task part: topology, control, and per piece its model chain,
-    effort and harness (weight 1/n) with its harness factors at that weight, plus its role and role x family
+    effort and harness at its seat weight (`seat_weights` under the rule `seats`: by role from 0.4.2, 1/n
+    under `average`) with its harness factors at that weight, plus its role and role x family
     (weight 1/g, g the copies in its group, so parallel copies carry the role effect once, as one wide piece
     does), and in a flow run its step term at the role x family weight (`step_terms`)."""
     terms: list[Term] = [(f"topology:{st.shape or st.workflow_id}", None, 1.0)]
     terms += _control_terms(st.k_max, max(st.widths.values() or [1]))
-    n = max(1, len(st.pieces))
+    weight = seat_weights(st, seats)
     for piece in st.pieces:
         h, m, e = _s(st.settings[piece])
-        terms += setting_terms(h, m, e, 1.0 / n)
+        terms += setting_terms(h, m, e, weight[piece])
         if st.factors:
-            terms += factor_terms(h, st.factors, 1.0 / n)
+            terms += factor_terms(h, st.factors, weight[piece])
         g = 1.0 / (st.copies.get(piece) or 1)
         terms += role_terms(st.roles[piece], m, g) + step_terms(st.flow, piece, st.roles[piece], m, g)
     return tuple(terms)
@@ -479,8 +532,9 @@ def gate_row(task: Task, source: str, st: Structure, gate: GateInfo, k: int,
     return task_terms(task, source, features) + list(gate_rest(st, gate, k))
 
 
-def run_row(task: Task, source: str, st: Structure, features: FeatureSet | None = None) -> list[Term]:
-    return task_terms(task, source, features) + list(run_rest(st))
+def run_row(task: Task, source: str, st: Structure, features: FeatureSet | None = None,
+            seats: str = SEAT_RULE) -> list[Term]:
+    return task_terms(task, source, features) + list(run_rest(st, seats))
 
 
 def _control_terms(k_max: int, width: int) -> list[Term]:
@@ -495,9 +549,10 @@ def _control_terms(k_max: int, width: int) -> list[Term]:
 
 
 def rows_for_config(task: Task, config: Configuration, source: str = "user",
-                    features: FeatureSet | None = None, factors: Sequence[str] = ()) -> dict:
+                    features: FeatureSet | None = None, factors: Sequence[str] = (),
+                    seats: str = SEAT_RULE) -> dict:
     """Prediction rows: per (piece, round), per (gate, round), one run row, and the structure. `factors`: the
-    harness factors on every piece (`spec/harness.md`)."""
+    harness factors on every piece (`spec/harness.md`); `seats`: the seat rule of the run row (`seat_weights`)."""
     st = structure(config, factors)
     cost = {}
     for piece in st.pieces:
@@ -509,7 +564,7 @@ def rows_for_config(task: Task, config: Configuration, source: str = "user",
         rounds = st.k_max if st.gate_loop.get(gi) is not None else 1
         for k in range(1, rounds + 1):
             gate[(gi, k)] = gate_row(task, source, st, g, k, features)
-    return {"structure": st, "cost": cost, "gate": gate, "run": run_row(task, source, st, features)}
+    return {"structure": st, "cost": cost, "gate": gate, "run": run_row(task, source, st, features, seats)}
 
 
 # ---------------------------------------------------------------- reading run documents
@@ -1030,8 +1085,9 @@ def _gate_observations(doc: dict, st: Structure, by_piece_round: dict) -> list[t
     return out
 
 
-def rows_for_run(run_doc: dict) -> dict:
-    """Fitting rows for one run document: {cost, tokens, gate, success, scores} plus its structure."""
+def rows_for_run(run_doc: dict, seats: str = SEAT_RULE) -> dict:
+    """Fitting rows for one run document: {cost, tokens, gate, success, scores} plus its structure; `seats` is
+    the seat rule of the success and score rows (`seat_weights`)."""
     pr = parse_run(run_doc)
     st = structure(pr.config, pr.factors, pr.flow)
     out: dict[str, Any] = {"run": pr.run_id, "source": pr.source, "structure": st,
@@ -1044,7 +1100,7 @@ def rows_for_run(run_doc: dict) -> dict:
             out["tokens"].append((terms, math.log(a.tokens), a.weight))
     for gi, k, passed in pr.gates:
         out["gate"].append((gate_row(pr.task, pr.source, st, st.gates[gi], k), 1.0 if passed else 0.0))
-    row = run_row(pr.task, pr.source, st)
+    row = run_row(pr.task, pr.source, st, seats=seats)
     if pr.evidence is not None and pr.evidence.z is not None:
         out["success"] = (row, float(pr.evidence.z), float(pr.evidence.q))
     for name, value in (pr.evidence.scores if pr.evidence else {}).items():

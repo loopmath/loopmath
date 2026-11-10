@@ -89,12 +89,16 @@ def test_cost_rows_carry_each_factor_under_the_pieces_harness():
 
 
 def test_the_run_row_weighs_each_factor_as_the_pieces_harness_term():
-    rows = rows_for_run(with_record(pir_doc(), record("skill:a")))
-    run_terms, _, _ = rows["success"]
-    totals = _totals(run_terms)
-    assert totals["hfactor:claude-code|skill:a"] == pytest.approx(2 / 3)
-    assert totals["hfactor:codex|skill:a"] == pytest.approx(1 / 3)
-    assert totals["harness:claude-code"] == pytest.approx(2 / 3)
+    """Planner and writer on claude-code, the reviewer on codex: 0.22 + 1 and 0.11 by role, 2/3 and 1/3 by 1/n."""
+    doc = with_record(pir_doc(), record("skill:a"))
+    for seats, claude, codex in (("role-v1", 1.22, 0.11), ("average", 2 / 3, 1 / 3)):
+        run_terms, _, _ = rows_for_run(doc, seats=seats)["success"]
+        totals = _totals(run_terms)
+        assert totals["hfactor:claude-code|skill:a"] == pytest.approx(claude)
+        assert totals["hfactor:codex|skill:a"] == pytest.approx(codex)
+        assert totals["harness:claude-code"] == pytest.approx(claude)
+        assert totals["harness:codex"] == pytest.approx(codex)
+    assert rows_for_run(doc)["success"] == rows_for_run(doc, seats="role-v1")["success"]  # the default
 
 
 def test_gate_rows_carry_no_factor():

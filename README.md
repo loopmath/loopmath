@@ -74,6 +74,8 @@ Reading the history uses up to 8 worker processes (one per CPU, at most 8). Set 
 
 loopmath ships with a prior built from our own sweeps and experiments, so `recommend` gives an answer before you have any history. Your own runs then move it. Your store's overall pass rate is its own, with a wide prior that only your runs move: the shipped runs give their costs and gate rows but no success rows, and the public benchmarks say which models are stronger (`belief.level`, `store` by default; `loopmath config set belief.level shared`, then `loopmath fit`, gives 0.3.5's fit).
 
+In a workflow with several pieces, the piece that writes the change counts most in the predicted chance of success: its model, effort and harness count 1, the planner's 0.22 and the reviewers' 0.11 between them. These three weights are a placeholder from one experiment on 8 coding tasks; they are fixed, not learned from your runs, and will change. `loopmath config set belief.seat_weights average`, then `loopmath fit`, counts every piece the same, as 0.4.1 did.
+
 The prior ships inside the package: our runs, in the shared form (no titles, paths, commands or free text), and the published benchmark results. They are the same files we fit with, and each release updates them. `onboard` and the results page say in one line which prior they start from, and `loopmath prior show` lists it source by source.
 
 ## The loop

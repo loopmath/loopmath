@@ -62,8 +62,8 @@ from ..types import (
     Prediction, ScorePrediction, Task,
 )
 from .compose import Intervals, RunDraws, compose, cost_per_round, interval, ranges
-from .design import (Structure, cost_rest, gate_rest, other_design, run_rest, split_factor_node, structure,
-                     task_features, task_terms)
+from .design import (Structure, cost_rest, fit_seat_rule, gate_rest, other_design, run_rest, split_factor_node,
+                     structure, task_features, task_terms)
 from .forest import LEVEL_ALIASES, canonical_model_id, default_scale, display_level, level_of, node_key, scale_group
 from .block import BlockFactor, blocks, leading_diagonal
 from .gaussian import _cho, cov_factor
@@ -444,6 +444,9 @@ class FitState:
         self.price_offsets: dict[str, float] = dict((self.meta.get("price_offsets") or {}).get("models") or {})
         # spec 04 section 3 (0.2.8): each priced model's cache-read rate, $ per token; a draw's rate stays above it
         self.rate_floors: dict[str, float] = dict(self.meta.get("rate_floors") or {})
+        # the seat rule the fit's success and score rows were made under (`design.seat_weights`): predictions
+        # use the same one, so a fit from before 0.4.2 keeps its 1/n rows until the next fit
+        self.seat_rule: str = fit_seat_rule(self.meta)
         if heads is None:
             heads = {}
             for name, hmeta in (self.meta.get("heads") or {}).items():
@@ -532,7 +535,8 @@ class FitState:
                 gate[(gi, k)] = gate_rest(st, g, k)
         floors = {piece: float(self.rate_floors.get(canonical_model_id(st.settings[piece].model), 0.0))
                   for piece in st.pieces}
-        return {"config": config, "st": st, "cost": cost, "gate": gate, "run": run_rest(st), "floors": floors}
+        return {"config": config, "st": st, "cost": cost, "gate": gate, "run": run_rest(st, self.seat_rule),
+                "floors": floors}
 
     # ------------------------------------------------------------ the task as the fit reads it
 

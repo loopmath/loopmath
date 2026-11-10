@@ -538,7 +538,11 @@ def _add_recording(sub) -> None:
                                   "benchmark in the shipped benchmarks.toml has its own weight, in runs, shared by "
                                   "a model's results on it; a number here is one weight for every benchmark, and 0 "
                                   "turns benchmark priors off. belief.level is store by default: the store's pass "
-                                  "rate is learned from its own runs only; shared is 0.3.5's fit.")
+                                  "rate is learned from its own runs only; shared is 0.3.5's fit. "
+                                  "belief.seat_weights is role by default: in a multi-piece workflow the writer's "
+                                  "model, effort and harness count 1, the planner's 0.22 and the reviewers' 0.11 "
+                                  "between them (placeholder values); average counts every piece the same, as "
+                                  "0.4.1 did.")
     q.add_argument("key", metavar="KEY")
     q.add_argument("value", metavar="VALUE")
     _common(q)

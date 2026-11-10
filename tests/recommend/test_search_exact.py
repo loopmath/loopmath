@@ -95,6 +95,16 @@ def test_the_search_finds_the_brute_force_front_draw_optima_and_picks(fs, rule):
     assert out["levels"], "the space reaches no curve level; the check would be empty"
 
 
+def test_the_search_is_exact_under_the_role_seat_weights(tmp_path_factory):
+    """The same check on a fit under `belief.seat_weights = "role"`: the tables split a run row by piece at the
+    fit's seat weights, the writer at 1, the planner at 0.22 and the reviewers at 0.11 between them."""
+    role = H.synth_fit(tmp_path_factory, seats="role-v1")["state"]
+    assert role.seat_rule == "role-v1"
+    assert H.synth_fit(tmp_path_factory)["state"].seat_rule == "average"
+    out = check(role, H.RULE, small())
+    assert out["levels"], "the space reaches no curve level; the check would be empty"
+
+
 def test_a_tests_gate_in_the_loop_is_searched_per_judged_setting(fs):
     """SWEEP's loop has a gate after implement and after review, so review is reached with a chance that
     depends on implement's setting: the per-J merge, exact against brute force."""

@@ -16,7 +16,9 @@ declared task features `features.<key>` with `features.min_tasks`
 `eb`, 0.3.1's success head; `sampled` opts in to the success head by NUTS over
 its effects and scales, belief.integrated and belief.sampled), and `belief.level` (unset or `store`, from 0.4.0:
 each store's own success level, benchmarks by offset; `shared` is 0.3.5's fit, belief.level) with its two sds,
-`belief.benchmark_effort_sd` and `belief.cost_level_sd` (0.5 each under `store`).
+`belief.benchmark_effort_sd` and `belief.cost_level_sd` (0.5 each under `store`), and `belief.seat_weights` (unset or
+`role`: a multi-piece run's success and score rows carry the writer's setting at 1, the planner's at 0.22 and the
+reviewers' at 0.11 between them, placeholder values; `average` is 0.4.1's 1/n, also the default under `shared`).
 
 Reading uses `tomllib` (Python 3.11+), else a reader for the
 subset this module writes. The writer emits plain tables and JSON-compatible
@@ -60,6 +62,8 @@ CHOICES: dict[str, tuple[str, ...]] = {
     # unset or `eb`: 0.3.1's success head; `sampled` opts in (belief.integrated, belief.sampled)
     "belief.success_head": ("eb", "sampled"),
     "belief.level": ("store", "shared"),  # unset: `store` (0.4.0); `shared` is 0.3.5's fit (belief.level)
+    # unset: `role` under the store level, `average` under `shared` (0.4.2; belief.design.seat_rule)
+    "belief.seat_weights": ("role", "average"),
 }
 LABELER_KINDS = ("claude", "codex", "command")
 LABELER_KEYS = ("onboard.labeler", "labeler")  # `labeler` is the spec 02 name; D39 stores `onboard.labeler`
@@ -80,7 +84,7 @@ STRING_ROOTS = ("research",)  # values stored as given, never parsed as JSON
 KEYS = ("org", "acceptance_rule", "rules.<name>", "goal", "rescue.kind", "rescue.person_usd_per_hour",
         "rescue.hours", "rescue.decay", "rescue.max_attempts", "rescue.min_chance", "models.allowed", "harnesses",
         "subtypes", "benchmark_prior_weight", "belief.success_head", "belief.level", "belief.benchmark_effort_sd",
-        "belief.cost_level_sd", "explore.default_pick",
+        "belief.cost_level_sd", "belief.seat_weights", "explore.default_pick",
         "explore.auto_payback_runs", "referee.model",
         "budget.usd", "budget.period", "outcome.q.<tier>", "onboard.labeler", "onboard.skip",
         "usual.<type>.<repo>", "usual_meta.<type>.<repo>", "research.sweep_dir", "research.e0_corpus",

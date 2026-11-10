@@ -471,7 +471,7 @@
   "exit": 0,
   "python": "3.14",
   "stderr": "",
-  "stdout": "loopmath 0.4.1\n"
+  "stdout": "loopmath 0.4.2\n"
  },
  "cli/loopmath not-a-command": {
   "argv": [

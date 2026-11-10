@@ -92,7 +92,10 @@ def test_tree_law_a_new_version_predicts_its_family_with_a_wider_interval(s, tas
     other = simdata.config(simdata.IR, Setting("claude-code", "claude-opus-9-7", "high"))
     _, d_other = _row_eval(s, "success", task, other)
     _, d_other_fam = _row_eval(s, "success", task, other, drop=("model:claude-opus-9-7",))
-    np.testing.assert_allclose(d_other - d_other_fam, _widening(s, "success", ["model:claude-opus-9-7"]), atol=1e-12)
+    weight = sum(v for n, _, v in run_row(task, "user", structure(other)) if n == "model:claude-opus-9-7")
+    assert weight == pytest.approx(1.11)  # the writer at 1 and the reviewer at 0.11; 1/2 each under `average`
+    np.testing.assert_allclose(d_other - d_other_fam, weight * _widening(s, "success", ["model:claude-opus-9-7"]),
+                               atol=1e-12)
 
 
 def test_tree_law_a_new_family_starts_from_its_provider(s, task):
@@ -107,7 +110,7 @@ def test_tree_law_a_new_family_starts_from_its_provider(s, task):
 
 
 def test_misclassification_widens_the_success_head(tmp_path):
-    docs, _ = simdata.simulate(300, seed=31, source="live")
+    docs, _ = simdata.simulate(300, seed=31, source="live", seats="average")  # the world of the numbers below
     noisy = json.loads(json.dumps(docs))
     for doc in noisy:
         for sig in doc["run"]["signals"]:

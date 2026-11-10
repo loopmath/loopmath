@@ -183,15 +183,16 @@ def test_one_pieces_setting_changes_only_its_own_rows():
     before = simdata.config(simdata.PIR, OPUS)
     after = simdata.config(simdata.PIR, OPUS, FABLE, OPUS)  # implement at fable
     task = simdata.make_task(np.random.default_rng(0), 0)
-    rb, ra = rows_for_config(task, before, "user"), rows_for_config(task, after, "user")
-    for key in rb["cost"]:
-        assert (rb["cost"][key] == ra["cost"][key]) == (key[0] != "implement")
-    n = 3
-    expected = _weights(setting_terms("claude-code", "claude-fable-9", "medium", 1 / n)
-                        + (("role_family:implementer|fable", None, 1.0),))
-    expected.subtract(_weights(setting_terms("claude-code", "claude-opus-9", "high", 1 / n)
-                               + (("role_family:implementer|opus", None, 1.0),)))
-    assert _diff(ra["run"], rb["run"]) == {k: round(v, 12) for k, v in expected.items() if abs(v) > 1e-12}
+    for seats, w in (("role-v1", 1.0), ("average", 1 / 3)):  # the writer's seat weight under each rule
+        rb, ra = (rows_for_config(task, cfg, "user", seats=seats) for cfg in (before, after))
+        for key in rb["cost"]:
+            assert (rb["cost"][key] == ra["cost"][key]) == (key[0] != "implement")
+        assert D.seat_weights(structure(after), seats)["implement"] == pytest.approx(w)
+        expected = _weights(setting_terms("claude-code", "claude-fable-9", "medium", w)
+                            + (("role_family:implementer|fable", None, 1.0),))
+        expected.subtract(_weights(setting_terms("claude-code", "claude-opus-9", "high", w)
+                                   + (("role_family:implementer|opus", None, 1.0),)))
+        assert _diff(ra["run"], rb["run"]) == {k: round(v, 12) for k, v in expected.items() if abs(v) > 1e-12}
 
 
 def test_run_cost_is_the_sum_over_pieces_of_width_times_the_row(sim_fit):

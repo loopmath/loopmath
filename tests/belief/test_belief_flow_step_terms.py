@@ -53,6 +53,8 @@ DRAWS = 4000  # posterior draws per head for the quality moves
 # The coding rows of the fixtures' documents (`_fixture_digest`), computed on the tree before step terms
 FIXTURE_DOCS = 75
 FIXTURE_DIGEST = "f5ccebc4483454bdefef222ed3585e1c8fddf08ae6180b3661e5807b0adcaa45"
+# the same documents under the role seat weights (0.4.2): 33 of the 75 runs have rows of their own there
+FIXTURE_DIGEST_ROLE = "7b4c1cd01725b039b392439a57826a9a02d367075cd110b329fb02e7c8940b6b"
 
 
 def recovery_truth(synthesize: dict[str, float] | None = None) -> dict:
@@ -416,17 +418,18 @@ def test_shared_family_moves_differ_only_by_step_terms(example):
                       "step:lit-brief#synthesize|haiku", "step:lit-brief#synthesize|opus"}
 
 
-def _fixture_digest() -> tuple[int, str]:
+def _fixture_digest(seats: str = "average") -> tuple[int, str]:
     """The design rows of the coding run documents in `tests/fixtures/harness_runs`: `rows_for_run` without the
-    structure, and `rows_for_config` on the run's task and configuration, as one JSON text."""
+    structure, and `rows_for_config` on the run's task and configuration, as one JSON text. The base rows are
+    1/n rows (`belief.seat_weights = "average"`)."""
     docs = [json.loads(line) for line in (FIXTURES / "no-flow-rows.0.3.5.jsonl").read_text(encoding="utf-8").splitlines()
             if line.strip()]
     docs += [HR.to_ocp(row, observed_default=WHEN) for row in HR.read(FIXTURES / "stage-gate-rows.jsonl")]
     per = []
     for doc in docs:
-        got = design.rows_for_run(doc)
+        got = design.rows_for_run(doc, seats=seats)
         pr = design.parse_run(doc)
-        planned = design.rows_for_config(pr.task, pr.config, pr.source)
+        planned = design.rows_for_config(pr.task, pr.config, pr.source, seats=seats)
         per.append({"run_rows": {k: got[k] for k in ("run", "source", "cost", "tokens", "gate", "success", "scores")},
                     "config_rows": {"cost": sorted((repr(k), v) for k, v in planned["cost"].items()),
                                     "gate": sorted((repr(k), v) for k, v in planned["gate"].items()),
@@ -437,3 +440,7 @@ def _fixture_digest() -> tuple[int, str]:
 
 def test_coding_fixture_rows_are_the_base_rows():
     assert _fixture_digest() == (FIXTURE_DOCS, FIXTURE_DIGEST)
+
+
+def test_coding_fixture_rows_under_the_role_seat_weights():
+    assert _fixture_digest("role-v1") == (FIXTURE_DOCS, FIXTURE_DIGEST_ROLE)

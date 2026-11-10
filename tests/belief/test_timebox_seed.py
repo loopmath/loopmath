@@ -70,7 +70,7 @@ def test_a_timeboxed_cost_row_carries_the_effort_terms_at_the_constant():
     assert any(n.startswith("role:") for n in other) and any(n.startswith("fsrc:") for n in other)
     # gate and run rows keep effort at 1: effort still changes what a run achieves
     task = Task(id="t1", type="feature", repo="r", features={"horizon_s": "7200"})
-    assert all(v == pytest.approx(1.0 / len(st.pieces)) for n, _, v in D.run_row(task, "user", st)
+    assert all(v == pytest.approx(D.seat_weights(st)[piece]) for n, _, v in D.run_row(task, "user", st)
                if n.startswith("effort:"))
 
 

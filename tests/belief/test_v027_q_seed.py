@@ -25,8 +25,9 @@ SEED_KEY_025 = "4071c3e18a65a4b24e57bce69aa31288221ddecdcdd94b1c9300ce094b0c426a
 
 
 def _docs():
-    verified, _ = simdata.simulate(40, seed=31, source="live", prefix="run_v")
-    reported, _ = simdata.simulate(40, seed=32, source="live", prefix="run_r", tier="reported")
+    verified, _ = simdata.simulate(40, seed=31, source="live", prefix="run_v", seats="average")
+    reported, _ = simdata.simulate(40, seed=32, source="live", prefix="run_r", tier="reported",
+                                   seats="average")  # the 1/n world the pinned keys were made on
     return verified + reported
 
 
