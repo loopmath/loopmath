@@ -174,7 +174,7 @@ setting = {harness = "api", model = {id = "claude-opus-5-5"}, effort = "high", o
 
 [document.producer]
 name = "loopmath"
-version = "0.4.2"
+version = "0.4.3"
 
 [document.producer.capabilities]
 flow = true

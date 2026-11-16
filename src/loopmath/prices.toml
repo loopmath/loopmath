@@ -145,9 +145,9 @@ source = "OpenCode 1.17.11 model catalog, opencode free route"
 # Rows checked on the provider pages on 2026-09-23; gpt-6.1-sol added and
 # gpt-6-luna checked again on 2026-10-12 (no newer luna is listed);
 # claude-sonnet-5-5 and claude-haiku-5-5 confirmed and gpt-6.1-terra added
-# on 2026-11-03. as_of stays the copied table's date: a row with no
-# "checked" date takes it as the date of its tariff, and those rows were
-# not read again.
+# on 2026-11-03; claude-fable-5-2 added on 2026-11-16. as_of stays the
+# copied table's date: a row with no "checked" date takes it as the date of
+# its tariff, and those rows were not read again.
 # Each source names its page and the date it was read; the tariff record
 # written with every priced attempt takes its date from "checked YYYY-MM-DD".
 #
@@ -186,6 +186,13 @@ cache_read = 0.01
 cache_write = 0.20
 output = 0.50
 source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-03: Claude Haiku 5.5 at $0.10 input, $0.20 1h cache write, $0.01 cache read, $0.50 output for prompts up to 100,000 tokens; prompts over 100,000 tokens bill $0.50 input, $1 1h cache write, $0.05 cache read, $2.50 output and are priced at this rate (a floor); cache_write is the 1h rate"
+
+["claude-fable-5-2"]
+input = 8.00
+cache_read = 0.20
+cache_write = 16.00
+output = 40.00
+source = "official list, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-16: Claude Fable 5.2 at $8 input, $16 1h cache write, $0.20 cache read (0.025x input), $40 output; cache_write is the 1h rate"
 
 ["gpt-6-astra"]
 input = 10.00

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.3 (2026-11-16)
+
+0.4.3 follows 0.4.2. It adds one price row. Everything else is 0.4.2's.
+
+### Prices: Claude Fable 5.2
+
+- The price table has a row for `claude-fable-5-2`, from Anthropic's official price list read on 2026-11-16: $8 input, $0.20 cache read, $16 cache write (the 1h rate) and $40 output, per million tokens. Runs on Claude Fable 5.2 are now priced instead of left without a cost.
+
 ## 0.4.2 (2026-11-09)
 
 0.4.2 follows 0.4.1. It changes how much each piece of a multi-piece workflow counts in the predicted chance of success and score. Everything else is 0.4.1's.
