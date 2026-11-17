@@ -1,22 +1,28 @@
 """`eval judges`: which judge, and how many repeats, from a fit.
 
-Reads only the fit file (and, for the stale-input warning, the digests of the study files). Every figure
-is computed per posterior draw and reported as a stat: `{"mean", "sd", "lo", "hi"}` with the 90% interval.
+Reads the fit file, and from the study folder only the number of items per input (items.jsonl) and, for
+the stale-input warning, the digests of the study files. Every figure is computed per posterior draw and
+reported as a stat: `{"mean", "sd", "lo", "hi"}` with the 90% interval.
 
 Per judge and dimension, on the fitting scale and on the component's own scale where one exists:
 
 - `bias`, `tau` (judge-by-output disagreement), `sigma` (run-to-run noise of one call).
-- `mse` of the mean of k calls, k = 1 to 5: `bias^2 + tau^2 + sigma^2 / k`. When the judge-by-input term
-  is measured its variance is added: like `tau`, it does not shrink with repeats.
-- `r2`: the share of the hidden quality's variance over the study's targets that a reading explains,
-  `var_q / (var_q + tau^2 + sigma^2 / k)`, with `var_q` the variance between arm means (weighted by
-  runs) plus the input and run variances. It is on the fitting scale: for `binary`, `levels` and `items`
-  it describes the judge's view before it is cut into a verdict.
+- `mse` of the mean of k calls, k = 1 to 5: `systematic + tau^2 + sigma^2 / k`. The systematic part is
+  the mean of `(bias + family effect)^2` over the targets of the study, each target with the family
+  that wrote it. `mse.without_family` is the conditional figure `bias^2 + tau^2 + sigma^2 / k`. When the
+  judge-by-input term is measured its variance is added: like `tau`, it does not shrink with repeats.
+- `r2`: the squared correlation, over the targets of the study and the judge's noise, between reported
+  quality `m(q)` and the mean of k calls as they are recorded: `eta + e` for `linear` and `fraction`,
+  the position of the level read for `levels`, 0 or 1 for `binary`, the share of items passed for
+  `items` (which needs the number of items per input).
+- `reliability`: the same for hidden quality on the fitting scale against the judge's view before it
+  is cut into a verdict, `var_q / (var_q + tau^2 + sigma^2 / k)`, with `var_q` the variance between arm
+  means (weighted by runs) plus the input and run variances. It is not what a recorded reading explains.
 - `effective_repeats`: how many independent readings k repeats are worth,
   `(tau^2 + sigma^2) / (tau^2 + sigma^2 / k)`. Its limit, `1 + sigma^2 / tau^2`, is the most repeats can buy.
 - `cost`: per call, per reading (a `panel` call is shared by the components it scores), and per unit of
-  error removed, where the error removed by k calls is the variance of hidden quality they explain,
-  `var_q x r2(k)`.
+  error removed, where the error removed by k calls is the variance of reported quality they explain,
+  `var(m) x r2(k)`.
 
 For a `binary` dimension, over the targets of the study (every run's hidden quality in the draws):
 `false_pass`, `false_fail`, `flip` (two calls on one output disagree) and `agreement`. A target's hidden
@@ -38,7 +44,9 @@ the batching loss (two judges that differ only in `mode`) and the reference effe
 differ only in `reference.shown`).
 
 A quantity whose term the design does not identify is null, and is listed under `not_measured` with the
-design that would measure it. It is never reported as a finding.
+design that would measure it. It is never reported as a finding. The same holds for every figure derived
+from it: a family effect or a judge-by-input term that is fitted but not identified is neither used nor
+replaced by zero, so `mse`, `r2`, cost, pass and fail figures and choices of that judge are not reported.
 """
 
 from __future__ import annotations
@@ -55,6 +63,7 @@ from scipy.special import ndtr, owens_t
 from ..output import EXIT_OK, emit_json
 from . import contracts as C
 from . import fitfile as F
+from . import quality as Q
 from .contracts import ContractError
 
 SCHEMA = "loopmath.eval-judges-report/1"
@@ -208,6 +217,91 @@ def status_figures(q: np.ndarray, shift: np.ndarray, shared_sd: np.ndarray, call
     return out
 
 
+def bvn_cdf(h: Any, k: Any, rho: Any) -> np.ndarray:
+    """`P(X <= h, Y <= k)` for standard normal X and Y with correlation `rho`, by Owen's T function."""
+    h, k, rho = np.broadcast_arrays(np.asarray(h, dtype=float), np.asarray(k, dtype=float),
+                                    np.asarray(rho, dtype=float))
+    h = np.where(h == 0, 1e-150, np.clip(h, -40.0, 40.0))
+    k = np.where(k == 0, 1e-150, np.clip(k, -40.0, 40.0))
+    rho = np.clip(rho, -1.0 + 1e-12, 1.0 - 1e-12)
+    root = np.sqrt(1.0 - rho * rho)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        out = (0.5 * (ndtr(h) + ndtr(k)) - owens_t(h, (k - rho * h) / (h * root))
+               - owens_t(k, (h - rho * k) / (k * root)) - np.where(h * k > 0, 0.0, 0.5))
+    return np.clip(out, 0.0, 1.0)
+
+
+def reading_moments(mean: np.ndarray, shared_sd: np.ndarray, call_sd: np.ndarray, kind: str,
+                    cuts: np.ndarray | None = None, n_items: np.ndarray | None = None) -> tuple:
+    """Moments of the judge's reading of each target, per draw: `(expected, shared, per_call)`.
+
+    `mean[S, R]` is the judge's expected view of each target (hidden quality, bias, family effect),
+    `shared_sd[S]` the sd of what every call on one target shares, `call_sd[S]` the sd of one call's
+    noise. A reading is what section 7.4 of the model says it is: `eta + e` for `linear` and `fraction`,
+    the position of the level whose interval holds `eta + e` for `levels` (`cuts[1 or S, L - 1]`), 0 or 1
+    for `binary`, and the share `k / n` with `k ~ Binomial(n, Phi(eta + e))` for `items` (`n_items[R]`).
+
+    `expected[S, R]` is the mean reading of a target. The mean of k calls on it has the variance
+    `shared + per_call / k`."""
+    shared, call = shared_sd[:, None] ** 2, call_sd[:, None] ** 2
+    if kind in ("linear", "fraction"):
+        return mean, np.broadcast_to(shared, mean.shape), np.broadcast_to(call, mean.shape)
+    if kind == "items":
+        total = np.sqrt(1.0 + shared + call)
+        h = mean / total
+        expected = ndtr(h)
+        same = bvn_cdf(h, h, (shared + call) / total ** 2)       # two items of one call both pass
+        cross = bvn_cdf(h, h, shared / total ** 2)               # an item in each of two calls both pass
+        second = same + (expected - same) / n_items[None, :]
+        return expected, cross - expected ** 2, second - cross
+    cuts = np.zeros((1, 1)) if kind == "binary" else np.atleast_2d(np.asarray(cuts, dtype=float))
+    total = np.sqrt(shared + call)
+    some = total > 0
+    safe = np.where(some, total, 1.0)
+    rho = np.where(some, shared / safe ** 2, 0.0)
+    hs = []
+    for c in range(cuts.shape[1]):
+        gap = mean - cuts[:, c][:, None]
+        hs.append(np.where(np.isnan(gap), np.nan, np.where(some, gap / safe, np.where(gap >= 0, 40.0, -40.0))))
+    steps = float(len(hs))
+    expected = sum(ndtr(h) for h in hs) / steps
+    second = sum(ndtr(np.minimum(a, b)) for a in hs for b in hs) / steps ** 2
+    cross = sum(bvn_cdf(a, b, rho) for a in hs for b in hs) / steps ** 2
+    return expected, cross - expected ** 2, second - cross
+
+
+def reading_r2(m: np.ndarray, expected: np.ndarray, shared: np.ndarray, per_call: np.ndarray,
+               k: int) -> tuple[np.ndarray, np.ndarray]:
+    """Per draw: the squared correlation between reported quality and the mean of k calls, and `var(m)`.
+
+    The correlation is over the targets of the study and the judge's noise: `m[S, R]` is the reported
+    quality of each target, the other arrays come from `reading_moments`. NaN where either side has no
+    variance."""
+    ok = ~(np.isnan(m) | np.isnan(expected) | np.isnan(shared + per_call))
+    m, expected = np.where(ok, m, np.nan), np.where(ok, expected, np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cm, ce = m - _nanmean(m)[:, None], expected - _nanmean(expected)[:, None]
+        cov, var_m = _nanmean(cm * ce), _nanmean(cm * cm)
+        var_y = _nanmean(ce * ce) + _nanmean(np.where(ok, shared + per_call / k, np.nan))
+        return np.where((var_m > 0) & (var_y > 0), cov ** 2 / (var_m * var_y), np.nan), var_m
+
+
+def item_counts(fit: F.Fit, items: list[dict]) -> dict[str, np.ndarray]:
+    """Per `items` dimension, the number of items on each run's input (NaN where there is none)."""
+    tally: dict[tuple[str, str], int] = {}
+    for item in items:
+        tally[(item["input"], item["component"])] = tally.get((item["input"], item["component"]), 0) + 1
+    inputs = [fit.index["inputs"][i] for i in fit.run_input]
+    out = {}
+    for dim in fit.dimensions:
+        if dim["scale"]["kind"] != "items":
+            continue
+        counts = np.array([tally.get((name, dim["component"]), 0) for name in inputs], dtype=float)
+        if counts.size and counts.max() > 0:
+            out[dim["id"]] = np.where(counts > 0, counts, np.nan)
+    return out
+
+
 def study_pairs(fit: F.Fit) -> tuple[np.ndarray, np.ndarray, int]:
     """Every two runs of one input from different arms: positions `(a, b)` and how many there are in all."""
     by_input: dict[int, list[int]] = {}
@@ -255,8 +349,9 @@ class _Report:
     """Builds the report of one fit. `raw[(judge, dimension)]` keeps the per-draw arrays that the
     comparisons across judges read; only measured quantities are kept there."""
 
-    def __init__(self, fit: F.Fit) -> None:
+    def __init__(self, fit: F.Fit, items: dict[str, np.ndarray] | None = None) -> None:
         self.fit = fit
+        self.items = items or {}
         self.draws = fit.draws
         self.dims: list[dict] = fit.dimensions
         self.declared: list[dict] = fit["judges"]
@@ -280,6 +375,19 @@ class _Report:
             if entry not in self.not_measured:
                 self.not_measured.append(entry)
         return ok
+
+    def _use(self, name: str, x: np.ndarray, judge: str, dimension: str) -> str:
+        """How an optional term enters the figures derived from it: `measured` (its draws are used),
+        `none` (the model has no such term here) or `unmeasured` (fitted but not identified: nothing
+        that depends on it is reported, and it is not replaced by zero)."""
+        if x.size == 0 or np.isnan(x).all():
+            return "none"
+        state = term_state(self.fit, name, judge, dimension)
+        if state in F.MEASURED_STATES:
+            return "measured"
+        if state in ("off", "absent") or (state is None and not np.nan_to_num(x).any()):
+            return "none"
+        return "unmeasured"
 
     def _family_effect(self, j: int, d: int) -> np.ndarray:
         """`[S, R]`: the judge's family effect on each run's output at the dimension's step. 0 where none."""
@@ -322,22 +430,41 @@ class _Report:
             if ok[name]:
                 raw[name] = x
 
-        # The judge-by-input term counts only when the design measures it.
-        by_input = np.nan_to_num(draws["sd_judge_input"][:, j, d])
-        input_state = term_state(fit, "judge_input", jid, did)
-        if input_state in F.MEASURED_STATES:
+        # Optional terms: used when measured, absent when the model has none, and never set to zero when
+        # they are fitted without being identified.
+        input_sd = draws["sd_judge_input"][:, j, d]
+        input_use = self._use("judge_input", input_sd, jid, did)
+        family_use = self._use("family", draws["family"][:, j, :, d], jid, did)
+        by_input = np.nan_to_num(input_sd) if input_use == "measured" else np.zeros_like(tau)
+        if input_use == "measured":
             out["sd_judge_input"] = {"fitting": stat(by_input), "own": _scaled(by_input, factor),
-                                     "state": input_state, "measured": True}
-        else:
-            if input_state == "prior_only":
-                self._flag("sd_judge_input", ["judge_input"], jid, did)
-            by_input = np.zeros_like(by_input)
-        stable = by_input ** 2 + tau ** 2          # what repeats do not shrink, besides the bias
+                                     "state": term_state(fit, "judge_input", jid, did), "measured": True}
+        stable = by_input ** 2 + tau ** 2          # what repeats do not shrink, besides the systematic part
 
         noise_ok = bool(ok["tau"] and ok["sigma"])
+        reason = None if noise_ok else "tau or sigma is not measured"
+        if noise_ok and input_use == "unmeasured":
+            self._flag("sd_judge_input", ["judge_input"], jid, did)
+            noise_ok, reason = False, "the judge-by-input term is fitted but not identified"
+        total_ok = noise_ok and present["bias"]
+        total_reason = reason
+        if total_ok and family_use == "unmeasured":
+            self._flag("mse, r2, cost, pass and fail figures", ["family"], jid, did)
+            total_ok, total_reason = False, "the family effect is fitted but not identified"
+
+        q = draws["q_run"][:, :, d]
+        effect = self._family_effect(j, d) if family_use == "measured" and q.shape[1] else 0.0
+        shift = np.nan_to_num(bias)[:, None] + effect                       # S, R (or S, 1): bias plus family
+        systematic = (shift ** 2).mean(axis=1)
         var_q = self.var_q[:, d]
-        out["mse"] = {"measured": noise_ok and present["bias"], "by_repeats": []}
-        out["r2"] = {"measured": noise_ok, "one_call": None, "by_repeats": []}
+        out["mse"] = {"measured": bool(total_ok), "population": "the targets of the study",
+                      "family": {"measured": "included", "none": "none", "unmeasured": "not_measured"}[family_use],
+                      "systematic": None, "by_repeats": [], "without_family": []}
+        out["r2"] = {"measured": False, "of": "reported quality", "by": "the mean of k calls as recorded",
+                     "one_call": None, "by_repeats": []}
+        out["reliability"] = {"measured": noise_ok, "of": "hidden quality on the fitting scale",
+                              "by": "the judge's view before it is cut into a verdict", "one_call": None,
+                              "by_repeats": []}
         out["effective_repeats"] = {"measured": noise_ok, "by_repeats": [], "limit": None}
         per_call = judge.get("cost_usd_per_call")
         per_reading = None if per_call is None else per_call / components_per_call(judge, dim, self.dims)
@@ -347,42 +474,79 @@ class _Report:
             with np.errstate(invalid="ignore", divide="ignore"):
                 for k in REPEATS:
                     noise = stable + sigma ** 2 / k
-                    r2 = var_q / (var_q + noise)
-                    out["r2"]["by_repeats"].append(stat(r2))
+                    out["reliability"]["by_repeats"].append(stat(var_q / (var_q + noise)))
                     out["effective_repeats"]["by_repeats"].append(stat((stable + sigma ** 2) / noise))
                     raw[f"noise{k}"] = noise
-                    if present["bias"]:
-                        mse = bias ** 2 + noise
-                        raw[f"mse{k}"] = mse
-                        out["mse"]["by_repeats"].append({"repeats": k, "fitting": stat(mse),
-                                                         "own": _scaled(mse, factor, power=2)})
-                    if per_reading is not None:
-                        removed = var_q * r2
-                        out["cost"]["by_repeats"].append({
-                            "repeats": k, "usd": k * per_reading, "variance_removed": _mean(removed),
-                            "usd_per_variance_removed": _mean(k * per_reading / removed)})
-                out["r2"]["one_call"] = out["r2"]["by_repeats"][0]
+                out["reliability"]["one_call"] = out["reliability"]["by_repeats"][0]
                 out["effective_repeats"]["limit"] = stat((stable + sigma ** 2) / stable)
+        if total_ok:
+            raw["shift"] = shift
+            out["mse"]["systematic"] = {"fitting": stat(systematic), "own": _scaled(systematic, factor, power=2)}
+            for k in REPEATS:
+                mse = systematic + stable + sigma ** 2 / k
+                raw[f"mse{k}"] = mse
+                out["mse"]["by_repeats"].append({"repeats": k, "fitting": stat(mse),
+                                                 "own": _scaled(mse, factor, power=2)})
+                if family_use == "measured":
+                    plain = bias ** 2 + stable + sigma ** 2 / k
+                    out["mse"]["without_family"].append({"repeats": k, "fitting": stat(plain),
+                                                         "own": _scaled(plain, factor, power=2)})
+        if total_reason and not total_ok:
+            out["mse"]["reason"] = total_reason
 
+        status_ok = False
         if kind in ("binary", "items") and present["bias"]:
             names = ["tau", "sigma"] + (["binary_status"] if kind == "binary" else [])
-            measured = noise_ok and self._flag("false_pass, false_fail, flip, agreement", names, jid, did)
-            out["status"] = {"measured": bool(measured), "model": "binary" if kind == "binary" else "k_of_n"}
-            if measured:
-                shift = bias[:, None] + self._family_effect(j, d)
+            status_ok = self._flag("false_pass, false_fail, flip, agreement", names, jid, did) and total_ok
+            out["status"] = {"measured": bool(status_ok), "model": "binary" if kind == "binary" else "k_of_n"}
+            if status_ok:
                 call_sd = sigma if kind == "binary" else np.sqrt(1.0 + sigma ** 2)
-                figures = status_figures(draws["q_run"][:, :, d], shift, np.sqrt(stable), call_sd, kind)
+                figures = status_figures(q, np.broadcast_to(shift, q.shape), np.sqrt(stable), call_sd, kind)
                 for name, x in figures.items():
                     out["status"][name] = _mean(x) if name in ("n_pass", "n_fail") else stat(x)
                     raw[name] = x
 
+        # R-squared of the reading as recorded against reported quality, over the targets of the study.
+        r2_reason = total_reason if not total_ok else None
+        if total_ok and kind == "binary" and not status_ok:
+            r2_reason = "the hidden status of the binary dimension is not identified"
+        n_items = self.items.get(did)
+        if total_ok and kind == "items" and n_items is None:
+            r2_reason = "needs the number of items per target: items.jsonl in the study folder"
+        if total_ok and not q.shape[1]:
+            r2_reason = "the fit holds no target"
+        if total_ok and r2_reason is None:
+            cuts = None
+            if kind == "levels":
+                size = len(dim["scale"]["levels"]) - 1
+                cuts = Q.fixed_cuts(size + 1)[None, :]
+                free = draws.get("cuts")
+                if dim.get("cuts") == "free" and free is not None and np.isfinite(free[:, d, :size]).all():
+                    cuts = free[:, d, :size]
+            expected, shared, call = reading_moments(q + shift, np.sqrt(stable), sigma, kind, cuts, n_items)
+            m = Q.reported(q, kind)
+            out["r2"]["measured"] = True
+            for k in REPEATS:
+                r2, var_m = reading_r2(m, expected, shared, call, k)
+                out["r2"]["by_repeats"].append(stat(r2))
+                if per_reading is not None:
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        removed = var_m * r2
+                        out["cost"]["by_repeats"].append({
+                            "repeats": k, "usd": k * per_reading, "variance_removed": _mean(removed),
+                            "usd_per_variance_removed": _mean(np.where(removed > 0, k * per_reading / removed,
+                                                                       np.nan))})
+            out["r2"]["one_call"] = out["r2"]["by_repeats"][0]
+        elif r2_reason:
+            out["r2"]["reason"] = r2_reason
+
         if present["sigma_pair"]:
-            out["pairs"] = self.pairs(j, jid, d, did, tau, pair_sd, bool(ok["tau"]), factor)
+            out["pairs"] = self.pairs(j, jid, d, did, tau, pair_sd, bool(ok["tau"]), factor, family_use)
         self.raw[(jid, did)] = raw
         return out
 
     def pairs(self, j: int, jid: str, d: int, did: str, tau: np.ndarray, pair_sd: np.ndarray, tau_ok: bool,
-              factor: float | None) -> dict:
+              factor: float | None, family_use: str = "none") -> dict:
         fit, draws = self.fit, self.draws
         pair_ok = self._flag("sigma_pair", ["sigma_pair"], jid, did)
         out: dict = {"sigma_pair": {"fitting": stat(pair_sd) if pair_ok else None,
@@ -396,9 +560,11 @@ class _Report:
             self._pairs = study_pairs(fit)
         a, b, total = self._pairs
         out["pairs"], out["pairs_read"] = total, int(len(a))
+        if family_use == "unmeasured":      # the family effect stays in a pair of outputs from two families
+            rest = self._flag("tie rate and the chance to pick the better output", ["family"], jid, did) and rest
         if not (pair_ok and rest and tau_ok and len(a)):
             return out
-        effect = self._family_effect(j, d)
+        effect = self._family_effect(j, d) if family_use == "measured" else np.zeros(draws["q_run"].shape[:2])
         q = draws["q_run"][:, :, d]
         figures = pair_figures(q[:, a], q[:, b], effect[:, a] - effect[:, b], np.sqrt(2 * tau ** 2 + pair_sd ** 2),
                                np.nan_to_num(draws["position"][:, j]), np.nan_to_num(draws["tie_width"][:, j]))
@@ -486,8 +652,12 @@ class _Report:
     def next_step(self, jid: str, did: str, k: int) -> dict | None:
         """From (judge, k repeats): one more repeat against one call of the best second judge.
 
-        The two judges' errors are taken as independent and combined with inverse-MSE weights. A person
-        is not offered as the second judge: reviewer time is planned by `eval labels next`."""
+        The combined reading is `w x (mean of the k calls) + (1 - w) x (the second judge's call)`. Its
+        error keeps both judges' systematic parts (bias and family effect, per target) with their cross
+        term, `(w s1 + (1 - w) s2)^2`, plus `w^2 n1 + (1 - w)^2 n2` of the two independent noises. `w` is
+        the weight in [0, 1] with the lowest such error at the posterior means, so a second judge is
+        never worse than no second judge. No bias correction is assumed. A person is not offered as the
+        second judge: reviewer time is planned by `eval labels next`."""
         base = self.raw.get((jid, did), {})
         if f"mse{k}" not in base:
             return None
@@ -498,21 +668,25 @@ class _Report:
                                       "cost_usd": None if cost is None else (k + 1) * cost},
                      "second_judge": None, "second_judge_beats_repeat": None}
         best = None
+        first = float(base[f"mse{k}"].mean())
         for declared in self.declared:
             other = declared["id"]
-            second = self.raw.get((other, did), {}).get("mse1")
-            if other == jid or second is None or declared["kind"] == "person":
+            second = self.raw.get((other, did), {})
+            if other == jid or "mse1" not in second or declared["kind"] == "person":
                 continue
-            with np.errstate(divide="ignore", invalid="ignore"):
-                combined = np.nan_to_num(1.0 / (1.0 / base[f"mse{k}"] + 1.0 / second))
-            rmse = float(np.sqrt(combined.mean()))
+            other_mse = float(second["mse1"].mean())
+            cross = float((base["shift"] * second["shift"]).mean())   # the two systematic errors, per target
+            spread = first + other_mse - 2.0 * cross
+            weight = min(1.0, max(0.0, (other_mse - cross) / spread)) if spread > 0 else 0.5
+            combined = weight ** 2 * first + (1.0 - weight) ** 2 * other_mse + 2.0 * weight * (1.0 - weight) * cross
+            rmse = float(np.sqrt(max(combined, 0.0)))
             if best is None or rmse < best["rmse"]:
                 other_cost = self.cost.get((other, did))
-                best = {"judge": other, "rmse": rmse,
+                best = {"judge": other, "weight": weight, "rmse": rmse,
                         "cost_usd": None if cost is None or other_cost is None else k * cost + other_cost}
         if best is not None:
             out["second_judge"] = best
-            out["second_judge_beats_repeat"] = bool(best["rmse"] < out["more_repeats"]["rmse"])
+            out["second_judge_beats_repeat"] = bool(best["rmse"] < out["more_repeats"]["rmse"] - 1e-9)
         return out
 
     def choices(self, target_error: float | None, budget_usd: float | None) -> list[dict]:
@@ -634,13 +808,14 @@ def stale_inputs(fit: F.Fit, study: str | None, strict: bool) -> dict:
     return {"study": str(folder), "changes": changes, "not_checked": sorted(skipped)}
 
 
-def report(fit: F.Fit, target_error: float | None = None, budget_usd: float | None = None) -> dict:
-    """The whole report of `eval judges` as one JSON-ready mapping."""
+def report(fit: F.Fit, target_error: float | None = None, budget_usd: float | None = None,
+           items: list[dict] | None = None) -> dict:
+    """The whole report of `eval judges` as one JSON-ready mapping. `items` are the rows of items.jsonl."""
     for name, value in (("--target-error", target_error), ("--budget-usd", budget_usd)):
         if value is not None and not (np.isfinite(value) and value > 0):
             raise ContractError(fit.path.name, name, f"{value:g} is not above 0", "give a number above 0",
                                 "out_of_range")
-    builder = _Report(fit)
+    builder = _Report(fit, item_counts(fit, items or []))
     judges = [builder.judge(j, judge) for j, judge in enumerate(builder.declared)]
     batching, reference = builder.comparisons()
     anchor = fit["anchor"]
@@ -759,8 +934,20 @@ def render(payload: dict) -> str:
 def run(args: argparse.Namespace) -> int:
     fit = F.read_fit(args.fit, allow_unconverged=getattr(args, "allow_unconverged", False))
     stale = stale_inputs(fit, getattr(args, "study", None), getattr(args, "strict", False))
-    payload = report(fit, getattr(args, "target_error", None), getattr(args, "budget_usd", None))
+    folder = Path(args.study) if getattr(args, "study", None) else fit.path.parent
+    items = C.read_lines(folder / C.ITEMS_FILE, C.SCHEMA_ITEMS, missing_ok=True)
+    payload = report(fit, getattr(args, "target_error", None), getattr(args, "budget_usd", None), items)
     payload["stale"] = stale
+    files = {"fit": fit.path, "draws": F.draws_path(fit.path)}
+    if (folder / C.ITEMS_FILE).is_file():
+        files["items"] = folder / C.ITEMS_FILE
+    payload["inputs"] = C.input_digests(files)
+    payload["options"] = {"target_error": getattr(args, "target_error", None),
+                          "budget_usd": getattr(args, "budget_usd", None),
+                          "allow_unconverged": bool(getattr(args, "allow_unconverged", False)),
+                          "strict": bool(getattr(args, "strict", False)),
+                          "study": str(args.study) if getattr(args, "study", None) else None,
+                          "repeats": list(REPEATS), "max_pairs": MAX_PAIRS}
     for change in stale["changes"]:
         print(f"warning: {fit.path.name}: {change}", file=sys.stderr)
     if getattr(args, "json", False):

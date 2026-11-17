@@ -114,7 +114,7 @@ def test_a_lower_is_better_component_turns_the_bias_over(tmp_path):
     assert row["tau"]["own"]["mean"] == pytest.approx(4 * built.truth["tau"][1, 0])
 
 
-def test_r2_and_effective_repeats(tmp_path):
+def test_latent_reliability_and_effective_repeats(tmp_path):
     built = exact(tmp_path)
     payload = J.report(built.fit)
     truth = built.truth
@@ -122,12 +122,126 @@ def test_r2_and_effective_repeats(tmp_path):
         for d, dimension in enumerate(DIMS):
             row = dim_row(payload, judge, dimension)
             t2, s2, var_q = truth["tau"][j, d] ** 2, truth["sigma"][j, d] ** 2, study_var_q(truth, d)
-            for k, r2, eff in zip((1, 2, 3, 4, 5), row["r2"]["by_repeats"], row["effective_repeats"]["by_repeats"]):
-                assert r2["mean"] == pytest.approx(var_q / (var_q + t2 + s2 / k))
+            assert row["reliability"]["of"] == "hidden quality on the fitting scale"
+            for k, rel, eff in zip((1, 2, 3, 4, 5), row["reliability"]["by_repeats"],
+                                   row["effective_repeats"]["by_repeats"]):
+                assert rel["mean"] == pytest.approx(var_q / (var_q + t2 + s2 / k))
                 assert eff["mean"] == pytest.approx((t2 + s2) / (t2 + s2 / k))
-            assert row["r2"]["one_call"] == row["r2"]["by_repeats"][0]
+            assert row["reliability"]["one_call"] == row["reliability"]["by_repeats"][0]
             assert row["effective_repeats"]["by_repeats"][0]["mean"] == pytest.approx(1.0)
             assert row["effective_repeats"]["limit"]["mean"] == pytest.approx(1 + s2 / t2)
+
+
+def _items_rows(fit, component="coverage", n=4):
+    """n items per input for one `items` component."""
+    return [C.validate_item({"schema": C.SCHEMA_ITEMS, "id": f"it-{i}-{x}", "input": name, "component": component})
+            for i, name in enumerate(fit.index["inputs"]) for x in range(n)]
+
+
+def _simulate_readings(truth, j, d, kind, k, n=20000, seed=5, n_items=4, levels=3, cuts=None):
+    """Reported quality of each target beside the mean of k simulated readings (PRD 7.4), `[R, n]` each."""
+    rng = np.random.default_rng(seed)
+    runs = testing.example_runs()
+    family = np.array([FAMILY_OF_ARM[run["arm"]] for run in runs])
+    q = truth["q_run"][:, d]
+    eta = (q + truth["bias"][j, d] + np.nan_to_num(truth["family"][j])[family, d])[:, None] \
+        + rng.normal(0, truth["tau"][j, d], (len(q), n))
+    x = eta[:, :, None] + rng.normal(0, truth["sigma"][j, d], (len(q), n, k))
+    if kind == "binary":
+        y, m = (x >= 0).astype(float), (q >= 0).astype(float)
+    elif kind == "items":
+        y, m = rng.binomial(n_items, ndtr(x)) / n_items, ndtr(q)
+    elif kind == "levels":                                       # the level whose interval holds the reading
+        cuts = (np.arange(levels - 1) + 0.5) / (levels - 1) if cuts is None else np.asarray(cuts)
+        y, m = (x[..., None] > cuts).sum(axis=-1) / (levels - 1), np.clip(q, 0, 1)
+    else:
+        y, m = x, np.clip(q, 0, 1)
+    return np.broadcast_to(m[:, None], eta.shape), y.mean(axis=-1)
+
+
+KINDS = {"final/numbers_right": "binary", "final/clarity": "levels", "final/depth": "linear",
+         "final/coverage": "items", "final/overall": "linear"}
+
+
+@pytest.mark.parametrize("judge", [0, 1, 2])
+@pytest.mark.parametrize("dimension", DIMS)
+def test_r2_is_of_the_reading_as_recorded_against_a_simulation(tmp_path, judge, dimension):
+    built = exact(tmp_path, truth={"family": family_truth()})
+    payload = J.report(built.fit, items=_items_rows(built.fit))
+    d = DIMS.index(dimension)
+    row = dim_row(payload, built.fit.judges[judge], dimension)
+    assert row["r2"]["measured"] is True and row["r2"]["of"] == "reported quality"
+    assert row["r2"]["one_call"] == row["r2"]["by_repeats"][0]
+    for k in (1, 3):
+        m, reading = _simulate_readings(built.truth, judge, d, KINDS[dimension], k, seed=5 + k)
+        simulated = np.corrcoef(m.ravel(), reading.ravel())[0, 1] ** 2
+        assert row["r2"]["by_repeats"][k - 1]["mean"] == pytest.approx(simulated, abs=0.006), k
+    if KINDS[dimension] != "linear":                             # cutting the reading into a verdict loses some
+        assert row["r2"]["one_call"]["mean"] < row["reliability"]["one_call"]["mean"] + 0.02
+
+
+def _one_component(kind):
+    scale = {"kind": kind, "range": [0, 1]} if kind == "linear" else {"kind": kind}
+    return C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "r", "version": "1",
+                              "components": [{"id": "quality", "scale": scale}]})
+
+
+def _normal_binary_fit(tmp_path, name="binary.json"):
+    """600 targets at the quantiles of a standard normal, judges with no bias, tau 0 and sigma 1."""
+    from statistics import NormalDist
+    runs = testing.example_runs(n_inputs=200)
+    q = [[NormalDist().inv_cdf((i + 0.5) / len(runs))] for i in range(len(runs))]
+    return exact(tmp_path, name, rubric=_one_component("binary"), runs=runs, n_draws=4, truth={
+        "mu": 0, "sd_input": 0, "sd_run": 1, "bias": [[0], [0], [0]], "tau": [[0], [0], [0]],
+        "sigma": [[1], [1], [1]], "q_run": q})
+
+
+def test_r2_of_a_binary_reading_is_a_quarter_where_the_latent_reliability_is_a_half(tmp_path):
+    # Hidden quality standard normal, the reading 1[q + e >= 0] with e standard normal: the correlation of
+    # the two signs is (2 / pi) x arcsin(1 / sqrt(2)) = 1 / 2, so R-squared is 1 / 4.
+    row = dim_row(J.report(_normal_binary_fit(tmp_path).fit), "strong", "final/quality")
+    assert row["r2"]["one_call"]["mean"] == pytest.approx(0.25, abs=1e-4)
+    assert row["status"]["r2_status"]["mean"] == pytest.approx(0.25, abs=1e-4)
+    assert row["reliability"]["one_call"]["mean"] == pytest.approx(0.5)
+
+
+def test_free_cut_points_are_read_from_the_draws(tmp_path):
+    import copy
+    rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "r", "version": "1", "components": [
+        {"id": "quality", "scale": {"kind": "levels", "levels": ["1", "2", "3", "4", "5"]}}]})
+    built = exact(tmp_path, rubric=rubric)
+    fixed = dim_row(J.report(built.fit), "strong", "final/quality")["r2"]["one_call"]["mean"]
+    m, reading = _simulate_readings(built.truth, 1, 0, "levels", 1, levels=5)
+    assert fixed == pytest.approx(np.corrcoef(m.ravel(), reading.ravel())[0, 1] ** 2, abs=0.006)
+    moved = [0.30, 0.50, 0.62, 0.70]                             # most targets now fall between two cuts
+    meta = copy.deepcopy(built.fit.meta)
+    meta["dimensions"][0]["cuts"] = "free"
+    fit = F.Fit(built.path, meta)
+    fit._draws = {name: array.copy() for name, array in built.fit.draws.items()}
+    fit._draws["cuts"] = np.broadcast_to(np.array(moved), (fit.sizes["S"], 1, 4)).copy()
+    free = dim_row(J.report(fit), "strong", "final/quality")["r2"]["one_call"]["mean"]
+    m, reading = _simulate_readings(built.truth, 1, 0, "levels", 1, levels=5, cuts=moved)
+    assert free == pytest.approx(np.corrcoef(m.ravel(), reading.ravel())[0, 1] ** 2, abs=0.006)
+    assert abs(free - fixed) > 0.01
+
+
+def test_r2_of_an_items_dimension_needs_the_item_counts(tmp_path):
+    built = exact(tmp_path)
+    row = dim_row(J.report(built.fit), "strong", "final/coverage")
+    assert row["r2"]["measured"] is False and row["r2"]["by_repeats"] == [] and row["r2"]["one_call"] is None
+    assert row["r2"]["reason"] == "needs the number of items per target: items.jsonl in the study folder"
+    assert row["cost"]["by_repeats"] == [] and row["mse"]["measured"] is True
+    few = dim_row(J.report(built.fit, items=_items_rows(built.fit, n=1)), "strong", "final/coverage")
+    many = dim_row(J.report(built.fit, items=_items_rows(built.fit, n=40)), "strong", "final/coverage")
+    assert few["r2"]["one_call"]["mean"] < many["r2"]["one_call"]["mean"]       # more items, a sharper share
+
+
+def test_the_command_reads_item_counts_from_the_study_folder(tmp_path, capsys):
+    built = exact(tmp_path)
+    C.write_lines(tmp_path / C.ITEMS_FILE, C.SCHEMA_ITEMS, _items_rows(built.fit))
+    assert cli.main(["eval", "judges", str(built.path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert dim_row(payload, "strong", "final/coverage")["r2"]["measured"] is True
 
 
 def test_no_disagreement_means_no_limit_on_repeats(tmp_path):
@@ -151,14 +265,26 @@ def test_a_measured_judge_by_input_term_joins_what_repeats_do_not_shrink(tmp_pat
     assert row["sd_judge_input"]["fitting"]["mean"] == pytest.approx(0.07)
     assert row["mse"]["by_repeats"][2]["fitting"]["mean"] == pytest.approx(b * b + 0.07 ** 2 + t * t + s * s / 3)
     assert "sd_judge_input" not in dim_row(payload, "strong", "final/depth")     # the term is off for this judge
-    # Fitted but not identified: it is left out and listed.
+    # Fitted but not identified: it is listed, and nothing that depends on it is reported. It is not
+    # replaced by zero, and its prior draws move no figure.
     terms = terms_with(base.fit["terms"], {("judge_input", "cheap", None): "prior_only"})
-    payload = J.report(exact(tmp_path, "prior.json", truth={"sd_judge_input": by_input}, terms=terms).fit)
+    prior = exact(tmp_path, "prior.json", truth={"sd_judge_input": by_input}, terms=terms)
+    payload = J.report(prior.fit)
     row = dim_row(payload, "cheap", "final/depth")
     assert "sd_judge_input" not in row
-    assert row["mse"]["by_repeats"][2]["fitting"]["mean"] == pytest.approx(b * b + t * t + s * s / 3)
+    assert row["mse"]["measured"] is False and row["mse"]["by_repeats"] == []
+    assert row["mse"]["reason"] == "the judge-by-input term is fitted but not identified"
+    assert row["r2"]["measured"] is False and row["r2"]["by_repeats"] == []
+    assert row["reliability"]["measured"] is False and row["effective_repeats"]["measured"] is False
+    assert row["cost"]["by_repeats"] == []
+    assert row["bias"]["fitting"] is not None and row["tau"]["measured"] is True     # these do not depend on it
+    assert dim_row(payload, "cheap", "final/numbers_right")["status"] == {"measured": False, "model": "binary"}
     assert {"quantity": "sd_judge_input", "judge": "cheap", "dimension": None, "term": "judge_input",
             "state": "prior_only", "needs": F.TERM_NEEDS["judge_input"]} in payload["not_measured"]
+    depth = next(block for block in payload["choices"] if block["dimension"] == "final/depth")
+    assert {entry["judge"] for entry in depth["table"]} == {"reviewer", "strong"}
+    prior.fit.draws["sd_judge_input"][:, 2, :] = 3.0
+    assert J.report(prior.fit) == payload
 
 
 def test_cost_per_call_per_reading_and_per_error_removed(tmp_path):
@@ -170,12 +296,15 @@ def test_cost_per_call_per_reading_and_per_error_removed(tmp_path):
     truth = built.truth
     strong = dim_row(payload, "strong", "final/depth")["cost"]
     assert strong["usd_per_call"] == 0.05 and strong["usd_per_reading"] == 0.05
-    var_q, t2, s2 = study_var_q(truth, 2), truth["tau"][1, 2] ** 2, truth["sigma"][1, 2] ** 2
+    # What k readings remove of the variance of reported quality over the 36 targets: by simulation, the
+    # variance of reported quality minus what is left after the best straight line through the readings.
     for k, entry in zip((1, 2, 3, 4, 5), strong["by_repeats"]):
-        removed = var_q * var_q / (var_q + t2 + s2 / k)
+        m, reading = _simulate_readings(truth, 1, 2, "linear", k, n=40000, seed=20 + k)
+        line = np.polyfit(reading.ravel(), m.ravel(), 1)
+        removed = m.var() - (m - np.polyval(line, reading)).var()
         assert entry["repeats"] == k and entry["usd"] == pytest.approx(0.05 * k)
-        assert entry["variance_removed"] == pytest.approx(removed)
-        assert entry["usd_per_variance_removed"] == pytest.approx(0.05 * k / removed)
+        assert entry["variance_removed"] == pytest.approx(removed, rel=0.02)
+        assert entry["usd_per_variance_removed"] == pytest.approx(0.05 * k / removed, rel=0.02)
     cheap = judge_row(payload, "cheap")
     assert [row["dimension"] for row in cheap["dims"]] == ["final/clarity", "final/depth"]   # only what it scores
     assert cheap["dims"][0]["cost"]["usd_per_reading"] == pytest.approx(0.005 / 2)            # one call, 2 components
@@ -314,7 +443,8 @@ def test_a_pairs_only_dimension_has_pair_figures_and_no_bias(tmp_path):
     payload = J.report(built.fit)
     row = dim_row(payload, "strong", "final/overall")
     assert row["bias"] is None and row["sigma"] == {"fitting": None, "own": None, "state": "absent", "measured": False}
-    assert row["mse"] == {"measured": False, "by_repeats": []} and row["r2"]["one_call"] is None
+    assert row["mse"]["measured"] is False and row["mse"]["by_repeats"] == [] and row["mse"]["systematic"] is None
+    assert row["r2"]["measured"] is False and row["r2"]["one_call"] is None
     assert row["pairs"]["measured"] is True and 0.5 < row["pairs"]["correct"]["mean"] < 1
     assert [r["dimension"] for r in judge_row(payload, "reviewer")["dims"]] == DIMS[:4]   # nothing left to report
     assert all(block["dimension"] != "final/overall" for block in payload["choices"])
@@ -345,8 +475,10 @@ def test_prior_only_terms_are_listed_and_never_reported(tmp_path):
     row = dim_row(payload, "cheap", "final/depth")
     assert row["sigma"] == {"fitting": None, "own": None, "state": "prior_only", "measured": False}
     assert row["tau"]["measured"] is True and row["bias"]["fitting"] is not None
-    assert row["mse"] == {"measured": False, "by_repeats": []}
-    assert row["r2"] == {"measured": False, "one_call": None, "by_repeats": []}
+    assert row["mse"]["measured"] is False and row["mse"]["by_repeats"] == [] and row["mse"]["systematic"] is None
+    assert row["mse"]["without_family"] == [] and row["mse"]["reason"] == "tau or sigma is not measured"
+    assert row["r2"]["measured"] is False and row["r2"]["one_call"] is None and row["r2"]["by_repeats"] == []
+    assert row["reliability"]["measured"] is False and row["reliability"]["by_repeats"] == []
     assert row["effective_repeats"] == {"measured": False, "by_repeats": [], "limit": None}
     assert row["cost"]["by_repeats"] == [] and row["cost"]["usd_per_call"] == 0.005
     assert {"quantity": "sigma", "judge": "cheap", "dimension": "final/depth", "term": "sigma", "state": "prior_only",
@@ -355,6 +487,9 @@ def test_prior_only_terms_are_listed_and_never_reported(tmp_path):
     for judge in ("reviewer", "strong", "cheap"):
         assert dim_row(payload, judge, "final/numbers_right")["status"] == {"measured": False, "model": "binary"}
         assert dim_row(payload, judge, "final/numbers_right")["mse"]["measured"] is True
+        assert dim_row(payload, judge, "final/numbers_right")["r2"] == {
+            "measured": False, "of": "reported quality", "by": "the mean of k calls as recorded", "one_call": None,
+            "by_repeats": [], "reason": "the hidden status of the binary dimension is not identified"}
         assert dim_row(payload, judge, "final/coverage")["status"]["measured"] is True
     assert {"quantity": "false_pass, false_fail, flip, agreement", "judge": None, "dimension": "final/numbers_right",
             "term": "binary_status", "state": "prior_only",
@@ -525,6 +660,140 @@ def test_a_second_judge_against_one_more_repeat(tmp_path):
     assert strong["second_judge"]["judge"] == "cheap" and strong["second_judge_beats_repeat"] is False
 
 
+def _combined_rmse(first, second, weight, k, n=400000, seed=3):
+    """The error of `weight x (mean of k calls of the first judge) + (1 - weight) x (one call of the second)`
+    on one target of hidden quality 0, simulated. Each judge is `(bias, tau, sigma)`."""
+    rng = np.random.default_rng(seed)
+    one = first[0] + rng.normal(0, 1, n) * first[1] + rng.normal(0, 1, (k, n)).mean(axis=0) * first[2]
+    two = second[0] + rng.normal(0, 1, n) * second[1] + rng.normal(0, 1, n) * second[2]
+    return float(np.sqrt(np.mean((weight * one + (1 - weight) * two) ** 2)))
+
+
+def _second_judge(tmp_path, name, bias):
+    built = exact(tmp_path, name, rubric=_one_component("linear"), n_draws=8, truth={
+        "bias": [[0.0], [bias[0]], [bias[1]]], "tau": [[0.0], [0.0], [0.0]], "sigma": [[0.1], [0.1], [0.1]]})
+    steps = J.report(built.fit)["choices"][0]["second_judge"]
+    return next(step for step in steps if step["judge"] == "strong")
+
+
+def test_a_second_judge_with_the_same_bias_does_not_beat_one_more_repeat(tmp_path):
+    # Both model judges read 0.3 too high with call noise 0.1. Averaging two calls halves the noise and
+    # leaves the bias, whichever judge makes the second call: sqrt(0.3^2 + 0.1^2 / 2) either way.
+    step = _second_judge(tmp_path, "same.json", (0.3, 0.3))
+    same = np.sqrt(0.3 ** 2 + 0.1 ** 2 / 2)                      # 0.308221
+    assert step["more_repeats"]["rmse"] == pytest.approx(same)
+    assert step["second_judge"]["judge"] == "cheap" and step["second_judge"]["rmse"] == pytest.approx(same)
+    assert step["second_judge"]["weight"] == pytest.approx(0.5)
+    assert step["second_judge_beats_repeat"] is False
+    simulated = _combined_rmse((0.3, 0.0, 0.1), (0.3, 0.0, 0.1), step["second_judge"]["weight"], 1)
+    assert step["second_judge"]["rmse"] == pytest.approx(simulated, abs=0.001)
+
+
+def test_a_second_judge_with_the_opposite_bias_cancels_it(tmp_path):
+    # +0.3 and -0.3 with equal noise: the mean of one call each has no bias left, sqrt(0.1^2 / 2).
+    step = _second_judge(tmp_path, "opposite.json", (0.3, -0.3))
+    assert step["second_judge"]["rmse"] == pytest.approx(np.sqrt(0.1 ** 2 / 2))          # 0.070711
+    assert step["second_judge"]["weight"] == pytest.approx(0.5)
+    assert step["more_repeats"]["rmse"] == pytest.approx(np.sqrt(0.3 ** 2 + 0.1 ** 2 / 2))
+    assert step["second_judge_beats_repeat"] is True
+    simulated = _combined_rmse((0.3, 0.0, 0.1), (-0.3, 0.0, 0.1), 0.5, 1)
+    assert step["second_judge"]["rmse"] == pytest.approx(simulated, abs=0.001)
+
+
+def test_the_combined_error_of_two_judges_matches_a_simulation_and_no_weight_does_better(tmp_path):
+    base = testing.build_fit(tmp_path / "base.json").truth
+    bias, tau, sigma = base["bias"].copy(), base["tau"].copy(), base["sigma"].copy()
+    bias[1, 2], tau[1, 2], sigma[1, 2] = 0.06, 0.05, 0.08
+    bias[2, 2], tau[2, 2], sigma[2, 2] = 0.02, 0.03, 0.12
+    payload = J.report(exact(tmp_path, truth={"bias": bias, "tau": tau, "sigma": sigma}).fit)
+    depth = next(block for block in payload["choices"] if block["dimension"] == "final/depth")
+    step = next(step for step in depth["second_judge"] if step["judge"] == "strong")
+    k, weight = step["repeats"], step["second_judge"]["weight"]
+    assert step["second_judge"]["judge"] == "cheap"
+    judges = {"strong": (0.06, 0.05, 0.08), "cheap": (0.02, 0.03, 0.12)}
+    first, second = judges[step["judge"]], judges[step["second_judge"]["judge"]]
+    assert 0 < weight < 1
+    assert step["second_judge"]["rmse"] == pytest.approx(_combined_rmse(first, second, weight, k), abs=0.0005)
+    for other in (weight - 0.15, weight + 0.15):
+        assert _combined_rmse(first, second, other, k) > step["second_judge"]["rmse"] + 0.0003
+
+
+def test_mse_counts_the_family_effect_over_the_targets_of_the_study(tmp_path):
+    # No bias, sigma 0.05, and a judge that reads one family 0.2 high and the other 0.2 low: every target
+    # is read 0.2 off, so the error of one call is 0.2^2 + 0.05^2 = 0.0425, not 0.05^2.
+    built = exact(tmp_path, rubric=_one_component("linear"), n_draws=8, truth={
+        "mu": 0.5, "bias": [[0], [0], [0]], "tau": [[0], [0], [0]], "sigma": [[0.05]] * 3,
+        "family": [[[0], [0]], [[0.2], [-0.2]], [[0], [0]]]})
+    payload = J.report(built.fit)
+    mse = dim_row(payload, "strong", "final/quality")["mse"]
+    assert mse["family"] == "included" and mse["population"] == "the targets of the study"
+    assert mse["by_repeats"][0]["fitting"]["mean"] == pytest.approx(0.0425)
+    assert mse["by_repeats"][4]["fitting"]["mean"] == pytest.approx(0.04 + 0.05 ** 2 / 5)
+    assert mse["systematic"]["fitting"]["mean"] == pytest.approx(0.04)
+    assert mse["without_family"][0]["fitting"]["mean"] == pytest.approx(0.0025)    # the conditional figure
+    table = {(row["judge"], row["repeats"]): row["rmse"] for row in payload["choices"][0]["table"]}
+    assert table[("strong", 1)] == pytest.approx(np.sqrt(0.0425))                  # what the choices are made on
+    assert table[("cheap", 1)] == pytest.approx(0.05)
+    assert dim_row(payload, "cheap", "final/quality")["mse"]["without_family"][0]["fitting"]["mean"] == \
+        pytest.approx(0.0025)
+
+
+def test_an_unequal_family_effect_is_averaged_over_the_targets(tmp_path):
+    built = exact(tmp_path, truth={"family": family_truth(0.3)})
+    truth = built.truth
+    row = dim_row(J.report(built.fit), "strong", "final/depth")
+    b, t, s = truth["bias"][1, 2], truth["tau"][1, 2], truth["sigma"][1, 2]
+    # 12 of the 36 targets were written by family alpha (arm strong-all), where the judge reads 0.3 higher.
+    want = (12 * (b + 0.3) ** 2 + 24 * b ** 2) / 36 + t * t + s * s / 2
+    assert row["mse"]["by_repeats"][1]["fitting"]["mean"] == pytest.approx(want)
+    assert row["mse"]["without_family"][1]["fitting"]["mean"] == pytest.approx(b * b + t * t + s * s / 2)
+
+
+def _prior_family(built, draws_value):
+    """The same fit with the family term of `strong` marked prior_only and its family draws overwritten."""
+    import copy
+    meta = copy.deepcopy(built.fit.meta)
+    for term in meta["terms"]:
+        if term["term"] == "family" and term.get("judge") == "strong":
+            term["state"] = "prior_only"
+    fit = F.Fit(built.path, meta)
+    fit._draws = {name: array.copy() for name, array in built.fit.draws.items()}
+    fit._draws["family"][:, 1, :, :] = draws_value
+    return fit
+
+
+def test_a_prior_only_family_term_reaches_no_figure(tmp_path):
+    built = _normal_binary_fit(tmp_path)
+    measured = dim_row(J.report(built.fit), "strong", "final/quality")
+    assert measured["status"]["measured"] is True
+    assert measured["status"]["false_pass"]["mean"] == pytest.approx(0.25, abs=1e-3)    # arctan(1) / pi
+    payload = J.report(_prior_family(built, 5.0))
+    row = dim_row(payload, "strong", "final/quality")
+    assert judge_row(payload, "strong")["family"]["own_family"]["measured"] is False
+    assert row["status"] == {"measured": False, "model": "binary"}
+    assert row["mse"]["measured"] is False and row["mse"]["by_repeats"] == [] and row["mse"]["family"] == "not_measured"
+    assert row["mse"]["reason"] == "the family effect is fitted but not identified"
+    assert row["r2"]["measured"] is False and row["cost"]["by_repeats"] == []
+    assert row["bias"]["fitting"]["mean"] == pytest.approx(0.0) and row["sigma"]["measured"] is True
+    assert {"quantity": "mse, r2, cost, pass and fail figures", "judge": "strong", "dimension": None,
+            "term": "family", "state": "prior_only", "needs": F.TERM_NEEDS["family"]} in payload["not_measured"]
+    assert all(entry["judge"] != "strong" for entry in payload["choices"][0]["table"])
+    assert dim_row(payload, "cheap", "final/quality")["status"]["measured"] is True      # its own term is measured
+    # Whatever the prior draws say, the report is the same.
+    assert J.report(_prior_family(built, -3.0)) == payload
+
+
+def test_a_prior_only_family_term_reaches_no_pair_figure(tmp_path):
+    built = _pair_fit(tmp_path)
+    assert dim_row(J.report(built.fit), "strong", "final/depth")["pairs"]["measured"] is True
+    payload = J.report(_prior_family(built, 0.4))
+    row = dim_row(payload, "strong", "final/depth")["pairs"]
+    assert row["measured"] is False and row["tie_rate"] is None and row["correct"] is None
+    assert {"quantity": "tie rate and the chance to pick the better output", "judge": "strong", "dimension": None,
+            "term": "family", "state": "prior_only", "needs": F.TERM_NEEDS["family"]} in payload["not_measured"]
+    assert J.report(_prior_family(built, -0.4)) == payload
+
+
 def _variant_judges():
     """`strong` and `strong-panel` differ only in mode; `strong` and `strong-ref` only in the reference."""
     model = {"id": "model-large", "family": "alpha"}
@@ -607,7 +876,14 @@ def test_json_is_one_object_and_the_same_every_time(tmp_path, capsys):
     assert payload["fit"] == "fit.json" and payload["converged"] is True and payload["draws"] == 200
     assert payload["stale"] == {"study": None, "changes": [], "not_checked": []}
     assert set(payload) == {"schema", "fit", "converged", "draws", "anchor", "repeats", "judges", "choices",
-                            "batching_loss", "reference_effect", "not_measured", "stale"}
+                            "batching_loss", "reference_effect", "not_measured", "stale", "inputs", "options"}
+    import hashlib
+    draws_file = tmp_path / "fit.draws.npz"
+    assert payload["inputs"] == {
+        "draws": {"file": "fit.draws.npz", "sha256": hashlib.sha256(draws_file.read_bytes()).hexdigest()},
+        "fit": {"file": "fit.json", "sha256": hashlib.sha256(built.path.read_bytes()).hexdigest()}}
+    assert payload["options"] == {"target_error": 0.1, "budget_usd": None, "allow_unconverged": False,
+                                  "strict": False, "study": None, "repeats": [1, 2, 3, 4, 5], "max_pairs": 4000}
     assert cli.main(["eval", "judges", str(built.path), "--json", "--target-error", "0.1"]) == 0
     assert capsys.readouterr().out == first.out
     lo, hi = (dim_row(payload, "strong", "final/depth")["sigma"]["fitting"][name] for name in ("lo", "hi"))
@@ -625,7 +901,11 @@ def test_text_output(tmp_path, capsys):
     assert "judge reviewer (person, per_component, anchor)" in lines
     header = "  dimension                       bias     tau   sigma   mse(1)   mse(3)     r2  eff(3)"
     assert lines.count(header) == 3
-    assert "  final/depth                   +0.000   0.025   0.050   0.0031   0.0015   0.86    2.14" in lines
+    # r2 of the reviewer on final/depth: the variance of the 36 targets over itself plus tau^2 + sigma^2.
+    q = built.truth["q_run"][:, 2]
+    assert f"{q.var() / (q.var() + 0.025 ** 2 + 0.05 ** 2):.2f}" == "0.82"
+    assert "  final/depth                   +0.000   0.025   0.050   0.0031   0.0015   0.82    2.14" in lines
+    assert "  final/coverage                +0.000   0.150   1.000   1.0225   0.3558      -    2.87" in lines
     assert any(line.startswith("  final/numbers_right: false pass ") for line in lines)
     assert any(line.startswith("  final/coverage per item: false pass ") for line in lines)
     assert "final/depth: best choice within USD 0.02: cheap x 4, error 0.119, 0.02 USD" in lines
