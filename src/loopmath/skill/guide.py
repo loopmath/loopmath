@@ -2,7 +2,8 @@
 
 The one installed skill (`skills/loopmath/SKILL.md`) sends the agent here, so a job's
 instructions always match the installed loopmath. Each topic is a packaged file in `guides/`:
-the six jobs, then the command reference they share. Read only: it needs no store and writes
+the six jobs, the two `eval` topics (experimental; `eval` lists its own commands in its last
+section), then the command reference they share. Read only: it needs no store and writes
 nothing, so this module imports nothing from the rest of loopmath.
 """
 
@@ -20,6 +21,8 @@ TOPICS = {
     "record": "a task is done: record the run and show its receipt, or judge a pair blind",
     "fit": "update the fit, say what loopmath learned, or the fit is not usable",
     "flow": "an experiment on a fixed multi-step workflow: set it up, run its arms, record them, read the verdicts",
+    "eval": "outputs scored on a rubric by model judges and people: fit, judges, value, labels (experimental)",
+    "eval-record": "write each run and judge call of a scored pipeline in the files eval reads (experimental)",
     "reference": "every command, flag, JSON field and exit code the guides use",
 }
 FOLLOW = "Run `loopmath guide <topic>` and follow it."

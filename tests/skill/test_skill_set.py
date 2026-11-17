@@ -81,8 +81,9 @@ def test_the_retired_files_are_the_five_job_skills_and_every_reference_copy():
     assert len(inst.RETIRED) == 11 and not set(inst.RETIRED) & set(inst.OWNED)
     assert set(inst.RETIRED) == {"loopmath/reference.md"} | {f"{n}/{f}" for n in inst.RETIRED_SKILLS
                                                              for f in ("SKILL.md", "reference.md")}
-    assert sorted(inst.RETIRED_SKILLS.values()) == sorted(t for t in guide.TOPICS if t not in ("reference", "flow"))
-    assert {inst.guide_for(rel) for rel in inst.RETIRED} == set(guide.TOPICS) - {"flow"}
+    new = {"flow", "eval", "eval-record"}  # topics no 0.3.3 skill had
+    assert sorted(inst.RETIRED_SKILLS.values()) == sorted(t for t in guide.TOPICS if t not in {"reference", *new})
+    assert {inst.guide_for(rel) for rel in inst.RETIRED} == set(guide.TOPICS) - new
 
 
 @pytest.mark.parametrize("target,scope,codex_skills", [
