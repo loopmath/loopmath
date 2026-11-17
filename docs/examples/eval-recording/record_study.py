@@ -112,9 +112,14 @@ def record_pair(study: Path, *, a: str, b: str, judge: str, call: str, verdict: 
                 replaces: str | None = None) -> str:
     """One comparison of two outputs of the same input. `verdict` is "a", "b" or "tie". Returns the id.
 
-    A request that compares on several components writes one line per component, all with the same `call`.
     The id of the line is the call, and the component when one is named. A correction is a new line with its
-    own `pair_id`, the same `call` and the id of the wrong line in `replaces`."""
+    own `pair_id`, the same `call` and the id of the wrong line in `replaces`.
+
+    Make one request per compared component, or ask for one overall verdict per pair request. A request that
+    compared on several components is recorded as one line per component, all with the same `call`. That
+    keeps the record true to what was asked, but the current fit does not model noise shared by the verdicts
+    of one pair request: it reads them as independent. Keep the true `call` all the same. A call id per
+    verdict does not change the fit, and it loses the record of what was asked."""
     pair_id = pair_id or ".".join(part for part in (call, component) if part)
     _append(study / "pairs.jsonl", {
         "schema": "loopmath.eval-pairs/1", "id": pair_id, "a": a, "b": b, "step": step, "component": component,

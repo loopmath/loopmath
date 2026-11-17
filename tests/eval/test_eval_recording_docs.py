@@ -18,6 +18,8 @@ here against the real commands and the real validators:
   lines of one call are one reading, the calls in the files are the requests the generator made, and a
   correction leaves the number of panel requests as it was;
 - every example run is marked simulated, and the fit takes the examples only with `--allow-simulated`;
+- a limit the tutorial states: the verdicts of one pair request share a call id in the record, and the fit
+  builds the same model whether they share it or not. While that holds, the limit stays in the documents;
 - every `loopmath eval` command shown parses, every link to a heading lands, and the agent guide's JSON
   examples validate.
 
@@ -44,6 +46,7 @@ from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from loopmath import cli
@@ -897,6 +900,91 @@ def test_the_helpers_write_a_correction_under_the_old_call_and_a_new_answer_unde
     assert live["c0998.overall.fix1"]["verdict"] == "b"
     record.record_pair(study, component="depth", verdict="b", pair_id="c0998.depth.again", **pair)
     assert [row["code"] for row in report(study)["problems"]] == ["call_twice"]
+
+
+def same(one: object, other: object) -> bool:
+    """Whether two values of a model's engine input are equal: arrays by shape, type and content."""
+    if isinstance(one, np.ndarray) or isinstance(other, np.ndarray):
+        return (isinstance(one, np.ndarray) and isinstance(other, np.ndarray) and one.shape == other.shape
+                and one.dtype == other.dtype and bool(np.array_equal(one, other)))
+    if isinstance(one, (list, tuple)):
+        return (type(one) is type(other) and len(one) == len(other)
+                and all(same(a, b) for a, b in zip(one, other)))
+    return type(one) is type(other) and one == other
+
+
+def _split_pair_calls(tables):
+    """Give every verdict of a pair call with several verdicts a call of its own. A correction keeps the
+    call of the line it corrects."""
+    by_id = {row["id"]: row for row in tables["pairs"]}
+    for row in tables["pairs"]:
+        if "replaces" not in row and row["call"] == "h0003":
+            row["call"] = row["id"]
+    for row in tables["pairs"]:
+        if "replaces" in row:
+            row["call"] = by_id[row["replaces"]]["call"]
+
+
+def _split_score_panel(tables):
+    for row in tables["scores"]:
+        if row["call"] == "c0011":
+            row["call"] = row["id"]
+
+
+PAIR_LIMIT = "the current fit does not model noise shared by the verdicts of one pair request"
+
+
+def test_the_fit_builds_the_same_model_for_shared_and_split_pair_calls_and_the_documents_say_so(doc, guide, tmp_path):
+    """A limit of the current fit, which the tutorial states. Call `h0003` of `scales` holds two verdicts of
+    one sitting. The pair part of the model has no term for a pair call: every value of the engine input is
+    the same when each verdict gets a call of its own. (The comparison can see a difference: a score panel
+    split the same way changes the input.) So the page, the guide and the pair helper must say that a shared
+    pair call id is kept for the record and not fitted, recommend one verdict per pair request, and say that
+    true call ids stay.
+
+    When the engine learns to fit noise shared by the verdicts of one pair call, the first part of this test
+    fails. Change the documents then, and this test with them."""
+    for name in ("pairs", "scores"):
+        (tmp_path / name).mkdir()
+    pairs = C.read_lines(EX / "scales" / C.PAIRS_FILE, C.SCHEMA_PAIRS)
+    shared = [row for row in pairs if row["call"] == "h0003"]
+    assert sorted((row["id"], row["component"], row.get("replaces")) for row in shared) == [
+        ("h0003.depth", "depth", None), ("h0003.overall", "overall", None),
+        ("h0003.overall.fix1", "overall", "h0003.overall")]
+
+    split = broken(tmp_path / "pairs", _split_pair_calls)
+    rows = {row["id"]: row for row in C.read_lines(split / C.PAIRS_FILE, C.SCHEMA_PAIRS)}
+    assert (rows["h0003.depth"]["call"], rows["h0003.overall"]["call"], rows["h0003.overall.fix1"]["call"]) == (
+        "h0003.depth", "h0003.overall", "h0003.overall")
+    assert check(split)[0] == 0 and report(split)["counts"] == report(EX / "scales")["counts"]
+    as_recorded, as_split = design(EX / "scales"), design(split)
+    assert as_recorded.counts["pairs_used"] == as_split.counts["pairs_used"] == 4
+    assert set(as_recorded.data) == set(as_split.data) and len(as_recorded.data) > 40
+    differing = sorted(name for name in as_recorded.data if not same(as_recorded.data[name], as_split.data[name]))
+    assert differing == [], ("the model now tells a shared pair call from split ones: update the limit in "
+                             "docs/eval-recording.md, the guide and record_pair", differing)
+    assert not any("call" in name for name in as_recorded.data if name.startswith("p_"))
+
+    control = design(broken(tmp_path / "scores", _split_score_panel))
+    assert not same(as_recorded.data["n_pc"], control.data["n_pc"])           # the comparison is not blind
+    assert not same(as_recorded.data["g_pc"], control.data["g_pc"])
+
+    for name, text in (("the page", doc), ("the guide", guide), ("record_pair", generator().record_pair.__doc__)):
+        flat = " ".join(text.split())
+        assert PAIR_LIMIT in flat, f"{name} does not state the limit"
+        assert "one overall verdict per pair request" in flat, name
+        assert "one request per compared component" in flat, name
+        assert "0.4.4 does not" not in flat and "0.4.4 fits" not in flat, name
+    flat_doc, flat_guide = " ".join(doc.split()), " ".join(guide.split())
+    for flat in (flat_doc, flat_guide):
+        assert "record-format example" in flat and "loopmath 0.4.x" in flat and "true call id" in flat
+    head = "### One pair request, several verdicts: a limit of the current fit"
+    section = " ".join(doc[doc.index(head):doc.index("## Recording from your pipeline")].split())
+    for words in (PAIR_LIMIT, "one request per compared component", "one overall verdict per pair request",
+                  "keep their true call id", "does not fix the model", "loopmath 0.4.x"):
+        assert words in section, words
+    before = " ".join(doc[doc.index("## Recording comparisons"):doc.index(head)].split())
+    assert "The last three lines are a record-format example" in before
 
 
 def test_the_helpers_leave_out_what_has_no_value(tmp_path):

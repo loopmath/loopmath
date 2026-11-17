@@ -26,7 +26,7 @@ runs them against the code. All names and numbers in them are made up, and every
 3. [The words](#the-words)
 4. [The study folder](#the-study-folder)
 5. [Recording judge outputs](#recording-judge-outputs): the verdict, the call id, check items, repeats, corrections
-6. [Recording comparisons](#recording-comparisons)
+6. [Recording comparisons](#recording-comparisons): one verdict per request, and a limit of the current fit
 7. [Recording from your pipeline](#recording-from-your-pipeline): three functions to copy
 8. [Human reviewers](#human-reviewers): call mode, blind ids, sheets, labels plans
 9. [Importing from other tools](#importing-from-other-tools): CSV and OCP
@@ -520,13 +520,35 @@ is `a`, `b` or `tie`. These are the lines of `scales/pairs.jsonl`:
 ```
 
 The first is a reviewer comparing two outputs overall. The second is a model judge comparing the `draft` step
-on `depth`. In the third and fourth, `reviewer-2` compared the same two outputs on two components in one
-sitting: one call, one line per component, and the line id is the call and the component. The last line
-corrects the fourth: its own id, the same call, and `replaces`.
+on `depth`. Each is one request with one verdict. That is the form to collect for the fit.
 
 Which run is `a` says nothing about the order shown. Pick `a` and `b` at random, so that `a` is not always the
 same arm, and record which one the judge saw first in `shown_first`. To measure the lean to the first one
 shown, ask about the same pair twice, once in each order. That is two calls and two lines.
+
+The last three lines are a record-format example. They show how to write down a request that compared on
+several components, and they come with a limit. `reviewer-2` compared the same two outputs on two components
+in one sitting: one call, one line per component, and the line id is the call and the component. The last
+line corrects the fourth: its own id, the same call, and `replaces`.
+
+### One pair request, several verdicts: a limit of the current fit
+
+The shared call id keeps the record true to what was asked. But the current fit does not model noise shared
+by the verdicts of one pair request. For scores it does: the scores of one panel request share a term in the
+model. For pairs there is no such term in loopmath 0.4.x. The fit reads the two verdicts of call `h0003` as
+two independent requests, although verdicts given in one sitting tend to move together. The check passes
+either way and says nothing.
+
+So:
+
+- **For a study meant for the current fit, ask for one verdict per pair request.** Either make one request
+  per compared component, or ask for one overall verdict per pair request.
+- **Answers you already have keep their true call id.** If a judge compared several components in one
+  request, record it that way. Giving each verdict a call id of its own does not fix the model: the fit comes
+  out the same, and the record of what was asked is lost. A later version that models the shared noise can
+  only use it if the call ids are true.
+- Read results from such pairs with care. Two verdicts from one sitting can carry less information than two
+  separate requests, and the current fit counts them as two.
 
 ## Recording from your pipeline
 
@@ -575,9 +597,14 @@ def record_pair(study: Path, *, a: str, b: str, judge: str, call: str, verdict: 
                 replaces: str | None = None) -> str:
     """One comparison of two outputs of the same input. `verdict` is "a", "b" or "tie". Returns the id.
 
-    A request that compares on several components writes one line per component, all with the same `call`.
     The id of the line is the call, and the component when one is named. A correction is a new line with its
-    own `pair_id`, the same `call` and the id of the wrong line in `replaces`."""
+    own `pair_id`, the same `call` and the id of the wrong line in `replaces`.
+
+    Make one request per compared component, or ask for one overall verdict per pair request. A request that
+    compared on several components is recorded as one line per component, all with the same `call`. That
+    keeps the record true to what was asked, but the current fit does not model noise shared by the verdicts
+    of one pair request: it reads them as independent. Keep the true `call` all the same. A call id per
+    verdict does not change the fit, and it loses the record of what was asked."""
     pair_id = pair_id or ".".join(part for part in (call, component) if part)
     _append(study / "pairs.jsonl", {
         "schema": "loopmath.eval-pairs/1", "id": pair_id, "a": a, "b": b, "step": step, "component": component,
@@ -872,7 +899,7 @@ you spend on judges. These are the needs, as the table words them:
 | whether a judge favours its own model family (`family`) | judges from 2 or more families, each scoring outputs from 2 or more families |
 | whether the scores of one call move together (`halo`) | repeated panel calls on the same targets |
 | a lean to the output shown first (`position`) | pairs judged in both orders, or `shown_first` balanced across pairs |
-| the noise of comparisons and the width of a tie (`sigma_pair`, `tie_width`) | repeats of pairs by the judge, and ties |
+| the noise of comparisons and the width of a tie (`sigma_pair`, `tie_width`) | repeats of pairs by the judge, and ties. One verdict per pair request: the current fit has no term for noise shared by the verdicts of one request |
 | the difference between arms apart from the inputs (`run_vs_input`) | 2 or more runs per input |
 
 A step and a component together are a **dimension**, written `final/depth`. The table and the fit work per
@@ -904,6 +931,7 @@ In practice:
   answer, all items of a list of checks.
 - Every line has its own id. A repeat has a new call id. A correction has a new line id, the old call id and
   `replaces`.
+- Every pair request asked for one verdict: one component, or the output overall.
 - Values are raw and on the rubric's scale. A member with no value is left out, not written as `null`.
 - A share of the targets has repeats, two or more judges score every arm, and a reviewer has scored some of the
   same outputs.
@@ -1063,13 +1091,13 @@ optional object is required only when the object is there.
 | Member | Type | Required | Meaning |
 |---|---|---|---|
 | `schema` | text | yes | `loopmath.eval-pairs/1` |
-| `id` | text | yes | The id of this line. Build it from the call, and the component when one call compares on several. |
+| `id` | text | yes | The id of this line. Build it from the call, and the component when one call compared on several. |
 | `a` | text | yes | One run. |
 | `b` | text | yes | The other run. It must answer the same input as `a`. |
 | `step` | id | no, default `final` | The step whose outputs were compared. |
 | `component` | id | no, default the overall component of the step | What they were compared on. |
 | `judge` | id | yes | The judge. |
-| `call` | text | yes | The id of the request to the judge. A correction keeps it. |
+| `call` | text | yes | The id of the request to the judge. A correction keeps it. Several verdicts of one request share it, but the current fit does not model noise shared by them: see [the limit](#one-pair-request-several-verdicts-a-limit-of-the-current-fit). |
 | `shown_first` | `a` or `b` | no | Which output the judge saw first. Record it: without it the fit cannot measure a lean to the first one shown. |
 | `verdict` | `a`, `b` or `tie` | yes | Which output is better. |
 | `rubric` | `id@version` | yes | The rubric. |
@@ -1316,6 +1344,9 @@ These pass the check and still hurt. Look for them yourself.
 - **A call structure that does not match the request.** A `panel` judge whose readings each have their own
   call id passes. So do the check items of one request under one call id each, and a correction under a new
   call id. In each case the fit sees more requests than were made.
+- **Several verdicts under one pair call.** The record is right when that is what was asked, but the current
+  fit reads the verdicts as independent. See
+  [the limit](#one-pair-request-several-verdicts-a-limit-of-the-current-fit).
 - **Run ids that name the arm.** The check passes them. `eval labels next` refuses them later.
 - **A misspelt judge, when you leave out `--judges`.**
 - **An arm that mixes settings.** It is listed under `mixed_arm` and the check still says `ok`.

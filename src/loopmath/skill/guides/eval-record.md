@@ -162,7 +162,9 @@ Only when a judge compares two outputs. Append to `STUDY/pairs.jsonl`:
 - `a` and `b` are two runs of the same input. Pick at random which run is `a`.
 - `verdict` is `a`, `b` or `tie`. `shown_first` is the one the judge saw first. Always write it.
 - The same pair asked again in the other order is a second call and a second line.
-- A request that compares on several components writes one line per component under one call id. The line id is then the call and the component (`h0003.depth`).
+- Set a new judge up to give one verdict per pair request: one request per compared component, or one overall verdict per pair request. That is the form the current fit reads correctly.
+- `h0003` above is a record-format example with a limit. When a request did compare on several components, write one line per component under one call id, with the call and the component as the line id (`h0003.depth`). The shared call id keeps the record true, but the current fit does not model noise shared by the verdicts of one pair request: loopmath 0.4.x fits them as independent. Tell the user when their judge works this way.
+- Answers that already exist keep their true call id. Never give each verdict its own call id to get around the limit: the fit comes out the same and the record of what was asked is lost.
 - A correction works as for scores: its own `id`, the same `call`, and `replaces`.
 
 ## 6. Bring in scores that already exist
@@ -226,6 +228,7 @@ The check passes some mistakes. Look for them yourself:
 - A value on the wrong scale that is still inside the range, such as 0.7 under a 0 to 10 component. Compare the lowest and highest value per judge and component with the rubric.
 - A call structure that is not what was asked: a `panel` judge or a sitting whose lines each have their own `call`, the checks of one request under a `call` each, a correction under a new `call`. Count the distinct `call` values per judge and compare with the number of requests made.
 - Made-up runs with no `simulated` mark.
+- Several pair verdicts under one `call`. It is the right record of such a request, and the current fit treats the verdicts as independent. Say so to the user.
 - A run id or a ref that names the arm, the model or the family.
 - An entry in `mixed_arm`: an arm whose runs differ in a setting. Split it into two arms or fix the run lines.
 - An entry in `warnings` about a call shared by two judges or two outputs.
@@ -238,6 +241,7 @@ Each row of `design` has `term`, `judge`, `dimension`, `count`, `met` and `needs
 - One judge only, or judges that each score one arm: every judge should score outputs of every arm.
 - No reviewer scores, or fewer than 6 outputs per component: ask for a small batch scored by a person. 30 makes a firm anchor.
 - Comparisons in one order only: ask each pair in both orders.
+- Comparisons on several components in one request: ask for one verdict per request from now on.
 - No costs: `cost_usd` on runs and `cost_usd_per_call` on judges.
 
 Do not start a fit, install anything or call a judge to fill a gap. The user decides what to spend. When the study holds runs marked `simulated`, say so: the fit will refuse it without `--allow-simulated`.
