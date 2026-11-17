@@ -379,6 +379,8 @@ def _print(payload: dict) -> None:
                 print(f"      {cell['arm']} {cell['dimension']}: {cell['n_labels']} labels, {cell['status']}")
                 continue
             flag = f"  FLAGGED: gap {cell['gap']:+.3f}, joint sd {cell['joint_sd']:.3f}" if cell["flagged"] else ""
+            if cell["model"] is None:
+                flag = f"  {cell['status']}"
             print(f"      {cell['arm']} {cell['dimension']}: design {fmt(cell['design'])} "
                   f"({cell['design']['interval']}, {cell['n_labels']} labels)  model {fmt(cell['model'])}{flag}")
     print_warnings(payload["warnings"])
