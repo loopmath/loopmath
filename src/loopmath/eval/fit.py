@@ -135,16 +135,27 @@ def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], di
     `clusters[chains, draws]` labels draws that share a draw of the hyperparameters (the theta points of
     `engine_laplace`). Then each column's effective sample size is the smaller of the autocorrelation
     figure and `cluster_ess`, so repeating a theta point cannot raise it, and the `ess` check names the
-    number of distinct labels as `theta_points`."""
+    number of distinct labels as `theta_points`.
+
+    The last check, `finite_draws`, counts the draws of parameters that exist that are not finite, and
+    names the first such parameter as `worst`. R-hat cannot be computed on such a column, so it is left
+    out of the R-hat and effective sample size checks and fails here instead."""
     rhats, esses, labels = [], [], []
+    nonfinite, first_nonfinite = 0, None
     for name in CHECKED:
         if name in LATER and name not in raw:
             continue
         x = np.asarray(raw[name], dtype=float)
         flat = x.reshape(x.shape[0], x.shape[1], -1)
-        keep = np.broadcast_to(exists[name], x.shape[2:]).reshape(-1) if name in exists else np.ones(
+        active = np.broadcast_to(exists[name], x.shape[2:]).reshape(-1) if name in exists else np.ones(
             flat.shape[2], dtype=bool)
-        keep = keep & np.isfinite(flat).all(axis=(0, 1)) & (flat.std(axis=(0, 1)) > 1e-12)
+        finite = np.isfinite(flat).all(axis=(0, 1))
+        broken = np.flatnonzero(active & ~finite)
+        if len(broken):
+            nonfinite += int((~np.isfinite(flat[:, :, broken])).sum())
+            if first_nonfinite is None:
+                first_nonfinite = f"{name}{[int(k) for k in np.unravel_index(broken[0], x.shape[2:])]}"
+        keep = active & finite & (flat.std(axis=(0, 1)) > 1e-12)
         columns = np.flatnonzero(keep)
         for start in range(0, len(columns), BLOCK):
             block = flat[:, :, columns[start:start + BLOCK]]
@@ -172,6 +183,8 @@ def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], di
         checks[1]["theta_points"] = int(len(np.unique(np.asarray(clusters))))
     if least is not None:
         checks.append({"name": "saved_draws", "value": saved, "limit": int(least), "ok": bool(saved >= least)})
+    checks.append({"name": "finite_draws", "value": nonfinite, "limit": 0, "ok": nonfinite == 0,
+                   "worst": first_nonfinite})
     return {"converged": all(check["ok"] for check in checks), "rhat_max": rhat_max, "ess_min": ess_min,
             "divergences": int(divergences), "run_seconds": float(run_seconds), "checks": checks}
 

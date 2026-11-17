@@ -8,6 +8,7 @@ or the truth of a simulated study. All data is synthetic.
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 
@@ -378,6 +379,75 @@ def test_cell_integral_moments_and_bound_derivatives_against_quad():
         assert np.allclose(got[name][live, r], fd[live], rtol=1e-5, atol=1e-7), (r, name)
 
 
+def test_cell_integral_finds_the_mode_however_far_from_its_guess():
+    """A guess from other arguments can be hundreds of curvature scales off (the boundary scan moves a
+    cavity mean from about 60 to 571). The first two cells are the S3 pilot's (panel-vs-per-component,
+    seed 1), where the old search stopped short of the mode and exp overflowed. Every cell must match
+    scipy quad, be ok, and agree with the call without a guess."""
+    m = np.array([571.14, -751.812, 600.0, 2000.0, -40.0])
+    s2 = np.array([1.04995, 0.906432, 1.0, 0.01, 4.0])
+    far, wide = 685348.28281101, EL.OPEN
+    lo = np.array([[0.0, 0.0, -wide], [-far, -far, -wide], [0.0, 598.7, -wide], [0.0, 1999.2, -wide],
+                   [-wide, -41.5, -wide]])
+    hi = np.array([[far, far, wide], [0.0, 0.0, wide], [wide, 600.4, 601.0], [wide, 1999.9, wide],
+                   [0.0, -40.2, -38.0]])
+    w = np.array([[1, 1, 0], [1, 1, 0], [2, 1, 1], [1, 1, 0], [3, 1, 1]], dtype=float)
+    g_mode = np.array([61.0646, -136.9917, 60.0, 30.0, 500.0])
+    guess = {"mode": g_mode, "A": g_mode - 10.0, "B": g_mode + 10.0}
+    with np.errstate(over="raise", invalid="raise"):
+        got = EL.cell_integral(m, s2, lo, hi, w, guess=guess)
+    alone = EL.cell_integral(m, s2, lo, hi, w)
+    assert got["ok"].all() and alone["ok"].all()
+    for name in ("logZ", "mean", "var", "mode"):
+        assert np.allclose(got[name], alone[name], rtol=0, atol=1e-9 * (1 + np.abs(alone[name]))), name
+    for g in range(len(m)):
+        sd = np.sqrt(s2[g])
+
+        def f(u, power=0):
+            val = stats.norm.logpdf(u, m[g], sd)
+            for r in range(lo.shape[1]):
+                if w[g, r]:
+                    with np.errstate(divide="ignore"):
+                        val += w[g, r] * np.log(special.ndtr(hi[g, r] - u) - special.ndtr(lo[g, r] - u))
+            return (u - m[g]) ** power * np.exp(val)
+
+        cuts = [x for x in np.concatenate([lo[g][w[g] > 0], hi[g][w[g] > 0]]) if abs(x - m[g]) < 40 * sd]
+        pts = sorted(set(cuts) | {m[g] + k * sd for k in (-40, -10, 0, 10, 40)})
+        Z, M1, M2 = (sum(integrate.quad(f, a, b, args=(k,), limit=400, epsabs=0, epsrel=1e-12)[0]
+                         for a, b in zip(pts[:-1], pts[1:])) for k in (0, 1, 2))
+        assert abs(got["logZ"][g] - np.log(Z)) < 1e-8, g
+        assert abs(got["mean"][g] - (m[g] + M1 / Z)) < 1e-7 * (1 + sd), g
+        assert abs(got["var"][g] - (M2 / Z - (M1 / Z) ** 2)) < 1e-6 * (1 + s2[g]), g
+
+
+def test_cell_integral_from_a_stale_guess_matches_the_gaussian_limit():
+    """Cavity N(400, 1), two passes on [0, 1e6], an earlier mode of 0 (the review's case): the passes are
+    certain near 400, so log Z = 0, the mean 400 and the variance 1 to rounding. A stale guess only starts
+    the search: the old search stopped at 320 with log Z -2775.6."""
+    a = (np.array([400.0]), np.array([1.0]), np.array([[0.0, 0.0]]), np.array([[1e6, 1e6]]), np.ones((1, 2)))
+    with np.errstate(over="raise", invalid="raise"):
+        warm = EL.cell_integral(*a, guess={"mode": np.array([0.0]), "A": np.array([-9.0]), "B": np.array([9.0])})
+    assert warm["ok"][0] and warm["mode"][0] == pytest.approx(400.0, abs=1e-6)
+    assert abs(warm["logZ"][0]) < 1e-9 and abs(warm["mean"][0] - 400.0) < 1e-7 and abs(warm["var"][0] - 1.0) < 1e-7
+
+
+def test_a_smooth_cell_of_many_passes_is_caught_by_the_doubled_rule():
+    """500 passes and 1 failure on one cut, cavity N(0, 100) (the review's case): the curvature scale is
+    0.31, so the cell counts as smooth, yet the product is skewed and GH_ORDER nodes are off by about
+    1.2e-4. The smooth rule is a heuristic; the cell rule check, with twice the nodes, must see it."""
+    def lh(x):
+        return 500 * special.log_ndtr(x) + special.log_ndtr(-x) - x * x / 200
+
+    peak = lh(3.0)
+    exact = np.log(integrate.quad(lambda x: np.exp(lh(x) - peak), -20, 40, epsabs=1e-13, epsrel=1e-13,
+                                  limit=400)[0]) + peak - 0.5 * np.log(200 * np.pi)
+    a = (np.array([0.0]), np.array([100.0]), np.array([[0.0, -EL.OPEN]]), np.array([[EL.OPEN, 0.0]]),
+         np.array([[500.0, 1.0]]))
+    base, fine = EL.cell_integral(*a), EL.cell_integral(*a, panels=2 * EL.PANELS)
+    assert base["smooth"][0] and base["ok"][0]
+    assert abs(fine["logZ"][0] - exact) < 1e-5
+    assert abs(base["logZ"][0] - fine["logZ"][0]) > EL.CELL_RULE_MAX
+
 def _oracle():
     try:
         import laplace_oracle
@@ -609,6 +679,227 @@ def test_sample_returns_the_shape_of_engine_pymc_and_checks():
     # pairs-only dimension: arm means sum to 0
     only = np.flatnonzero(design.data["pairs_only"])
     assert np.allclose(res["draws"]["mu"][..., only].sum(axis=2), 0.0)
+
+
+@pytest.mark.parametrize("helper", ["runs", "no PYTHONPATH", "fails", "other copy"])
+def test_theta_points_in_a_helper_process_give_the_draws_of_one_process(monkeypatch, helper):
+    """Theta points split over 2 processes give exactly the draws and labels one process gives; a helper
+    that fails, or that imported another copy of the engine than the caller, has its share run in the
+    caller, with the same draws. Without PYTHONPATH the helper still finds the caller's copy, ahead of any
+    other installed one."""
+    design, _ = catalog_design("pairs", inputs=8)
+    call = dict(seed=2, draws=60, chains=2, theta_points=12, cores=2, find_boundary=False)
+    monkeypatch.setattr(EL, "THETA_PARALLEL_SECONDS", float("inf"))
+    alone = EL.sample(design.data, **call)
+    monkeypatch.setattr(EL, "THETA_PARALLEL_SECONDS", 0.0)
+    if helper == "no PYTHONPATH":
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+    if helper == "fails":
+        monkeypatch.setattr(EL, "_THETA_WORKER", "import sys; sys.exit(3)")
+    if helper == "other copy":   # the helper is told the caller's engine is another file
+        monkeypatch.setattr(EL, "_THETA_WORKER", "import sys\nsys.argv[2] = '/elsewhere/engine_laplace.py'\n"
+                            + EL._THETA_WORKER)
+    split = EL.sample(design.data, **call)
+    assert alone["checks"][1]["theta_helpers"] == 0
+    assert split["checks"][1]["theta_helpers"] == (1 if helper in ("runs", "no PYTHONPATH") else 0)
+    np.testing.assert_array_equal(alone["theta_point"], split["theta_point"])
+    assert set(alone["draws"]) == set(split["draws"])
+    for name in alone["draws"]:
+        np.testing.assert_array_equal(alone["draws"][name], split["draws"][name], err_msg=name)
+
+
+_SPOIL_CALL = dict(seed=2, draws=60, chains=2, theta_points=12, cores=1)
+
+
+@functools.lru_cache(maxsize=1)
+def _clean_pairs_fit():
+    design, _ = catalog_design("pairs", inputs=8)
+    return design, EL.sample(design.data, **_SPOIL_CALL)
+
+
+def _spoil(monkeypatch, phase: str, *, calls: set | None = None, field: str = "logZ", doubled: bool = False) -> dict:
+    """Make `field[0]` of every `cell_integral` result NaN while the engine function `phase` runs: in every
+    call, or with `calls` only within those evaluations (`Problem.evaluate`, counted from 1 in the phase).
+    With `doubled`, only in the doubled rule of the cell rule check. Returns the state; with `calls`, its
+    `seen` lists the theta of each evaluation in the phase."""
+    rule, evaluate = EL.cell_integral, EL.Problem.evaluate
+    state = {"on": False, "spoil": False, "n": 0, "seen": []}
+
+    def spoiled(*args, **kw):
+        out = rule(*args, **kw)
+        if state["spoil"] and field in out and (not doubled or kw.get("panels") == 2 * EL.PANELS):
+            out = dict(out, **{field: out[field].copy()})
+            out[field].flat[0] = np.nan
+        return out
+
+    def counted(self, *args, **kw):
+        if not state["on"] or calls is None:
+            return evaluate(self, *args, **kw)
+        state["n"] += 1
+        state["seen"].append(np.array(args[0], dtype=float))
+        state["spoil"] = state["n"] in calls
+        try:
+            return evaluate(self, *args, **kw)
+        finally:
+            state["spoil"] = False
+
+    inner = getattr(EL, phase)
+
+    def wrapped(*args, **kw):
+        state["on"], state["spoil"] = True, calls is None
+        try:
+            return inner(*args, **kw)
+        finally:
+            state["on"], state["spoil"] = False, False
+
+    monkeypatch.setattr(EL, "cell_integral", spoiled)
+    monkeypatch.setattr(EL.Problem, "evaluate", counted)
+    monkeypatch.setattr(EL, phase, wrapped)
+    return state
+
+
+_SPOILS = {"one boundary trial": ("boundary", {2}, False, []),
+           "boundary scan": ("boundary", None, False, []),
+           "one theta draw": ("_theta_points", {1}, False, []),
+           "polish": ("polish", None, False, ["optimizer"]),
+           "six theta attempts": ("_theta_points", set(range(1, 7)), False, ["inner_newton"]),
+           "cell rule check": ("cell_rule_check", None, True, ["cell_rule"])}
+
+
+@pytest.mark.parametrize("case", list(_SPOILS))
+def test_a_cell_value_that_is_not_finite_is_rejected_or_fails_a_check(monkeypatch, case):
+    """One group's log Z made NaN in one phase of the fit. A trial point that meets it is rejected and
+    another tried, which alone fails no check: one boundary trial (the next level is tried), the whole
+    boundary scan (its sds are reported unchecked), one theta draw (drawn again). A result the fit needs
+    fails a check: the evaluation at theta-hat in polish fails `optimizer`; the first theta point with all
+    six attempts spoiled, theta-hat included, fails `inner_newton`, and its draws are NaN rather than drawn
+    from a rejected result; the doubled rule fails `cell_rule`. No check value is NaN or infinite."""
+    design, clean = _clean_pairs_fit()
+    assert all(c["ok"] for c in clean["checks"])
+    base_newton = {c["name"]: c for c in clean["checks"]}["inner_newton"]
+    assert base_newton["bad_cells"] == 0 and base_newton["lost_theta_points"] == 0
+    phase, calls, doubled, expect = _SPOILS[case]
+    state = _spoil(monkeypatch, phase, calls=calls, doubled=doubled)
+    res = EL.sample(design.data, **_SPOIL_CALL)
+    json.dumps(res["checks"], allow_nan=False)   # a fit file holds no NaN or infinity
+    checks = {c["name"]: c for c in res["checks"]}
+    assert sorted(name for name, c in checks.items() if not c["ok"]) == expect, res["checks"]
+    newton, rule = checks["inner_newton"], checks["cell_rule"]
+    if case == "cell rule check":
+        assert rule["bad_groups"] >= 1 and rule["value"] is None and newton["bad_cells"] == 0
+    else:
+        assert newton["bad_cells"] >= 1 and rule["bad_groups"] == 0
+    mu = res["draws"]["mu"]
+    if case == "six theta attempts":
+        assert newton["lost_theta_points"] == 1 and newton["redrawn_theta"] == base_newton["redrawn_theta"] + 6
+        gone = ~np.isfinite(mu).all(axis=(2, 3))
+        assert gone.any() and not gone.all() and np.isnan(mu[gone]).all()
+        assert np.all(res["theta_point"][gone] == res["theta_points"])   # the theta-hat label
+        checked = {**FT.existing(design), "halo_call": design.masks["panel"]}
+        told = FT.diagnose(res["draws"], checked, 0, 0.0, clusters=res["theta_point"])
+        assert not told["converged"] and told["checks"][-1]["name"] == "finite_draws"
+        assert told["checks"][-1]["value"] > 0 and not told["checks"][-1]["ok"]
+    else:
+        assert np.isfinite(mu).all() and newton["lost_theta_points"] == 0
+    if case == "one theta draw":
+        assert newton["redrawn_theta"] == base_newton["redrawn_theta"] + 1
+    if case == "polish":
+        assert checks["optimizer"]["finite"] is False and checks["optimizer"]["value"] is None
+        assert checks["theta_hessian"]["ok"]
+    if case == "one boundary trial":   # evaluations 1, 2, 3: theta-hat, the spoiled trial, its retry
+        base, first, second = state["seen"][:3]
+        k = np.flatnonzero(first != base)
+        assert len(k) == 1 and list(np.flatnonzero(second != base)) == list(k) and second[k[0]] > first[k[0]]
+        # the same sd at the next level (1e-3 of the prior scale), which here decides as the first level did
+        assert res["boundary_unchecked"] == clean["boundary_unchecked"] and res["boundary"] == clean["boundary"]
+    if case == "boundary scan":   # theta-hat itself was spoiled: every sd not at its bound is unchecked
+        assert len(res["boundary_unchecked"]) > 0 and set(res["boundary"]) <= set(clean["boundary"])
+
+
+@pytest.mark.parametrize("field", ["logZ", "mean", "var", "tail", "dlo", "dhi"])
+def test_a_cell_field_that_is_not_finite_stops_ep_at_its_fixed_point(monkeypatch, field):
+    """Warm from a converged EP evaluation (the review's case: levels-3, 3 inputs), one cell's field made NaN:
+    EP must not take it into an update or a convergence decision. The evaluation is refused: no value, no
+    gradient, the inner step not ok. Bound derivatives are asked for only with the gradient, so the value
+    alone stays as it was."""
+    design, _ = catalog_design("levels-3", inputs=3, seed=2)
+    prob = EL.Problem(design.data)
+    prob.workers = 1
+    theta = prob.params.init
+    base = prob.evaluate(theta)
+    assert base["mode"]["inner"] == "ep" and base["mode"]["ok"] and EL._usable(base)
+    rule, seen = EL.cell_integral, [0]
+
+    def spoiled(*args, **kw):
+        out = rule(*args, **kw)
+        if field in out:
+            seen[0] += 1
+            out = dict(out, **{field: out[field].copy()})
+            out[field].flat[0] = np.nan
+        return out
+
+    monkeypatch.setattr(EL, "cell_integral", spoiled)
+    res = prob.evaluate(theta, base["mode"])
+    assert seen[0] >= 1
+    assert not res["mode"]["ok"] and res["mode"]["bad_cells"] >= 1 and not EL._usable(res)
+    assert np.isnan(res["value"]) and np.isnan(res["grad"]).all()
+    if field in ("dlo", "dhi"):
+        alone = prob.evaluate(theta, base["mode"], grad=False)
+        assert alone["mode"]["ok"] and alone["value"] == pytest.approx(base["value"], rel=0, abs=1e-8)
+
+
+def test_polish_refuses_a_value_that_is_not_finite_even_with_a_finite_gradient(monkeypatch):
+    """The review's polish case: the objective at theta-hat NaN while its gradient is finite (and the
+    Newton decrement tiny). Polish must not report that point as converged."""
+    design, _ = catalog_design("levels-3", inputs=3, seed=2)
+    prob = EL.Problem(design.data)
+    prob.workers = 1
+    theta = prob.params.init
+    good = prob.evaluate(theta)
+    H = np.eye(len(theta)) * 1e12   # any step gains next to nothing
+    assert EL.polish(prob, theta, H, good["mode"])["ok"]
+    evaluate = EL.Problem.evaluate
+
+    def nan_value(self, *args, **kw):
+        out = evaluate(self, *args, **kw)
+        return dict(out, value=np.nan)
+
+    monkeypatch.setattr(EL.Problem, "evaluate", nan_value)
+    told = EL.polish(prob, theta, H, good["mode"])
+    assert not told["ok"] and told["res"] is None and not np.isfinite(told["decrement"])
+
+def test_a_fit_whose_final_evaluation_is_not_finite_is_written_and_not_converged(monkeypatch, tmp_path):
+    """The review's polish probe: levels-3, 3 inputs, simulation seed 2, fit seed 9, 4 chains, 1000 saved
+    draws, 1 core, one group's log Z NaN only while polish runs. The objective at theta-hat is then not
+    finite: `optimizer` fails (no decrement), the fit is not converged, and the fit file is still written."""
+    design, _ = catalog_design("levels-3", inputs=3, seed=2)
+    _spoil(monkeypatch, "polish")
+    meta, draws = FT.fit_design(design, seed=9, cores=1, engine="laplace")
+    checks = {c["name"]: c for c in meta["diagnostics"]["checks"]}
+    assert not meta["diagnostics"]["converged"]
+    assert [name for name, c in checks.items() if not c["ok"]] == ["optimizer"]
+    assert checks["optimizer"]["finite"] is False and checks["optimizer"]["value"] is None
+    path = F.write_fit(tmp_path / "fit.json", meta, draws)
+    assert F.read_fit(path, allow_unconverged=True).meta["diagnostics"]["converged"] is False
+
+
+def test_the_s3_pilot_case_fits_without_overflow_or_an_untrusted_cell():
+    """panel-vs-per-component, seed 1 (the S3 pilot): the boundary scan moved cavity means hundreds of
+    curvature scales from the cell rule's warm start; the mode search stopped short, exp overflowed, and
+    the NaN was absorbed while every check passed. Now no overflow, no group that is not ok."""
+    import warnings
+
+    sim = S.generate(specs.get("panel-vs-per-component"), 1)
+    design = M.build(C.Study(Path("."), sim.runs, sim.scores, sim.pairs, sim.items), sim.rubric, sim.judges,
+                     allow_simulated=True)
+    with warnings.catch_warnings(record=True) as got:
+        warnings.simplefilter("always")
+        res = EL.sample(design.data, seed=1, draws=50, chains=2, theta_points=20, cores=1)
+    numeric = [str(g.message) for g in got if issubclass(g.category, RuntimeWarning)]
+    assert numeric == []
+    checks = {c["name"]: c for c in res["checks"]}
+    assert checks["inner_newton"]["bad_cells"] == 0 and checks["cell_rule"]["bad_groups"] == 0
+    assert all(c["ok"] for c in res["checks"]), res["checks"]
 
 
 def test_fit_recovers_a_linear_study_and_names_absent_terms_at_the_boundary():

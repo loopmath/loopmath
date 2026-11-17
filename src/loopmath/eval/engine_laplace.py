@@ -265,11 +265,13 @@ def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray,
     curvature scale s* = (-(log h)''(u*))^-1/2 are found first. Every bound of a reading is a wall of
     unit width (the call noise).
 
-    A smooth cell, one where every wall in range is at least SMOOTH_WALLS curvature scales wide (lane
-    S2's measured rule: adaptive Gauss-Hermite is then accurate to about 1e-9 at 9 nodes), is integrated
-    by Gauss-Hermite with GH_ORDER nodes centred at u* and scaled by s*. A wall is in range when it lies
-    within sqrt(2 WINDOW) s* + WALL_REACH of u*. Its `tail` is 0: the cell rule check compares it with
-    twice the nodes.
+    A smooth cell, one where every wall in range is at least SMOOTH_WALLS curvature scales wide, is
+    integrated by Gauss-Hermite with GH_ORDER nodes centred at u* and scaled by s*. A wall is in range
+    when it lies within sqrt(2 WINDOW) s* + WALL_REACH of u*. The rule is a heuristic from lane S2's
+    measurements (about 1e-9 at 9 nodes on its cases), not a bound: a cell with many readings on one side
+    of a cut can pass it with a skewed product (500 passes of 501 at cavity variance 100: an error of
+    1.2e-4 at GH_ORDER nodes). Its `tail` is 0; the cell rule check compares it with twice the nodes and
+    catches such a cell.
 
     Every other cell is integrated over [A, B], where log h is within WINDOW of its maximum. Breakpoints
     are A, the finite bounds inside (A, B), u* and B. Every gap between breakpoints is split in two
@@ -279,9 +281,13 @@ def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray,
     log-concavity: integral beyond B <= h(B) / |(log h)'(B)|.
 
     `panels` scales both rules (twice PANELS doubles every panel count and the Gauss-Hermite order).
-    With `bounds`, also d log Z / d lo_r and d hi_r. `guess` (`mode`, `A`, `B` of an earlier call on
-    nearby arguments) only starts the searches: the mode and the window ends are found to the same
-    tolerances either way."""
+    With `bounds`, also d log Z / d lo_r and d hi_r. `guess` (`mode`, `A`, `B` of an earlier call)
+    only starts the searches: the mode search starts from the guess or from m, whichever has the larger
+    log h, and the mode and the window ends are found to the same tolerances either way.
+
+    `ok` marks a cell whose mode search converged (and, for a rough cell, both window searches), with no
+    node above log h(u*) and finite log Z, mean, variance, tail and (with `bounds`) derivatives. A cell
+    that is not ok must not be used (EP stops at it)."""
     m, s2 = np.asarray(m, float), np.asarray(s2, float)
     G, R = lo.shape
     live = w > 0
@@ -297,23 +303,39 @@ def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray,
         return f, d1, d2
 
     every = np.arange(G)
-    # the mode: Newton with a bracket (d1 falls in u)
+    # the mode: Newton with a bracket (d1 falls in u), from the guess or the cavity mean, whichever has
+    # the larger log h (a guess from other arguments can be far off). A step is limited to 4 max(1, s),
+    # and the limit doubles while a cell's steps keep being cut in one direction, so a mode any distance
+    # away is reached in a few dozen steps.
     s = np.sqrt(s2)
-    u = m.copy() if guess is None else np.asarray(guess["mode"], float).copy()
+    u = m.copy()
+    here = derivs(u, every)
+    if guess is not None:
+        g_mode = np.asarray(guess["mode"], float)
+        there = derivs(g_mode, every)
+        pick = there[0] > here[0]
+        u = np.where(pick, g_mode, u)
+        here = tuple(np.where(pick, x, y) for x, y in zip(there, here))
     left, right = np.full(G, -np.inf), np.full(G, np.inf)
-    for _ in range(80):
-        f, d1, d2 = derivs(u, every)
+    limit, cut_dir = 4.0 * np.maximum(1.0, s), np.zeros(G)
+    for _ in range(100):
+        f, d1, d2 = here
         left = np.where(d1 > 0, np.maximum(left, u), left)
         right = np.where(d1 <= 0, np.minimum(right, u), right)
         if np.all(np.abs(d1) * np.sqrt(-1.0 / d2) < 1e-9):
             break
-        step = np.clip(-d1 / d2, -4.0 * np.maximum(1.0, s), 4.0 * np.maximum(1.0, s))
-        new = u + step
+        raw = -d1 / d2
+        cut = np.abs(raw) > limit
+        limit = np.where(cut & (np.sign(raw) == cut_dir), 2.0 * limit, np.where(cut, limit, 4.0 * np.maximum(1.0, s)))
+        cut_dir = np.where(cut, np.sign(raw), 0.0)
+        new = u + np.clip(raw, -limit, limit)
         inside = (new > left) & (new < right)
         both = np.isfinite(left) & np.isfinite(right)
         u = np.where(inside | ~both, new, 0.5 * (left + right))
-    f0, _, d2 = derivs(u, every)
+        here = derivs(u, every)
+    f0, d1, d2 = here
     mode, scale = u, np.sqrt(-1.0 / d2)
+    found = np.abs(d1) * scale < 1e-6   # the mode search converged
     A = mode - np.sqrt(2.0 * WINDOW) * scale
     B = mode + np.sqrt(2.0 * WINDOW) * scale
     # smooth cells: no wall narrower than SMOOTH_WALLS curvature scales in range
@@ -323,6 +345,7 @@ def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray,
     smooth = (SMOOTH_WALLS * scale <= 1.0) | ~wall.any(axis=1)
     sm, rough = np.flatnonzero(smooth), np.flatnonzero(~smooth)
     cells, nodes, logw = [], [], []
+    reached = np.ones(G, bool)   # both window ends found (rough cells)
     if len(sm):
         x, lwx = _hermite(max(2, int(round(GH_ORDER * panels / PANELS))))
         cells.append(np.repeat(sm, len(x)))
@@ -347,6 +370,9 @@ def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray,
                 step = np.where(np.abs(slope) > 1e-300, -F / np.where(slope == 0, 1.0, slope), side * far)
                 step = side * np.clip(side * step, -0.9 * np.abs(v - mr), far)
                 v = v + step
+            else:   # out of steps: an end not within 0.5 of the window is not trusted
+                f, _, _ = derivs(v, rough)
+                reached[rough] &= np.abs(f0r - f - WINDOW) < 0.5
             ends.append(v)
         Ar, Br = ends
         A[rough], B[rough] = Ar, Br
@@ -392,16 +418,23 @@ def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray,
     a, b = lo_m[cell] - node[:, None], hi_m[cell] - node[:, None]
     lp = np.where(live[cell], log_interval(a, b), 0.0)
     lh = (w[cell] * lp).sum(axis=1) - 0.5 * (node - m[cell]) ** 2 / s2[cell]
-    q = np.exp(lh - f0[cell] + lw)   # f0 = log h(u*) is the maximum of log h: nothing overflows
+    # f0 = log h(u*) is the maximum of log h when the mode search converged. Checked: no node may lie
+    # above it (a cell where one does is not `ok`), and the sums are shifted by the larger of the two,
+    # so exp cannot overflow either way.
+    peak = np.full(G, -np.inf)
+    np.maximum.at(peak, cell, lh)
+    top = np.maximum(f0, peak)
+    q = np.exp(lh - top[cell] + lw)
 
     def per_cell(x):
         return np.bincount(cell, x, minlength=G)
 
     Z = per_cell(q)
-    pw = q / Z[cell]
-    mean = per_cell(pw * node)
-    var = per_cell(pw * (node - mean[cell]) ** 2)
-    logZ = np.log(Z) + f0 - 0.5 * np.log(2.0 * np.pi * s2)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pw = q / Z[cell]
+        mean = per_cell(pw * node)
+        var = per_cell(pw * (node - mean[cell]) ** 2)
+        logZ = np.log(Z) + top - 0.5 * np.log(2.0 * np.pi * s2)
     # tails beyond [A, B] of the panel rule, relative to Z, by log-concavity
     tail = np.zeros(G)
     if len(rough):
@@ -409,13 +442,16 @@ def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray,
             f, d1, _ = derivs(v, rough)
             tail[rough] += np.exp(f - logZ[rough] - 0.5 * np.log(2.0 * np.pi * s2[rough])) / \
                 np.maximum(np.abs(d1), 1e-300)
+    ok = found & reached & (peak - f0 <= 1e-6 * np.maximum(1.0, np.abs(f0))) & np.isfinite(logZ) \
+        & np.isfinite(mean) & np.isfinite(var) & np.isfinite(tail)
     out = {"logZ": logZ, "mean": mean, "var": var, "tail": tail, "mode": mode, "scale": scale, "A": A, "B": B,
-           "smooth": smooth}
+           "smooth": smooth, "ok": ok}
     if bounds:
         kk = interval_kernel(np.repeat(node, R), lo_m[cell].ravel(), hi_m[cell].ravel())
         for name in ("dlo", "dhi"):
             d = pw[:, None] * kk[name].reshape(-1, R)
             out[name] = np.stack([per_cell(d[:, r]) for r in range(R)], axis=1) * w
+            out["ok"] = out["ok"] & np.all(np.isfinite(out[name]) | ~live, axis=1)
     return out
 
 
@@ -823,6 +859,7 @@ class Problem:
         self.params = Params(self)
         self.inner = "laplace" if self.all_gauss else "ep"
         self.workers = CELL_WORKERS
+        self.bad_cells = 0   # groups whose tilted integral was not finite or not trusted, over every EP sweep
 
     def _pack_entries(self) -> None:
         """Entries to padded arrays per row: global entries (n x Kg) and local ones (n x Kl)."""
@@ -1066,7 +1103,8 @@ class Problem:
         """Per group: log Z, mean and variance of the group's predictor under cavity times readings.
         `guess` (the `guess` of an earlier result) starts the searches of the cell rule."""
         ng = self.n_groups
-        out = {"logZ": np.zeros(ng), "mean": np.zeros(ng), "var": np.zeros(ng), "tail": np.zeros(ng)}
+        out = {"logZ": np.zeros(ng), "mean": np.zeros(ng), "var": np.zeros(ng), "tail": np.zeros(ng),
+               "ok": np.ones(ng, bool)}
         if bounds:
             out["dlo"], out["dhi"] = np.zeros(self.g_rows.shape), np.zeros(self.g_rows.shape)
         one = self.g_simple
@@ -1087,11 +1125,18 @@ class Problem:
             q = cell_integrals(muc[many], sc2[many], np.where(use, c["lo"][rr], -OPEN),
                                np.where(use, c["hi"][rr], OPEN), np.where(use, self.r_w[rr], 0.0), panels=panels,
                                bounds=bounds, guess=guess, workers=self.workers)
-            for name in ("logZ", "mean", "var", "tail"):
+            for name in ("logZ", "mean", "var", "tail", "ok"):
                 out[name][many] = q[name]
             out["guess"] = {"mode": q["mode"], "A": q["A"], "B": q["B"]}
             if bounds:
                 out["dlo"][many], out["dhi"][many] = q["dlo"], q["dhi"]
+        # a group is ok when log Z, its moments, its tail bound and the bound derivatives asked for are
+        # finite (and, for the cell rule, its searches converged with no node above the mode)
+        good = np.isfinite(out["logZ"]) & np.isfinite(out["mean"]) & np.isfinite(out["var"]) & np.isfinite(out["tail"])
+        if bounds:
+            used = self.g_rows >= 0
+            good &= np.all(np.isfinite(out["dlo"]) | ~used, axis=1) & np.all(np.isfinite(out["dhi"]) | ~used, axis=1)
+        out["ok"] &= good
         return out
 
     def ep(self, c: dict, sites: tuple[np.ndarray, np.ndarray] | None = None, *, grad: bool = False,
@@ -1117,7 +1162,7 @@ class Problem:
             guess = sites[2] if len(sites) > 2 else None
         W_row, N_row = np.zeros(n), np.zeros(n)
         W_row[g], N_row[g] = w[g] / var[g], w[g] * self.r_y[g] / var[g]
-        ok, steps, change, last = False, 0, np.inf, np.inf
+        ok, steps, change, last, bad = False, 0, np.inf, np.inf, 0
         hist_g: list[np.ndarray] = []
         hist_f: list[np.ndarray] = []
         for steps in range(1, max_iter + 1):
@@ -1136,11 +1181,21 @@ class Problem:
             muc = (mut / vt - nu_g) * sc2
             tl = self.tilted(c, muc, sc2, guess=guess)
             guess = tl.get("guess")
-            vt_new = np.maximum(tl["var"], 1e-300)
-            tau_new = np.maximum(1.0 / vt_new - tc, 0.0)
-            nu_new = tl["mean"] / vt_new - muc * tc
-            change = max(float(np.max(np.abs(tau_new - tau_g) / (1.0 + tau_g), initial=0.0)),
-                         float(np.max(np.abs(nu_new - nu_g) / (1.0 + np.abs(nu_g)), initial=0.0)))
+            with np.errstate(over="ignore", invalid="ignore"):
+                vt_new = np.maximum(tl["var"], 1e-300)
+                tau_new = np.maximum(1.0 / vt_new - tc, 0.0)
+                nu_new = tl["mean"] / vt_new - muc * tc
+            bad = int((~(tl["ok"] & np.isfinite(tau_new) & np.isfinite(nu_new))).sum())
+            if bad:   # a group's moments or its new site are not finite or not trusted: no update, the step fails
+                self.bad_cells += bad
+                ok = False
+                break
+            change = float(np.max([np.max(np.abs(tau_new - tau_g) / (1.0 + tau_g)),    # NaN would propagate
+                                   np.max(np.abs(nu_new - nu_g) / (1.0 + np.abs(nu_g)))]))
+            if not np.isfinite(change):   # a change that overflows: no update, the step fails
+                self.bad_cells += 1
+                ok, bad = False, 1
+                break
             if change < tol or steps == max_iter:   # stop before an update, so the value matches the sites
                 ok = change < tol
                 break
@@ -1167,7 +1222,10 @@ class Problem:
             + float((-0.5 * W_row * c["o"] ** 2 + N_row * c["o"]).sum())
         value += float((w[g] * (-0.5 * (LOG_2PI + np.log(var[g])) - 0.5 * self.r_y[g] ** 2 / var[g])).sum())
         out = {"zg": mg, "zb": mb, "eta": mu, "factor": fac, "sites": (tau_g, nu_g, guess), "steps": steps, "ok": ok,
-               "change": change, "inner": "ep", "v": v, "xs_g": xs_g, "xs_l": xs_l, "tail": 0.0}
+               "change": change, "inner": "ep", "v": v, "xs_g": xs_g, "xs_l": xs_l, "tail": 0.0, "bad_cells": bad}
+        if bad:
+            out["f"] = np.nan
+            return out
         if ng:
             value += float((tl["logZ"] - 0.5 * np.log(tc * vt) - 0.5 * (mut ** 2 / vt - muc ** 2 * tc)).sum())
             out.update(tail=float(tl["tail"].max()), cavity=(muc, sc2))
@@ -1177,6 +1235,11 @@ class Problem:
             dlo, dhi = np.zeros(n), np.zeros(n)
             if ng:
                 tb = self.tilted(c, muc, sc2, bounds=True, guess=guess)
+                bad = int((~tb["ok"]).sum())
+                if bad:   # a bound derivative is not finite or not trusted: the evaluation fails
+                    self.bad_cells += bad
+                    out.update(ok=False, bad_cells=bad, f=np.nan)
+                    return out
                 use = self.g_rows >= 0
                 dlo[self.g_rows[use]] = tb["dlo"][use]
                 dhi[self.g_rows[use]] = tb["dhi"][use]
@@ -1211,6 +1274,10 @@ class Problem:
             fac = m["factor"]
             laplace = m["f"] - 0.5 * fac.logdet + ss_value
         out = {"value": laplace + prior, "laplace": laplace, "prior": prior, "mode": m, "nu": nu, "c": c}
+        if m.get("bad_cells"):   # EP met a group it cannot integrate: no value, no gradient
+            if grad:
+                out["grad"] = np.full(len(theta), np.nan)
+            return out
         if not grad:
             return out
         zg, zb = m["zg"], m["zb"]
@@ -1510,6 +1577,26 @@ class Params:
 # ---------------------------------------------------------------------------------------------------
 # Fitting and drawing
 
+def _usable(res: dict, grad: bool = True) -> bool:
+    """Whether a result of `Problem.evaluate` may be accepted: no group the cell rule could not integrate,
+    a finite value, a finite gradient (with `grad`) and finite latents."""
+    if res["mode"].get("bad_cells") or not np.isfinite(res["value"]):
+        return False
+    if grad and not np.all(np.isfinite(res["grad"])):
+        return False
+    return bool(np.all(np.isfinite(res["mode"]["zg"])) and np.all(np.isfinite(res["mode"]["zb"])))
+
+
+def _attempt(prob: Problem, theta: np.ndarray, start: Any, **kw) -> dict | None:
+    """`prob.evaluate(theta, start, **kw)`, or None where the inner step cannot take theta: a factorisation
+    that fails, or a result `_usable` refuses. The callers reject such a trial point and try another."""
+    try:
+        res = prob.evaluate(theta, start, **kw)
+    except np.linalg.LinAlgError:
+        return None
+    return res if _usable(res, grad=kw.get("grad", True)) else None
+
+
 def fit_theta(prob: Problem, *, max_iter: int = 600, gtol: float = 1e-5, max_step: float = 1.0,
               x0: np.ndarray | None = None, hinv0: np.ndarray | None = None) -> dict:
     """The outer step: theta-hat by a projected BFGS on minus the penalised Laplace (or EP) objective.
@@ -1628,9 +1715,15 @@ def polish(prob: Problem, theta: np.ndarray, H: np.ndarray, start=None, *, round
 
     A hyperparameter at a bound with its gradient pointing out stays there. Stops when the Newton
     decrement `g' H^-1 g / 2` (the gain a full step would bring, in log likelihood units) is below `tol`.
-    Returns theta, the last evaluation, the decrement and the largest free gradient."""
+    Returns theta, the last evaluation, the decrement, the largest free gradient and `ok`.
+
+    Only a result `_usable` accepts (finite value and gradient) is used: a trial point it refuses is
+    rejected, as one that lowers the objective is. When the evaluation at theta itself is refused, or the
+    decrement is not finite, the result is not `ok` (and `res` is None in the first case)."""
     P = prob.params
-    res = prob.evaluate(theta, start)
+    res = _attempt(prob, theta, start)
+    if res is None:
+        return {"theta": theta, "res": None, "decrement": np.inf, "grad_max": np.inf, "ok": False}
     decrement = np.inf
     for _ in range(rounds + 1):
         g = res["grad"]
@@ -1649,8 +1742,8 @@ def polish(prob: Problem, theta: np.ndarray, H: np.ndarray, start=None, *, round
         size = 1.0
         for _try in range(30):
             trial = np.clip(theta + size * step, P.lo, P.hi)
-            new = prob.evaluate(trial, res["mode"])
-            if np.isfinite(new["value"]) and new["value"] >= res["value"] - 1e-9:
+            new = _attempt(prob, trial, res["mode"])
+            if new is not None and new["value"] >= res["value"] - 1e-9:
                 break
             size *= 0.5
         else:
@@ -1659,15 +1752,17 @@ def polish(prob: Problem, theta: np.ndarray, H: np.ndarray, start=None, *, round
     g = res["grad"]
     free = ~(((theta <= P.lo + 1e-9) & (g < 0)) | ((theta >= P.hi - 1e-9) & (g > 0)))
     return {"theta": theta, "res": res, "decrement": float(decrement),
-            "grad_max": float(np.abs(g[free]).max(initial=0.0))}
+            "grad_max": float(np.abs(g[free]).max(initial=0.0)), "ok": bool(np.isfinite(decrement))}
 
 
 def _cov_from(H: np.ndarray) -> tuple[np.ndarray, bool]:
-    """The covariance of theta from minus the Hessian; eigenvalues below a floor are raised to it."""
+    """The covariance of theta from minus the Hessian; eigenvalues below a floor are raised to it. A
+    Hessian with entries that are not finite is not ok; those entries are taken as 0."""
     if H.size == 0:
         return H, True
-    vals, vecs = np.linalg.eigh(H)
-    ok = bool(vals.min() > 0)
+    finite = bool(np.all(np.isfinite(H)))
+    vals, vecs = np.linalg.eigh(np.where(np.isfinite(H), H, 0.0))
+    ok = bool(vals.min() > 0) and finite
     floor = max(1e-8 * float(np.abs(vals).max(initial=1.0)), 1e-10)
     vals = np.maximum(vals, floor)
     return (vecs / vals) @ vecs.T, ok
@@ -1680,10 +1775,12 @@ def boundary(prob: Problem, theta: np.ndarray, start=None, drop: float = 1.92) -
     short rather than long: an sd it names is at the boundary. An sd already that small is named.
 
     Where the inner step cannot take the trial point (a call noise that small makes the Hessian too
-    ill-conditioned to factor), the trial is 1e-3 times the prior scale instead; an sd neither trial can
-    take is returned in the second list, unchecked. Returns `(at the boundary, unchecked)`."""
+    ill-conditioned to factor, or a result `_usable` refuses), the trial is 1e-3 times the prior scale
+    instead; an sd neither trial can take is returned in the second list, unchecked, and so is every sd
+    not already named when theta-hat itself cannot be taken. Returns `(at the boundary, unchecked)`."""
     P = prob.params
-    base = prob.evaluate(theta, start, grad=False, tol=VALUE_TOL)["laplace"]
+    base = _attempt(prob, theta, start, grad=False, tol=VALUE_TOL)
+    base = np.nan if base is None else base["laplace"]
     out, unchecked = [], []
     for k in np.flatnonzero(P.code == HN):
         near_zero = P.lo[k] + 0.2            # about 5e-5 of the prior scale
@@ -1696,12 +1793,11 @@ def boundary(prob: Problem, theta: np.ndarray, start=None, drop: float = 1.92) -
                 continue
             trial = theta.copy()
             trial[k] = level
-            try:
-                value = prob.evaluate(trial, start, grad=False, tol=VALUE_TOL)["laplace"]
+            got = _attempt(prob, trial, start, grad=False, tol=VALUE_TOL)
+            if got is not None:
+                value = got["laplace"]
                 break
-            except np.linalg.LinAlgError:
-                value = None
-        if value is None or not np.isfinite(value):
+        if value is None or not np.isfinite(base):
             unchecked.append(P.labels[k])
         elif base - value < drop:
             out.append(P.labels[k])
@@ -1768,8 +1864,130 @@ def cell_rule_check(prob: "Problem", theta: np.ndarray, start: Any) -> dict | No
     many = ~prob.g_simple
     diff = np.abs(base["logZ"] - fine["logZ"])[many]
     value = float(diff.sum() + base["tail"][many].sum())
-    return {"name": "cell_rule", "value": value, "limit": CELL_RULE_MAX, "ok": bool(value <= CELL_RULE_MAX),
-            "groups": int(many.sum()), "max_group": float(diff.max(initial=0.0))}
+    bad = int((~(base["ok"] & fine["ok"]))[many].sum())   # a group either rule cannot integrate fails the check
+    good = not bad and np.isfinite(value)   # else no value (a fit file holds no NaN or infinity)
+    return {"name": "cell_rule", "value": value if good else None, "limit": CELL_RULE_MAX,
+            "ok": bool(good and value <= CELL_RULE_MAX), "groups": int(many.sum()),
+            "max_group": float(diff.max(initial=0.0)) if good else None, "bad_groups": bad}
+
+
+def _theta_point(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any, gen: np.random.Generator,
+                 n: int) -> tuple[dict, bool, int, bool, bool, int]:
+    """One theta point: a draw of theta the inner step can take (`_attempt`; drawn again up to five times,
+    then theta-hat stands in), the inner step there at `DRAW_TOL`, and n draws of z from its Gaussian.
+    When no attempt can be taken, theta-hat included, the point is lost: its outputs are NaN, never draws
+    from a rejected result. Returns (the outputs of the n draws, whether the inner step converged, failed
+    attempts, stood in, lost, groups the cell rule could not integrate on the way)."""
+    P = prob.params
+    res, failed, before = None, 0, prob.bad_cells
+    for attempt in range(6):
+        t = theta if attempt == 5 else np.clip(theta + chol @ gen.standard_normal(len(theta)), P.lo, P.hi)
+        res = _attempt(prob, t, start, grad=False, tol=DRAW_TOL)
+        if res is not None:
+            break
+        failed += 1
+    if res is None:
+        shapes = outputs(prob, P.unpack(theta), np.zeros((n, prob.G)), np.zeros((n, prob.I, prob.B)))
+        values = {name: np.full(np.shape(x), np.nan) for name, x in shapes.items()}
+        return values, False, failed, True, True, prob.bad_cells - before
+    dg, db = res["mode"]["factor"].draw(gen, n)
+    values = outputs(prob, res["nu"], res["mode"]["zg"] + dg, res["mode"]["zb"] + db)
+    return values, bool(res["mode"]["ok"]), failed, attempt == 5, False, prob.bad_cells - before
+
+
+THETA_PARALLEL_SECONDS = 4.0   # theta points go to helper processes only when they would take longer
+_THETA_WORKER = ("import sys\nif sys.argv[1] not in sys.path: sys.path.insert(0, sys.argv[1])\n"
+                 "from loopmath.eval.engine_laplace import _theta_worker\n_theta_worker()")
+
+
+def _theta_worker() -> None:
+    """A helper process of `_theta_points`: reads (problem, theta, chol, start, jobs) pickled on stdin, runs
+    `_theta_point` on each job with a one-thread cell rule and writes the results pickled on stdout. It
+    exits with 2, unread, when it imported another copy of this module than the caller (argv[2])."""
+    import pickle
+    import sys
+    if os.path.realpath(__file__) != os.path.realpath(sys.argv[2]):
+        sys.exit(2)
+    raw = sys.stdout.buffer
+    sys.stdout = sys.stderr   # nothing but the results on the pipe
+    prob, theta, chol, start, jobs = pickle.load(sys.stdin.buffer)
+    prob.workers = 1
+    out = [_theta_point(prob, theta, chol, start, gen, n) for gen, n in jobs]
+    pickle.dump(out, raw, protocol=pickle.HIGHEST_PROTOCOL)
+    raw.flush()
+
+
+def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any,
+                  jobs: list[tuple[np.random.Generator, int]]) -> tuple[list, int]:
+    """`_theta_point` on every (generator, n) job, in order; returns (the results, helper processes used).
+
+    The points are independent, so with `prob.workers` > 1 and more than `THETA_PARALLEL_SECONDS` of work
+    (timed on the first point) the rest are split into equal contiguous shares: this process runs the
+    first, and one helper process each of the others (`python -c` on `_theta_worker`, the problem sent
+    pickled on a pipe; not multiprocessing, which would import the caller's main script again). Each
+    runs a one-thread cell rule, so no more than `prob.workers` cores are busy. Every point carries its
+    own generator, so the draws are the same wherever it runs. A helper that fails, or that imports
+    another copy of this module, has its share run here instead; helpers still running when this
+    process raises are killed."""
+    import pickle
+    import subprocess
+    import sys
+    import threading
+    if not jobs:
+        return [], 0
+    keep = prob.workers
+    prob.workers = 1 if keep > 1 else keep
+    try:
+        t0 = time.time()
+        results = [_theta_point(prob, theta, chol, start, *jobs[0])]
+        rest = jobs[1:]
+        share = max(1, min(keep, len(rest)))
+        if keep <= 1 or share <= 1 or not sys.executable or (time.time() - t0) * len(rest) < THETA_PARALLEL_SECONDS:
+            prob.workers = keep   # no helpers: the cell rule keeps its threads
+            return results + [_theta_point(prob, theta, chol, start, *job) for job in rest], 0
+        cuts = np.linspace(0, len(rest), share + 1).astype(int)
+        parts = [rest[cuts[k]:cuts[k + 1]] for k in range(share)]
+        here = os.path.abspath(__file__)
+        root = os.path.dirname(os.path.dirname(os.path.dirname(here)))   # the folder holding `loopmath`
+        helpers = []
+        try:
+            for part in parts[1:]:
+                payload = pickle.dumps((prob, theta, chol, start, part), protocol=pickle.HIGHEST_PROTOCOL)
+                try:
+                    proc = subprocess.Popen([sys.executable, "-c", _THETA_WORKER, root, here], stdin=subprocess.PIPE,
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                except OSError:
+                    helpers.append((part, None, None))
+                    continue
+                box: list = []
+                talk = threading.Thread(target=lambda p=proc, d=payload, b=box: b.append(p.communicate(d)),
+                                        daemon=True)
+                talk.start()
+                helpers.append((part, proc, (talk, box)))
+            results += [_theta_point(prob, theta, chol, start, *job) for job in parts[0]]
+        except BaseException:
+            for _, proc, _ in helpers:
+                if proc is not None and proc.poll() is None:
+                    proc.kill()   # our own child, by its handle
+            raise
+        used = 0
+        for part, proc, link in helpers:
+            got = None
+            if proc is not None:
+                link[0].join()
+                if proc.returncode == 0 and link[1]:
+                    try:
+                        got = pickle.loads(link[1][0][0])
+                    except Exception:
+                        got = None
+            if got is None or len(got) != len(part):
+                got = [_theta_point(prob, theta, chol, start, *job) for job in part]
+            else:
+                used += 1
+            results += got
+        return results, used
+    finally:
+        prob.workers = keep
 
 
 def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: int | None = None, chains: int = 4,
@@ -1788,7 +2006,16 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
     `boundary` (labels of sds the data cannot tell from 0; `boundary_unchecked` those the scan could not
     test), `theta` (labels, estimates and sds on the unconstrained scale) and `theta_point[chains, draws]`
     (the theta point of each draw; theta-hat stand-ins share the label `theta_points`). `divergences` is
-    0: there is no sampler. `cores` is the number of threads for the cell rule (default `CELL_WORKERS`).
+    0: there is no sampler. `cores` (default `CELL_WORKERS`) is the number of threads for the cell rule
+    in the theta fit, and of processes for the theta points (`_theta_points`).
+
+    A result with a value that is not finite, or with a group the cell rule could not integrate, is never
+    used (`_usable`). A trial point of the optimizer, polish or the boundary scan that gives one is
+    rejected and another tried, and a theta draw is drawn again; that alone fails no check. Where a result
+    is needed it fails one: the final evaluation fails `optimizer` (`finite` false), the theta Hessian
+    `theta_hessian`, a theta point with no attempt left `inner_newton` (`lost_theta_points`; its draws are
+    NaN), and the doubled rule `cell_rule`. `inner_newton` reports `bad_cells`, the groups that could not
+    be integrated anywhere in the fit, rejected trials included. A check value that is not finite is None.
     `tune` and `target_accept` are accepted for the same call shape and not used."""
     del tune, target_accept
     started = time.time()
@@ -1820,12 +2047,18 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
             hess = theta_hessian(prob, theta, start)
             polished = polish(prob, theta, hess, start)
         theta, decrement, grad_max = polished["theta"], polished["decrement"], polished["grad_max"]
-        start = polished["res"]["mode"]
-        fitted["value"] = polished["res"]["value"]
-        inner_fit = bool(polished["res"]["mode"]["ok"])
+        final = bool(polished["ok"])
+        if final:
+            start = polished["res"]["mode"]
+            fitted["value"] = polished["res"]["value"]
+            inner_fit = bool(polished["res"]["mode"]["ok"])
+        else:   # the evaluation at theta-hat cannot be used: the optimizer check fails
+            fitted["value"], inner_fit = np.nan, False
     else:
         hess = np.zeros((0, 0))
+        final = bool(np.isfinite(fitted["value"]))
         inner_fit = True
+    final = bool(final and np.isfinite(decrement) and np.isfinite(grad_max))
     cov, hess_ok = _cov_from(hess)
     edge, unchecked = boundary(prob, theta, start) if find_boundary and P.size else ([], [])
     chains, draws = int(chains), int(draws)
@@ -1841,27 +2074,20 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
         point[j] = rng.permutation(mine)[np.arange(draws) * len(mine) // draws]
     which = point.ravel()
     label = which.copy()
-    inner_ok, redrawn, stand_ins = True, 0, 0
-    for m in range(M):
-        picks = np.flatnonzero(which == m)
-        if not len(picks):
-            continue
-        res = None
-        for attempt in range(6):   # a theta draw the inner step cannot take is drawn again; theta-hat last
-            t = theta if attempt == 5 else np.clip(theta + chol @ rng.standard_normal(len(theta)), P.lo, P.hi)
-            try:
-                res = prob.evaluate(t, start, grad=False, tol=DRAW_TOL)
-            except np.linalg.LinAlgError:
-                res = None
-            if res is not None and np.isfinite(res["value"]):
-                break
-            redrawn += 1
-        if attempt == 5:   # theta-hat stood in: one shared label, not an independent theta draw
+    inner_ok, redrawn, stand_ins, lost = True, 0, 0, 0
+    bad_cells = prob.bad_cells   # in the fit, the Hessian and the boundary scan; the theta points add theirs
+    jobs = [(m, np.flatnonzero(which == m)) for m in range(M)]
+    jobs = [(m, picks) for m, picks in jobs if len(picks)]
+    gens = rng.spawn(M)   # one generator per theta point: the draws do not depend on where a point runs
+    results, helpers = _theta_points(prob, theta, chol, start, [(gens[m], len(picks)) for m, picks in jobs])
+    for (m, picks), (values, ok, attempts, stood_in, gone, bad) in zip(jobs, results):
+        redrawn += attempts
+        lost += gone
+        bad_cells += bad
+        if stood_in:   # theta-hat stood in: one shared label, not an independent theta draw
             label[picks] = M
             stand_ins += 1
-        inner_ok &= bool(res["mode"]["ok"])
-        dg, db = res["mode"]["factor"].draw(rng, len(picks))
-        values = outputs(prob, res["nu"], res["mode"]["zg"] + dg, res["mode"]["zb"] + db)
+        inner_ok &= ok
         for name, x in values.items():
             if out[name] is None:
                 out[name] = np.zeros((total,) + x.shape[1:])
@@ -1870,13 +2096,16 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
     if not prob.has_pairs:
         for name in ("sigma_pair", "position", "tie_width"):
             result[name] = np.full(result[name].shape, np.nan)
-    checks = [{"name": "optimizer", "value": decrement, "limit": DECREMENT_MAX,
-               "ok": bool(decrement <= DECREMENT_MAX and inner_fit), "grad_max": grad_max,
-               "message": fitted["message"], "iterations": fitted["iterations"],
-               "laplace_iterations": fitted.get("laplace_iterations", 0)},
+    # a value that is not finite is given as None: a fit file holds no NaN or infinity
+    checks = [{"name": "optimizer", "value": float(decrement) if final else None, "limit": DECREMENT_MAX,
+               "ok": bool(final and decrement <= DECREMENT_MAX and inner_fit), "finite": final,
+               "grad_max": float(grad_max) if final else None, "message": fitted["message"],
+               "iterations": fitted["iterations"], "laplace_iterations": fitted.get("laplace_iterations", 0)},
               {"name": "inner_newton", "value": int(not inner_ok), "limit": 0, "ok": bool(inner_ok),
-               "redrawn_theta": int(redrawn), "theta_hat_stand_ins": int(stand_ins)},
-              {"name": "theta_hessian", "value": float(np.linalg.eigvalsh(hess).min()) if P.size else 0.0,
+               "redrawn_theta": int(redrawn), "theta_hat_stand_ins": int(stand_ins), "lost_theta_points": int(lost),
+               "theta_helpers": int(helpers), "bad_cells": int(bad_cells)},
+              {"name": "theta_hessian", "value": (float(np.linalg.eigvalsh(hess).min()) if np.all(np.isfinite(hess))
+                                                  else None) if P.size else 0.0,
                "limit": 0.0, "ok": bool(hess_ok)}]
     checks[1]["inner"] = prob.inner
     rule = cell_rule_check(prob, theta, start)

@@ -69,7 +69,7 @@ def test_diagnose_fails_each_check_alone_and_skips_what_does_not_exist():
     rng = np.random.default_rng(1)
     raw = {name: rng.standard_normal((2, 400, 2)) for name in FT.CHECKED}
     good = FT.diagnose(raw, {}, 0, 1.5)
-    assert good["converged"] and [c["name"] for c in good["checks"]] == ["rhat", "ess", "divergences"]
+    assert good["converged"] and [c["name"] for c in good["checks"]] == ["rhat", "ess", "divergences", "finite_draws"]
     assert good["run_seconds"] == 1.5 and good["rhat_max"] < FT.RHAT_MAX and good["ess_min"] > FT.ESS_MIN
     assert not FT.diagnose(raw, {}, 9, 0.0)["converged"]            # more than 1% of 800 draws diverged
     assert FT.diagnose(raw, {}, 8, 0.0)["converged"]
@@ -79,6 +79,25 @@ def test_diagnose_fails_each_check_alone_and_skips_what_does_not_exist():
     assert FT.diagnose(bad, {"tau": np.zeros(2, dtype=bool)}, 0, 0.0)["converged"]   # masked out: not checked
     fixed = dict(raw, sigma=np.ones((2, 400, 2)))                                    # a fixed unit: not checked
     assert FT.diagnose(fixed, {}, 0, 0.0)["converged"]
+
+
+def test_diagnose_fails_a_draw_that_is_not_finite_where_the_parameter_exists():
+    """One NaN saved draw of a parameter that exists fails `finite_draws` (R-hat cannot see that column);
+    NaN where the mask says the parameter does not exist is not counted."""
+    rng = np.random.default_rng(1)
+    raw = {name: rng.standard_normal((2, 400, 2)) for name in FT.CHECKED}
+    assert FT.diagnose(raw, {}, 0, 0.0)["checks"][-1] == {"name": "finite_draws", "value": 0, "limit": 0, "ok": True,
+                                                          "worst": None}
+    holed = dict(raw, mu=raw["mu"].copy())
+    holed["mu"][1, 7, 1] = np.nan
+    told = FT.diagnose(holed, {}, 0, 0.0)
+    assert not told["converged"] and told["checks"][-1] == {"name": "finite_draws", "value": 1, "limit": 0,
+                                                            "ok": False, "worst": "mu[1]"}
+    assert [c["name"] for c in told["checks"] if not c["ok"]] == ["finite_draws"]
+    absent = dict(raw, tau=np.where(np.array([False, True]), np.nan, raw["tau"]))   # tau[1] does not exist
+    assert FT.diagnose(absent, {"tau": np.array([True, False])}, 0, 0.0)["converged"]
+    told = FT.diagnose(absent, {"tau": np.array([True, True])}, 0, 0.0)
+    assert not told["converged"] and told["checks"][-1]["value"] == 800 and told["checks"][-1]["worst"] == "tau[1]"
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -163,7 +182,8 @@ def test_smoke_fit_of_the_small_study_writes_a_fit_every_later_stage_can_read(tm
     assert fit.stale(files) == [] and fit.stale({**files, "rubric": JUDGES}) != []
     assert fit["counts"]["readings_used"] == 304 and fit["counts"]["pairs_used"] == 18
     assert fit["notes"] == [{"kind": "reading", "id": "s0021", "reason": "replaced by s0305"}]
-    assert [c["name"] for c in fit["diagnostics"]["checks"]] == ["rhat", "ess", "divergences", "saved_draws"]
+    assert [c["name"] for c in fit["diagnostics"]["checks"]] == ["rhat", "ess", "divergences", "saved_draws",
+                                                                "finite_draws"]
     assert fit["diagnostics"]["checks"][3] == {"name": "saved_draws", "value": 100, "limit": 400, "ok": False}
     assert fit["diagnostics"]["converged"] is False              # 100 saved draws cannot carry the intervals
     draws = fit.draws
