@@ -57,20 +57,39 @@ Method
    correlated given the Gaussian readings form a block; the integral is the product over blocks.
    The call noise `e` of an `items` call of n > 1 items touches one factor only, so it can be summed
    out inside that factor: `log of the integral over e ~ N(0, 1) of Phi(w + t e)^k Phi(-w - t e)^(n-k)`
-   by composite Gauss-Legendre in e around its mode, per value of w (`noisy_binomial`). That is still
-   log-concave in w. `items="summed"` does this for every such call, `items="explicit"` keeps `e` as a
-   direction of the block, and `items="auto"` (the default) sums only when an explicit block would
-   span more than `SUM_DIM` directions. The Laplace value is always that of the explicit layout, and
-   `posterior` reports `e` only when it stayed explicit.
-4. A block whose forms span d directions is integrated over those d coordinates (the rest of `z` does
-   not touch it) by tensor-product Gauss-Hermite centred at the mode and scaled by the curvature there.
-   The node count per coordinate runs through `NODES` until two successive changes of log p are both
-   below `tol`; `error` is the larger of those two changes, summed over blocks. With 1 node the rule is
-   the Laplace approximation of the same integral, returned as `laplace`.
-5. Posterior moments come from the same nodes, mapped back through step 1 and 2.
+   per value of w (`noisy_binomial`). That is still log-concave in w. The inner rule is composite
+   Gauss-Legendre over e* +- 10 (e* the mode; the integrand there is below e^-50 of its top), with
+   breakpoints at e* + 2^j sd for j = 0..24 each side and where the probit argument w + t e crosses
+   0, +-2, .., +-10, and panels halved until two successive values agree to the inner tolerance (it
+   refuses after `INNER_LEVELS`). Its error is the last change, and it enters the block's error.
+   `items="summed"` does this for every such call, `items="explicit"` keeps `e` as a direction of the
+   block, and `items="auto"` (the default) sums only when an explicit block would span more than
+   `SUM_DIM` directions. The Laplace value is always that of the explicit layout, and `posterior`
+   reports `e` only when it stayed explicit.
+4. Decisions about the layout are made in units of each factor's own scale (its `s`, or
+   `sqrt(1 + t^2)` for a summed call), so a common change of units changes nothing. Two factors are
+   linked when the correlation of their forms passes `LINK_TOL`; a block keeps the directions whose
+   standardised singular value passes `DROP_STD`. What the dropped directions and the cut links could
+   move, to second order at the mode, is added to the block's error.
+5. A block whose forms span d directions is integrated over those d coordinates (the rest of `z` does
+   not touch it). Its coordinates are sharp where the standardised singular value is at least
+   `SHARP_AT` (the factors change over a small part of the prior sd there).
+   - One direction: scipy's adaptive quad over the range above e^-80 of the peak.
+   - No sharp coordinate (or `method="gh"`): tensor-product Gauss-Hermite centred at the mode and
+     scaled by the curvature there, the node count per coordinate through `NODES`.
+   - One or two sharp coordinates (or `method="nested"`): the sharp ones by adaptive line rules with
+     breakpoints at the mode (graded out geometrically) and where each factor turns, and in a plane
+     at the vertices where two factors turn; the range cut where the log-concave integrand is 70
+     below its top. The other coordinates by Gauss-Hermite from the Laplace marginal of those
+     coordinates, through `NODES`. More than two sharp coordinates go to Gauss-Hermite in `auto`
+     (which may refuse) and are refused by `nested`.
+   The node count stops when the last two changes of log p plus the largest inner error are within
+   `tol`; the block's `error` is that sum plus the dropped and link terms, summed over blocks. With
+   1 node the rule is the Laplace approximation of the same integral, returned as `laplace`.
+6. Posterior moments come from the same nodes, mapped back through steps 1 and 2.
 
 A block of more than `MAX_DIM` directions is refused (`OracleTooLarge`), as is a block that does not
-converge within `max_nodes` nodes (`OracleNotConverged`).
+converge within `max_nodes` nodes or an inner rule that cannot reach its tolerance (`OracleNotConverged`).
 
 All data made here is synthetic.
 """
@@ -97,9 +116,19 @@ INTERVAL, BINOMIAL, GAUSS, NOISY = 0, 1, 2, 3  # factor kinds (NOISY: binomial-p
 NODES = (3, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257)   # numpy's hermegauss fails at 513
 MAX_DIM = 8
 SUM_DIM = 4                                   # items="auto" sums item call noise out above this block size
-INNER_PANELS = 4                              # Gauss-Legendre panels (16 nodes) per side of a NOISY factor
+GL_NODES = 8                                  # Gauss-Legendre nodes per panel in the breakpoint rules
+INNER_LEVELS = 8                              # panel halvings a breakpoint rule may try before it refuses
+INNER_TOL = 1.0e-12                           # relative accuracy asked of a NOISY factor by default
 LOG_2PI = math.log(2.0 * math.pi)
-RANK_TOL = 1.0e-10                            # singular values of a block below this are dropped
+DROP_STD = 1.0e-7                             # standardised singular values at or below this are dropped
+SHARP_AT = 3.0                                # standardised singular values from this are sharp directions
+NESTED_NODES = 2500                           # Gauss-Hermite nodes over the smooth directions of a nested block
+# Breakpoints of the adaptive line rules. Around a mode: 0 and +-2^j local sds, a geometric grading, so
+# no segment is much longer than the decay of a log-concave integrand at its inner end (two rules that
+# both step over a narrow tail would agree on nothing). Around a factor's turn, in its widths: past 8 a
+# probit is within 1e-15 of 0 or 1.
+STEPS_MODE = (0.0,) + tuple(sign * 2.0 ** j for j in range(25) for sign in (-1.0, 1.0))
+STEPS_WALL = (-8.0, -5.0, -2.5, -1.0, 0.0, 1.0, 2.5, 5.0, 8.0)
 LINK_TOL = 1.0e-12                            # relative covariance below this does not link two factors
 RANDOM_EXTRAS = ("mu", "bias", "position")
 CHUNK = 1 << 17
@@ -426,13 +455,21 @@ def _log_phi(x: np.ndarray) -> np.ndarray:
 def log_interval(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """log(Phi(b) - Phi(a)) for a < b, on the side of 0 where the difference keeps its digits."""
     a, b = np.broadcast_arrays(np.asarray(a, dtype=float), np.asarray(b, dtype=float))
+    out = np.empty(a.shape)
+    open_hi = np.isposinf(b)                  # one-sided: one log_ndtr, which keeps its digits on its own
+    open_lo = np.isneginf(a) & ~open_hi
+    both = ~(open_hi | open_lo)
+    out[open_hi] = special.log_ndtr(-a[open_hi])
+    out[open_lo] = special.log_ndtr(b[open_lo])
+    a, b = a[both], b[both]
     upper = a > 0
     hi_tail = np.where(upper, -a, b)          # the larger of the two Phi values, as a Phi argument
     lo_tail = np.where(upper, -b, a)
     big = special.log_ndtr(hi_tail)
     small = special.log_ndtr(lo_tail)
     with np.errstate(divide="ignore", invalid="ignore"):
-        return big + np.log(-np.expm1(small - big))
+        out[both] = big + np.log(-np.expm1(small - big))
+    return out
 
 
 def _binomial_g(x: np.ndarray, k: np.ndarray, n: np.ndarray):
@@ -443,74 +480,155 @@ def _binomial_g(x: np.ndarray, k: np.ndarray, n: np.ndarray):
             -k * lam1 * (x + lam1) - (n - k) * lam0 * (lam0 - x))
 
 
-@functools.lru_cache(maxsize=8)
-def _legendre(n: int) -> tuple[np.ndarray, np.ndarray]:
-    return leggauss(n)
+@functools.lru_cache(maxsize=16)
+def _panel_rule(level: int) -> tuple[np.ndarray, np.ndarray]:
+    """Gauss-Legendre nodes and weights on (0, 1), the unit cut into 2**level panels of GL_NODES each."""
+    x, w = leggauss(GL_NODES)
+    parts = 2 ** level
+    frac = ((np.arange(parts)[:, None] + 0.5 * (x[None, :] + 1.0)) / parts).ravel()
+    return frac, np.tile(0.5 * w / parts, parts)
 
 
-REACH = np.array([1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0, 48.0, 64.0, 96.0, 128.0])
+def breakpoint_rule(P: np.ndarray, evaluate, top: np.ndarray, tol: float, what: str, q: int,
+                    chunk: int = 1 << 20):
+    """Integrals over (P[:, 0], P[:, -1]) of exp(L - top) per row, with breakpoints P (rows x B, sorted).
+
+    `evaluate(E, R)` gives `(L, G, err)` at the points E of the rows R (flat arrays, R non-decreasing):
+    the log integrand, q weight functions (a sequence of arrays like E) whose weighted integrals come
+    back too, and the relative error of each integrand value (or None when the integrand is exact).
+    Each segment of nonzero width between breakpoints gets Gauss-Legendre panels of GL_NODES nodes; the
+    panels are halved until two successive values of every row agree to `tol` relative, and the finer
+    one is kept. Returns `(value, G integrals (q x rows), error)`, the error of a row being its last
+    change plus the largest integrand error met in it. Raises `OracleNotConverged` when a row has not
+    settled after INNER_LEVELS halvings. `chunk` bounds the points of one `evaluate` call."""
+    rows = P.shape[0]
+    width = np.diff(P, axis=1)
+    seg_r, seg_j = np.nonzero(width > 0)
+    seg_a, seg_w = P[seg_r, seg_j], width[seg_r, seg_j]
+    inner = np.zeros(rows)
+
+    def at(level: int, todo: np.ndarray):
+        frac, wts = _panel_rule(level)
+        pick = np.flatnonzero(todo[seg_r])
+        value, out = np.zeros(rows), np.zeros((q, rows))
+        per = max(1, chunk // len(frac))
+        for start in range(0, len(pick), per):
+            seg = pick[start:start + per]
+            E = (seg_a[seg, None] + seg_w[seg, None] * frac[None, :]).ravel()
+            W = (seg_w[seg, None] * wts[None, :]).ravel()
+            R = np.repeat(seg_r[seg], len(frac))
+            L, G, err = evaluate(E, R)
+            Pw = W * np.exp(L - top[R])
+            r0, r1 = int(R[0]), int(R[-1]) + 1
+            value[r0:r1] += np.bincount(R - r0, Pw, minlength=r1 - r0)
+            for j in range(q):
+                out[j, r0:r1] += np.bincount(R - r0, G[j] * Pw, minlength=r1 - r0)
+            if err is not None:
+                first = np.flatnonzero(np.r_[True, R[1:] != R[:-1]])
+                inner[R[first]] = np.maximum(inner[R[first]], np.maximum.reduceat(err, first))
+        return value, out
+
+    todo = np.ones(rows, dtype=bool)
+    v_prev, _ = at(0, todo)
+    value, G, err = np.zeros(rows), np.zeros((q, rows)), np.full(rows, np.inf)
+    for level in range(1, INNER_LEVELS + 1):
+        v_new, g_new = at(level, todo)
+        idx = np.flatnonzero(todo)
+        change = np.abs(v_new[idx] - v_prev[idx]) / np.where(v_new[idx] > 0, v_new[idx], np.nan)
+        value[idx], G[:, idx], err[idx] = v_new[idx], g_new[:, idx], change
+        v_prev = v_new
+        todo[idx[change <= tol]] = False
+        if not todo.any():
+            return value, G, err + inner
+    raise OracleNotConverged(f"{what}: {int(todo.sum())} of {rows} integrals still change by up to "
+                             f"{float(np.nanmax(err[todo])):.3g} after {INNER_LEVELS} halvings (tol {tol:.3g})")
+
+
+def _bracketed_root(grad, lo: np.ndarray, hi: np.ndarray, start: np.ndarray, what: str) -> np.ndarray:
+    """The root of a decreasing function per row: Newton steps kept inside the bracket (lo, hi), a
+    bisection step otherwise. `grad(x)` returns (value, derivative)."""
+    x = np.clip(start, lo, hi)
+    for _ in range(200):
+        g1, g2 = grad(x)
+        lo = np.where(g1 > 0, x, lo)
+        hi = np.where(g1 < 0, x, hi)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            newton = x - g1 / g2
+        near = 1e-13 * (1.0 + np.abs(x))
+        done = (g1 == 0) | (np.abs(newton - x) <= near) | (hi - lo <= 2.0 * near)
+        if done.all():
+            return np.where(np.abs(newton - x) <= near, newton, x)
+        inside = np.isfinite(newton) & (newton >= lo) & (newton <= hi)
+        x = np.where(done, x, np.where(inside, newton, 0.5 * (lo + hi)))
+    raise OracleNotConverged(f"{what}: the mode was not found")
 
 
 def noisy_binomial(w: np.ndarray, t: np.ndarray, k: np.ndarray, n: np.ndarray, derivs: bool = True,
-                   panels: int = INNER_PANELS, per_panel: int = 16, piece: int = 2048):
-    """log of the integral over e ~ N(0, 1) of Phi(w + t e)^k Phi(-w - t e)^(n - k), with d/dw and d2/dw2.
+                   tol: float = INNER_TOL, with_error: bool = False):
+    """log of the integral over e ~ N(0, 1) of Phi(w + t e)^k Phi(-w - t e)^(n - k), with d/dw and d2/dw2
+    (and, with `with_error`, the relative error estimate of each value).
 
-    Separately for every element: the mode e* of `h(e) = g(w + t e) - e^2 / 2` (concave, g = k log Phi
-    + (n - k) log Phi(-)) by Newton, then on each side of e* the first reach (in units of the curvature
-    scale, at most 9) where h has dropped by 40, cut into `panels` Gauss-Legendre panels of `per_panel`
-    nodes. Since h'' <= -1, h drops by at least 40.5 within 9 of e*, so the range always closes. The
-    derivatives are the posterior mean of g' and the posterior mean of g'' plus the posterior variance
-    of g'."""
+    Per element: the mode e* of `h(e) = g(w + t e) - e^2 / 2` (g = k log Phi + (n - k) log Phi(-), so
+    h'' <= -1 and the root of h' lies between 0 and h'(0)); the range e* +- 10, outside which h is at
+    least 50 below its peak; breakpoints at e* + `STEPS_MODE` local sds and, when t > 1, where the
+    probit argument w + t e crosses 0, +-2, ..., +-10 (the steps of width 1 / t that a large call noise
+    makes); then `breakpoint_rule` to relative accuracy `tol`, refusing otherwise. The derivatives are the
+    posterior mean of g' and the posterior mean of g'' plus the posterior variance of g'."""
     w, t, k, n = (np.asarray(v, dtype=float) for v in np.broadcast_arrays(w, t, k, n))
     shape = w.shape
-    w, t, k, n = (v.ravel() for v in (w, t, k, n))
-    xg, wg = _legendre(per_panel)
-    frac = (np.arange(panels)[:, None] + 0.5 * (xg[None, :] + 1.0)).ravel() / panels    # in (0, 1)
-    wfrac = np.tile(0.5 * wg, panels) / panels
-    lp, d1, d2 = np.zeros(w.size), np.zeros(w.size), np.zeros(w.size)
-    for start in range(0, w.size, piece):
-        sl = slice(start, min(w.size, start + piece))
-        ww, tt, kk, nn = w[sl], t[sl], k[sl], n[sl]
-        e = np.zeros(ww.size)
-        for _ in range(200):                       # the mode of h, concave in e
+    w, t, k, n = (v.ravel().copy() for v in (w, t, k, n))
+    lp, d1, d2, err = (np.zeros(w.size) for _ in range(4))
+    flat = t <= 1e-300
+    if flat.any():                                    # no noise: the binomial-probit term itself
+        g, g1, g2 = _binomial_g(w[flat], k[flat], n[flat])
+        lp[flat], d1[flat], d2[flat] = g, g1, g2
+    idx = np.flatnonzero(~flat)
+    if len(idx):
+        ww, tt, kk, nn = w[idx], t[idx], k[idx], n[idx]
+
+        def grad(e):
             _, g1, g2 = _binomial_g(ww + tt * e, kk, nn)
-            step = np.clip((tt * g1 - e) / (1.0 - tt * tt * g2), -4.0, 4.0)
-            e = e + step
-            if float(np.max(np.abs(step), initial=0.0)) < 1e-12:
-                break
-        else:
-            raise OracleNotConverged("the mode of an items call's noise was not found")
+            return tt * g1 - e, tt * tt * g2 - 1.0
+
+        h0 = grad(np.zeros(len(idx)))[0]
+        e = _bracketed_root(grad, np.minimum(0.0, h0) - 1.0, np.maximum(0.0, h0) + 1.0, np.zeros(len(idx)),
+                            "a summed items call")
         g0, _, g2 = _binomial_g(ww + tt * e, kk, nn)
         top = g0 - 0.5 * e * e
-        scale = 1.0 / np.sqrt(1.0 - tt * tt * g2)
-        cols, wcols = [], []
-        for side in (-1.0, 1.0):
-            reach = np.minimum(REACH[None, :] * scale[:, None], 9.0)
-            Ec = e[:, None] + side * reach
-            hc = _binomial_g(ww[:, None] + tt[:, None] * Ec, kk[:, None], nn[:, None])[0] - 0.5 * Ec * Ec
-            far = (top[:, None] - hc) >= 40.0
-            far[:, -1] = True
-            r = reach[np.arange(ww.size), np.argmax(far, axis=1)]
-            cols.append(e[:, None] + side * r[:, None] * frac[None, :])
-            wcols.append(r[:, None] * wfrac[None, :])
-        E, W = np.concatenate(cols, axis=1), np.concatenate(wcols, axis=1)
-        g, g1, g2 = _binomial_g(ww[:, None] + tt[:, None] * E, kk[:, None], nn[:, None])
-        P = W * np.exp(g - 0.5 * E * E - top[:, None])
-        S = P.sum(axis=1)
-        lp[sl] = top + np.log(S) - 0.5 * LOG_2PI
+        sd = 1.0 / np.sqrt(1.0 - tt * tt * g2)
+        cols = [e - 10.0, e + 10.0] + [e + m * sd for m in STEPS_MODE]
+        steep = tt > 1.0
+        for x in (-10.0, -8.0, -6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 6.0, 8.0, 10.0):
+            cols.append(np.where(steep, (x - ww) / np.where(steep, tt, 1.0), e))
+        P = np.sort(np.clip(np.stack(cols, axis=1), (e - 10.0)[:, None], (e + 10.0)[:, None]), axis=1)
+
+        def evaluate(E, R):
+            x = ww[R] + tt[R] * E
+            if not derivs:
+                return kk[R] * special.log_ndtr(x) + (nn[R] - kk[R]) * special.log_ndtr(-x) - 0.5 * E * E, (), None
+            g, g1, g2 = _binomial_g(x, kk[R], nn[R])
+            return g - 0.5 * E * E, (g1, g2 + g1 * g1), None
+
+        value, G, rel = breakpoint_rule(P, evaluate, top, tol, "a summed items call", 2 if derivs else 0)
+        lp[idx] = top + np.log(value) - 0.5 * LOG_2PI
+        err[idx] = rel
         if derivs:
-            P /= S[:, None]
-            m1 = (P * g1).sum(axis=1)
-            d1[sl] = m1
-            d2[sl] = (P * (g2 + g1 * g1)).sum(axis=1) - m1 * m1
-    lp, d1, d2 = (v.reshape(shape) for v in (lp, d1, d2))
-    return (lp, d1, d2) if derivs else lp
+            m1 = G[0] / value
+            d1[idx], d2[idx] = m1, G[1] / value - m1 * m1
+    lp, d1, d2, err = (v.reshape(shape) for v in (lp, d1, d2, err))
+    out = (lp, d1, d2) if derivs else (lp,)
+    if with_error:
+        out = out + (err,)
+    return out if len(out) > 1 else out[0]
 
 
 def factor_values(kind: np.ndarray, lo: np.ndarray, hi: np.ndarray, s: np.ndarray, k: np.ndarray, n: np.ndarray,
-                  w: np.ndarray, derivs: bool = True):
-    """log f(w) and, with `derivs`, d/dw and d2/dw2, elementwise. The factor arrays broadcast over w."""
+                  w: np.ndarray, derivs: bool = True, with_error: bool = False, tol: float = INNER_TOL):
+    """log f(w) and, with `derivs`, d/dw and d2/dw2, elementwise. The factor arrays broadcast over w. With
+    `with_error` the relative error estimate of each value comes last (0 except for NOISY factors, whose
+    inner integral is asked for relative accuracy `tol`)."""
     lp = np.zeros(np.broadcast(w, kind).shape)
+    err = np.zeros_like(lp)
     d1 = np.zeros_like(lp)
     d2 = np.zeros_like(lp)
     kind = np.broadcast_to(kind, lp.shape)
@@ -538,9 +656,9 @@ def factor_values(kind: np.ndarray, lo: np.ndarray, hi: np.ndarray, s: np.ndarra
     m = kind == NOISY
     if m.any():
         if derivs:
-            lp[m], d1[m], d2[m] = noisy_binomial(w[m], s[m], k[m], n[m])
+            lp[m], d1[m], d2[m], err[m] = noisy_binomial(w[m], s[m], k[m], n[m], tol=tol, with_error=True)
         else:
-            lp[m] = noisy_binomial(w[m], s[m], k[m], n[m], derivs=False)
+            lp[m], err[m] = noisy_binomial(w[m], s[m], k[m], n[m], derivs=False, tol=tol, with_error=True)
     m = kind == GAUSS
     if m.any():
         sd, y = s[m], lo[m]
@@ -549,7 +667,16 @@ def factor_values(kind: np.ndarray, lo: np.ndarray, hi: np.ndarray, s: np.ndarra
         if derivs:
             d1[m] = z / sd
             d2[m] = -1.0 / sd ** 2
-    return (lp, d1, d2) if derivs else lp
+    d2 = np.minimum(d2, 0.0)       # every factor is log-concave; rounding far in a tail can say otherwise
+    out = (lp, d1, d2) if derivs else (lp,)
+    if with_error:
+        out = out + (err,)
+    return out if len(out) > 1 else out[0]
+
+
+def factor_scale(kind: np.ndarray, s: np.ndarray) -> np.ndarray:
+    """The width in w over which a factor changes: the noise sd s, or sqrt(1 + t^2) for a NOISY factor."""
+    return np.where(np.asarray(kind) == NOISY, np.sqrt(1.0 + np.asarray(s, dtype=float) ** 2), s)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -559,31 +686,209 @@ def factor_values(kind: np.ndarray, lo: np.ndarray, hi: np.ndarray, s: np.ndarra
 class Block:
     factors: np.ndarray            # positions in the problem's factor list
     dim: int
-    method: str                    # "quad" (one direction, scipy's adaptive quadrature) or "gh"
-    nodes: int                     # Gauss-Hermite nodes per direction at the answer (0 for "quad")
+    method: str                    # "quad" (one direction, scipy), "gh" (Gauss-Hermite) or "nested"
+    nodes: int                     # Gauss-Hermite nodes per (smooth) direction at the answer (0: none)
     loglik: float
     laplace: float
-    error: float
+    error: float                   # quadrature + inner integrals + dropped directions, in log units
     history: list                  # (nodes per direction, log integral); for "quad" one entry (0, value)
     mean: np.ndarray               # posterior mean of the block's d coordinates
     cov: np.ndarray
     basis: np.ndarray              # p x d: the coordinates are basis' zeta, zeta ~ N(0, I) given Gaussian readings
+    sharp: int = 0                 # coordinates integrated by adaptive line rules ("nested")
+    slopes: np.ndarray | None = None   # |d log f / dw| times each factor's scale, at the mode
 
 
-def _integrate_block(prob: Problem, rows: np.ndarray, mu: np.ndarray, Mb: np.ndarray, basis: np.ndarray, *,
-                     tol: float, max_nodes: int, nodes: Sequence[int] | None, method: str,
-                     laplace_only: bool = False):
+class _Factors:
+    """The factor arrays of some rows of a problem, with their scales and the places where they turn."""
+
+    def __init__(self, prob: Problem, rows: np.ndarray, tol: float):
+        self.kind, self.lo, self.hi, self.s, self.k, self.n = (getattr(prob, f"f_{name}")[rows]
+                                                               for name in ("kind", "lo", "hi", "s", "k", "n"))
+        self.scale = factor_scale(self.kind, self.s)
+        self.noisy = int(np.sum(self.kind == NOISY))
+        # a NOISY factor is asked for a share of the block's tolerance (relative, so in log units)
+        self.inner_tol = max(1e-13, min(1e-10, tol / (20.0 * max(1, self.noisy))))
+        walls = []
+        for i, kind in enumerate(self.kind):
+            if kind == INTERVAL:
+                walls += [(i, float(b)) for b in (self.lo[i], self.hi[i]) if np.isfinite(b)]
+            elif kind == GAUSS:
+                walls.append((i, float(self.lo[i])))
+            else:
+                walls.append((i, 0.0))
+        self.walls = walls
+
+    def values(self, W: np.ndarray, derivs: bool = True):
+        """log f, (d1, d2,) and the relative error of each value at W (... x factors)."""
+        return factor_values(self.kind, self.lo, self.hi, self.s, self.k, self.n, W, derivs=derivs,
+                             with_error=True, tol=self.inner_tol)
+
+
+def _modes(F: _Factors, C: np.ndarray, A: np.ndarray, what: str):
+    """For each row of C (m x factors): the maximum over y (A's dh columns) of
+    L(y) = sum log f(C + A y) - |y|^2 / 2, by Newton with backtracking per row (L is concave, L'' <= -I).
+    Returns y, L, its gradient and Hessian there."""
+    m, dh = C.shape[0], A.shape[1]
+    eye = np.eye(dh)
+
+    def h(y, idx):
+        lp, d1, d2, _ = F.values(C[idx] + y @ A.T)
+        return lp.sum(axis=1) - 0.5 * (y * y).sum(axis=1), d1 @ A - y, np.einsum("ri,ia,ib->rab", d2, A, A) - eye
+
+    every = np.arange(m)
+    y = np.zeros((m, dh))
+    val, grad, hess = h(y, every)
+    for _ in range(200):
+        step = np.linalg.solve(-hess, grad[..., None])[..., 0]
+        gain = (grad * step).sum(axis=1)
+        idx = np.flatnonzero(gain > 1e-15 * np.maximum(1.0, np.abs(val)))
+        if not len(idx):
+            return y, val, grad, hess
+        t = np.ones(len(idx))
+        for _ in range(60):
+            new = y[idx] + t[:, None] * step[idx]
+            nval, ngrad, nhess = h(new, idx)
+            ok = np.isfinite(nval) & (nval >= val[idx] - 1e-14 * np.abs(val[idx]))
+            if ok.all():
+                break
+            t = np.where(ok, t, 0.5 * t)
+        else:
+            raise OracleNotConverged(f"{what}: the mode of a line was not found")
+        y[idx], val[idx], grad[idx], hess[idx] = new, nval, ngrad, nhess
+    raise OracleNotConverged(f"{what}: the mode of a line was not found in 200 Newton steps")
+
+
+
+
+def _reach(grad: np.ndarray, y: np.ndarray):
+    """Centre and half-width of the region outside which the integrand is below e^-60 of its top.
+    Since L'' <= -I, L(x) <= L(y) + |g|^2 / 2 - |x - (y + g)|^2 / 2 for any y with gradient g."""
+    g2 = (grad * grad).sum(axis=1)
+    return y + grad, np.sqrt(120.0 + g2)
+
+
+CUT = 70.0                                    # how far below its top a log-concave integrand ends a line rule
+
+
+def _cut(points: np.ndarray, logv: np.ndarray, c0: np.ndarray, top: np.ndarray, reach: np.ndarray):
+    """The range of a line rule around its mode c0: from the nearest candidate breakpoint on each side
+    where the log integrand (log-concave, so it stays lower beyond) is CUT below its top, or else the
+    reach bound of `_reach`. Also a bound on the mass left out, relative to e^top: beyond a cut point p
+    the log integrand falls at least as fast as the chord from the mode, so the tail is at most
+    e^(L(p) - top) |p - c0| / (top - L(p)); beyond the reach bound it is at most e^-60 / reach."""
+    low = logv < (top - CUT)[:, None]
+    lo, hi = c0 - reach, c0 + reach
+    tail = np.zeros(len(c0))
+    for side in (-1.0, 1.0):
+        here = low & (side * (points - c0[:, None]) > 0)
+        dist = np.where(here, side * (points - c0[:, None]), np.inf)
+        k = np.argmin(dist, axis=1)
+        found = np.isfinite(dist[np.arange(len(c0)), k]) & (dist[np.arange(len(c0)), k] < reach)
+        p, lp = points[np.arange(len(c0)), k], logv[np.arange(len(c0)), k]
+        drop = np.where(found, top - lp, 1.0)
+        tail += np.where(found, np.exp(-drop) * np.abs(p - c0) / drop, math.exp(-60.0) / reach)
+        if side < 0:
+            lo = np.where(found, p, lo)
+        else:
+            hi = np.where(found, p, hi)
+    return lo, hi, tail
+
+
+def _line_integrals(F: _Factors, C: np.ndarray, a: np.ndarray, tol: float, what: str):
+    """Per row of C (m x factors): log of the integral over y ~ N(0, 1) of prod f(C + a y), the posterior
+    mean and second moment of y (m x 1 and m x 1 x 1) and the relative error. Breakpoints at the mode and
+    where each factor turns (`walls`), the range cut where the integrand is CUT below its top (`_cut`),
+    then `breakpoint_rule` to relative accuracy `tol`."""
+    y, val, grad, hess = _modes(F, C, a[:, None], what)
+    centre, reach = _reach(grad, y)
+    c0 = centre[:, 0]
+    sd = 1.0 / np.sqrt(-hess[:, 0, 0])
+    cols = [c0 - reach, c0 + reach] + [c0 + k * sd for k in STEPS_MODE]
+    for i, b in F.walls:
+        if a[i] != 0.0:
+            turn, width = (b - C[:, i]) / a[i], F.scale[i] / abs(a[i])
+            cols += [turn + k * width for k in STEPS_WALL]
+    cand = np.clip(np.stack(cols, axis=1), (c0 - reach)[:, None], (c0 + reach)[:, None])
+    lp, _ = F.values(C[:, None, :] + cand[..., None] * a[None, None, :], derivs=False)
+    lo, hi, tail = _cut(cand, lp.sum(axis=2) - 0.5 * cand * cand, c0, val, reach)
+    P = np.sort(np.clip(cand, lo[:, None], hi[:, None]), axis=1)
+
+    def evaluate(E, R):
+        lp, err = F.values(C[R] + E[:, None] * a[None, :], derivs=False)
+        return lp.sum(axis=1) - 0.5 * E * E, (E, E * E), (err.sum(axis=1) if F.noisy else None)
+
+    value, G, rel = breakpoint_rule(P, evaluate, val, tol, what, 2, chunk=max(1024, (1 << 20) // len(a)))
+    rel = rel + tail / value
+    return (val + np.log(value) - 0.5 * LOG_2PI, (G[0] / value)[:, None], (G[1] / value)[:, None, None], rel)
+
+
+def _plane_integrals(F: _Factors, C: np.ndarray, A: np.ndarray, tol: float, what: str):
+    """As `_line_integrals` over y ~ N(0, I_2), A factors x 2: the outer coordinate by `breakpoint_rule`
+    over line integrals in the inner one. The outer breakpoints: the mode, where a factor turns on the
+    line through the mode, and the vertices where two factors turn, each with its width (the integral of
+    a line has kinks where the set it cuts changes shape). Vertices where the integrand is below e^-80 of
+    its top are skipped; the range is cut on the profile, the maximum over the inner coordinate (concave
+    too, and the line integral is at most its exponential). Returns means m x 2 and second moments m x 2 x 2."""
+    y, val, grad, hess = _modes(F, C, A, what)
+    centre, reach = _reach(grad, y)
+    c0, c1 = centre[:, 0], centre[:, 1]
+    sd = np.sqrt(np.linalg.inv(-hess)[:, 0, 0])
+    cols = [c0 - reach, c0 + reach] + [c0 + k * sd for k in STEPS_MODE]
+    for i, b in F.walls:
+        if A[i, 0] != 0.0:
+            turn, width = (b - C[:, i] - A[i, 1] * c1) / A[i, 0], F.scale[i] / abs(A[i, 0])
+            cols += [turn + k * width for k in STEPS_WALL]
+    for one in range(len(F.walls)):
+        for two in range(one + 1, len(F.walls)):
+            (i, bi), (j, bj) = F.walls[one], F.walls[two]
+            det = A[i, 0] * A[j, 1] - A[i, 1] * A[j, 0]
+            if i == j or abs(det) <= 1e-12 * np.hypot(*A[i]) * np.hypot(*A[j]):
+                continue
+            ri, rj = bi - C[:, i], bj - C[:, j]
+            v0, v1 = (ri * A[j, 1] - A[i, 1] * rj) / det, (A[i, 0] * rj - ri * A[j, 0]) / det
+            lp, _ = F.values(C + v0[:, None] * A[None, :, 0] + v1[:, None] * A[None, :, 1], derivs=False)
+            near = lp.sum(axis=1) - 0.5 * (v0 * v0 + v1 * v1) >= val - 80.0
+            width = np.hypot(F.scale[i] * A[j, 1], F.scale[j] * A[i, 1]) / abs(det)
+            cols += [np.where(near, v0 + k * width, c0) for k in STEPS_WALL]
+    cand = np.clip(np.stack(cols, axis=1), (c0 - reach)[:, None], (c0 + reach)[:, None])
+    m, K = cand.shape
+    lines = (C[:, None, :] + cand[..., None] * A[None, None, :, 0]).reshape(m * K, -1)
+    profile = _modes(F, lines, A[:, 1:2], what)[1].reshape(m, K) - 0.5 * cand * cand
+    lo, hi, tail = _cut(cand, profile, c0, val, reach)
+    P = np.sort(np.clip(cand, lo[:, None], hi[:, None]), axis=1)
+
+    def evaluate(E, R):
+        log_in, m_in, s_in, err = _line_integrals(F, C[R] + E[:, None] * A[None, :, 0], A[:, 1], tol, what)
+        m_in, s_in = m_in[:, 0], s_in[:, 0, 0]
+        return log_in - 0.5 * E * E, (E, E * E, m_in, E * m_in, s_in), err
+
+    value, G, rel = breakpoint_rule(P, evaluate, val, tol, what, 5, chunk=2048)
+    rel = rel + tail / value
+    G = G / value
+    mean = np.stack([G[0], G[2]], axis=1)
+    second = np.stack([np.stack([G[1], G[3]], axis=1), np.stack([G[3], G[4]], axis=1)], axis=1)
+    return val + np.log(value) - 0.5 * LOG_2PI, mean, second, rel
+
+
+def _gh_grid(n: int, d: int, start: int, stop: int):
+    """Nodes start..stop of the n^d tensor Gauss-Hermite grid (weight e^{-z^2/2}) and their log weights."""
+    x, wts = hermegauss(n)
+    logw = np.log(wts)
+    idx = np.unravel_index(np.arange(start, stop), (n,) * d)
+    return np.stack([x[i] for i in idx], axis=1), np.sum([logw[i] for i in idx], axis=0)
+
+
+def _integrate_block(prob: Problem, part, *, tol: float, max_nodes: int, nodes: Sequence[int] | None,
+                     method: str, laplace_only: bool = False):
     """The integral over one block's d coordinates y ~ N(0, I) of the product of its factors (with
     `laplace_only`, just its Laplace value)."""
+    rows, mu, Mb, basis = part.rows, part.mu, part.Mb, part.basis
     d = Mb.shape[1]
-    sel = {name: getattr(prob, f"f_{name}")[rows] for name in ("kind", "lo", "hi", "s", "k", "n")}
-
-    def logf(W: np.ndarray) -> np.ndarray:
-        return factor_values(sel["kind"], sel["lo"], sel["hi"], sel["s"], sel["k"], sel["n"], W, derivs=False)
+    F = _Factors(prob, rows, tol)
 
     def h(y: np.ndarray):
-        w = mu + Mb @ y
-        lp, d1, d2 = factor_values(sel["kind"], sel["lo"], sel["hi"], sel["s"], sel["k"], sel["n"], w)
+        lp, d1, d2, _ = F.values(mu + Mb @ y)
         return lp.sum() - 0.5 * y @ y, Mb.T @ d1 - y, (Mb.T * d2) @ Mb - np.eye(d)
 
     # the mode, by Newton with backtracking (every factor is log-concave in w, so the mode is unique)
@@ -612,22 +917,41 @@ def _integrate_block(prob: Problem, rows: np.ndarray, mu: np.ndarray, Mb: np.nda
     laplace = log_det + float(val)
     if laplace_only:
         return laplace
+    # what the dropped directions could move: second order in their (standardised) variance
+    _, d1, d2, _ = F.values(mu + Mb @ y)
+    slopes = np.abs(d1) * F.scale
+    dropped = 0.5 * part.drop * float(np.sum(np.abs(d2) * F.scale ** 2 + slopes ** 2))
 
-    if method == "auto" and d == 1 and nodes is None:
-        return _quad_block(rows, logf, mu, Mb, basis, float(y[0]), float(Lc[0, 0]), float(val), laplace)
+    sharp = int(np.sum(part.strength >= SHARP_AT))
+    if method == "nested" or (method == "auto" and d >= 2 and nodes is None and 1 <= sharp <= 2):
+        if sharp > 2:
+            raise OracleTooLarge(f"a block has {sharp} sharp directions; the nested rule takes at most 2")
+        block = _nested_block(F, part, y, prec, max(1, sharp), laplace, tol, max_nodes)
+    elif method == "auto" and d == 1 and nodes is None:
+        block = _quad_block(F, part, float(y[0]), float(Lc[0, 0]), float(val), laplace)
+    else:
+        block = _gh_block(F, part, y, Lc, log_det, laplace, tol, max_nodes, nodes)
+    block.error += dropped
+    block.slopes = slopes
+    return block
+
+
+def _gh_block(F: _Factors, part, y, Lc, log_det, laplace, tol, max_nodes, nodes) -> Block:
+    """Tensor Gauss-Hermite centred at the mode and scaled by the curvature there, through `NODES` until
+    the last two changes plus the largest inner error are within `tol`."""
+    rows, mu, Mb, basis = part.rows, part.mu, part.Mb, part.basis
+    d = Mb.shape[1]
+    chunk = max(256, CHUNK // max(1, 4 * F.noisy))
 
     def rule(n: int):
-        x, wts = hermegauss(n)
-        logw = np.log(wts)
         total = n ** d
-        top, s0 = -np.inf, 0.0
+        top, s0, inner = -np.inf, 0.0, 0.0
         s1, s2 = np.zeros(d), np.zeros((d, d))
-        for start in range(0, total, CHUNK):
-            idx = np.unravel_index(np.arange(start, min(total, start + CHUNK)), (n,) * d)
-            Z = np.stack([x[i] for i in idx], axis=1)
-            lw = np.sum([logw[i] for i in idx], axis=0)
+        for start in range(0, total, chunk):
+            Z, lw = _gh_grid(n, d, start, min(total, start + chunk))
             Y = y + Z @ Lc.T
-            lp = logf(mu + Y @ Mb.T)
+            lp, err = F.values(mu + Y @ Mb.T, derivs=False)
+            inner = max(inner, float(err.sum(axis=1).max()))
             val_n = lp.sum(axis=1) - 0.5 * (Y * Y).sum(axis=1) + 0.5 * (Z * Z).sum(axis=1) + lw
             local = float(np.max(val_n))
             if local > top:
@@ -639,17 +963,18 @@ def _integrate_block(prob: Problem, rows: np.ndarray, mu: np.ndarray, Mb: np.nda
             s2 += (Y * wts_n[:, None]).T @ Y
         logint = log_det - 0.5 * d * LOG_2PI + top + math.log(s0)
         mean = s1 / s0
-        return logint, mean, s2 / s0 - np.outer(mean, mean)
+        return logint, mean, s2 / s0 - np.outer(mean, mean), inner
 
     seq = list(nodes) if nodes is not None else [n for n in NODES if n ** d <= max_nodes]
     history: list = []
     found = None
     for n in seq:
-        logint, mean, cov = rule(n)
+        logint, mean, cov, inner = rule(n)
         history.append((n, logint))
-        found = (n, logint, mean, cov)
+        found = (n, logint, mean, cov, inner)
         if nodes is None and len(history) >= 3:
-            if abs(history[-1][1] - history[-2][1]) <= tol and abs(history[-2][1] - history[-3][1]) <= tol:
+            last = max(abs(history[-1][1] - history[-2][1]), abs(history[-2][1] - history[-3][1]))
+            if last + inner <= tol:
                 break
     else:
         if nodes is None:
@@ -658,19 +983,22 @@ def _integrate_block(prob: Problem, rows: np.ndarray, mu: np.ndarray, Mb: np.nda
                                      f"{[n for n, _ in history]}, tol {tol}, max_nodes {max_nodes}")
     assert found is not None
     changes = [abs(history[i][1] - history[i - 1][1]) for i in range(1, len(history))]
-    error = max(changes[-2:]) if changes else math.nan
-    n, logint, mean, cov = found
+    n, logint, mean, cov, inner = found
+    error = (max(changes[-2:]) if changes else math.nan) + inner
     return Block(factors=rows, dim=d, method="gh", nodes=n, loglik=logint, laplace=laplace, error=error,
                  history=history, mean=mean, cov=cov, basis=basis)
 
 
-def _quad_block(rows, logf, mu, Mb, basis, mode: float, scale: float, top: float, laplace: float) -> Block:
+def _quad_block(F: _Factors, part, mode: float, scale: float, top: float, laplace: float) -> Block:
     """One direction: scipy's adaptive Gauss-Kronrod over the range where the integrand is above e^-80 of
     its peak, with a break point at the mode. Robust to the near-hard walls of a small call noise."""
-    col = Mb[:, 0]
+    col, mu = part.Mb[:, 0], part.mu
+    inner = [0.0]
 
     def hval(y: float) -> float:
-        return float(logf(mu + col * y).sum()) - 0.5 * y * y
+        lp, err = F.values(mu + col * y, derivs=False)
+        inner[0] = max(inner[0], float(err.sum()))
+        return float(lp.sum()) - 0.5 * y * y
 
     def edge(sign: float) -> float:
         step = scale
@@ -692,8 +1020,76 @@ def _quad_block(rows, logf, mu, Mb, basis, mode: float, scale: float, top: float
     mean = found[1][0] / s0
     var = found[2][0] / s0 - mean * mean
     logint = top - 0.5 * LOG_2PI + math.log(s0)
-    return Block(factors=rows, dim=1, method="quad", nodes=0, loglik=logint, laplace=laplace, error=e0 / s0,
-                 history=[(0, logint)], mean=np.array([mean]), cov=np.array([[var]]), basis=basis)
+    return Block(factors=part.rows, dim=1, method="quad", nodes=0, loglik=logint, laplace=laplace,
+                 error=e0 / s0 + inner[0], history=[(0, logint)], mean=np.array([mean]), cov=np.array([[var]]),
+                 basis=part.basis)
+
+
+def _nested_block(F: _Factors, part, y, prec, dh: int, laplace: float, tol: float, max_nodes: int) -> Block:
+    """The first `dh` coordinates (the sharp ones: the factors change over a small part of their sd) by
+    adaptive line rules with breakpoints where the factors turn (`_line_integrals`, `_plane_integrals`),
+    the rest by Gauss-Hermite from the Laplace marginal of those coordinates, through `NODES` until the
+    last two changes plus the largest inner error are within `tol`. The inner rules get tol / 20 each."""
+    rows, mu, Mb, basis = part.rows, part.mu, part.Mb, part.basis
+    d = Mb.shape[1]
+    dg = d - dh
+    Ah, Ag = Mb[:, :dh], Mb[:, dh:]
+    inner_tol = tol / 20.0
+    what = f"a block of {d} directions, {dh} sharp"
+
+    def sharp(Yg):
+        C = mu[None, :] + Yg @ Ag.T
+        if dh == 1:
+            return _line_integrals(F, C, Ah[:, 0], inner_tol, what)
+        return _plane_integrals(F, C, Ah, inner_tol, what)
+
+    if dg == 0:
+        logint, mh, sh, err = sharp(np.zeros((1, 0)))
+        mean = mh[0]
+        return Block(factors=rows, dim=d, method="nested", nodes=0, loglik=float(logint[0]), laplace=laplace,
+                     error=float(err[0]), history=[(0, float(logint[0]))], mean=mean,
+                     cov=sh[0] - np.outer(mean, mean), basis=basis, sharp=dh)
+
+    cov_all = np.linalg.inv(prec)
+    Lg = np.linalg.cholesky(0.5 * (cov_all[dh:, dh:] + cov_all[dh:, dh:].T))
+    log_det = float(np.log(np.diag(Lg)).sum())
+    yg = y[dh:]
+
+    def rule(n: int):
+        Z, lw = _gh_grid(n, dg, 0, n ** dg)
+        Yg = yg + Z @ Lg.T
+        logJ, mh, sh, err = sharp(Yg)
+        val_n = logJ - 0.5 * (Yg * Yg).sum(axis=1) - 0.5 * dg * LOG_2PI + 0.5 * (Z * Z).sum(axis=1) + lw
+        top = float(np.max(val_n))
+        wts = np.exp(val_n - top)
+        s0 = float(wts.sum())
+        w = wts / s0
+        mean = np.concatenate([w @ mh, w @ Yg])
+        second = np.zeros((d, d))
+        second[:dh, :dh] = np.einsum("r,rab->ab", w, sh)
+        second[dh:, dh:] = (Yg * w[:, None]).T @ Yg
+        second[dh:, :dh] = (Yg * w[:, None]).T @ mh
+        second[:dh, dh:] = second[dh:, :dh].T
+        return log_det + top + math.log(s0), mean, second - np.outer(mean, mean), float(err.max())
+
+    history: list = []
+    found = None
+    for n in [n for n in NODES if n ** dg <= min(max_nodes, NESTED_NODES)]:
+        logint, mean, cov, inner = rule(n)
+        history.append((n, logint))
+        found = (n, logint, mean, cov, inner)
+        if len(history) >= 3:
+            last = max(abs(history[-1][1] - history[-2][1]), abs(history[-2][1] - history[-3][1]))
+            if last + inner <= tol:
+                break
+    else:
+        changes = [abs(history[i][1] - history[i - 1][1]) for i in range(1, len(history))]
+        raise OracleNotConverged(f"{what}: changes {changes} at nodes {[n for n, _ in history]}, tol {tol}")
+    assert found is not None
+    n, logint, mean, cov, inner = found
+    changes = [abs(history[i][1] - history[i - 1][1]) for i in range(1, len(history))]
+    return Block(factors=rows, dim=d, method="nested", nodes=n, loglik=logint, laplace=laplace,
+                 error=max(changes[-2:]) + inner, history=history, mean=mean, cov=cov, basis=basis, sharp=dh)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -702,7 +1098,7 @@ def _quad_block(rows, logf, mu, Mb, basis, mode: float, scale: float, top: float
 @dataclass
 class Result:
     loglik: float                  # log p(y | theta), normalised
-    error: float                   # quadrature error estimate on loglik (sum over blocks)
+    error: float                   # error estimate on loglik (blocks, inner integrals, dropped and unlinked parts)
     laplace: float                 # the Laplace approximation of the same integral (1 node per direction)
     gaussian_loglik: float         # the closed-form part (Gaussian readings and terms free of random effects)
     blocks: list = field(default_factory=list)
@@ -713,15 +1109,33 @@ class Result:
 
 
 @dataclass
+class _Part:
+    rows: np.ndarray               # factors of the block
+    mu: np.ndarray                 # their forms at zeta = 0
+    Mb: np.ndarray                 # factors x d: the forms are mu + Mb y, y ~ N(0, I_d)
+    basis: np.ndarray              # p x d: y = basis' zeta
+    strength: np.ndarray           # d standardised singular values (Mb's columns over the factor scales)
+    drop: float                    # sum of the squared standardised singular values dropped
+
+
+@dataclass
 class _Layout:
     gauss: float                   # the closed-form part
     flat: float                    # factors left with no random direction
+    flat_error: float
     mean: np.ndarray               # z given the Gaussian readings: mean + root zeta, zeta ~ N(0, I)
     root: np.ndarray
-    parts: list                    # (rows, mu_w, Mb, basis) per block
+    parts: list                    # _Part per block
+    cross: np.ndarray              # |covariance| of standardised forms in different blocks (unlinked)
+    slopes: np.ndarray             # standardised |d log f / dw| of flat factors at their value (0 elsewhere)
 
 
-def _layout(prob: Problem) -> _Layout:
+def _layout(prob: Problem, tol: float = 1e-8) -> _Layout:
+    """Steps 2 and 3 of the method. Every rank and link decision is made on the forms standardised by
+    their factor's scale (how many noise sds a factor moves per unit of zeta), so it does not depend on
+    the units of theta: two factors are linked when their forms correlate above LINK_TOL, a block keeps
+    the directions whose standardised singular value exceeds DROP_STD, and a block with none is a
+    product of values at the mean."""
     p = prob.p
     gauss = prob.const
     mean, cov = np.zeros(p), np.eye(p)
@@ -738,25 +1152,35 @@ def _layout(prob: Problem) -> _Layout:
         cov = 0.5 * (cov + cov.T)
     vals, vecs = np.linalg.eigh(cov)
     root = vecs * np.sqrt(np.clip(vals, 0.0, None))[None, :]       # root root' = cov
-    flat, parts = 0.0, []
-    if len(prob.f_off):
+    nf = len(prob.f_off)
+    flat, flat_error, parts = 0.0, 0.0, []
+    cross, slopes = np.zeros((nf, nf)), np.zeros(nf)
+    if nf:
         mu_w = prob.f_off + prob.f_rows @ mean
-        B = prob.f_rows @ root
-        cw = B @ B.T
+        scale = factor_scale(prob.f_kind, prob.f_s)
+        Bs = (prob.f_rows @ root) / scale[:, None]
+        cw = Bs @ Bs.T
         sd_w = np.sqrt(np.clip(np.diag(cw), 0.0, None))
         link = np.abs(cw) > LINK_TOL * np.outer(sd_w, sd_w)
         link &= (sd_w[:, None] > 0) & (sd_w[None, :] > 0)
         n_parts, label = connected_components(link, directed=False)
+        cross = np.abs(cw) * (label[:, None] != label[None, :])
         for part in range(n_parts):
             rows = np.flatnonzero(label == part)
-            U, S, Vt = np.linalg.svd(B[rows], full_matrices=False)
-            keep = S > RANK_TOL
-            if not keep.any():
-                flat += float(factor_values(prob.f_kind[rows], prob.f_lo[rows], prob.f_hi[rows], prob.f_s[rows],
-                                            prob.f_k[rows], prob.f_n[rows], mu_w[rows], derivs=False).sum())
+            U, S, Vt = np.linalg.svd(Bs[rows], full_matrices=False)
+            keep = S > DROP_STD
+            drop = float(np.sum(S[~keep] ** 2))
+            if keep.any():
+                parts.append(_Part(rows=rows, mu=mu_w[rows], Mb=scale[rows, None] * (U[:, keep] * S[keep][None, :]),
+                                   basis=Vt[keep].T, strength=S[keep], drop=drop))
                 continue
-            parts.append((rows, mu_w[rows], U[:, keep] * S[keep][None, :], Vt[keep].T))
-    return _Layout(gauss=gauss, flat=flat, mean=mean, root=root, parts=parts)
+            F = _Factors(prob, rows, tol)
+            lp, d1, d2, err = F.values(mu_w[rows])
+            flat += float(lp.sum())
+            slopes[rows] = np.abs(d1) * F.scale
+            flat_error += float(err.sum()) + 0.5 * drop * float(np.sum(np.abs(d2) * F.scale ** 2 + slopes[rows] ** 2))
+    return _Layout(gauss=gauss, flat=flat, flat_error=flat_error, mean=mean, root=root, parts=parts, cross=cross,
+                   slopes=slopes)
 
 
 def exact(data: Mapping[str, Any], theta: Mapping[str, Any] | None = None, *, random: Sequence[str] = (),
@@ -764,41 +1188,45 @@ def exact(data: Mapping[str, Any], theta: Mapping[str, Any] | None = None, *, ra
           gaussian: str = "closed", method: str = "auto", items: str = "auto") -> Result:
     """The exact log-likelihood, its error estimate, the Laplace value and the posterior of every random effect.
 
-    `method="auto"` integrates a block of one direction with scipy's adaptive quadrature and larger
-    blocks with Gauss-Hermite; `method="gh"` uses Gauss-Hermite everywhere (a check of one against the
+    `method="auto"` integrates a block of one direction with scipy's adaptive quadrature, a block with
+    one or two sharp directions by the nested rule and other blocks by Gauss-Hermite; `method="gh"` uses
+    Gauss-Hermite everywhere and `method="nested"` the nested rule everywhere (checks of one against the
     other). `nodes` fixes the Gauss-Hermite node counts per direction (no convergence loop; the last
     count is the answer). `items` is "auto", "explicit" or "summed" (the module docstring, step 3)."""
-    if method not in ("auto", "gh"):
-        raise ValueError("method= is 'auto' or 'gh'")
+    if method not in ("auto", "gh", "nested"):
+        raise ValueError("method= is 'auto', 'gh' or 'nested'")
     if items not in ("auto", "explicit", "summed"):
         raise ValueError("items= is 'auto', 'explicit' or 'summed'")
     options = dict(tol=tol, max_nodes=max_nodes, nodes=nodes, method=method)
     prob = build_problem(data, theta, random=random, gaussian=gaussian, items="explicit")
-    lay = _layout(prob)
+    lay = _layout(prob, tol)
     has_e = len(prob.effects["e"][0]) > 0
     summed = has_e and (items == "summed" or (items == "auto" and
-                                             max((part[2].shape[1] for part in lay.parts), default=0) > SUM_DIM))
+                                             max((part.Mb.shape[1] for part in lay.parts), default=0) > SUM_DIM))
     laplace = None
     if summed:                     # the Laplace value of the explicit layout, then integrate the summed one
-        laplace = lay.gauss + lay.flat + sum(_integrate_block(prob, rows, mu_w, Mb, basis, laplace_only=True,
-                                                              **options) for rows, mu_w, Mb, basis in lay.parts)
+        laplace = lay.gauss + lay.flat + sum(_integrate_block(prob, part, laplace_only=True, **options)
+                                             for part in lay.parts)
         prob = build_problem(data, theta, random=random, gaussian=gaussian, items="summed")
-        lay = _layout(prob)
+        lay = _layout(prob, tol)
     p = prob.p
-    loglik, lap, error = lay.gauss + lay.flat, lay.gauss + lay.flat, 0.0
+    loglik, lap, error = lay.gauss + lay.flat, lay.gauss + lay.flat, lay.flat_error
+    slopes = lay.slopes.copy()
     blocks: list[Block] = []
     z_mean, inner = lay.mean.copy(), np.eye(p)
-    for rows, mu_w, Mb, basis in lay.parts:
-        d = Mb.shape[1]
+    for part in lay.parts:
+        d = part.Mb.shape[1]
         if d > MAX_DIM:
-            raise OracleTooLarge(f"a block of {len(rows)} factors spans {d} directions; the cap is {MAX_DIM}")
-        block = _integrate_block(prob, rows, mu_w, Mb, basis, **options)
+            raise OracleTooLarge(f"a block of {len(part.rows)} factors spans {d} directions; the cap is {MAX_DIM}")
+        block = _integrate_block(prob, part, **options)
         blocks.append(block)
         loglik += block.loglik
         lap += block.laplace
         error += block.error if np.isfinite(block.error) else 0.0
-        z_mean += lay.root @ (basis @ block.mean)
-        inner += basis @ (block.cov - np.eye(d)) @ basis.T
+        slopes[part.rows] = block.slopes
+        z_mean += lay.root @ (part.basis @ block.mean)
+        inner += part.basis @ (block.cov - np.eye(d)) @ part.basis.T
+    error += 0.5 * float(slopes @ lay.cross @ slopes)      # first order in the covariance left unlinked
     z_cov = lay.root @ inner @ lay.root.T
     posterior = {}
     for name, (off, T) in prob.effects.items():

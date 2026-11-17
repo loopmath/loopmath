@@ -14,13 +14,16 @@ synthetic.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import itertools
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy import integrate, optimize, special, stats
+from scipy.stats import qmc
 
 import laplace_oracle as O
 
@@ -98,19 +101,114 @@ def latent_model(b: O.Tiny):
     return mean, L, lo, hi, y, const, Q, mu.copy()
 
 
-def log_rect(mean, cov, lo, hi, seed: int = 0) -> float:
-    """log P(lo < X < hi) for X ~ N(mean, cov): a closed form in one dimension, Genz's method above."""
+def log_rect(mean, cov, lo, hi, seed: int = 0, abseps: float = 1e-12) -> float:
+    """log P(lo < X < hi) for X ~ N(mean, cov): a closed form in one dimension, Genz's method above
+    (`abseps=0` asks for relative accuracy alone, which a tiny probability needs)."""
     if len(mean) == 1:
         s = math.sqrt(cov[0, 0])
         a, b = (lo[0] - mean[0]) / s, (hi[0] - mean[0]) / s
         return float(np.log(stats.norm.cdf(b) - stats.norm.cdf(a))) if a <= 0 else \
             float(np.log(stats.norm.sf(a) - stats.norm.sf(b)))
     value = stats.multivariate_normal.cdf(hi, mean=mean, cov=cov, lower_limit=lo, maxpts=400_000 * len(mean),
-                                          abseps=1e-12, releps=1e-9, rng=np.random.default_rng(seed))
+                                          abseps=abseps, releps=1e-9, rng=np.random.default_rng(seed))
     return float(np.log(value))
 
 
-def reference_loglik(b: O.Tiny, seed: int = 0) -> float:
+def log_phi_interval(a, b):
+    """log(Phi(b) - Phi(a)) elementwise for a < b, from scipy's log_ndtr on the side of 0 that keeps
+    the digits (this file's own, not the oracle's)."""
+    a, b = np.broadcast_arrays(np.asarray(a, dtype=float), np.asarray(b, dtype=float))
+    up = a > 0
+    big = special.log_ndtr(np.where(up, -a, b))
+    small = special.log_ndtr(np.where(up, -b, a))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return big + np.log1p(-np.exp(small - big))
+
+
+def log_rect_small(mean, cov, lo, hi) -> float:
+    """log P(lo < X < hi) for a normal X of one or two coordinates, to about 1e-12 at any size of the
+    probability: the interval in one; in two, scipy quad over x1 of its density times the conditional
+    interval of x2, over the range where that is within e^-80 of its top (found on a grid of 20001
+    points), with 40 breakpoints across it."""
+    if len(mean) == 1:
+        s = math.sqrt(cov[0, 0])
+        return float(log_phi_interval((lo[0] - mean[0]) / s, (hi[0] - mean[0]) / s))
+    s1 = math.sqrt(cov[0, 0])
+    beta = cov[0, 1] / cov[0, 0]
+    s2 = math.sqrt(cov[1, 1] - beta * cov[0, 1])
+
+    def logf(x):
+        m2 = mean[1] + beta * (np.asarray(x) - mean[0])
+        return stats.norm.logpdf(x, mean[0], s1) + log_phi_interval((lo[1] - m2) / s2, (hi[1] - m2) / s2)
+
+    a, b = max(lo[0], mean[0] - 40 * s1), min(hi[0], mean[0] + 40 * s1)
+    xs = np.linspace(a, b, 20001)
+    lv = logf(xs)
+    top = float(lv.max())
+    keep = xs[lv > top - 80.0]
+    a, b = max(a, keep.min() - (xs[1] - xs[0])), min(b, keep.max() + (xs[1] - xs[0]))
+    points = sorted(set(np.linspace(a, b, 42)[1:-1]) | {float(xs[int(lv.argmax())])})
+    value, _ = integrate.quad(lambda x: math.exp(float(logf(x)) - top), a, b, points=points, epsabs=0.0,
+                              epsrel=1e-12, limit=5000)
+    return top + math.log(value)
+
+
+def log_rect_sov(mean, cov, lo, hi, seed: int = 0, m: int = 15, reps: int = 16):
+    """log P(lo < X < hi) for X ~ N(mean, cov) by Genz's separation of variables with Genz-Bretz
+    ordering, every interval and every inverse taken in log space (so a probability of e^-400 keeps
+    its digits, where scipy's Genz returns 0), over `reps` scrambled Sobol sets of 2^m points. Returns
+    the estimate and its standard error in log units, from the spread of the replicates."""
+    n = len(mean)
+    a, b = np.asarray(lo, dtype=float) - mean, np.asarray(hi, dtype=float) - mean
+    S = np.array(cov, dtype=float)
+    L = np.zeros((n, n))
+    y = np.zeros(n)
+    for i in range(n):                      # order: the least likely interval next, given the ones before
+        best, best_p = i, np.inf
+        for k in range(i, n):
+            sd = math.sqrt(S[k, k] - L[k, :i] @ L[k, :i])
+            mu = L[k, :i] @ y[:i]
+            p = float(log_phi_interval((a[k] - mu) / sd, (b[k] - mu) / sd))
+            if p < best_p:
+                best, best_p = k, p
+        for arr in (a, b):
+            arr[[i, best]] = arr[[best, i]]
+        S[[i, best]] = S[[best, i]]
+        S[:, [i, best]] = S[:, [best, i]]
+        L[[i, best]] = L[[best, i]]
+        L[i, i] = math.sqrt(S[i, i] - L[i, :i] @ L[i, :i])
+        for k in range(i + 1, n):
+            L[k, i] = (S[k, i] - L[k, :i] @ L[i, :i]) / L[i, i]
+        mu = L[i, :i] @ y[:i]
+        al, be = (a[i] - mu) / L[i, i], (b[i] - mu) / L[i, i]
+        lz = float(log_phi_interval(al, be))
+        y[i] = sum(sign * math.exp(-0.5 * x * x - 0.5 * math.log(2 * math.pi) - lz)
+                   for sign, x in ((1.0, al), (-1.0, be)) if np.isfinite(x))
+    est = []
+    for r in range(reps):
+        U = qmc.Sobol(d=max(1, n - 1), scramble=True, seed=seed * 1000 + r).random_base2(m)
+        z = np.zeros((U.shape[0], n))
+        logw = np.zeros(U.shape[0])
+        for i in range(n):
+            mu = z[:, :i] @ L[i, :i]
+            al, be = (a[i] - mu) / L[i, i], (b[i] - mu) / L[i, i]
+            logw += log_phi_interval(al, be)
+            if i < n - 1:
+                w = np.clip(U[:, i], 1e-300, 1.0 - 1e-16)
+                with np.errstate(divide="ignore"):
+                    low = special.ndtri_exp(np.logaddexp(np.log1p(-w) + special.log_ndtr(al),
+                                                         np.log(w) + special.log_ndtr(be)))
+                    upp = -special.ndtri_exp(np.logaddexp(np.log1p(-w) + special.log_ndtr(-al),
+                                                          np.log(w) + special.log_ndtr(-be)))
+                z[:, i] = np.where(al > 0, upp, low)
+        top = float(logw.max())
+        est.append(top + math.log(float(np.mean(np.exp(logw - top)))))
+    est = np.array(est)
+    p = np.exp(est - est.max())
+    return float(est.max() + math.log(p.mean())), float(p.std(ddof=1) / math.sqrt(reps) / p.mean())
+
+
+def reference_loglik(b: O.Tiny, seed: int = 0, abseps: float = 1e-12) -> float:
     """Gaussian readings by their normal density, the rest by the rectangle probability given them."""
     mean, L, lo, hi, y, const, _, _ = latent_model(b)
     cov = L @ L.T
@@ -126,7 +224,7 @@ def reference_loglik(b: O.Tiny, seed: int = 0) -> float:
             m_r = m_r + gain @ (y[g] - mean[g])
             c_r = c_r - gain @ cov[np.ix_(g, rest)]
     if rest.any():
-        out += log_rect(m_r, c_r, lo[rest], hi[rest], seed)
+        out += log_rect(m_r, c_r, lo[rest], hi[rest], seed, abseps)
     return out
 
 
@@ -411,10 +509,11 @@ def test_item_noise_summed_inside_its_factor_equals_it_as_a_direction(options):
 
 def test_a_summed_items_call_equals_scipy_quad_over_its_noise():
     """The factor alone: log of the integral over e of Phi(w + t e)^k Phi(-w - t e)^(n - k) phi(e), by
-    scipy's quad on the log-shifted integrand, and its derivatives by finite differences."""
-    worst = 0.0
-    for w, t, k, n in itertools.product((-4.0, -1.3, 0.0, 0.7, 2.5), (0.05, 0.4, 1.0, 2.5), (0, 1, 2, 5),
-                                        (2, 5, 7)):
+    scipy's quad on the log-shifted integrand (split at its peak, where the probit argument is 0 and 3 and
+    8 widths 1 / t either side), and its derivatives by finite differences. The reported error covers the
+    difference; a tighter inner tolerance moves the value by less than 1e-12."""
+    for w, t, k, n in itertools.product((-4.0, -1.3, 0.0, 0.7, 2.5), (0.05, 0.4, 1.0, 2.5, 30.0, 1000.0),
+                                        (0, 1, 2, 5), (2, 5, 7)):
         if k > n:
             continue
 
@@ -425,18 +524,115 @@ def test_a_summed_items_call_equals_scipy_quad_over_its_noise():
         grid = np.linspace(-12, 12, 4801)
         top = float(np.max(log_g(grid)))
         peak = float(grid[np.argmax(log_g(grid))])
-        ref, _ = integrate.quad(lambda e: math.exp(log_g(e) - top), -12, 12, points=[peak], epsabs=0,
-                                epsrel=1e-13, limit=1000)
+        cuts = [peak] + [(-w + x) / t for x in (-8.0, -3.0, 0.0, 3.0, 8.0)]
+        edges = [-12.0] + sorted(c for c in set(cuts) if -12.0 < c < 12.0) + [12.0]
+        ref = sum(integrate.quad(lambda e: math.exp(log_g(e) - top), lo, hi, epsabs=1e-15, epsrel=1e-12,
+                                 limit=1000)[0] for lo, hi in zip(edges, edges[1:]))
         ref = math.log(ref) + top - 0.5 * O.LOG_2PI
-        got, d1, d2 = (float(v[0]) for v in O.noisy_binomial(np.array([w]), t, k, n))
-        worst = max(worst, abs(got - ref))
+        got, d1, d2, err = (float(v[0]) for v in O.noisy_binomial(np.array([w]), t, k, n, with_error=True))
         assert got == pytest.approx(ref, abs=1e-9), (w, t, k, n)
-        assert float(O.noisy_binomial(np.array([w]), t, k, n, derivs=False, panels=8)[0]) == pytest.approx(got, abs=1e-12)
-        h = 1e-4
+        assert abs(got - ref) <= err + 2e-12, (w, t, k, n, got - ref, err)
+        assert err <= O.INNER_TOL
+        assert float(O.noisy_binomial(np.array([w]), t, k, n, derivs=False, tol=1e-13)[0]) == pytest.approx(got, abs=1e-12)
+        h = 1e-4 * max(1.0, t)
         up, down = (float(O.noisy_binomial(np.array([w + x]), t, k, n, derivs=False)[0]) for x in (h, -h))
         assert d1 == pytest.approx((up - down) / (2 * h), abs=1e-6)
         assert d2 == pytest.approx((up - 2 * got + down) / h ** 2, abs=1e-4)
         assert d2 < 0                                                # log-concave in w
+
+
+@pytest.mark.parametrize("sigma", [5.0, 30.0, 100.0])
+def test_a_summed_none_of_three_call_is_the_trivariate_normal_orthant(sigma):
+    """One items call of three items, none passed, nothing else random: the probability is
+    E Phi(-sigma Z)^3, the orthant probability of three normals of correlation rho = sigma^2 / (1 + sigma^2),
+    which is 1/8 + 3 asin(rho) / (4 pi) exactly. The reported error is positive and covers the difference."""
+    b = O.tiny("items", theta={"mu": 0.0, "sd_input": 0.0, "sd_run": 0.0, "tau": 0.0, "sigma": sigma}, seed=0)
+    b.data["g_k"][:] = 0
+    assert list(b.data["g_n"]) == [3]
+    out = O.exact(b.data, b.theta, items="summed")
+    rho = sigma * sigma / (1.0 + sigma * sigma)
+    ref = math.log(0.125 + 3.0 * math.asin(rho) / (4.0 * math.pi))
+    if sigma == 30.0:
+        assert ref == pytest.approx(-0.7159016050648754, abs=1e-15)
+    assert 0.0 < out.error <= 1e-8
+    assert abs(out.loglik - ref) <= out.error + 1e-14
+
+
+def test_large_item_call_noise_on_the_default_path_equals_nested_quad():
+    """Two runs on one input, three calls each of three items, none passed; sd_input 0.4 and sigma 30,
+    nothing else random. The default path sums the call noise out (the review's case). The reference
+    integrates each call's noise by quad inside a quad over the input effect: -4.293624424218564."""
+    sigma = 30.0
+    b = O.tiny("items", runs=2, judges=1, calls=3, inputs=[0, 0], seed=0,
+               theta={"mu": 0.0, "sd_input": 0.4, "sd_run": 0.0, "tau": 0.0, "sigma": sigma})
+    b.data["g_k"][:] = 0
+    out = O.exact(b.data, b.theta)
+    assert out.items == "summed"
+
+    def call(c):
+        def f(e):
+            return special.ndtr(-c - sigma * e) ** 3 * math.exp(-e * e / 2) / math.sqrt(2 * math.pi)
+        cuts = sorted({-12.0, -1.0, 0.0, 1.0, 12.0, -c / sigma, (-c - 8) / sigma, (-c + 8) / sigma})
+        return sum(integrate.quad(f, lo, hi, epsabs=1e-15, epsrel=1e-12, limit=300)[0]
+                   for lo, hi in zip(cuts, cuts[1:]))
+
+    ref, _ = integrate.quad(lambda z: call(0.4 * z) ** 6 * math.exp(-z * z / 2) / math.sqrt(2 * math.pi), -10, 10,
+                            epsabs=1e-15, epsrel=1e-11, limit=300)
+    assert math.log(ref) == pytest.approx(-4.293624424218564, abs=1e-10)
+    assert out.loglik == pytest.approx(-4.293624424218564, abs=1e-10)
+    assert out.error <= 1e-8 and abs(out.loglik - math.log(ref)) <= out.error + 1e-10
+
+
+def _theta_times(b, factor, names):
+    theta = dict(b.theta)
+    for name in names:
+        theta[name] = np.asarray(theta[name], dtype=float) * factor
+    return theta
+
+
+@pytest.mark.parametrize("s", [1.0, 1e-3, 1e-6, 1e-9, 1e-10, 1e-11])
+def test_a_common_change_of_units_changes_nothing(s):
+    """Binary, one run, one judge, the reading 1: with every scale of theta times s, the probability is
+    Phi(0.3 / sqrt(1.57)) for every s, and q given it is a truncated-normal projection whose mean and sd
+    are s times those at s = 1."""
+    b = O.tiny("binary", theta={"mu": 0.3 * s, "sd_input": 0.4 * s, "sd_run": 0.5 * s, "tau": 0.4 * s, "sigma": s},
+               seed=0)
+    b.data["g_y"][:] = 1.0
+    out = O.exact(b.data, b.theta)
+    sd_x, cov = math.sqrt(1.57), 0.41
+    a = 0.3 / sd_x
+    lam = math.exp(special.log_ndtr(a) * -1.0) * math.exp(-0.5 * a * a) / math.sqrt(2 * math.pi)
+    assert out.loglik == pytest.approx(float(special.log_ndtr(a)), abs=1e-13)
+    assert out.loglik == pytest.approx(-0.5198455314716747, abs=1e-13)
+    assert len(out.blocks) == 1 and out.error <= 1e-8
+    mean = 0.3 + cov / sd_x * lam
+    var = cov - cov ** 2 / sd_x ** 2 * (a * lam + lam * lam)
+    assert float(out.posterior["q_run"]["mean"][0, 0]) / s == pytest.approx(mean, rel=1e-10)
+    assert float(out.posterior["q_run"]["sd"][0, 0]) / s == pytest.approx(math.sqrt(var), rel=1e-9)
+
+
+SCALED = [("binary", dict(judges=2, calls=2), ("mu", "sd_input", "sd_run", "tau", "sigma", "bias")),
+          ("pairs", dict(runs=3, judges=1, pair_calls=1),
+           ("mu", "sd_input", "sd_run", "tau", "sigma_pair", "tie_width", "position", "bias")),
+          ("pairs", dict(runs=2, judges=2, pair_calls=2),
+           ("mu", "sd_input", "sd_run", "tau", "sigma_pair", "tie_width", "position", "bias"))]
+
+
+@pytest.mark.parametrize("kind,options,names", SCALED, ids=[f"{k}-{i}" for i, (k, _, _) in enumerate(SCALED)])
+def test_blocks_of_several_directions_do_not_depend_on_units(kind, options, names):
+    """Binary and pair designs read signs and widths only: every scale of theta times s leaves the
+    likelihood alone and multiplies the posterior means and sds of q, the cell terms and the halo
+    factors' loadings by s (z_jt is in sd units, so it stays). Down to s = 1e-11."""
+    b = O.tiny(kind, seed=3, **options)
+    base = O.exact(b.data, b.theta)
+    for s in (1e-3, 1e-7, 1e-10, 1e-11):
+        out = O.exact(b.data, _theta_times(b, s, names))
+        assert out.loglik == pytest.approx(base.loglik, abs=1e-10), s
+        assert [block.dim for block in out.blocks] == [block.dim for block in base.blocks]
+        for name in ("q_run", "cell"):
+            np.testing.assert_allclose(out.posterior[name]["mean"] / s, base.posterior[name]["mean"], atol=1e-7)
+            np.testing.assert_allclose(out.posterior[name]["sd"] / s, base.posterior[name]["sd"], atol=1e-7)
+        np.testing.assert_allclose(out.posterior["z_jt"]["mean"], base.posterior["z_jt"]["mean"], atol=1e-7)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -466,6 +662,46 @@ def test_the_quadrature_converges_and_the_two_rules_agree(kind, options):
     biggest = max(gh.blocks, key=lambda block: block.dim)
     fixed = O.exact(b.data, b.theta, method="gh", nodes=[max(n for n in O.NODES if n ** biggest.dim <= 300_000)])
     assert fixed.loglik == pytest.approx(gh.loglik, abs=1e-8)
+
+
+def judges_times(b: O.Tiny, factor: float) -> O.Tiny:
+    """b with its judge noise (tau and the call noise, or the pair noise) times `factor`."""
+    names = ("tau", "sigma_pair") if b.kind == "pairs" else ("tau", "sigma")
+    return dataclasses.replace(b, theta=_theta_times(b, factor, names))
+
+
+def test_the_review_seed_8_case_with_sharp_judges_converges_by_the_nested_rule():
+    """Binary, one run, two judges, two calls, tau and sigma times 0.03: Gauss-Hermite does not settle
+    (and refuses rather than report), the nested rule converges to the review's value, which Genz's
+    method brackets too."""
+    b = judges_times(O.tiny("binary", runs=1, judges=2, calls=2, seed=8), 0.03)
+    out = O.exact(b.data, b.theta)
+    assert out.loglik == pytest.approx(-1.7767059692894638, abs=1e-10)
+    assert 0.0 < out.error <= 1e-8
+    assert [(block.method, block.sharp) for block in out.blocks if block.dim > 1] == [("nested", 1)]
+    refs = [reference_loglik(b, seed=s) for s in (0, 1)]
+    assert out.loglik == pytest.approx(refs[0], abs=max(2e-6, 5 * abs(refs[0] - refs[1])))
+    with pytest.raises(O.OracleNotConverged):
+        O.exact(b.data, b.theta, method="gh")
+
+
+NESTED = [("binary", dict(runs=1, judges=2, calls=2), 8), ("binary", dict(runs=2, judges=2, calls=2), 222),
+          ("pairs", dict(runs=2, judges=2, pair_calls=1), 221), ("pairs", dict(runs=3, judges=1, pair_calls=1), 311)]
+
+
+@pytest.mark.parametrize("factor", [1.0, 0.3])
+@pytest.mark.parametrize("kind,options,seed", NESTED, ids=[f"{k}-{i}" for i, (k, _, _) in enumerate(NESTED)])
+def test_the_nested_rule_equals_gauss_hermite_where_both_settle(kind, options, seed, factor):
+    """With the default judge noise and at 0.3 of it, both rules converge: the log-likelihood and every
+    posterior mean and sd agree."""
+    b = judges_times(O.tiny(kind, seed=seed, **options), factor)
+    gh = O.exact(b.data, b.theta, method="gh")
+    nested = O.exact(b.data, b.theta, method="nested")
+    assert all(block.method == "nested" for block in nested.blocks if block.dim > 1)
+    assert nested.loglik == pytest.approx(gh.loglik, abs=2e-8)
+    for name in gh.posterior:
+        for key in ("mean", "sd"):
+            np.testing.assert_allclose(nested.posterior[name][key], gh.posterior[name][key], atol=1e-6)
 
 
 @pytest.mark.parametrize("kind,calls", [("binary", 2), ("binary", 3), ("levels", 2), ("levels", 3)])
@@ -641,3 +877,35 @@ def test_every_tiny_design_converges_and_small_ones_equal_genz(kind, runs, judge
     if len(mean) <= 9:
         refs = [reference_loglik(b, seed=s) for s in (0, 1)]
         assert out.loglik == pytest.approx(refs[0], abs=max(2e-6, 5 * abs(refs[0] - refs[1])))
+
+
+SHARP = [(factor, *design) for factor in (0.1, 0.03) for design in FULL]
+COSTLY = ("pairs", 3, 2)          # two sharp and two smooth coordinates: about 6 CPU-minutes a design
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("factor,kind,runs,judges,calls", SHARP)
+def test_every_tiny_design_with_sharp_judges_converges_and_equals_an_independent_value(factor, kind, runs, judges,
+                                                                                         calls):
+    """The full grid with the judge noise times 0.1 and 0.03, where Laplace is far off and plain
+    Gauss-Hermite does not settle: every block within 1e-8, and a run at tol 1e-10 agrees. The
+    probabilities go down to e^-460, where scipy's Genz returns 0 or loses digits (-32.7856 for
+    -32.7780), so the independent values are this file's own: up to 2 latents an interval or a quad of
+    one (to 1e-8); up to 9, separation of variables in log space (to 5 standard errors).
+    Pairs of 3 runs and 2 judges take minutes each and run only with LOOPMATH_EVAL_COSTLY=1 as well."""
+    if (kind, runs, judges) == COSTLY and os.environ.get("LOOPMATH_EVAL_COSTLY") != "1":
+        pytest.skip("two sharp and two smooth coordinates: minutes a design; set LOOPMATH_EVAL_COSTLY=1")
+    options = dict(runs=runs, judges=judges, items=2)
+    options.update(pair_calls=calls) if kind == "pairs" else options.update(calls=calls)
+    b = judges_times(O.tiny(kind, seed=runs * 100 + judges * 10 + calls, **options), factor)
+    out = O.exact(b.data, b.theta)
+    assert all(block.error <= 1e-8 for block in out.blocks)
+    tight = O.exact(b.data, b.theta, tol=1e-10)
+    assert out.loglik == pytest.approx(tight.loglik, abs=1e-8)
+    mean, L, lo, hi, y, const, _, _ = latent_model(b)
+    assert np.isnan(y).all()                                      # no Gaussian reading on these kinds
+    if len(mean) <= 2:
+        assert out.loglik == pytest.approx(const + log_rect_small(mean, L @ L.T, lo, hi), abs=1e-8)
+    elif len(mean) <= 9:
+        ref, se = log_rect_sov(mean, L @ L.T, lo, hi)
+        assert out.loglik == pytest.approx(const + ref, abs=max(2e-6, 5 * se))
