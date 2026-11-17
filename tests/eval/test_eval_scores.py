@@ -837,3 +837,30 @@ def test_import_refuses_rows_that_share_a_call_and_writes_nothing(tmp_path, caps
                                  '"s1" for the component "depth"; give a repeat its own call, or name the reading '
                                  "it corrects in replaces\n")
     assert not (folder / C.SCORES_FILE).exists() and snapshot(folder) == before
+
+
+def test_import_takes_documents_that_share_signal_ids_and_a_second_import_changes_nothing(tmp_path, capsys):
+    def score(ident, value):
+        return {"id": ident, "kind": "score", "name": "depth", "value": value, "tier": "reported",
+                "observed_at": AT, "source": {"kind": "judge", "ref": "reviewer"}}
+
+    first = {"run": "r1", "input": "case-01", "arm": "baseline", "steps": [
+        {"step": "final", "model": {"id": "model-small", "family": "beta"}, "effort": "low"}]}
+    (tmp_path / "in").mkdir()
+    docs = []
+    for run, value in ((first, 4), ({**first, "run": "r2", "arm": "strong"}, 9)):
+        docs.append(tmp_path / "in" / f"{run['run']}.ocp.json")
+        docs[-1].write_text(json.dumps(document(run, signals=[score("s1", value)])), encoding="utf-8")
+    folder = tmp_path / "study"
+    base = ("import", "--ocp", *docs, "--rubric", RUBRIC, "--out", folder)
+    code, report = scores_json(capsys, *base)
+    assert code == 0 and report["readings"] == {"new": 2, "unchanged": 0, "refused": 0} and report["refused"] == []
+    assert [(row["id"], row["run"], row["value"]) for row in C.read_study(folder).scores] == [
+        ("r1.s1", "r1", 4), ("r2.s1", "r2", 9)]
+    before = snapshot(folder)
+    code, report = scores_json(capsys, *base)
+    assert code == 0 and report["readings"] == {"new": 0, "unchanged": 2, "refused": 0} and snapshot(folder) == before
+    assert scores(capsys, "check", folder, "--rubric", RUBRIC)[0] == 0
+    code, out, _ = scores(capsys, "export", folder)
+    assert code == 0 and [[s["id"] for s in json.loads(line)["signals"]] for line in out.splitlines()] == [
+        ["s1"], ["s1"]]

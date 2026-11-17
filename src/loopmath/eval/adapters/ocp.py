@@ -17,8 +17,11 @@ The mapping, both ways:
   the study row under `ext["dev.loopmath.eval.ocp"]` and written back on export.
 
 Records made by other tools have no `dev.loopmath.eval` member. For those, per (run, judge, name) the
-newest score signal is the reading and each earlier one is a reading it corrects. A preference is read on
-the overall component, or the one the caller names, with `shown_first` unknown.
+newest score signal is the reading and each earlier one is a reading it corrects. A signal id of another
+tool is unique in its run document, not in a study, so the reading's id and call are `<run id>.<signal
+id>`: two documents that both hold a signal `s1` give two readings. The signal's own id is kept and
+written back on export, where the eval member's `id` names the reading. A preference is read on the
+overall component, or the one the caller names, with `shown_first` unknown.
 
 Nothing here writes a file. `read_documents` and `read_rows` return rows for `scores.py` to validate and
 merge; `export` returns what `eval scores export` prints.
@@ -197,15 +200,31 @@ def _common(row: dict, e: dict, names: Iterable[str], rest: dict) -> dict:
     return row
 
 
-def reading_row(run_id: str, signal: dict, rubric_ref: str | None = None) -> dict:
-    """The study's reading of one score signal. Not validated: `contracts.validate_score` does that."""
-    e = _obj(_obj(signal.get("ext")).get(NS))
+def scoped_id(run_id: str, record_id: str) -> str:
+    """The study-wide id of a record that another tool named within its run document."""
+    return _ident(f"{run_id}.{record_id}")
+
+
+def reading_row(run_id: str, signal: dict, rubric_ref: str | None = None, *, scope: bool = False) -> dict:
+    """The study's reading of one score signal. Not validated: `contracts.validate_score` does that.
+
+    The reading's id is the eval member's `id`, else the signal's id. With `scope`, a signal that has no
+    eval member is named within its run: its reading id and call are `scoped_id(run, signal id)`. When
+    the reading's id is not the signal's, the signal's id is kept for `signal` to write back."""
+    stated = _obj(signal.get("ext")).get(NS)
+    e = _obj(stated)
     source = _obj(signal.get("source"))
-    row = {"id": signal.get("id"), "run": run_id, "step": e.get("step") or C.FINAL, "component": signal.get("name"),
-           "judge": source.get("ref"), "call": e.get("call") or signal.get("id"),
+    given = signal.get("id")
+    ident = e.get("id") or given
+    if scope and not isinstance(stated, dict) and isinstance(given, str) and given:
+        ident = scoped_id(run_id, given)
+    row = {"id": ident, "run": run_id, "step": e.get("step") or C.FINAL, "component": signal.get("name"),
+           "judge": source.get("ref"), "call": e.get("call") or ident,
            "value": e["level"] if e.get("level") is not None else signal.get("value"),
            "rubric": e.get("rubric") or rubric_ref, "observed_at": e.get("observed_at") or signal.get("observed_at")}
-    rest = _rest(signal, ("id", "kind", "name", "value", "observed_at", "source"), READING_MEMBERS)
+    rest = _rest(signal, ("id", "kind", "name", "value", "observed_at", "source"), (*READING_MEMBERS, "id"))
+    if ident != given:
+        rest["id"] = given
     kept_source = {k: copy.deepcopy(v) for k, v in source.items() if k != "ref"}
     if kept_source not in ({"kind": "judge"}, {"kind": "user"}):  # which of the two: the judges file says
         rest["source"] = kept_source
@@ -245,8 +264,10 @@ def pair_row(preference: dict, members: list, inputs: Mapping[str, str], rubric_
 
 
 def _signals(run_id: str, signals: Iterable[Any], where: str, batch: Batch, rubric_ref: str | None,
-             components: set[str] | None) -> None:
-    """Add the readings of one run's signals to `batch`. Verdicts and events are not readings and are skipped."""
+             components: set[str] | None, *, scope: bool = False) -> None:
+    """Add the readings of one run's signals to `batch`. Verdicts and events are not readings and are skipped.
+
+    `scope` is for run documents, whose signal ids are unique per document only (see `reading_row`)."""
     plain: dict[tuple[str, Any], list[tuple[float, int, dict]]] = {}
 
     def skip(signal: dict, reason: str) -> None:
@@ -262,7 +283,7 @@ def _signals(run_id: str, signals: Iterable[Any], where: str, batch: Batch, rubr
         elif signal.get("value") is None and _obj(e).get("level") is None:
             skip(signal, "a declared score with no value yet")
         elif isinstance(e, dict):
-            row = reading_row(run_id, signal, rubric_ref)
+            row = reading_row(run_id, signal, rubric_ref, scope=scope)
             batch.scores.append(row)
             batch.source[("scores", str(row["id"]))] = where
         elif rubric_ref is None:
@@ -275,7 +296,7 @@ def _signals(run_id: str, signals: Iterable[Any], where: str, batch: Batch, rubr
     for group in plain.values():
         earlier = None
         for _, _, signal in sorted(group, key=lambda entry: entry[:2]):
-            row = reading_row(run_id, signal, rubric_ref)
+            row = reading_row(run_id, signal, rubric_ref, scope=scope)
             if earlier is not None:
                 row["replaces"] = earlier
             earlier = row["id"]
@@ -309,7 +330,7 @@ def read_documents(documents: Iterable[tuple[str, Any]], *, rubric: dict | None 
     seen: dict[Any, dict] = {}
     for file, doc in docs:
         run = doc["run"]
-        _signals(run["id"], run.get("signals") or [], file, batch, rubric_ref, components)
+        _signals(run["id"], run.get("signals") or [], file, batch, rubric_ref, components, scope=True)
         slate = _obj(run.get("slate"))
         fallback_time = run.get("ended_at") or run.get("started_at") or _obj(doc.get("producer")).get("emitted_at")
         for preference in run.get("preferences") or []:
@@ -474,9 +495,13 @@ def signal(row: dict, source_kind: str = "judge") -> dict:
     value = row["value"]
     if isinstance(value, str):
         e["level"], value = value, None
-    out = {"id": row["id"], "kind": "score", "name": row["component"], "value": value, "observed_at": observed,
+    given = kept.get("id")  # the id another tool gave the signal in its run document
+    out = {"id": given if isinstance(given, str) and given else row["id"], "kind": "score", "name": row["component"],
+           "value": value, "observed_at": observed,
            "source": {**copy.deepcopy(_obj(kept.get("source")) or {"kind": source_kind}), "ref": row["judge"]}}
-    return _lay(out, kept, e, ("source",))
+    if out["id"] != row["id"]:
+        e["id"] = row["id"]
+    return _lay(out, kept, e, ("source", "id"))
 
 
 def preference(row: dict, slate: str, judge_kind: str = "model") -> dict:
