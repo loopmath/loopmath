@@ -141,6 +141,8 @@ def add(sub) -> None:
                  "print the OCP signals and preferences of a study as JSON Lines")
     q.add_argument("study", metavar="STUDY", help="the study folder")
     q.add_argument("--run", action="append", default=None, metavar="RUN", help="only this run (repeatable)")
+    q.add_argument("--judges", nargs="+", action="extend", default=None, metavar="ID",
+                   help="only the readings and pairs of these judges")
 
     # eval simulate
     q = _command(es, "simulate", "simulate", "simulate", "write a synthetic study with known truth")

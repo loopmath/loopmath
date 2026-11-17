@@ -18,10 +18,17 @@ The mapping, both ways:
 
 Records made by other tools have no `dev.loopmath.eval` member. For those, per (run, judge, name) the
 newest score signal is the reading and each earlier one is a reading it corrects. A signal id of another
-tool is unique in its run document, not in a study, so the reading's id and call are `<run id>.<signal
-id>`: two documents that both hold a signal `s1` give two readings. The signal's own id is kept and
-written back on export, where the eval member's `id` names the reading. A preference is read on the
-overall component, or the one the caller names, with `shown_first` unknown.
+tool is unique in its run document, not in a study, so the reading's id and call are `scoped_id(run id,
+signal id)`: two documents that both hold a signal `s1` give two readings. A preference of another tool
+is named within its slate the same way, `scoped_id(slate, preference id)`, so two slates that both hold
+a preference `f1` give two pairs, and the copies of one preference in its members' files give one. The
+record's own id is kept and written back on export, where the eval member's `id` names the reading or
+pair. A preference is read on the overall component, or the one the caller names, with `shown_first`
+unknown.
+
+OCP gives a run one slate at most (`run.slate`), and a preference in its file names that slate (E194).
+A run whose pairs lie on two or more slates is written with no slate of its own: each preference names
+its slate and its two members, which OCP allows.
 
 Nothing here writes a file. `read_documents` and `read_rows` return rows for `scores.py` to validate and
 merge; `export` returns what `eval scores export` prints.
@@ -200,9 +207,43 @@ def _common(row: dict, e: dict, names: Iterable[str], rest: dict) -> dict:
     return row
 
 
-def scoped_id(run_id: str, record_id: str) -> str:
-    """The study-wide id of a record that another tool named within its run document."""
-    return _ident(f"{run_id}.{record_id}")
+def _escape(text: str, also: str = "") -> str:
+    """`text` with `%`, white space, `/`, `@` and the characters of `also` written as `%XX`, one per UTF-8 byte."""
+    return "".join("".join(f"%{byte:02X}" for byte in ch.encode("utf-8")) if ch.isspace() or ch in "%/@" + also
+                   else ch for ch in text)
+
+
+def scoped_id(scope: str, record_id: str) -> str:
+    """The study-wide id of a record that another tool named within a scope: a signal within its run, a
+    preference within its slate.
+
+    It is `<scope>.<record id>` with `%`, white space, `/` and `@` written as `%XX` (per UTF-8 byte) in both
+    parts, and `.` as `%2E` in the scope. The first `.` left in the id ends the scope and `%` always starts
+    an escape, so two different pairs never give one id: run `a.b` with signal `c` gives `a%2Eb.c`, run `a`
+    with signal `b.c` gives `a.b.c`. Ids of letters, digits, `-` and `_` read as they are."""
+    return f"{_escape(scope, '.')}.{_escape(record_id)}"
+
+
+def source_of(table: str, row: dict, inputs: Mapping[str, str]) -> tuple[str, str, str]:
+    """The OCP record a row of `scores.jsonl` (`table` "scores") or `pairs.jsonl` ("pairs") is written as:
+    `("signal", run id, signal id)` or `("preference", slate, preference id)`. The record's id is the one
+    kept from the tool that made it, else the row's id; a pair's slate is the kept one, else the default
+    slate of the input of its run `a` (`inputs`: run id to input id). It does not depend on the content."""
+    kept = _obj(_obj(row.get("ext")).get(KEPT))
+    given = kept.get("id")
+    own = given if isinstance(given, str) and given else row["id"]
+    if table == "scores":
+        return "signal", row["run"], own
+    slate = kept.get("slate")
+    return "preference", slate if isinstance(slate, str) and slate else default_slate(inputs.get(row["a"], "")), own
+
+
+def id_in_0_4_4(source: tuple[str, str, str]) -> str:
+    """The id loopmath 0.4.4 gave the reading or pair of a record of another tool (see `source_of`): a
+    signal's was `<run id>.<signal id>` with white space, `/` and `@` written as `_`; a preference kept its
+    own id."""
+    kind, scope, own = source
+    return _ident(f"{scope}.{own}") if kind == "signal" else own
 
 
 def reading_row(run_id: str, signal: dict, rubric_ref: str | None = None, *, scope: bool = False) -> dict:
@@ -239,19 +280,30 @@ def _judge_id(judge: dict) -> str:
 
 
 def pair_row(preference: dict, members: list, inputs: Mapping[str, str], rubric_ref: str | None = None,
-             component: str | None = None, observed_at: str | None = None) -> dict:
-    """The study's pair of one preference between the two runs `members`. Not validated."""
-    e = _obj(_obj(preference.get("ext")).get(NS))
+             component: str | None = None, observed_at: str | None = None, *, scope: bool = False) -> dict:
+    """The study's pair of one preference between the two runs `members`. Not validated.
+
+    The pair's id is the eval member's `id`, else the preference's id. With `scope`, a preference that has
+    no eval member is named within its slate: its pair id and call are `scoped_id(slate, preference id)`.
+    When the pair's id is not the preference's, the preference's id is kept for `preference` to write back."""
+    stated = _obj(preference.get("ext")).get(NS)
+    e = _obj(stated)
     a, b = members
     judge = _obj(preference.get("judge"))
     winner = preference.get("winner")
-    row = {"id": preference.get("id"), "a": a, "b": b, "step": e.get("step") or C.FINAL,
+    given, slate = preference.get("id"), preference.get("slate")
+    ident = e.get("id") or given
+    if scope and not isinstance(stated, dict) and isinstance(given, str) and given and isinstance(slate, str):
+        ident = scoped_id(slate, given)
+    row = {"id": ident, "a": a, "b": b, "step": e.get("step") or C.FINAL,
            "component": e.get("component") or component, "judge": _judge_id(judge),
-           "call": e.get("call") or preference.get("id"), "shown_first": e.get("shown_first"),
+           "call": e.get("call") or ident, "shown_first": e.get("shown_first"),
            "verdict": "a" if winner == a else "b" if winner == b else winner,
            "rubric": e.get("rubric") or rubric_ref,
            "observed_at": e.get("observed_at") or preference.get("observed_at") or observed_at}
-    rest = _rest(preference, ("id", "winner", "members", "observed_at", "judge", "slate"), PAIR_MEMBERS)
+    rest = _rest(preference, ("id", "winner", "members", "observed_at", "judge", "slate"), (*PAIR_MEMBERS, "id"))
+    if ident != given:
+        rest["id"] = given
     kept_judge = {k: copy.deepcopy(v) for k, v in judge.items() if k != "ext"}
     judge_ext = {k: copy.deepcopy(v) for k, v in _obj(judge.get("ext")).items() if k != NS}
     if judge_ext:
@@ -327,7 +379,7 @@ def read_documents(documents: Iterable[tuple[str, Any]], *, rubric: dict | None 
         batch.source[("runs", row["run"])] = file
         known[row["run"]] = row["input"]
         docs.append((file, doc))
-    seen: dict[Any, dict] = {}
+    seen: dict[str, dict] = {}
     for file, doc in docs:
         run = doc["run"]
         _signals(run["id"], run.get("signals") or [], file, batch, rubric_ref, components, scope=True)
@@ -336,9 +388,10 @@ def read_documents(documents: Iterable[tuple[str, Any]], *, rubric: dict | None 
         for preference in run.get("preferences") or []:
             if not isinstance(preference, dict):
                 continue
-            if seen.get(preference.get("id")) == preference:
+            key = repr((preference.get("slate"), preference.get("id")))  # a preference id is unique in its slate
+            if seen.get(key) == preference:
                 continue  # copied into every member's file: read once
-            seen[preference.get("id")] = preference
+            seen[key] = preference
             reason, row = None, None
             has_eval = isinstance(_obj(preference.get("ext")).get(NS), dict)
             members = preference.get("members")
@@ -355,7 +408,7 @@ def read_documents(documents: Iterable[tuple[str, Any]], *, rubric: dict | None 
             elif not has_eval and rubric_ref is None:
                 reason = "the preference names no rubric; give --rubric"
             else:
-                row = pair_row(preference, members, known, rubric_ref, pair_component, fallback_time)
+                row = pair_row(preference, members, known, rubric_ref, pair_component, fallback_time, scope=True)
                 if row["observed_at"] is None:
                     reason = "the preference has no observed_at and its run has no time"
             if reason is not None or row is None:
@@ -510,21 +563,37 @@ def preference(row: dict, slate: str, judge_kind: str = "model") -> dict:
     e, observed = _eval_ext(row, PAIR_MEMBERS, kept)
     judge = copy.deepcopy(_obj(kept.get("judge")) or {"kind": judge_kind})
     judge["ext"] = {**_obj(judge.get("ext")), NS: {"id": row["judge"]}}
-    out = {"id": row["id"], "slate": kept.get("slate") or slate,
+    given = kept.get("id")  # the id another tool gave the preference in its slate
+    out = {"id": given if isinstance(given, str) and given else row["id"], "slate": kept.get("slate") or slate,
            "winner": "tie" if row["verdict"] == "tie" else row[row["verdict"]], "members": [row["a"], row["b"]],
            "judge": judge, "observed_at": observed}
-    return _lay(out, kept, e, ("judge", "slate"))
+    if out["id"] != row["id"]:
+        e["id"] = row["id"]
+    return _lay(out, kept, e, ("judge", "slate", "id"))
+
+
+def _slate_of(row: dict, by_id: Mapping[str, dict]) -> tuple[str, dict | None]:
+    """The slate `export` writes a pair on, and the slate both its runs kept when they share one."""
+    own = [_obj(_obj(_obj(by_id[name].get("ext")).get(KEPT)).get("slate")) for name in (row["a"], row["b"])]
+    shared = own[0] if own[0] and own[0].get("id") == own[1].get("id") else None
+    kept = _obj(_obj(row.get("ext")).get(KEPT)).get("slate")
+    return kept or (shared["id"] if shared else default_slate(by_id[row["a"]]["input"])), shared
 
 
 def export(runs: list[dict], scores: list[dict], pairs: list[dict], *, only: Iterable[str] | None = None,
-           persons: Iterable[str] = ()) -> tuple[list[dict], list[dict]]:
+           persons: Iterable[str] = (), every_pair: list[dict] | None = None) -> tuple[list[dict], list[dict]]:
     """`(entries, not_used)`: per run, what `eval scores export` prints, and the rows it could not place.
 
-    An entry is `{"run", "signals", "preferences"}`, with `slate` when the run has preferences. Every
-    reading and pair is written, corrected ones too, so nothing is lost on the way back. A preference is
-    copied into the entry of both of its runs. Readings and pairs by a judge id in `persons` are written
-    as a user's (`source.kind` `user`, `judge.kind` `user`); the others as a judge's and a model's.
-    A reading or pair whose run is not in `runs` is listed in `not_used`."""
+    An entry is `{"run", "signals", "preferences"}`. When the run has preferences it has `slate` too, the
+    run's slate, if the study's pairs put the run on one slate; if they put it on two or more, the entry
+    has `slates` instead, the slates of its preferences, and the run has no slate of its own (OCP gives a
+    run one slate at most, and each preference names its slate and members). `every_pair` is every pair of
+    the study when `pairs` is a part of them (as with `--judges`): slates and their members are taken over
+    all of them, so a part never gives a run a slate that the whole study contradicts. Every reading and
+    pair is written, corrected ones too, so nothing is lost on the way back. A preference is copied into
+    the entry of both of its runs. Readings and pairs by a judge id in `persons` are written as a user's
+    (`source.kind` `user`, `judge.kind` `user`); the others as a judge's and a model's. A reading or pair
+    whose run is not in `runs` is listed in `not_used`."""
     persons = set(persons)
     by_id = {row["run"]: row for row in runs}
     wanted = list(by_id) if only is None else list(dict.fromkeys(only))
@@ -537,24 +606,32 @@ def export(runs: list[dict], scores: list[dict], pairs: list[dict], *, only: Ite
         elif row["run"] in entries:
             entries[row["run"]]["signals"].append(signal(row, "user" if row["judge"] in persons else "judge"))
     slates: dict[str, dict] = {}
+    on: dict[str, list[str]] = {}  # per run, the slates the study's pairs put it on
+    for row in pairs if every_pair is None else every_pair:
+        if row["a"] not in by_id or row["b"] not in by_id:
+            continue
+        name, shared = _slate_of(row, by_id)
+        slate = slates.setdefault(name, copy.deepcopy(shared) if shared and shared["id"] == name
+                                  else {"id": name, "members": []})
+        for run in (row["a"], row["b"]):
+            if run not in slate["members"]:
+                slate["members"].append(run)
+            if name not in on.setdefault(run, []):
+                on[run].append(name)
     for row in pairs:
         missing = [name for name in (row["a"], row["b"]) if name not in by_id]
         if missing:
             not_used.append({"kind": "pair", "id": row["id"], "reason": f'no run "{missing[0]}" in the study'})
             continue
-        own = [_obj(_obj(_obj(by_id[name].get("ext")).get(KEPT)).get("slate")) for name in (row["a"], row["b"])]
-        shared = own[0] if own[0] and own[0].get("id") == own[1].get("id") else None
-        record = preference(row, shared["id"] if shared else default_slate(by_id[row["a"]]["input"]),
-                            "user" if row["judge"] in persons else "model")
-        slate = slates.setdefault(record["slate"], copy.deepcopy(shared) if shared and shared["id"] == record["slate"]
-                                  else {"id": record["slate"], "members": []})
-        for name in (row["a"], row["b"]):
-            if name not in slate["members"]:
-                slate["members"].append(name)
-            if name in entries:
-                entries[name]["preferences"].append(record)
-                if record["slate"] not in used.setdefault(name, []):
-                    used[name].append(record["slate"])
+        name, shared = _slate_of(row, by_id)
+        record = preference(row, name, "user" if row["judge"] in persons else "model")
+        if name not in slates:  # a pair that is not among `every_pair`
+            slates[name] = {"id": name, "members": [row["a"], row["b"]]}
+        for run in (row["a"], row["b"]):
+            if run in entries:
+                entries[run]["preferences"].append(record)
+                if name not in used.setdefault(run, []):
+                    used[run].append(name)
     out = []
     for name in wanted:
         if name not in entries:
@@ -562,26 +639,43 @@ def export(runs: list[dict], scores: list[dict], pairs: list[dict], *, only: Ite
             continue
         entry = entries[name]
         names = used.get(name, [])
-        if names:
+        if names and len(set(on.get(name, [])) | set(names)) == 1:
             entry["slate"] = slates[names[0]]
-            if len(names) > 1:
-                entry["other_slates"] = [slates[other] for other in names[1:]]
+        elif names:
+            entry["slates"] = [slates[other] for other in names]
         out.append(entry)
     return out, not_used
 
 
 def merge(doc: dict, entry: dict) -> dict:
-    """A copy of the OCP run document `doc` with one export entry merged in: the signals and preferences
-    that are not there yet, by id, and the slate when the run has none."""
+    """A copy of the OCP run document `doc` with one export entry merged in: the signals that are not there
+    yet, by id, and the preferences that are not there yet, by slate and id (a preference id is unique in
+    its slate). The entry's `slate` becomes the run's when the run has none and every preference of the
+    document lies on it. A preference on another slate than the one the document gives the run is refused
+    by name (OCP E194): a run whose preferences lie on two slates has no slate of its own."""
     out = copy.deepcopy(doc)
     run = out["run"]
     if entry.get("run") != run.get("id"):
         raise ValueError(f"the entry is for run {entry.get('run')!r}, the document is run {run.get('id')!r}")
-    for name in ("signals", "preferences"):
-        have = {record.get("id") for record in run.get(name) or [] if isinstance(record, dict)}
-        new = [copy.deepcopy(record) for record in entry.get(name) or [] if record["id"] not in have]
-        if new:
-            run[name] = list(run.get(name) or []) + new
-    if entry.get("slate") is not None and "slate" not in run:
+    have = {record.get("id") for record in run.get("signals") or [] if isinstance(record, dict)}
+    new = [copy.deepcopy(record) for record in entry.get("signals") or [] if record["id"] not in have]
+    if new:
+        run["signals"] = list(run.get("signals") or []) + new
+    held = {(record.get("slate"), record.get("id")) for record in run.get("preferences") or []
+            if isinstance(record, dict)}
+    new = [copy.deepcopy(record) for record in entry.get("preferences") or []
+           if (record.get("slate"), record["id"]) not in held]
+    own = run["slate"].get("id") if isinstance(run.get("slate"), dict) else None
+    stray = [record for record in new if own is not None and record.get("slate") != own]
+    if stray:
+        raise ValueError(f"the preference {stray[0]['id']!r} is on the slate {stray[0].get('slate')!r}, and the "
+                         f"document gives the run {run.get('id')!r} the slate {own!r} (OCP E194); a run whose "
+                         "preferences lie on two slates has no slate of its own: merge into a document without "
+                         "run.slate")
+    if new:
+        run["preferences"] = list(run.get("preferences") or []) + new
+    if entry.get("slate") is not None and "slate" not in run and all(
+            record.get("slate") == entry["slate"]["id"] for record in run.get("preferences") or []
+            if isinstance(record, dict)):
         run["slate"] = copy.deepcopy(entry["slate"])
     return out

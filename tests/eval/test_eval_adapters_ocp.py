@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 
@@ -252,13 +253,15 @@ def test_two_documents_of_another_tool_may_use_the_same_signal_ids():
     batch = A.read_documents(named, rubric=rubric)
     rows = scores_of(batch)
     assert batch.not_used == [] and len(rows) == 5 and len({row["id"] for row in rows}) == 5
-    # by hand: run, signal id and value of every reading, the call, and what each later score corrects
+    # by hand: run, signal id and value of every reading, the call, and what each later score corrects. The
+    # "/" and the space of "team/r 3" are written %2F and %20 (0.4.4 wrote "_", so a run "team_r_3" gave the
+    # same id)
     assert [(row["run"], row["id"], row["call"], row["value"], row.get("replaces")) for row in rows] == [
         ("r1", "r1.s1", "r1.s1", 5, None), ("r1", "r1.s2", "r1.s2", 6, "r1.s1"),
         ("r2", "r2.s1", "r2.s1", 8, None), ("r2", "r2.s2", "r2.s2", 9, "r2.s1"),
-        ("team/r 3", "team_r_3.s1", "team_r_3.s1", 2, None)]
+        ("team/r 3", "team%2Fr%203.s1", "team%2Fr%203.s1", 2, None)]
     assert [(row["id"], row["value"]) for row in C.live(rows, "scores.jsonl")[0]] == [
-        ("r1.s2", 6), ("r2.s2", 9), ("team_r_3.s1", 2)]
+        ("r1.s2", 6), ("r2.s2", 9), ("team%2Fr%203.s1", 2)]
     # the same documents again give the same rows: the ids do not depend on what was read before
     assert scores_of(A.read_documents(list(reversed(named)), rubric=rubric)) == [
         *rows[4:], *rows[2:4], *rows[:2]]
@@ -294,13 +297,16 @@ def test_a_preference_with_no_eval_member_is_read_on_the_named_component_or_list
             ("r2.json", document(runs[1], preferences=prefs[:2], slate=slate)), ("r3.json", document(runs[2]))]
     batch = A.read_documents(docs, rubric=rubric, pair_component="depth")
     rows = by_id(pairs_of(batch))
-    assert set(rows) == {"f1", "f2"}
-    assert rows["f1"] == {"schema": C.SCHEMA_PAIRS, "id": "f1", "a": "r1", "b": "r2", "step": "final",
-                          "component": "depth", "judge": "model_x", "call": "f1", "shown_first": None,
-                          "verdict": "a", "rubric": "brief@1", "observed_at": AT,
-                          "ext": {KEPT: {"judge": {"kind": "model", "model": "model x"}, "slate": "sl-1"}}}
-    assert rows["f2"]["verdict"] == "tie" and rows["f2"]["observed_at"] == "2026-02-03T09:00:00-08:00"
-    assert rows["f2"]["judge"] == "referee"
+    # a preference id of another tool is unique in its slate: the pair is named within the slate, and the
+    # copies of f1 and f2 in r2.json are the same two pairs
+    assert set(rows) == {"sl-1.f1", "sl-1.f2"} and len(batch.pairs) == 2
+    assert rows["sl-1.f1"] == {"schema": C.SCHEMA_PAIRS, "id": "sl-1.f1", "a": "r1", "b": "r2", "step": "final",
+                               "component": "depth", "judge": "model_x", "call": "sl-1.f1", "shown_first": None,
+                               "verdict": "a", "rubric": "brief@1", "observed_at": AT,
+                               "ext": {KEPT: {"judge": {"kind": "model", "model": "model x"}, "slate": "sl-1",
+                                              "id": "f1"}}}
+    assert rows["sl-1.f2"]["verdict"] == "tie" and rows["sl-1.f2"]["observed_at"] == "2026-02-03T09:00:00-08:00"
+    assert rows["sl-1.f2"]["judge"] == "referee"
     assert {entry["id"]: entry["reason"] for entry in batch.not_used} == {
         "f3": "the preference does not name exactly two runs",
         "f4": "the two runs have different inputs",
@@ -310,7 +316,98 @@ def test_a_preference_with_no_eval_member_is_read_on_the_named_component_or_list
     assert all(entry["reason"] == "the preference names no rubric; give --rubric"
                for entry in A.read_documents(docs).not_used if entry["id"] in ("f1", "f2"))
     known = A.read_documents(docs[:1], rubric=rubric, inputs={"r2": "case-01"})  # r2 is already in the study
-    assert set(by_id(pairs_of(known))) == {"f1", "f2"}
+    assert set(by_id(pairs_of(known))) == {"sl-1.f1", "sl-1.f2"}
+
+
+def test_scoped_ids_are_one_to_one_and_an_independent_decoder_reads_both_ids_back():
+    # by hand: the collision of review 2 item 10, and the characters that are written as %XX
+    assert (A.scoped_id("a.b", "c"), A.scoped_id("a", "b.c")) == ("a%2Eb.c", "a.b.c")
+    assert A.scoped_id("r1", "s1") == "r1.s1" and A.scoped_id("run-7_x", "sig.3") == "run-7_x.sig.3"
+    assert A.scoped_id("team/r 3", "s1") == "team%2Fr%203.s1" and A.scoped_id("team_r_3", "s1") == "team_r_3.s1"
+    assert A.scoped_id("50%", "a@b") == "50%25.a%40b" and A.scoped_id("x", "%2E") == "x.%252E"
+    assert A.scoped_id("x　y", "é\tz") == "x%E3%80%80y.é%09z"  # per UTF-8 byte; letters stay
+    # every pair over a small alphabet of the troublesome characters: the scope ends at the first "." and
+    # urllib's percent decoding gives both ids back, so no two pairs share an id
+    chars = ["a", ".", "%", "2", "E", " ", "/", "@", "　"]
+    texts = chars + [x + y for x in chars for y in chars] + [
+        x + y + z for x in chars[:5] for y in chars[:5] for z in chars[:5]]
+    seen = {}
+    for scope in texts:
+        for record in texts:
+            ident = A.scoped_id(scope, record)
+            head, dot, tail = ident.partition(".")
+            assert dot and (unquote(head), unquote(tail)) == (scope, record), (scope, record, ident)
+            assert not any(ch.isspace() or ch in "/@" for ch in ident)
+            assert seen.setdefault(ident, (scope, record)) == (scope, record)
+    assert len(seen) == len(texts) ** 2 == 46225
+
+
+def test_runs_a_dot_b_and_a_with_dotted_signal_ids_give_four_readings_and_their_corrections():
+    """Review 2 item 10: run "a.b" with signals c, d and run "a" with signals b.c, b.d gave the ids a.b.c and
+    a.b.d twice in 0.4.4."""
+    rubric = C.read_document(STUDY / "rubric.json", C.SCHEMA_RUBRIC)
+
+    def score(ident, value, minute):
+        return {"id": ident, "kind": "score", "name": "depth", "value": value, "tier": "reported",
+                "observed_at": f"2026-02-03T10:{minute:02d}:00-08:00", "source": {"kind": "judge", "ref": "judge-a"}}
+
+    runs = [run_row("a.b"), run_row("a", arm="strong")]
+    docs = [document(runs[0], signals=[score("d", 6, 20), score("c", 5, 10)]),
+            document(runs[1], signals=[score("b.c", 8, 10), score("b.d", 9, 20)])]
+    assert [errors(doc) for doc in docs] == [[], []]
+    rows = scores_of(A.read_documents([("ab.json", docs[0]), ("a.json", docs[1])], rubric=rubric))
+    # by hand: the later score of each run corrects the earlier one of the same run, by its new id
+    assert [(row["run"], row["id"], row["call"], row["value"], row.get("replaces"), row["ext"][KEPT]["id"])
+            for row in rows] == [
+        ("a.b", "a%2Eb.c", "a%2Eb.c", 5, None, "c"), ("a.b", "a%2Eb.d", "a%2Eb.d", 6, "a%2Eb.c", "d"),
+        ("a", "a.b.c", "a.b.c", 8, None, "b.c"), ("a", "a.b.d", "a.b.d", 9, "a.b.c", "b.d")]
+    assert [row["id"] for row in C.live(rows, "scores.jsonl")[0]] == ["a%2Eb.d", "a.b.d"]
+    # out with the ids each document gave, the reading ids and corrections beside them, and back in unchanged
+    entries, not_used = A.export(runs, rows, [])
+    assert not_used == [] and [[(s["id"], s["ext"][NS]["id"], s["ext"][NS].get("replaces")) for s in entry["signals"]]
+                               for entry in entries] == [
+        [("c", "a%2Eb.c", None), ("d", "a%2Eb.d", "a%2Eb.c")], [("b.c", "a.b.c", None), ("b.d", "a.b.d", "a.b.c")]]
+    merged = json.loads(json.dumps([A.merge(document(run), entry) for run, entry in zip(runs, entries)]))
+    assert [errors(doc) for doc in merged] == [[], []]
+    assert scores_of(A.read_documents([("m0.json", merged[0]), ("m1.json", merged[1])])) == rows
+
+
+def test_preferences_of_another_tool_are_named_within_their_slate():
+    rubric = C.read_document(STUDY / "rubric.json", C.SCHEMA_RUBRIC)
+    runs = [run_row("r1"), run_row("r2", arm="strong"), run_row("r3", input_id="case-02"),
+            run_row("r4", input_id="case-02", arm="strong")]
+
+    def pref(winner, minute):
+        return {"id": "f1", "slate": "sl-1" if winner in ("r1", "r2") else "sl.2", "winner": winner,
+                "observed_at": f"2026-02-03T10:{minute:02d}:00-08:00", "judge": {"kind": "model", "model": "m"}}
+
+    one, two = pref("r2", 1), pref("r3", 2)  # both tools number their slate's preferences from f1
+    slates = [{"id": "sl-1", "members": ["r1", "r2"]}, {"id": "sl.2", "members": ["r3", "r4"]}]
+    docs = [(f"{run['run']}.json", document(run, preferences=[p], slate=s))
+            for run, p, s in zip(runs, (one, one, two, two), (slates[0], slates[0], slates[1], slates[1]))]
+    batch = A.read_documents(docs, rubric=rubric)
+    rows = pairs_of(batch)
+    # by hand: one pair per slate, read once from the two files that hold it; "." in a slate is %2E
+    assert batch.not_used == [] and [(row["id"], row["call"], row["a"], row["b"], row["verdict"],
+                                      row["ext"][KEPT]["id"]) for row in rows] == [
+        ("sl-1.f1", "sl-1.f1", "r1", "r2", "b", "f1"), ("sl%2E2.f1", "sl%2E2.f1", "r3", "r4", "a", "f1")]
+    entries, not_used = A.export([C.validate_run({**row, "schema": C.SCHEMA_RUNS}, "runs.jsonl", "")
+                                  for row in batch.runs], [], rows)
+    out = {entry["run"]: entry for entry in entries}
+    assert not_used == [] and out["r1"]["preferences"] == out["r2"]["preferences"]
+    assert [(p["id"], p["slate"], p["winner"], p["ext"][NS]["id"]) for p in out["r1"]["preferences"] + out["r3"][
+        "preferences"]] == [("f1", "sl-1", "r2", "sl-1.f1"), ("f1", "sl.2", "r3", "sl%2E2.f1")]
+    for entry, (_, doc) in zip(entries, docs):  # what the other tool wrote comes back as it was
+        given, back = doc["run"]["preferences"][0], entry["preferences"][0]
+        assert {k: back[k] for k in given if k != "judge"} == {k: v for k, v in given.items() if k != "judge"}
+        assert {k: v for k, v in back["judge"].items() if k != "ext"} == given["judge"]
+    merged =json.loads(json.dumps([A.merge(document(run), out[run["run"]]) for run in runs]))
+    assert pairs_of(A.read_documents([(f"m{n}.json", doc) for n, doc in enumerate(merged)])) == rows
+    # one id in one slate with two contents: both come through, and the import refuses the second by id
+    other = dict(one, winner="r1")
+    clash = A.read_documents([("r1.json", document(runs[0], preferences=[one], slate=slates[0])),
+                              ("r2.json", document(runs[1], preferences=[other], slate=slates[0]))], rubric=rubric)
+    assert [(row["id"], row["verdict"]) for row in pairs_of(clash)] == [("sl-1.f1", "b"), ("sl-1.f1", "a")]
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -457,6 +554,32 @@ def test_merge_adds_only_what_the_document_does_not_hold():
     assert len(once["run"]["signals"]) == len(entries[0]["signals"]) and once["run"]["slate"] == entries[0]["slate"]
     with pytest.raises(ValueError, match="the entry is for run"):
         A.merge(document(study.runs[1]), entries[0])
+
+
+def test_merge_keeps_one_preference_id_apart_on_two_slates_and_refuses_one_off_the_runs_slate():
+    run = run_row("r1")
+
+    def entry(on: str, other: str, **more) -> dict:
+        record = {"id": "f1", "slate": on, "winner": "r1", "members": ["r1", other], "observed_at": AT,
+                  "judge": {"kind": "model"}}
+        return {"run": "r1", "signals": [], "preferences": [record], **more}
+
+    one = entry("slate-1", "r2", slate={"id": "slate-1", "members": ["r1", "r2"]})
+    two = entry("slate-2", "r3", slates=[{"id": "slate-2", "members": ["r1", "r3"]}])
+    # no slate in the document: both preferences are kept, and the run gets no slate, as neither covers both
+    doc = A.merge(A.merge(document(run), two), one)
+    assert [(p["slate"], p["id"]) for p in doc["run"]["preferences"]] == [("slate-2", "f1"), ("slate-1", "f1")]
+    assert "slate" not in doc["run"] and errors(doc) == []
+    assert A.merge(doc, one) == doc and A.merge(doc, two) == doc  # by slate and id: nothing twice
+    # a document on slate-1 takes slate-1's preference and refuses slate-2's by name; OCP finds E194 in it
+    on_one = A.merge(document(run), one)
+    assert on_one["run"]["slate"] == one["slate"] and errors(on_one) == []
+    with pytest.raises(ValueError, match=r"^the preference 'f1' is on the slate 'slate-2', and the document gives the "
+                                         r"run 'r1' the slate 'slate-1' \(OCP E194\)"):
+        A.merge(on_one, two)
+    forced = copy.deepcopy(on_one)
+    forced["run"]["preferences"] += two["preferences"]
+    assert [line.split(" ")[0] for line in errors(forced)] == ["E194"]
 
 
 def test_the_adapter_is_not_a_command_and_hands_over_to_scores(capsys):
