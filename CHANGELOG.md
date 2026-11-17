@@ -32,7 +32,7 @@ Not built, or not yet checked:
 - `eval scores export` has no filter by judge. Importing preferences made by another tool keeps their ids, and an id that is already taken is refused.
 - `eval steps` estimates no interactions between steps.
 - Costs in `eval judges` have no range.
-- `eval value --check design` has no variance term for stratified plans and does not use comparisons. Its ranges have been measured through the whole chain on one simulated study only: over 25 plans of 30 labels each they held the truth in 90% of cases under pilot plans and in 84% under active plans, against a stated 90%.
+- `eval value --check design` has no variance term for stratified plans and does not use comparisons. Its ranges have been measured through the whole chain on one simulated study only: over 25 plans of 30 labels each they held the truth in 90% of cases under pilot plans and in 94% under active plans, against a stated 90%.
 - `eval labels next --mode active` is opt-in. In simulation it beat pilot and uniform sampling by a small margin only. Its scores read yes or no and levels components as plain numbers and do not count what a label teaches about a judge. A plan never goes over its budget and can come in under it. Under a value file whose objective is `cheapest_within_margin` or `cost_per_pass`, active mode is refused.
 - `eval` is not a topic of `loopmath guide` and is not in the installed skill yet.
 

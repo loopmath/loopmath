@@ -146,7 +146,7 @@ number for that arm should not be trusted yet.
 - **`eval value --check design`** treats every labelled output as drawn alone: it has no variance term for
   stratified plans and does not use comparisons. Its ranges have been measured through the whole
   chain on one simulated study only: over 25 plans of 30 labels each they held the truth in 90% of cases under
-  pilot plans and in 84% under active plans, against a stated 90%. Read a flag from it as a reason to look, not
+  pilot plans and in 94% under active plans, against a stated 90%. Read a flag from it as a reason to look, not
   as a test.
 - **`eval labels next --mode active`** is opt-in; `pilot` is the default. In the simulated comparison, active mode
   had a lower decision loss than pilot and uniform sampling by a small margin. Its scores read yes or no and
