@@ -320,8 +320,310 @@ def check_draws(index: dict, draws: Mapping[str, np.ndarray], file: str = "fit.d
     return sizes
 
 
+INPUT_ROLES = ("runs", "scores", "pairs", "items", "rubric", "judges")
+COUNTS = ("runs", "inputs", "arms", "targets", "readings", "readings_used", "pairs", "pairs_used")
+STAT = ("mean", "sd", "lo", "hi")
+DIMENSION = ("id", "step", "component", "title", "role", "scale", "better", "review_minutes", "compare_minutes",
+             "human_only", "relative", "cuts")
+JUDGE_STATS = ("halo_target", "halo_call", "position", "tie_width")
+JUDGE_DIM_STATS = ("bias", "tau", "sigma", "sd_judge_input", "sigma_pair")
+JUDGE_DIM_COUNTS = ("n_targets", "n_calls", "n_pairs")
+JUDGE = ("id", "kind", "model", "effort", "prompt", "mode", "reference", "blinded", "cost_usd_per_call",
+         "components", "anchor", *JUDGE_STATS, "dims", "family")
+
+
+def _record(c: C._Check, value: Any, where: str, members: Sequence[str], nullable: Sequence[str] = (),
+            optional: Sequence[str] = ()) -> dict:
+    """An object with only `members`. Each has to be there; a `nullable` one may be null; an `optional`
+    one may be left out."""
+    c.obj(value, where, members, [name for name in members if name not in nullable and name not in optional])
+    for name in nullable:
+        if name not in value:
+            raise c.fail(where, f'missing member "{name}"', "add it", "missing_member")
+    return value
+
+
+def _number(c: C._Check, value: Any, where: str, **bounds: float) -> float:
+    try:
+        return c.number(value, where, **bounds)
+    except OverflowError:  # a whole number too large for a float
+        raise c.fail(where, "expected a finite number, got a number too large to read", "write a number here",
+                     "type") from None
+
+
+def _text(c: C._Check, value: Any, where: str) -> str:
+    """A string that may be empty."""
+    if not isinstance(value, str):
+        raise c.fail(where, f"expected a string, got {C._kind(value)}", "write a string here", "type")
+    return value
+
+
+def _stat(c: C._Check, value: Any, where: str) -> None:
+    """A stat: null, or the mean, sd and 90% interval."""
+    if value is None:
+        return
+    _record(c, value, where, STAT)
+    for name in STAT:
+        _number(c, value[name], f"{where}.{name}", **({"low": 0} if name == "sd" else {}))
+
+
+def _same(c: C._Check, got: Any, want: Any, where: str, what: str, fix: str) -> None:
+    if got != want:
+        shown = f'"{got}"' if isinstance(got, str) else C._num(got) if isinstance(got, (int, float)) else C._kind(got)
+        wanted = f'"{want}"' if isinstance(want, str) else str(want)
+        raise c.fail(where, f"{shown} is not {what} {wanted}", fix, "bad_index")
+
+
+def _matrix(c: C._Check, value: Any, where: str, size: int) -> None:
+    rows = c.array(value, where)
+    if len(rows) != size or any(not isinstance(row, list) or len(row) != size for row in rows):
+        raise c.fail(where, f"it is not a {size} by {size} matrix", "write one row and one column per dimension",
+                     "bad_index")
+    for n, row in enumerate(rows):
+        for m, cell in enumerate(row):
+            _number(c, cell, f"{where}[{n}][{m}]")
+
+
+def _check_dimensions(c: C._Check, dims: list, index: dict) -> None:
+    for n, (dim, known) in enumerate(zip(dims, index["dimensions"])):
+        w = f"dimensions[{n}]"
+        _record(c, dim, w, DIMENSION, nullable=("cuts",))
+        for name in ("id", "step", "component", "title"):
+            c.string(dim[name], f"{w}.{name}")
+        c.choice(dim["role"], f"{w}.role", C.ROLES)
+        scale = C._scale(c, dim["scale"], f"{w}.scale")
+        c.choice(dim["better"], f"{w}.better", C.BETTER)
+        for name in ("review_minutes", "compare_minutes"):
+            _number(c, dim[name], f"{w}.{name}", above=0)
+        for name in ("human_only", "relative"):
+            c.boolean(dim[name], f"{w}.{name}")
+        for name in ("step", "component"):
+            _same(c, dim[name], known[name], f"{w}.{name}", f"the {name} of index.dimensions[{n}],",
+                  "write the dimension as the index has it")
+        _same(c, scale["kind"], known["kind"], f"{w}.scale.kind", f"the kind of index.dimensions[{n}],",
+              "write the dimension as the index has it")
+        if scale["kind"] == "levels":
+            c.choice(dim["cuts"], f"{w}.cuts", ("fixed", "free"))
+            cuts = known.get("cuts")
+            if cuts is not None and len(cuts) != len(scale["levels"]) - 1:
+                raise c.fail(f"index.dimensions[{n}].cuts", f"{len(cuts)} cuts for {len(scale['levels'])} levels",
+                             "give one cut between each two levels", "bad_index")
+        elif dim["cuts"] is not None:
+            raise c.fail(f"{w}.cuts", f'a "{scale["kind"]}" scale has no cuts', "write null", "scale_member")
+
+
+def _check_arms(c: C._Check, arms: list, index: dict) -> None:
+    ids = [dim["id"] for dim in index["dimensions"]]
+    for a, arm in enumerate(arms):
+        w = f"arms[{a}]"
+        _record(c, arm, w, ("id", "n_runs", "n_inputs", "cost_usd", "steps", "mixed", "dims"), nullable=("cost_usd",))
+        mine = [r for r, position in enumerate(index["run_arm"]) if position == a]
+        _same(c, c.integer(arm["n_runs"], f"{w}.n_runs", low=0), len(mine), f"{w}.n_runs",
+              "the count of its runs in index.run_arm,", "count the runs of the arm")
+        _same(c, c.integer(arm["n_inputs"], f"{w}.n_inputs", low=0), len({index["run_input"][r] for r in mine}),
+              f"{w}.n_inputs", "the count of its inputs in index.run_input,", "count the inputs of the arm")
+        if arm["cost_usd"] is not None:
+            _number(c, arm["cost_usd"], f"{w}.cost_usd", low=0)
+        for n, step in enumerate(c.array(arm["steps"], f"{w}.steps", non_empty=True)):
+            v = f"{w}.steps[{n}]"
+            c.obj(step, v, {"step", "model", "effort", "variant"}, {"step", "model"})
+            c.ident(step["step"], f"{v}.step")
+            C._model(c, step["model"], f"{v}.model")
+            for name in ("effort", "variant"):
+                if step.get(name) is not None:
+                    c.string(step[name], f"{v}.{name}")
+        c.boolean(arm["mixed"], f"{w}.mixed")
+        rows = c.array(arm["dims"], f"{w}.dims")
+        if len(rows) != len(ids):
+            raise c.fail(f"{w}.dims", f"{len(rows)} entries for {len(ids)} dimensions",
+                         "write one entry per dimension, in the order of index.dimensions", "bad_index")
+        for d, row in enumerate(rows):
+            v = f"{w}.dims[{d}]"
+            _record(c, row, v, ("dimension", "reported", "own", "fitting"), nullable=("reported", "own", "fitting"))
+            _same(c, row["dimension"], ids[d], f"{v}.dimension", "the dimension at this place,",
+                  "write one entry per dimension, in the order of index.dimensions")
+            for name in ("reported", "own", "fitting"):
+                _stat(c, row[name], f"{v}.{name}")
+
+
+def _check_levels(c: C._Check, levels: Any, index: dict) -> None:
+    size = len(index["dimensions"])
+    _record(c, levels, "levels", ("input", "run"))
+    for level in ("input", "run"):
+        w = f"levels.{level}"
+        _record(c, levels[level], w, ("sd", "corr"))
+        sds = c.array(levels[level]["sd"], f"{w}.sd")
+        if len(sds) != size:
+            raise c.fail(f"{w}.sd", f"{len(sds)} entries for {size} dimensions",
+                         "write one entry per dimension, in the order of index.dimensions", "bad_index")
+        for d, one in enumerate(sds):
+            _stat(c, one, f"{w}.sd[{d}]")
+        corr = _record(c, levels[level]["corr"], f"{w}.corr", ("mean", "lo", "hi"))
+        for name in ("mean", "lo", "hi"):
+            _matrix(c, corr[name], f"{w}.corr.{name}", size)
+
+
+def _check_judges(c: C._Check, judges: list, index: dict) -> None:
+    ids = [dim["id"] for dim in index["dimensions"]]
+    cells = [(family, dim) for family in index["families"] for dim in ids]
+    for j, judge in enumerate(judges):
+        w = f"judges[{j}]"
+        _record(c, judge, w, JUDGE, nullable=("components", *JUDGE_STATS),
+                optional=("model", "effort", "prompt", "cost_usd_per_call"))
+        kind = c.choice(judge["kind"], f"{w}.kind", C.JUDGE_KINDS)
+        if kind == "model":
+            if judge.get("model") is None:
+                raise c.fail(w, 'a judge of kind "model" has no model', "add model with id and family",
+                             "missing_member")
+            C._model(c, judge["model"], f"{w}.model", provider=True)
+        elif judge.get("model") is not None:
+            raise c.fail(f"{w}.model", f'a judge of kind "{kind}" has a model', 'remove it, or set kind to "model"',
+                         "judge_model")
+        for name in ("effort", "prompt"):
+            if judge.get(name) is not None:
+                c.string(judge[name], f"{w}.{name}")
+        c.choice(judge["mode"], f"{w}.mode", C.JUDGE_MODES)
+        C._reference(c, judge["reference"], f"{w}.reference")
+        for name in ("blinded", "anchor"):
+            c.boolean(judge[name], f"{w}.{name}")
+        if judge.get("cost_usd_per_call") is not None:
+            _number(c, judge["cost_usd_per_call"], f"{w}.cost_usd_per_call", low=0)
+        if judge["components"] is not None:
+            for n, name in enumerate(c.array(judge["components"], f"{w}.components", non_empty=True)):
+                c.ident(name, f"{w}.components[{n}]")
+        for name in JUDGE_STATS:
+            _stat(c, judge[name], f"{w}.{name}")
+        rows = c.array(judge["dims"], f"{w}.dims")
+        if len(rows) != len(ids):
+            raise c.fail(f"{w}.dims", f"{len(rows)} entries for {len(ids)} dimensions",
+                         "write one entry per dimension, in the order of index.dimensions", "bad_index")
+        for d, row in enumerate(rows):
+            v = f"{w}.dims[{d}]"
+            _record(c, row, v, ("dimension", *JUDGE_DIM_STATS, *JUDGE_DIM_COUNTS), nullable=JUDGE_DIM_STATS)
+            _same(c, row["dimension"], ids[d], f"{v}.dimension", "the dimension at this place,",
+                  "write one entry per dimension, in the order of index.dimensions")
+            for name in JUDGE_DIM_STATS:
+                _stat(c, row[name], f"{v}.{name}")
+            for name in JUDGE_DIM_COUNTS:
+                c.integer(row[name], f"{v}.{name}", low=0)
+        rows = c.array(judge["family"], f"{w}.family")
+        if len(rows) != len(cells):
+            raise c.fail(f"{w}.family", f"{len(rows)} entries for {len(index['families'])} families and "
+                         f"{len(ids)} dimensions", "write one entry per family and dimension, families first",
+                         "bad_index")
+        for n, row in enumerate(rows):
+            v = f"{w}.family[{n}]"
+            _record(c, row, v, ("family", "dimension", "effect"), nullable=("effect",))
+            _same(c, row["family"], cells[n][0], f"{v}.family", "the family at this place,",
+                  "write one entry per family and dimension, families first")
+            _same(c, row["dimension"], cells[n][1], f"{v}.dimension", "the dimension at this place,",
+                  "write one entry per family and dimension, families first")
+            _stat(c, row["effect"], f"{v}.effect")
+
+
+def _check_targets(c: C._Check, targets: list, index: dict) -> None:
+    runs = {run: r for r, run in enumerate(index["runs"])}
+    by_step: dict[str, list[str]] = {}
+    for dim in index["dimensions"]:
+        by_step.setdefault(dim["step"], []).append(dim["id"])
+    seen = set()
+    for n, target in enumerate(targets):
+        w = f"targets[{n}]"
+        _record(c, target, w, ("run", "step", "input", "arm", "refs", "dims"))
+        for name in ("run", "step", "input", "arm"):
+            c.string(target[name], f"{w}.{name}")
+        if target["run"] not in runs:
+            raise c.fail(f"{w}.run", f'unknown run "{target["run"]}"', "name a run of index.runs", "bad_index")
+        if target["step"] not in by_step:
+            raise c.fail(f"{w}.step", f'no dimension of index.dimensions is on the step "{target["step"]}"',
+                         "name a step that has a dimension", "bad_index")
+        if (target["run"], target["step"]) in seen:
+            raise c.fail(w, f'the run "{target["run"]}" at the step "{target["step"]}" appears twice',
+                         "give every target once", "duplicate")
+        seen.add((target["run"], target["step"]))
+        r = runs[target["run"]]
+        _same(c, target["input"], index["inputs"][index["run_input"][r]], f"{w}.input",
+              "the input of the run in index.run_input,", "write the input of the run")
+        _same(c, target["arm"], index["arms"][index["run_arm"][r]], f"{w}.arm", "the arm of the run in index.run_arm,",
+              "write the arm of the run")
+        refs = target["refs"]
+        if not isinstance(refs, dict):
+            raise c.fail(f"{w}.refs", f"expected an object, got {C._kind(refs)}",
+                         "map a name (input, output) to a reference", "type")
+        for name, ref in refs.items():
+            c.string(ref, f"{w}.refs.{name}")
+        rows = c.array(target["dims"], f"{w}.dims")
+        ids = by_step[target["step"]]
+        if len(rows) != len(ids):
+            raise c.fail(f"{w}.dims", f'{len(rows)} entries for {len(ids)} dimensions of the step "{target["step"]}"',
+                         "write one entry per dimension of the step, in the order of index.dimensions", "bad_index")
+        for d, row in enumerate(rows):
+            v = f"{w}.dims[{d}]"
+            _record(c, row, v, ("dimension", "pooled", "unpooled", "judges"), nullable=("pooled", "unpooled"))
+            _same(c, row["dimension"], ids[d], f"{v}.dimension", "the dimension at this place,",
+                  "write one entry per dimension of the step, in the order of index.dimensions")
+            if row["pooled"] is not None:
+                _record(c, row["pooled"], f"{v}.pooled", ("mean", "sd"))
+                _number(c, row["pooled"]["mean"], f"{v}.pooled.mean")
+                _number(c, row["pooled"]["sd"], f"{v}.pooled.sd", low=0)
+            if row["unpooled"] is not None:
+                _record(c, row["unpooled"], f"{v}.unpooled", ("mean", "sd", "n"), nullable=("sd",))
+                _number(c, row["unpooled"]["mean"], f"{v}.unpooled.mean")
+                if row["unpooled"]["sd"] is not None:
+                    _number(c, row["unpooled"]["sd"], f"{v}.unpooled.sd", low=0)
+                c.integer(row["unpooled"]["n"], f"{v}.unpooled.n", low=0)
+            calls = row["judges"]
+            if not isinstance(calls, dict):
+                raise c.fail(f"{v}.judges", f"expected an object, got {C._kind(calls)}",
+                             "map a judge id to its count of calls", "type")
+            for name, count in calls.items():
+                if name not in index["judges"]:
+                    raise c.fail(f"{v}.judges.{name}", f'unknown judge "{name}"', "name a judge of index.judges",
+                                 "bad_index")
+                c.integer(count, f"{v}.judges.{name}", low=0)
+
+
+def _check_draws(c: C._Check, draws: dict, index: dict) -> None:
+    name = c.string(draws["file"], "draws.file")
+    if name in (".", "..") or "/" in name or "\\" in name:
+        raise c.fail("draws.file", f'"{name}" is not a file name', "name the draws file that sits beside fit.json",
+                     "bad_file")
+    digest = c.string(draws["sha256"], "draws.sha256")
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise c.fail("draws.sha256", "it is not a SHA-256 digest", "write 64 hex digits, lower case", "bad_digest")
+    sizes = {**_sizes(index, {}), "S": c.integer(draws["n"], "draws.n", low=1)}
+    arrays = draws["arrays"]
+    if not isinstance(arrays, dict):
+        raise c.fail("draws.arrays", f"expected an object, got {C._kind(arrays)}", "map an array name to its shape",
+                     "type")
+    for array in DRAW_SHAPES:
+        if array not in arrays and array not in OPTIONAL_DRAWS:
+            raise c.fail("draws.arrays", f'missing member "{array}"', "add it", "missing_member")
+    for array, shape in arrays.items():
+        w = f"draws.arrays.{array}"
+        if array not in DRAW_SHAPES:
+            raise c.fail(w, "unknown array", "write only the arrays of fitfile.DRAW_SHAPES", "draws_unknown")
+        for n, size in enumerate(c.array(shape, w)):
+            c.integer(size, f"{w}[{n}]", low=0)
+        axes = DRAW_SHAPES[array]
+        if len(shape) != len(axes) or any(axis in sizes and size != sizes[axis] for axis, size in zip(axes, shape)):
+            want = ", ".join(str(sizes.get(axis, axis)) for axis in axes)
+            raise c.fail(w, f"shape {tuple(shape)} is not ({', '.join(axes)}) = ({want})",
+                         "match the index of fit.json", "draws_shape")
+
+
 def validate_fit(obj: Any, file: str = "fit.json") -> dict:
-    """Check the members of `fit.json` that later stages index by. Returns the object as given."""
+    """Check every member of `fit.json` against the contract at the top of this module: the members that
+    must be there, their types, no unknown member (but under `ext`), and that every block agrees with
+    `index`. A later stage can then index what it reads without a check of its own. Returns the object
+    as given."""
+    try:
+        return _validate(obj, file)
+    except OverflowError:  # a whole number too large for a float, in a place a shared check reads
+        raise ContractError(file, "", "a number is too large to read", "write finite numbers", "type") from None
+
+
+def _validate(obj: Any, file: str) -> dict:
     c = C._Check(file)
     C._schema(c, obj, "", C.SCHEMA_FIT)
     c.obj(obj, "", MEMBERS, [name for name in MEMBERS if name != "schema"])
@@ -329,12 +631,24 @@ def validate_fit(obj: Any, file: str = "fit.json") -> dict:
                                            "run_arm", "run_input"},
                   {"arms", "dimensions", "judges", "families", "inputs", "runs", "run_arm", "run_input"})
     for name in ("arms", "judges", "families", "inputs", "runs"):
-        c.array(index[name], f"index.{name}")
+        for n, entry in enumerate(c.array(index[name], f"index.{name}")):
+            c.string(entry, f"index.{name}[{n}]")
         c.unique(index[name], f"index.{name}", "id")
     for n, dim in enumerate(c.array(index["dimensions"], "index.dimensions", non_empty=True)):
-        c.obj(dim, f"index.dimensions[{n}]", {"id", "step", "component", "kind", "cuts"},
-              {"id", "step", "component", "kind"})
-        c.choice(dim["kind"], f"index.dimensions[{n}].kind", C.SCALE_KINDS)
+        w = f"index.dimensions[{n}]"
+        c.obj(dim, w, {"id", "step", "component", "kind", "cuts"}, {"id", "step", "component", "kind"})
+        for name in ("id", "step", "component"):
+            c.string(dim[name], f"{w}.{name}")
+        _same(c, dim["id"], C.dimension_id(dim["step"], dim["component"]), f"{w}.id", "the step and the component,",
+              "write the id as step/component")
+        c.choice(dim["kind"], f"{w}.kind", C.SCALE_KINDS)
+        if dim.get("cuts") is not None:
+            if dim["kind"] != "levels":
+                raise c.fail(f"{w}.cuts", f'a "{dim["kind"]}" scale has no cuts', "write null", "scale_member")
+            cuts = [_number(c, cut, f"{w}.cuts[{m}]") for m, cut in enumerate(c.array(dim["cuts"], f"{w}.cuts",
+                                                                                  non_empty=True))]
+            if any(low >= high for low, high in zip(cuts, cuts[1:])):
+                raise c.fail(f"{w}.cuts", "the cuts do not rise", "list the cuts lowest first", "bad_cuts")
     c.unique([dim["id"] for dim in index["dimensions"]], "index.dimensions", "dimension id")
     for name, size in (("run_arm", len(index["arms"])), ("run_input", len(index["inputs"]))):
         rows = c.array(index[name], f"index.{name}")
@@ -342,28 +656,104 @@ def validate_fit(obj: Any, file: str = "fit.json") -> dict:
                 isinstance(v, bool) or not isinstance(v, int) or not 0 <= v < size for v in rows):
             raise c.fail(f"index.{name}", "it does not give one valid position per run",
                          "write one position per entry of index.runs", "bad_index")
+    ids = [dim["id"] for dim in index["dimensions"]]
+
+    inputs = obj["inputs"]
+    if not isinstance(inputs, dict):
+        raise c.fail("inputs", f"expected an object, got {C._kind(inputs)}", "write a JSON object here", "type")
+    for role, entry in inputs.items():
+        if role not in INPUT_ROLES:
+            raise c.fail(f"inputs.{role}", "unknown member", f"use one of {', '.join(INPUT_ROLES)}", "unknown_member")
+        _record(c, entry, f"inputs.{role}", ("file", "sha256"))
+        for name in ("file", "sha256"):
+            c.string(entry[name], f"inputs.{role}.{name}")
+    if not isinstance(obj["options"], dict):
+        raise c.fail("options", f"expected an object, got {C._kind(obj['options'])}", "write a JSON object here",
+                     "type")
+    engine = _record(c, obj["engine"], "engine", ("name", "version"))
+    c.string(engine["name"], "engine.name")
+    _text(c, engine["version"], "engine.version")
+    c.integer(obj["seed"], "seed")
+
     dims = c.array(obj["dimensions"], "dimensions")
-    if [dim.get("id") if isinstance(dim, dict) else None for dim in dims] != [d["id"] for d in index["dimensions"]]:
+    if [dim.get("id") if isinstance(dim, dict) else None for dim in dims] != ids:
         raise c.fail("dimensions", "the ids do not match index.dimensions", "list the same dimensions in order",
                      "bad_index")
-    for name, ids in (("arms", index["arms"]), ("judges", index["judges"])):
+    _check_dimensions(c, dims, index)
+    for name, known in (("arms", index["arms"]), ("judges", index["judges"])):
         rows = c.array(obj[name], name)
-        if [row.get("id") if isinstance(row, dict) else None for row in rows] != ids:
+        if [row.get("id") if isinstance(row, dict) else None for row in rows] != known:
             raise c.fail(name, f"the ids do not match index.{name}", f"list the same {name} in order", "bad_index")
+    _check_arms(c, obj["arms"], index)
+    _check_judges(c, obj["judges"], index)
+    _check_levels(c, obj["levels"], index)
+    targets = c.array(obj["targets"], "targets")
+    _check_targets(c, targets, index)
+
+    counts = _record(c, obj["counts"], "counts", COUNTS)
+    for name in COUNTS:
+        c.integer(counts[name], f"counts.{name}", low=0)
+    for name, size, what in (("runs", len(index["runs"]), "index.runs"), ("inputs", len(index["inputs"]),
+                                                                           "index.inputs"),
+                             ("arms", len(index["arms"]), "index.arms"), ("targets", len(targets), "targets")):
+        _same(c, counts[name], size, f"counts.{name}", f"the length of {what},", f"count the entries of {what}")
+
     for n, row in enumerate(c.array(obj["terms"], "terms")):
-        c.obj(row, f"terms[{n}]", {"term", "judge", "dimension", "state", "count", "needs", "reason"},
-              {"term", "state"})
-        c.choice(row["state"], f"terms[{n}].state", TERM_STATES)
+        w = f"terms[{n}]"
+        c.obj(row, w, {"term", "judge", "dimension", "state", "count", "needs", "reason"}, {"term", "state"})
+        c.choice(row["term"], f"{w}.term", TERMS)
+        c.choice(row["state"], f"{w}.state", TERM_STATES)
+        for name, known in (("judge", index["judges"]), ("dimension", ids)):
+            if row.get(name) is not None and row[name] not in known:
+                shown = f'"{row[name]}"' if isinstance(row[name], str) else C._kind(row[name])
+                raise c.fail(f"{w}.{name}", f"unknown {name} {shown}", f"name a {name} of the index, or write null",
+                             "bad_index")
+        if row.get("count") is not None:
+            c.integer(row["count"], f"{w}.count", low=0)
+        for name in ("needs", "reason"):
+            if row.get(name) is not None:
+                _text(c, row[name], f"{w}.{name}")
     diagnostics = c.obj(obj["diagnostics"], "diagnostics",
                         {"converged", "rhat_max", "ess_min", "divergences", "run_seconds", "checks"}, {"converged"})
     c.boolean(diagnostics["converged"], "diagnostics.converged")
+    for name in ("rhat_max", "ess_min", "run_seconds"):
+        if diagnostics.get(name) is not None:
+            _number(c, diagnostics[name], f"diagnostics.{name}", low=0)
+    if diagnostics.get("divergences") is not None:
+        c.integer(diagnostics["divergences"], "diagnostics.divergences", low=0)
+    if diagnostics.get("checks") is not None:
+        for n, row in enumerate(c.array(diagnostics["checks"], "diagnostics.checks")):
+            if not isinstance(row, dict):
+                raise c.fail(f"diagnostics.checks[{n}]", f"expected an object, got {C._kind(row)}",
+                             "write a JSON object here", "type")
     anchor = c.obj(obj["anchor"], "anchor", {"kind", "judges", "min_anchor_targets", "dimensions"},
                    {"kind", "dimensions"})
     c.choice(anchor["kind"], "anchor.kind", ("person", "judges_mean"))
+    if anchor.get("judges") is not None:
+        for n, name in enumerate(c.array(anchor["judges"], "anchor.judges")):
+            if name not in index["judges"]:
+                shown = f'"{name}"' if isinstance(name, str) else C._kind(name)
+                raise c.fail(f"anchor.judges[{n}]", f"unknown judge {shown}", "name a judge of index.judges",
+                             "bad_index")
+    if anchor.get("min_anchor_targets") is not None:
+        c.integer(anchor["min_anchor_targets"], "anchor.min_anchor_targets", low=1)
     for n, row in enumerate(c.array(anchor["dimensions"], "anchor.dimensions")):
-        c.obj(row, f"anchor.dimensions[{n}]", {"dimension", "state", "n_targets"}, {"dimension", "state"})
-        c.choice(row["state"], f"anchor.dimensions[{n}].state", ANCHOR_STATES)
-    c.obj(obj["draws"], "draws", {"file", "sha256", "n", "arrays"}, {"file", "sha256", "n", "arrays"})
+        w = f"anchor.dimensions[{n}]"
+        c.obj(row, w, {"dimension", "state", "n_targets"}, {"dimension", "state"})
+        c.choice(row["state"], f"{w}.state", ANCHOR_STATES)
+        if row["dimension"] not in ids:
+            shown = f'"{row["dimension"]}"' if isinstance(row["dimension"], str) else C._kind(row["dimension"])
+            raise c.fail(f"{w}.dimension", f"unknown dimension {shown}", "name a dimension of index.dimensions",
+                         "bad_index")
+        if row.get("n_targets") is not None:
+            c.integer(row["n_targets"], f"{w}.n_targets", low=0)
+    c.unique([row["dimension"] for row in anchor["dimensions"]], "anchor.dimensions", "dimension")
+    for n, row in enumerate(c.array(obj["notes"], "notes")):
+        _record(c, row, f"notes[{n}]", ("kind", "id", "reason"))
+        for name in ("kind", "id", "reason"):
+            c.string(row[name], f"notes[{n}].{name}")
+    _check_draws(c, c.obj(obj["draws"], "draws", {"file", "sha256", "n", "arrays"},
+                          {"file", "sha256", "n", "arrays"}), index)
     return obj
 
 

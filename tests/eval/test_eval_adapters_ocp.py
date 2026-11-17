@@ -217,12 +217,15 @@ def test_signals_with_no_eval_member_the_newest_is_the_reading_and_earlier_ones_
     assert errors(doc) == []
     with_rubric = A.read_documents([("r1.json", doc)], rubric=rubric)
     rows = by_id(scores_of(with_rubric))
-    assert set(rows) == {"n1", "n2", "n3", "m1"}
-    assert (rows["n2"]["replaces"], rows["n3"]["replaces"]) == ("n1", "n2") and "replaces" not in rows["n1"]
-    assert [row["id"] for row in C.live(list(rows.values()), "scores.jsonl")[0]] == ["n3", "m1"]
-    assert rows["n3"] == {"schema": C.SCHEMA_SCORES, "id": "n3", "run": "r1", "step": "final", "component": "depth",
-                          "judge": "judge-a", "call": "n3", "value": 7, "rubric": "brief@1",
-                          "observed_at": "2026-02-03T10:30:00-08:00", "replaces": "n2"}
+    # a signal id of another tool is unique in its document only: the reading is named within its run
+    assert set(rows) == {"r1.n1", "r1.n2", "r1.n3", "r1.m1"}
+    assert (rows["r1.n2"]["replaces"], rows["r1.n3"]["replaces"]) == ("r1.n1", "r1.n2")
+    assert "replaces" not in rows["r1.n1"]
+    assert [row["id"] for row in C.live(list(rows.values()), "scores.jsonl")[0]] == ["r1.n3", "r1.m1"]
+    assert rows["r1.n3"] == {"schema": C.SCHEMA_SCORES, "id": "r1.n3", "run": "r1", "step": "final",
+                             "component": "depth", "judge": "judge-a", "call": "r1.n3", "value": 7,
+                             "rubric": "brief@1", "observed_at": "2026-02-03T10:30:00-08:00", "replaces": "r1.n2",
+                             "ext": {KEPT: {"id": "n3"}}}
     assert with_rubric.not_used == [
         {"source": "r1.json", "kind": "signal", "id": "x1", "reason": '"speed" is not a component of the rubric'},
         {"source": "r1.json", "kind": "signal", "id": "t1",
@@ -230,6 +233,49 @@ def test_signals_with_no_eval_member_the_newest_is_the_reading_and_earlier_ones_
     bare = A.read_documents([("r1.json", doc)])
     assert bare.scores == [] and {entry["reason"] for entry in bare.not_used if entry["id"] != "t1"} == {
         "the signal names no rubric; give --rubric"}
+
+
+def test_two_documents_of_another_tool_may_use_the_same_signal_ids():
+    rubric = C.read_document(STUDY / "rubric.json", C.SCHEMA_RUBRIC)
+
+    def score(ident, value, minute):
+        return {"id": ident, "kind": "score", "name": "depth", "value": value, "tier": "reported",
+                "observed_at": f"2026-02-03T10:{minute:02d}:00-08:00", "source": {"kind": "judge", "ref": "judge-a"}}
+
+    # each document numbers its signals from s1; in both, s2 is a later score of the same judge and component
+    runs = [run_row("r1"), run_row("r2", arm="strong"), run_row("team/r 3", input_id="case-02")]
+    docs = [document(runs[0], signals=[score("s1", 5, 10), score("s2", 6, 20)]),
+            document(runs[1], signals=[score("s1", 8, 10), score("s2", 9, 20)]),
+            document(runs[2], signals=[score("s1", 2, 10)])]
+    assert [errors(doc) for doc in docs] == [[], [], []]
+    named = [(f"d{n}.json", doc) for n, doc in enumerate(docs)]
+    batch = A.read_documents(named, rubric=rubric)
+    rows = scores_of(batch)
+    assert batch.not_used == [] and len(rows) == 5 and len({row["id"] for row in rows}) == 5
+    # by hand: run, signal id and value of every reading, the call, and what each later score corrects
+    assert [(row["run"], row["id"], row["call"], row["value"], row.get("replaces")) for row in rows] == [
+        ("r1", "r1.s1", "r1.s1", 5, None), ("r1", "r1.s2", "r1.s2", 6, "r1.s1"),
+        ("r2", "r2.s1", "r2.s1", 8, None), ("r2", "r2.s2", "r2.s2", 9, "r2.s1"),
+        ("team/r 3", "team_r_3.s1", "team_r_3.s1", 2, None)]
+    assert [(row["id"], row["value"]) for row in C.live(rows, "scores.jsonl")[0]] == [
+        ("r1.s2", 6), ("r2.s2", 9), ("team_r_3.s1", 2)]
+    # the same documents again give the same rows: the ids do not depend on what was read before
+    assert scores_of(A.read_documents(list(reversed(named)), rubric=rubric)) == [
+        *rows[4:], *rows[2:4], *rows[:2]]
+    # on the way out each signal has the id its document gave it, and the reading's id beside it
+    entries, not_used = A.export(runs, rows, [])
+    assert not_used == [] and [[s["id"] for s in entry["signals"]] for entry in entries] == [
+        ["s1", "s2"], ["s1", "s2"], ["s1"]]
+    assert entries[1]["signals"][1]["ext"][NS] == {"id": "r2.s2", "call": "r2.s2", "step": "final",
+                                                    "rubric": "brief@1", "replaces": "r2.s1"}
+    for entry, doc in zip(entries, docs):
+        for out, given in zip(entry["signals"], doc["run"]["signals"]):
+            assert {k: v for k, v in out.items() if k != "ext"} == given
+    # and back in, with the eval member now on every signal: the same five readings, member for member
+    merged = [A.merge(document(run), entry) for run, entry in zip(runs, entries)]
+    assert [errors(doc) for doc in merged] == [[], [], []]
+    again = A.read_documents([(f"m{n}.json", doc) for n, doc in enumerate(json.loads(json.dumps(merged)))])
+    assert scores_of(again) == rows
 
 
 def test_a_preference_with_no_eval_member_is_read_on_the_named_component_or_listed_as_not_used():

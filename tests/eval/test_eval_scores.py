@@ -748,3 +748,119 @@ def test_add_item_lines_and_a_count_on_an_items_component(tmp_path, capsys):
                "items.jsonl; name an item of the run's input, or import the items first\n")
     assert len(C.read_study(folder).scores) == 3
     assert scores(capsys, "check", folder, "--rubric", rubric)[0] == 0
+
+
+# ---------------------------------------------------------------------------------------------------
+# One call, one verdict: pairs
+
+def test_check_refuses_two_pairs_of_one_call(tmp_path, capsys):
+    folder = copy_study(tmp_path)
+    base = ("check", folder, "--rubric", RUBRIC, "--judges", JUDGES)
+    # the same runs, judge, component and call, with opposite verdicts: one call cannot say both
+    edit_lines(folder, C.PAIRS_FILE, lambda rows: [*rows, pair("y1", call="q1", verdict="a"),
+                                                   pair("y2", call="q1", verdict="b")])
+    code, report = scores_json(capsys, *base)
+    assert code == 1 and report["ok"] is False
+    assert [entry["message"] for entry in report["problems"]] == [
+        'pairs.jsonl: call "q1": two pairs of one call for the component "overall" ("y1" and "y2"); give a repeat '
+        "its own call, or name the pair it corrects in replaces"]
+    assert report["problems"][0]["code"] == "call_twice"
+    # a pair with no component is on the overall component: it clashes with one that names it
+    edit_lines(folder, C.PAIRS_FILE, lambda rows: [
+        *rows[:-1], {k: v for k, v in pair("y2", call="q1", verdict="b").items() if k != "component"}])
+    code, _, err = scores(capsys, *base)
+    assert code == 1 and err == ('error: pairs.jsonl: call "q1": two pairs of one call for the component "overall" '
+                                 '("y1" and "y2"); give a repeat its own call, or name the pair it corrects in '
+                                 "replaces\n")
+    # as a correction it is one verdict: 18 pairs of the study plus this one are read, and y1 is not
+    edit_lines(folder, C.PAIRS_FILE, lambda rows: [*rows[:-1], pair("y2", call="q1", verdict="b", replaces="y1")])
+    code, report = scores_json(capsys, *base)
+    assert code == 0 and report["ok"] is True
+    assert (report["counts"]["pairs"], report["counts"]["pairs_read"]) == (20, 19)
+    assert {"table": "pairs", "id": "y1", "reason": "replaced", "by": "y2"} in report["not_read"]
+    # as a repeat with its own call both are read, and so is a second component compared in the same call
+    edit_lines(folder, C.PAIRS_FILE, lambda rows: [*rows[:-1], pair("y2", call="q2", verdict="b"),
+                                                   pair("y3", call="q1", component="depth")])
+    code, report = scores_json(capsys, *base)
+    assert code == 0 and (report["counts"]["pairs"], report["counts"]["pairs_read"]) == (21, 21)
+
+
+def test_add_refuses_a_second_pair_in_a_call_and_takes_it_as_a_correction(tmp_path, capsys):
+    folder = copy_study(tmp_path)
+    first = ("add", folder, "--rubric", RUBRIC, "--pair", "baseline-01", "strong-01", "--judge", "judge-strong",
+             "--call", "q1")
+    assert scores(capsys, *first, "--verdict", "a")[0] == 0
+    before = snapshot(folder)
+    assert scores(capsys, *first, "--verdict", "b") == (
+        1, "", 'error: eval scores add: --call: the call "q1" already has the pair "p019" for the component '
+               '"overall"; give a repeat its own call, or name the pair it corrects in --replaces\n')
+    assert scores(capsys, *first, "--verdict", "b", "--component", "overall")[0] == 1
+    assert snapshot(folder) == before and len(C.read_study(folder).pairs) == 19
+    assert scores(capsys, *first, "--verdict", "b", "--replaces", "p019")[0] == 0
+    assert scores(capsys, *first, "--verdict", "b", "--component", "depth")[0] == 0  # another component, same call
+    assert scores(capsys, "add", folder, "--rubric", RUBRIC, "--pair", "baseline-01", "strong-01", "--judge",
+                  "judge-strong", "--verdict", "a")[0] == 0  # a repeat, with a call of its own
+    assert len(C.read_study(folder).pairs) == 22
+    assert scores(capsys, "check", folder, "--rubric", RUBRIC, "--judges", JUDGES)[0] == 0
+
+
+def test_import_refuses_rows_that_share_a_call_and_writes_nothing(tmp_path, capsys):
+    folder = small_study(tmp_path)
+    header = "id,a,b,component,judge,call,shown_first,verdict,observed_at"
+    twice = write_csv(tmp_path / "twice.csv", header, f"p1,r1,r2,overall,reviewer,q1,a,a,{AT}",
+                      f"p2,r1,r2,overall,reviewer,q1,a,b,{AT}", f"p3,r1,r2,depth,reviewer,q1,a,b,{AT}")
+    code, out, err = scores(capsys, "import", "--pairs-csv", twice, "--rubric", RUBRIC, "--out", folder)
+    assert code == 1 and not (folder / C.PAIRS_FILE).exists()
+    assert err == ('error: twice.csv line 3: the pair "p2" shares the call "q1" with the pair "p1" for the component '
+                   '"overall"; give a repeat its own call, or name the pair it corrects in replaces\n')
+    assert "pairs: 2 new, 0 unchanged, 1 refused" in out
+    # the first two rows alone, the second as a correction of the first: both are kept, one is read
+    fine = write_csv(tmp_path / "fine.csv", header + ",replaces", f"p1,r1,r2,overall,reviewer,q1,a,a,{AT},",
+                     f"p2,r1,r2,overall,reviewer,q1,a,b,{AT},p1")
+    code, report = scores_json(capsys, "import", "--pairs-csv", fine, "--rubric", RUBRIC, "--out", folder)
+    assert code == 0 and report["pairs"] == {"new": 2, "unchanged": 0, "refused": 0}
+    # a later file that reuses the call of a pair already in the study
+    later = write_csv(tmp_path / "later.csv", header, f"p9,r1,r2,,reviewer,q1,b,a,{AT}")
+    before = snapshot(folder)
+    code, report = scores_json(capsys, "import", "--pairs-csv", later, "--rubric", RUBRIC, "--out", folder)
+    assert code == 1 and report["pairs"] == {"new": 0, "unchanged": 0, "refused": 1}
+    assert report["refused"] == [{"table": "pairs", "id": "p9", "source": "later.csv line 2", "reason": (
+        'the pair "p9" shares the call "q1" with the pair "p2" for the component "overall"; give a repeat its own '
+        "call, or name the pair it corrects in replaces")}]
+    assert snapshot(folder) == before
+    # readings follow the same rule on the way in
+    readings = write_csv(tmp_path / "readings.csv", "id,run,component,judge,call,value,observed_at",
+                         f"s1,r1,depth,reviewer,k1,4,{AT}", f"s2,r1,depth,reviewer,k1,9,{AT}",
+                         f"s3,r1,clarity,reviewer,k1,ok,{AT}")
+    code, _, err = scores(capsys, "import", "--csv", readings, "--rubric", RUBRIC, "--out", folder)
+    assert code == 1 and err == ('error: readings.csv line 3: the reading "s2" shares the call "k1" with the reading '
+                                 '"s1" for the component "depth"; give a repeat its own call, or name the reading '
+                                 "it corrects in replaces\n")
+    assert not (folder / C.SCORES_FILE).exists() and snapshot(folder) == before
+
+
+def test_import_takes_documents_that_share_signal_ids_and_a_second_import_changes_nothing(tmp_path, capsys):
+    def score(ident, value):
+        return {"id": ident, "kind": "score", "name": "depth", "value": value, "tier": "reported",
+                "observed_at": AT, "source": {"kind": "judge", "ref": "reviewer"}}
+
+    first = {"run": "r1", "input": "case-01", "arm": "baseline", "steps": [
+        {"step": "final", "model": {"id": "model-small", "family": "beta"}, "effort": "low"}]}
+    (tmp_path / "in").mkdir()
+    docs = []
+    for run, value in ((first, 4), ({**first, "run": "r2", "arm": "strong"}, 9)):
+        docs.append(tmp_path / "in" / f"{run['run']}.ocp.json")
+        docs[-1].write_text(json.dumps(document(run, signals=[score("s1", value)])), encoding="utf-8")
+    folder = tmp_path / "study"
+    base = ("import", "--ocp", *docs, "--rubric", RUBRIC, "--out", folder)
+    code, report = scores_json(capsys, *base)
+    assert code == 0 and report["readings"] == {"new": 2, "unchanged": 0, "refused": 0} and report["refused"] == []
+    assert [(row["id"], row["run"], row["value"]) for row in C.read_study(folder).scores] == [
+        ("r1.s1", "r1", 4), ("r2.s1", "r2", 9)]
+    before = snapshot(folder)
+    code, report = scores_json(capsys, *base)
+    assert code == 0 and report["readings"] == {"new": 0, "unchanged": 2, "refused": 0} and snapshot(folder) == before
+    assert scores(capsys, "check", folder, "--rubric", RUBRIC)[0] == 0
+    code, out, _ = scores(capsys, "export", folder)
+    assert code == 0 and [[s["id"] for s in json.loads(line)["signals"]] for line in out.splitlines()] == [
+        ["s1"], ["s1"]]
