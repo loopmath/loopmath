@@ -1,0 +1,612 @@
+"""The Laplace engine (`engine_laplace`): kernels, the block factorisation, the marginal likelihood, the
+gradient, the fit and the fit file it writes.
+
+Every check here compares with a value computed another way: a dense multivariate normal built from the
+study rows by the model's definition, numerical integration, dense linear algebra, finite differences,
+or the truth of a simulated study. All data is synthetic.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+from scipy import integrate, optimize, special, stats
+
+from loopmath import cli
+from loopmath.eval import contracts as C
+from loopmath.eval import engine_laplace as EL
+from loopmath.eval import engine_pymc
+from loopmath.eval import fit as FT
+from loopmath.eval import fitfile as F
+from loopmath.eval import model as M
+from loopmath.eval import simulate as S
+from loopmath.eval import specs
+
+slow = pytest.mark.slow
+STAMP = "2026-01-15T09:00:00-08:00"
+
+
+def catalog_design(name: str, inputs: int, seed: int = 0, **build):
+    sim = S.generate(specs.get(name, inputs=inputs), seed)
+    study = C.Study(Path("."), sim.runs, sim.scores, sim.pairs, sim.items)
+    return M.build(study, sim.rubric, sim.judges, allow_simulated=True, **build), sim
+
+
+def set_theta(prob: EL.Problem, values: dict) -> np.ndarray:
+    """theta with named hyperparameters set on their natural scale (an sd, a share, a correlation)."""
+    P = prob.params
+    theta = P.init.copy()
+    for label, value in values.items():
+        k = P.labels.index(label)
+        code = P.code[k]
+        theta[k] = {EL.HN: np.log, EL.GAMMA: np.log, EL.BETA12: special.logit, EL.CPC: np.arctanh,
+                    EL.REL: lambda x: x}[code](value)
+    return theta
+
+
+# ---------------------------------------------------------------------------------------------------
+# Kernels
+
+def test_log_interval_against_numerical_integration_in_the_middle_and_in_both_tails():
+    cases = [(-0.3, 0.4), (-1e-7, 1e-7), (1.0, 1.5), (-2.0, -1.9), (6.0, 6.5), (25.0, 26.0), (-38.0, -37.5),
+             (30.0, 1e6), (-1e6, -30.0), (-1e6, 1e6), (0.0, 1e6)]
+    for a, b in cases:
+        got = float(EL.log_interval(np.array([a]), np.array([b]))[0])
+        # the integral of the normal density from a to b, scaled by the density at the end nearer 0
+        near = a if a >= 0 else (b if b <= 0 else 0.0)
+        top = min(b, near + 60.0) if a >= 0 else b
+        bottom = max(a, near - 60.0) if b <= 0 else a
+        if a < 0 < b:
+            bottom, top = max(a, -60.0), min(b, 60.0)
+        value, _ = integrate.quad(lambda x: np.exp(-0.5 * (x * x - near * near)), bottom, top, epsabs=0,
+                                  epsrel=1e-13, limit=200)
+        want = np.log(value) - 0.5 * near * near - 0.5 * np.log(2 * np.pi)
+        assert abs(got - want) < 1e-9 * max(1.0, abs(want)), (a, b, got, want)
+
+
+def test_interval_kernel_derivatives_against_finite_differences():
+    rng = np.random.default_rng(3)
+    lo = np.array([-1e6, -0.4, 0.0, 1.2, -2.0, -1e6, 3.0])
+    hi = np.array([0.0, 0.7, 1e6, 1.5, -1.0, 1e6, 1e6])
+    eta = rng.normal(size=lo.size) * 1.5
+    eta[-1] = -4.0   # far into the tail of a pass: the Mills ratio regime
+    k = EL.interval_kernel(eta, lo, hi)
+    h = 1e-5
+
+    def at(e=eta, l=lo, u=hi):
+        return EL.interval_kernel(e, l, u)
+
+    for name, lower in (("logp", "d1"), ("d1", "d2"), ("d2", "d3")):
+        fd = (at(e=eta + h)[name] - at(e=eta - h)[name]) / (2 * h)
+        assert np.allclose(k[lower], fd, rtol=1e-5, atol=1e-6), (lower, k[lower], fd)
+    finite_lo, finite_hi = np.abs(lo) < 1e5, np.abs(hi) < 1e5
+    for name, prefix in (("logp", "d"), ("d1", "d1_d"), ("d2", "d2_d")):
+        fd = (at(l=lo + h)[name] - at(l=lo - h)[name]) / (2 * h)
+        assert np.allclose(k[prefix + "lo"][finite_lo], fd[finite_lo], rtol=1e-5, atol=1e-6), (prefix, "lo")
+        fd = (at(u=hi + h)[name] - at(u=hi - h)[name]) / (2 * h)
+        assert np.allclose(k[prefix + "hi"][finite_hi], fd[finite_hi], rtol=1e-5, atol=1e-6), (prefix, "hi")
+    # an open bound contributes nothing, and no value is NaN
+    assert np.all(k["dlo"][~finite_lo] == 0.0) and np.all(k["dhi"][~finite_hi] == 0.0)
+    assert all(np.isfinite(value).all() for value in k.values())
+
+
+def test_interval_kernel_far_in_the_tails_follows_the_mills_ratio_series():
+    """A pass read when the latent sits x noise sds below 0 (and the mirror case). For large x the inverse
+    Mills ratio has the series lam = x + 1/x - 2/x^3 + 10/x^5 - 74/x^7 (from Phi(-x)/phi(x) = 1/x - 1/x^3
+    + 3/x^5 - 15/x^7), so for the fail side d1 = -lam, d2 = -lam (lam - x) = -1 + 1/x^2 - 6/x^4 + 50/x^6
+    and d3 = -2/x^3 + 24/x^5 - 300/x^7. Before the tail formulas, x near 1e7 gave d2 near -7e11 and a
+    Hessian that was not positive definite."""
+    x = np.array([30.0, 1e3, 1e5, 1e7])
+    k = EL.interval_kernel(x, np.full(4, -1e13), np.zeros(4))    # a fail read far above the cut
+    lam = x + 1 / x - 2 / x ** 3 + 10 / x ** 5 - 74 / x ** 7
+    d3 = -2 / x ** 3 + 24 / x ** 5 - 300 / x ** 7
+    assert np.allclose(k["d1"], -lam, rtol=1e-11)
+    assert np.allclose(k["d2"], -1 + 1 / x ** 2 - 6 / x ** 4 + 50 / x ** 6, rtol=1e-9, atol=0)
+    assert np.allclose(k["d3"], d3, rtol=1e-5, atol=0)
+    m = EL.interval_kernel(-x, np.zeros(4), np.full(4, 1e13))    # the mirror: a pass read far below the cut
+    assert np.allclose(m["d1"], lam, rtol=1e-11) and np.allclose(m["d3"], -d3, rtol=1e-5, atol=0)
+    # log P against the series of log Phi(-x)
+    want = -0.5 * x ** 2 - np.log(x) - 0.5 * np.log(2 * np.pi) + np.log1p(-1 / x ** 2 + 3 / x ** 4 - 15 / x ** 6)
+    assert np.allclose(k["logp"], want, rtol=1e-12, atol=0)
+    # every interval, however far out: finite, and d2 within [-1, 0]
+    rng = np.random.default_rng(5)
+    eta = rng.choice([-1, 1], 400) * 10 ** rng.uniform(-3, 7, 400)
+    lo = rng.choice([-1e13, -1.0, 0.0, 0.5], 400)
+    hi = lo + rng.choice([1e-6, 0.3, 2.0, 1e13], 400)
+    keep = hi > lo   # lo + 1e-6 rounds to lo at -1e13: an empty interval, log P = -inf by definition
+    eta, lo, hi = eta[keep], lo[keep], hi[keep]
+    k = EL.interval_kernel(eta, lo, hi)
+    assert all(np.isfinite(value).all() for value in k.values())
+    assert np.all((k["d2"] >= -1.0) & (k["d2"] <= 0.0))
+
+
+def test_gaussian_kernel_against_scipy_and_finite_differences():
+    eta, y, var = np.array([0.3, -1.0]), np.array([0.5, 0.2]), np.array([0.04, 2.0])
+    k = EL.gaussian_kernel(eta, y, var)
+    assert np.allclose(k["logp"], stats.norm.logpdf(y, eta, np.sqrt(var)))
+    h = 1e-6
+    fd = (EL.gaussian_kernel(eta, y, var + h)["logp"] - EL.gaussian_kernel(eta, y, var - h)["logp"]) / (2 * h)
+    assert np.allclose(k["dvar"], fd, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------------------------------
+# The block factorisation
+
+def test_block_factor_matches_dense_linear_algebra():
+    rng = np.random.default_rng(7)
+    G, I, B = 5, 4, 3
+    n = G + I * B
+    X = rng.normal(size=(40, n))
+    # an arrow: every row touches the global unknowns and the unknowns of one input
+    for row in range(40):
+        i = row % I
+        keep = np.zeros(n, dtype=bool)
+        keep[:G] = True
+        keep[G + i * B:G + (i + 1) * B] = True
+        X[row, ~keep] = 0.0
+    W = rng.uniform(0.1, 3.0, size=40)
+    H = np.eye(n) + X.T @ (W[:, None] * X)
+    gg, bg = H[:G, :G], np.stack([H[G + i * B:G + (i + 1) * B, :G] for i in range(I)])
+    bb = np.stack([H[G + i * B:G + (i + 1) * B, G + i * B:G + (i + 1) * B] for i in range(I)])
+    fac = EL.Factor(gg, bg, bb)
+    assert np.isclose(fac.logdet, np.linalg.slogdet(H)[1], rtol=1e-12)
+    r = rng.normal(size=n)
+    xg, xb = fac.solve(r[:G], r[G:].reshape(I, B))
+    assert np.allclose(np.concatenate([xg, xb.ravel()]), np.linalg.solve(H, r))
+    inv = np.linalg.inv(H)
+    sgg, sbg, sbb = fac.selected()
+    assert np.allclose(sgg, inv[:G, :G])
+    for i in range(I):
+        part = slice(G + i * B, G + (i + 1) * B)
+        assert np.allclose(sbg[i], inv[part, :G]) and np.allclose(sbb[i], inv[part, part])
+    dg, db = fac.draw(np.random.default_rng(0), 200_000)
+    draws = np.concatenate([dg, db.reshape(len(dg), -1)], axis=1)
+    assert np.abs(np.cov(draws.T) - inv).max() < 0.02 * np.abs(inv).max()
+
+
+# ---------------------------------------------------------------------------------------------------
+# The marginal likelihood against independent values
+
+def _linear_study(seed: int = 5):
+    """2 linear components, 2 arms on 3 inputs, a person anchor who reads everything once and two model
+    judges who read everything twice. Values are drawn at random: only the likelihood is checked."""
+    rng = np.random.default_rng(seed)
+    comps = [{"id": c, "title": c, "scale": {"kind": "linear", "range": [0, 10]}} for c in ("depth", "clarity")]
+    rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "t", "version": "1", "components": comps})
+    judges = C.validate_judges({"schema": C.SCHEMA_JUDGES, "anchor": ["reviewer"], "min_anchor_targets": 3,
+                                "judges": [{"id": "reviewer", "kind": "person"},
+                                           {"id": "strong", "kind": "model", "model": {"id": "m1", "family": "alpha"}},
+                                           {"id": "cheap", "kind": "model", "model": {"id": "m2", "family": "beta"}}]})
+    runs, scores = [], []
+    for i in range(3):
+        for arm in ("base", "new"):
+            run = f"{arm}-{i}"
+            runs.append(C.validate_run({"schema": C.SCHEMA_RUNS, "run": run, "input": f"in-{i}", "arm": arm,
+                                        "steps": [{"step": "final", "model": {"id": "x", "family": "alpha"}}],
+                                        "simulated": True}))
+            for comp in ("depth", "clarity"):
+                for judge, calls in (("reviewer", 1), ("strong", 2), ("cheap", 2)):
+                    for _ in range(calls):
+                        scores.append(C.validate_score({
+                            "schema": C.SCHEMA_SCORES, "id": f"s{len(scores)}", "run": run, "component": comp,
+                            "judge": judge, "call": f"k{len(scores)}", "rubric": "t@1", "observed_at": STAMP,
+                            "value": float(np.round(rng.uniform(2, 8), 2))}))
+    study = C.Study(Path("."), runs, scores, [], [])
+    return study, rubric, judges
+
+
+def _dense_gaussian_loglik(study, nu: dict) -> float:
+    """log p(readings) of the model, from the rows: a multivariate normal whose covariance is summed from
+    every term of the model's definition (engine_pymc's module text). Independent of the engine's layout."""
+    judges = ["reviewer", "strong", "cheap"]
+    dims = ["depth", "clarity"]
+    arms = ["base", "new"]
+    run_of = {row["run"]: row for row in study.runs}
+    rows = study.scores
+    n = len(rows)
+    y = np.array([row["value"] / 10.0 for row in rows])
+    s = 0.25
+    w = np.array([1.0, 0.0, 0.0])            # the anchor carries the bias of every dimension
+    cov_in = np.outer(nu["sd_in"], nu["sd_in"]) * nu["corr_in"]
+    cov_run = np.outer(nu["sd_run"], nu["sd_run"]) * nu["corr_run"]
+    V = np.zeros((n, n))
+    for a, ra in enumerate(rows):
+        run_a = run_of[ra["run"]]
+        ja, da = judges.index(ra["judge"]), dims.index(ra["component"])
+        for b, rb in enumerate(rows):
+            run_b = run_of[rb["run"]]
+            jb, db = judges.index(rb["judge"]), dims.index(rb["component"])
+            v = 0.0
+            if run_a["arm"] == run_b["arm"] and da == db:
+                v += (2 * s) ** 2                                   # the arm mean, N(0.5, (2 s)^2)
+            if run_a["input"] == run_b["input"]:
+                v += cov_in[da, db]
+            if ra["run"] == rb["run"]:
+                v += cov_run[da, db]
+                if ja == jb:   # the judge's view of the output: shared by dimensions, and the own part
+                    v += nu["tau"][ja, da] * nu["tau"][jb, db] * nu["h"][ja]
+                    if da == db:
+                        v += nu["tau"][ja, da] ** 2 * (1 - nu["h"][ja])
+            if da == db:   # bias = s (z_j - sum_k w_k z_k)
+                v += s * s * ((ja == jb) - w[ja] - w[jb] + (w * w).sum())
+            if a == b:
+                v += nu["sigma"][ja, da] ** 2
+            V[a, b] = v
+    return float(stats.multivariate_normal(np.full(n, 0.5), V).logpdf(y))
+
+
+def test_gaussian_marginal_likelihood_equals_the_dense_multivariate_normal():
+    study, rubric, judges = _linear_study()
+    design = M.build(study, rubric, judges, allow_simulated=True, terms=["family=off", "judge_input=off"])
+    assert np.allclose(design.data["bias_w"], [[1, 1], [0, 0], [0, 0]])
+    prob = EL.Problem(design.data)
+    nu = {"sd_in": np.array([0.07, 0.05]), "sd_run": np.array([0.04, 0.06]), "corr": 0.35, "corr_r": -0.2,
+          "tau": np.array([[0.03, 0.02], [0.05, 0.04], [0.08, 0.09]]),
+          "sigma": np.array([[0.04, 0.03], [0.05, 0.04], [0.07, 0.06]]), "h": np.array([0.2, 0.5, 0.7])}
+    values = {"sd_input[0]": 0.07, "sd_input[1]": 0.05, "sd_run[0]": 0.04, "sd_run[1]": 0.06,
+              "cpc_input[0]": 0.35, "cpc_run[0]": -0.2}
+    for j in range(3):
+        values[f"halo_target[{j}]"] = nu["h"][j]
+        for d in range(2):
+            values[f"tau[{j}, {d}]"] = nu["tau"][j, d]
+            values[f"sigma[{j}, {d}]"] = nu["sigma"][j, d]
+    theta = set_theta(prob, values)
+    got = prob.evaluate(theta, grad=False)["laplace"]
+    corr = lambda r: np.array([[1.0, r], [r, 1.0]])
+    want = _dense_gaussian_loglik(study, {**nu, "corr_in": corr(0.35), "corr_run": corr(-0.2)})
+    assert abs(got - want) < 1e-8 * abs(want), (got, want)
+
+
+def _probit_design(passes: list[int], tau: float):
+    comps = [{"id": "ok", "title": "ok", "scale": {"kind": "binary"}}]
+    rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "t", "version": "1", "components": comps})
+    judges = C.validate_judges({"schema": C.SCHEMA_JUDGES, "judges": [
+        {"id": "a", "kind": "model", "model": {"id": "m1", "family": "alpha"}}]})
+    runs = [C.validate_run({"schema": C.SCHEMA_RUNS, "run": "r", "input": "i", "arm": "x",
+                            "steps": [{"step": "final", "model": {"id": "x", "family": "alpha"}}], "simulated": True})]
+    scores = [C.validate_score({"schema": C.SCHEMA_SCORES, "id": f"s{k}", "run": "r", "component": "ok", "judge": "a",
+                                "call": f"k{k}", "rubric": "t@1", "observed_at": STAMP, "value": int(v)})
+              for k, v in enumerate(passes)]
+    design = M.build(C.Study(Path("."), runs, scores, [], []), rubric, judges, allow_simulated=True)
+    prob = EL.Problem(design.data)
+    return prob, set_theta(prob, {"sd_input[0]": 0.6, "sd_run[0]": 0.5, "tau[0, 0]": tau})
+
+
+@pytest.mark.parametrize("passes,tau,gap", [([1, 0], 0.8, 0.02), ([1, 1, 1], 0.5, 0.10), ([1, 1], 2.0, 0.13),
+                                            ([0], 1.0, 0.03)])
+def test_probit_laplace_is_the_one_dimensional_laplace_and_near_the_exact_integral(passes, tau, gap):
+    """One run read by one judge (probit units, s = 1; one judge, so its relative call noise is 1). With
+    repeated calls the readings depend on x = mu + v + u + tau t alone, a normal of variance
+    4 + 0.6^2 + 0.5^2 + tau^2, and given x the calls are independent with unit noise. With one call the
+    judge's view of the output joins the call noise: the reading is a probit in q = mu + v + u (variance
+    4 + 0.6^2 + 0.5^2) with noise sd sqrt(1 + tau^2). The engine's value must equal the Laplace
+    approximation in that one latent, computed here by plain numerical means. Its distance to the exact
+    integral by quadrature is the Laplace error itself (measured: 0.012 for a mixed cell, 0.023 for one
+    call, 0.078 and 0.107 for cells of 3 and 2 passes, where the posterior is skewed). `gap` bounds that
+    measured error. The EP inner step closes it: here every reading of the run shares one predictor, so
+    they form one site, and EP with one site is the exact integral (to the cell rule's error)."""
+    prob, theta = _probit_design(passes, tau)
+    got = prob.evaluate(theta, grad=False, inner="laplace")["laplace"]
+    ep = prob.evaluate(theta, grad=False, inner="ep")
+    k, n = sum(passes), len(passes)
+    var = 4.0 + 0.36 + 0.25 + (tau ** 2 if n > 1 else 0.0)
+    noise = 1.0 if n > 1 else np.sqrt(1.0 + tau ** 2)
+
+    def log_f(x):   # log likelihood plus log prior of the latent
+        return (k * special.log_ndtr(x / noise) + (n - k) * special.log_ndtr(-x / noise)
+                + stats.norm.logpdf(x, 0, np.sqrt(var)))
+
+    mode = optimize.minimize_scalar(lambda x: -log_f(x), bounds=(-20, 20), method="bounded",
+                                    options={"xatol": 1e-12}).x
+    h = 1e-4
+    curv = -(log_f(mode + h) - 2 * log_f(mode) + log_f(mode - h)) / h ** 2
+    laplace_1d = log_f(mode) + 0.5 * np.log(2 * np.pi / curv)
+    assert abs(got - laplace_1d) < 1e-5, (got, laplace_1d)
+    exact = np.log(integrate.quad(lambda x: np.exp(log_f(x)), -40, 40, epsabs=0, epsrel=1e-12, limit=200)[0])
+    assert abs(got - exact) < gap, (got, exact)
+    assert ep["mode"]["ok"] and prob.n_groups == 1
+    assert abs(ep["laplace"] - exact) < 1e-8, (ep["laplace"], exact)
+
+
+# ---------------------------------------------------------------------------------------------------
+# The cell rule and the EP inner step
+
+def test_cell_integral_matches_lane_s2s_rule_on_levels_cells():
+    """`cell_integral` against an independent rule: lane S2's `laplace_kernels.cell_integral` (adaptive
+    Gauss-Hermite on smooth cells, Gauss-Kronrod panels on sharp ones, each with its own error estimate),
+    on cells of two levels readings, sharp to smooth. S2 works in the reading's units with a noise sd;
+    the engine's rule has unit noise, so the cavity and the cuts are divided by the sd. With 6 panels per
+    half gap the rules agree to 1e-8; the engine's default (EL.PANELS = 4, chosen for speed) to 3e-7."""
+    K = pytest.importorskip("loopmath.eval.laplace_kernels")
+    rng = np.random.default_rng(3)
+    for sd, tau in ((0.01, 0.1), (0.3, 0.1), (0.003, 0.03), (1.0, 2.0)):
+        n = 300
+        m = rng.uniform(0.1, 0.9, n)
+        cuts = np.array([-np.inf, 0.25, 0.75, np.inf])
+        lev = rng.integers(0, 3, (n, 2))
+        lev[:, 1] = np.where(rng.random(n) < 0.7, lev[:, 0], lev[:, 1])
+        lo, hi = cuts[lev], cuts[lev + 1]
+        ref = K.cell_integral("levels", np.repeat(m, 2), {"lo": lo.ravel(), "hi": hi.ravel()}, {"sd": sd},
+                              np.repeat(np.arange(n), 2), np.full(n, tau))
+        args = (m / sd, np.full(n, (tau / sd) ** 2), np.where(np.isfinite(lo), lo / sd, -EL.OPEN),
+                np.where(np.isfinite(hi), hi / sd, EL.OPEN), np.ones((n, 2)))
+        got = EL.cell_integral(*args, panels=6)
+        assert np.max(np.abs(got["logZ"] - np.asarray(ref.logl))) < 1e-8, (sd, tau)
+        assert np.max(got["tail"]) < 1e-12
+        got = EL.cell_integral(*args)
+        assert np.max(np.abs(got["logZ"] - np.asarray(ref.logl))) < 3e-7, (sd, tau)
+
+
+def test_cell_integral_moments_and_bound_derivatives_against_quad():
+    """Weighted cells (passed and failed items of one call, repeated binary calls, a levels reading)
+    against scipy quad: log Z, the mean and the variance of the predictor; the bound derivatives against
+    central differences of log Z."""
+    rng = np.random.default_rng(8)
+    n = 40
+    m = rng.normal(0, 3, n)
+    s2 = 10 ** rng.uniform(-1, 3, n)
+    lo = np.stack([np.zeros(n), np.full(n, -EL.OPEN), rng.uniform(-3, 1, n)], axis=1)
+    hi = np.stack([np.full(n, EL.OPEN), np.zeros(n), lo[:, 2] + rng.uniform(0.2, 4, n)], axis=1)
+    w = np.stack([rng.integers(1, 6, n), rng.integers(0, 4, n), rng.integers(0, 2, n)], axis=1).astype(float)
+    got = EL.cell_integral(m, s2, lo, hi, w, bounds=True)
+    for g in range(n):
+        def f(u, power=0):
+            val = stats.norm.logpdf(u, m[g], np.sqrt(s2[g]))
+            for r in range(3):
+                if w[g, r]:   # the reference underflows to log 0 far out, where the integrand is 0
+                    with np.errstate(divide="ignore"):
+                        val += w[g, r] * np.log(special.ndtr(hi[g, r] - u) - special.ndtr(lo[g, r] - u))
+            return u ** power * np.exp(val)
+        pts = sorted({0.0, lo[g, 2], hi[g, 2]})
+        Z, M1, M2 = (sum(integrate.quad(f, a, b, args=(k,), limit=400, epsabs=0, epsrel=1e-12)[0]
+                         for a, b in zip([-np.inf] + pts, pts + [np.inf])) for k in (0, 1, 2))
+        assert abs(got["logZ"][g] - np.log(Z)) < 1e-8
+        assert abs(got["mean"][g] - M1 / Z) < 1e-7 * (1 + np.sqrt(s2[g]))
+        assert abs(got["var"][g] - (M2 / Z - (M1 / Z) ** 2)) < 1e-6 * (1 + s2[g])
+    eps = 1e-5
+    for r, name, edge in ((0, "dlo", lo), (1, "dhi", hi), (2, "dlo", lo), (2, "dhi", hi)):
+        up, down = edge.copy(), edge.copy()
+        up[:, r] += eps
+        down[:, r] -= eps
+        a_up = EL.cell_integral(m, s2, up if edge is lo else lo, up if edge is hi else hi, w)["logZ"]
+        a_dn = EL.cell_integral(m, s2, down if edge is lo else lo, down if edge is hi else hi, w)["logZ"]
+        fd = (a_up - a_dn) / (2 * eps)
+        live = w[:, r] > 0
+        assert np.allclose(got[name][live, r], fd[live], rtol=1e-5, atol=1e-7), (r, name)
+
+
+def _oracle():
+    try:
+        import laplace_oracle
+    except ImportError:
+        pytest.skip("tests/eval/laplace_oracle.py (lane S4's exact oracle) is not on this branch")
+    return laplace_oracle
+
+
+def _engine_units(prob: EL.Problem, th: dict) -> dict:
+    """An oracle theta in the engine's units. On a dimension whose call noise is relative (binary, pairs
+    only) the engine fixes the judges' weighted geometric mean noise at 1, so every latent-scale value is
+    divided by that mean. The likelihood of the readings does not change; both sides then evaluate the
+    same model at the same theta."""
+    P = prob.params
+    th = {k: (np.array(v, dtype=float) if np.ndim(v) else v) for k, v in th.items()}
+    for key, wkey, flag in (("sigma", "sigma_w", "fixed"), ("sigma_pair", "pair_w", "only")):
+        if not np.asarray(getattr(P, flag)).any():
+            continue
+        wts = np.asarray(getattr(P, wkey), dtype=float)
+        g = float(np.exp((wts * np.log(np.asarray(th[key], dtype=float))).sum(axis=0))[0])
+        for name in ("sd_input", "sd_run", "tau", "sigma", "sigma_pair", "tie_width", "position", "mu", "bias"):
+            if name in th:
+                th[name] = np.asarray(th[name], dtype=float) / g
+    return th
+
+
+def _theta_vector(prob: EL.Problem, th: dict) -> np.ndarray:
+    P = prob.params
+    theta = P.init.copy()
+    for k, label in enumerate(P.labels):
+        name, idx = label.split("[")[0], tuple(int(x) for x in label.split("[")[1].rstrip("]").split(","))
+        value = float(np.asarray(th[name], dtype=float)[idx])
+        theta[k] = special.logit(value) if P.code[k] == EL.BETA12 else np.log(value)
+    return theta
+
+
+_SHARP = {"binary": dict(tau=0.4, sigma=1.0), "levels": dict(tau=0.06, sigma=0.15), "items": dict(tau=0.4, sigma=0.5),
+          "pairs": dict(tau=0.4, sigma_pair=1.0)}
+
+
+def _against_oracle(kind: str, opts: dict, f: float, seed: int):
+    O = _oracle()
+    b = O.tiny(kind, seed=seed, theta={k: v * f for k, v in _SHARP[kind].items()}, **opts)
+    prob = EL.Problem(b.data)
+    th = _engine_units(prob, O.full_theta(b.data, b.theta))
+    exact = O.exact(b.data, th, random=("mu", "bias", "position"))
+    const = O.pymc_constant(b.data) if kind == "items" else 0.0   # log C(n, k): the engine drops it
+    theta = _theta_vector(prob, th)
+    lap = prob.evaluate(theta, grad=False, inner="laplace")["laplace"] + const
+    ep = prob.evaluate(theta, grad=False, inner="ep")
+    assert ep["mode"]["ok"]
+    return prob, exact, lap, ep["laplace"] + const
+
+
+@pytest.mark.parametrize("kind,opts", [("binary", dict(runs=1, calls=1)), ("binary", dict(runs=1, calls=2)),
+                                       ("binary", dict(runs=1, calls=3)), ("levels", dict(runs=1, calls=1)),
+                                       ("levels", dict(runs=1, calls=3)), ("items", dict(runs=1, calls=1)),
+                                       ("pairs", dict(runs=2, pair_calls=1))])
+@pytest.mark.parametrize("f", [1.0, 0.1])
+def test_ep_is_exact_where_one_site_holds_every_reading(kind, opts, f):
+    """Lane S4's exact marginal likelihood (`O.exact`, random = mu, bias and position) on tiny designs,
+    at default sharpness (f = 1) and with tau and the call noise times 0.1 (sharp judges, where S4
+    measured Laplace 23% low on binary). Here every reading shares one predictor, so EP has one site and
+    must equal the exact value. The engine's Laplace value must equal the oracle's Laplace value: that
+    checks both sides read the same model."""
+    for seed in (0, 1):
+        prob, exact, lap, ep = _against_oracle(kind, opts, f, seed)
+        assert prob.n_groups == 1
+        assert abs(lap - exact.laplace) < 1e-6, (lap, exact.laplace)
+        assert abs(ep - exact.loglik) < 1e-6, (ep, exact.loglik, lap)
+
+
+@pytest.mark.parametrize("kind,opts,bound", [("items", dict(runs=1, calls=2), 0.01),
+                                             ("pairs", dict(runs=2, pair_calls=3), 0.12),
+                                             ("binary", dict(runs=2, judges=2, calls=1), 0.03)])
+def test_ep_beats_laplace_where_several_sites_share_unknowns(kind, opts, bound):
+    """Several sites on shared unknowns (two calls of items with their own call noise; pairs shown in
+    turn a, b and unknown, whose position term differs; two runs read by two judges): EP is an
+    approximation. Measured |log exact - EP| at most 0.0024, 0.097 and 0.0063, against Laplace 0.016,
+    0.40 and 0.087. `bound` holds the EP error; EP must also be at least three times closer than Laplace."""
+    checked = 0
+    for f in ((1.0,) if opts.get("judges") else (1.0, 0.1)):
+        for seed in (0, 1):
+            try:
+                _, exact, lap, ep = _against_oracle(kind, opts, f, seed)
+            except Exception as exc:   # the oracle refuses blocks it cannot integrate to its tolerance
+                if type(exc).__name__.startswith("Oracle"):
+                    continue
+                raise
+            checked += 1
+            assert abs(ep - exact.loglik) < bound, (f, seed, ep, exact.loglik)
+            assert abs(ep - exact.loglik) * 3 < abs(lap - exact.loglik), (f, seed, ep, lap, exact.loglik)
+    assert checked >= 1
+
+
+# ---------------------------------------------------------------------------------------------------
+# The gradient of the outer objective
+
+@pytest.mark.parametrize("name,inner", [("linear", None), ("levels-3", "ep"), ("binary-checks", "ep"), ("pairs", "ep"),
+                                        ("case-items", "ep"), ("halo", "ep"), ("panel-vs-per-component", "ep"),
+                                        ("own-family", "ep"), ("mixed-rubric", "ep"), ("levels-3", "laplace"),
+                                        ("binary-checks", "laplace"), ("pairs", "laplace"), ("case-items", "laplace")])
+def test_outer_gradient_matches_finite_differences(name, inner):
+    """The analytic gradient against central differences of the value, for both inner steps. The EP
+    gradient holds only at the EP fixed point (it treats the sites as fixed); the differences start EP
+    from the sites at theta, so this also checks that a warm start reaches the same fixed point."""
+    design, _ = catalog_design(name, inputs=4)
+    prob = EL.Problem(design.data)
+    rng = np.random.default_rng(11)
+    theta = np.clip(prob.params.init + 0.3 * rng.standard_normal(prob.params.size), prob.params.lo,
+                    prob.params.hi)
+    res = prob.evaluate(theta, inner=inner)
+    assert res["mode"]["ok"]
+    cold = prob.evaluate(theta, grad=False, inner=inner)["value"]
+    assert res["value"] == pytest.approx(cold, abs=1e-9)
+    h = 1e-5
+    for k in range(len(theta)):
+        e = np.zeros(len(theta))
+        e[k] = h
+        fd = (prob.evaluate(theta + e, res["mode"], grad=False, inner=inner)["value"]
+              - prob.evaluate(theta - e, res["mode"], grad=False, inner=inner)["value"]) / (2 * h)
+        assert abs(fd - res["grad"][k]) <= 1e-4 * max(1.0, abs(fd)), (name, prob.params.labels[k], res["grad"][k], fd)
+
+
+# ---------------------------------------------------------------------------------------------------
+# The fit
+
+def test_factor_structure_is_refused_by_name():
+    design, _ = catalog_design("linear", inputs=4, structure="factor:1")
+    with pytest.raises(NotImplementedError, match="factor"):
+        EL.Problem(design.data)
+
+
+def test_boundary_names_an_sd_already_at_its_bound_and_one_the_data_cannot_see():
+    """`linear` has no family effect: setting family_sd to its lower bound makes it 'at the boundary'
+    without a trial; the cheap judge's call noise is measured (repeated calls), so it is not named."""
+    design, _ = catalog_design("linear", inputs=10, seed=3)
+    prob = EL.Problem(design.data)
+    P = prob.params
+    fitted = EL.fit_theta(prob)
+    theta = fitted["theta"].copy()
+    k = P.labels.index("family_sd[0]")
+    theta[k] = P.lo[k]
+    at, unchecked = EL.boundary(prob, theta)
+    assert "family_sd[0]" in at and not unchecked
+    assert "sigma[2, 0]" not in at
+
+
+def test_sample_returns_the_shape_of_engine_pymc_and_checks():
+    design, _ = catalog_design("pairs", inputs=8)
+    res = EL.sample(design.data, seed=2, draws=60, chains=2, theta_points=12)
+    d = design.data
+    A, D, J, N, R = d["A"], d["D"], d["J"], d["F"], d["R"]
+    shapes = {"mu": (A, D), "sd_input": (D,), "sd_run": (D,), "corr_input": (D, D), "corr_run": (D, D),
+              "q_run": (R, D), "bias": (J, D), "tau": (J, D), "sigma": (J, D), "halo_target": (J,),
+              "halo_call": (J,), "family": (J, N, D), "sd_judge_input": (J, D), "sigma_pair": (J, D),
+              "position": (J,), "tie_width": (J,)}
+    assert set(res["draws"]) == set(engine_pymc.OUTPUTS)
+    for name, shape in shapes.items():
+        assert res["draws"][name].shape == (2, 60) + shape, name
+    assert res["divergences"] == 0 and res["approximate"] and "approximate draws" in res["version"]
+    assert {check["name"] for check in res["checks"]} == {"optimizer", "inner_newton", "theta_hessian", "cell_rule"}
+    assert res["checks"][1]["inner"] == "ep"   # pairs are cut readings: EP, and groups of them need the cell rule
+    assert all(check["ok"] for check in res["checks"]), res["checks"]
+    # pairs-only dimension: arm means sum to 0
+    only = np.flatnonzero(design.data["pairs_only"])
+    assert np.allclose(res["draws"]["mu"][..., only].sum(axis=2), 0.0)
+
+
+def test_fit_recovers_a_linear_study_and_names_absent_terms_at_the_boundary():
+    """`linear` simulates no family effect and no judge-by-input term: both family sds are at the
+    boundary. The cheap judge's disagreement (true 0.08) is not. Arm means and their difference sit
+    within 3 posterior sds of the truth (a single study: coverage itself is S3's bench)."""
+    design, sim = catalog_design("linear", inputs=40, seed=0)
+    res = EL.sample(design.data, seed=0)
+    assert all(check["ok"] for check in res["checks"])
+    edge = set(res["boundary"])
+    assert {"family_sd[0]", "family_sd[1]"} <= edge
+    assert not {"tau[2, 0]", "tau[2, 1]", "sigma[2, 0]", "sigma[2, 1]"} & edge
+    mu = res["draws"]["mu"].reshape(-1, 2, 2)
+    true_mu = np.asarray(sim.truth["mu"], dtype=float)
+    assert np.all(np.abs(mu.mean(axis=0) - true_mu) < 3 * mu.std(axis=0)), (mu.mean(axis=0), true_mu)
+    diff = mu[:, 1] - mu[:, 0]
+    true_diff = true_mu[1] - true_mu[0]
+    assert np.all(np.abs(diff.mean(axis=0) - true_diff) < 3 * diff.std(axis=0)), (diff.mean(axis=0), true_diff)
+    tau = res["draws"]["tau"].reshape(-1, 3, 2).mean(axis=0)
+    assert np.allclose(tau[1:], np.asarray(sim.truth["tau"], dtype=float)[1:], atol=0.03)
+
+
+def test_fit_design_with_the_laplace_engine_writes_a_fit_marked_approximate(tmp_path):
+    design, _ = catalog_design("linear", inputs=10, seed=1)
+    meta, draws = FT.fit_design(design, seed=1, engine="laplace")
+    assert meta["engine"]["name"] == "laplace" and "approximate draws" in meta["engine"]["version"]
+    assert meta["options"]["engine"] == "laplace" and meta["options"]["approximate_draws"] is True
+    names = [check["name"] for check in meta["diagnostics"]["checks"]]
+    assert {"optimizer", "inner_newton", "theta_hessian", "boundary"} <= set(names)
+    assert meta["diagnostics"]["converged"] and next(iter(draws.values())).shape[0] == 1000
+    path = F.write_fit(tmp_path / "fit.json", meta, draws)
+    fit = F.read_fit(path)
+    assert fit.meta["engine"]["name"] == "laplace"
+    with pytest.raises(C.ContractError):
+        FT.fit_design(design, engine="stan")
+
+
+def test_eval_fit_engine_laplace_on_the_command_line(tmp_path, capsys):
+    folder = tmp_path / "study"
+    assert cli.main(["eval", "simulate", "one-component", "--out", str(folder), "--seed", "4"]) == 0
+    code = cli.main(["eval", "fit", str(folder), "--rubric", str(folder / "rubric.json"), "--judges",
+                     str(folder / "judges.json"), "--allow-simulated", "--engine", "laplace"])
+    assert code == 0
+    meta = json.loads((folder / "fit.json").read_text())
+    assert meta["engine"]["name"] == "laplace" and meta["diagnostics"]["converged"]
+    assert "converged: yes" in capsys.readouterr().out
+    assert cli.main(["eval", "judges", str(folder / "fit.json")]) == 0
+
+
+# ---------------------------------------------------------------------------------------------------
+# Slow: the same study fitted with PyMC
+
+@slow
+@pytest.mark.skipif(not engine_pymc.available(), reason="needs the [bayes] extra")
+def test_laplace_and_pymc_agree_on_a_linear_study():
+    design, _ = catalog_design("linear", inputs=40, seed=1)
+    lap = EL.sample(design.data, seed=1)["draws"]
+    mc = engine_pymc.sample(design.data, seed=1, draws=500, chains=2, cores=2)["draws"]
+    for name in ("mu", "bias", "sigma"):
+        a, b = lap[name].reshape(-1, *lap[name].shape[2:]), mc[name].reshape(-1, *mc[name].shape[2:])
+        fixed = b.std(axis=0) < 1e-12   # an anchored entry (the first judge's bias) is 0 in every draw of both
+        assert np.all(np.abs(a[:, fixed] - b[:, fixed].mean(axis=0)) < 1e-12), name
+        sd = b.std(axis=0)[~fixed]
+        assert np.all(np.abs(a.mean(axis=0)[~fixed] - b.mean(axis=0)[~fixed]) < 0.5 * sd), name
+        assert np.all(np.abs(a.std(axis=0)[~fixed] / sd - 1.0) < 0.35), name

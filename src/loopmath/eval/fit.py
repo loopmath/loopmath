@@ -23,6 +23,14 @@ written either way.
 
 Defaults: 4 chains of 1000 draws after 1000 warm-up draws. `fit_design` is the same path as a function,
 for tests and other callers.
+
+Engines. `--engine pymc` (the default) samples with `engine_pymc`. `--engine laplace` fits with
+`engine_laplace` (Laplace or, with cut readings, EP marginal likelihood, empirical Bayes hyperparameters;
+no [bayes] extra) and makes `--keep-draws` approximate draws unless `--draws` says otherwise. Its fit
+file names the engine and says the draws are approximate (`engine.version`, `options.approximate_draws`),
+and its `diagnostics.checks` add the engine's own checks (`optimizer`, `inner_newton`, `theta_hessian`,
+and `cell_rule` when cut readings are integrated by the cell rule; each counted in `converged`) and
+`boundary`, the sds the data cannot tell from 0 (not counted).
 """
 
 from __future__ import annotations
@@ -49,6 +57,7 @@ BLOCK = 256                # columns per pass of the R-hat and effective sample 
 CHECKED = ("mu", "sd_input", "sd_run", "bias", "tau", "sigma", "halo_target", "halo_call", "family",
            "sd_judge_input", "sigma_pair", "position", "tie_width", "corr_input", "corr_run", "q_run")
 LATER = ("corr_input", "corr_run", "q_run")   # checked when the engine returns them
+ENGINES = ("pymc", "laplace")
 
 
 def split_rhat_ess(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -201,15 +210,29 @@ def unpooled(design: M.Design, draws: Mapping[str, np.ndarray]) -> dict:
     return out
 
 
+def _engine(name: str):
+    if name not in ENGINES:
+        raise C.ContractError("eval fit", f"--engine {name}", "not an engine", f"use one of {', '.join(ENGINES)}",
+                              "bad_option")
+    if name == "laplace":
+        from . import engine_laplace as engine
+    else:
+        from . import engine_pymc as engine
+    return engine
+
+
 def fit_design(design: M.Design, *, seed: int = 0, draws: int | None = None, chains: int | None = None,
                tune: int | None = None, cores: int | None = None, keep_draws: int = 1000,
-               inputs: dict | None = None, options: dict | None = None) -> tuple[dict, dict[str, np.ndarray]]:
-    """Sample a design and assemble the fit: `(every member of fit.json but draws, the draws)`."""
-    from . import engine_pymc as engine
-
+               inputs: dict | None = None, options: dict | None = None,
+               engine: str = "pymc") -> tuple[dict, dict[str, np.ndarray]]:
+    """Fit a design with `engine` and assemble the fit: `(every member of fit.json but draws, the draws)`."""
+    name = engine
+    engine = _engine(name)
     check_keep_draws(keep_draws)   # before the engine runs: nothing is sampled for a file that is refused
-    draws = DEFAULT_DRAWS if draws is None else int(draws)
     chains = DEFAULT_CHAINS if chains is None else int(chains)
+    if draws is None:   # the laplace engine makes as many draws as the file keeps
+        draws = -(-int(keep_draws) // chains) if name == "laplace" else DEFAULT_DRAWS
+    draws = int(draws)
     result = engine.sample(design.data, seed=seed, draws=draws, tune=tune, chains=chains, cores=cores)
     raw = result["draws"]
     first = np.asarray(raw["mu"])
@@ -217,9 +240,18 @@ def fit_design(design: M.Design, *, seed: int = 0, draws: int | None = None, cha
     checked = {**existing(design), "halo_call": design.masks["panel"]}   # elsewhere it is 0 by definition
     diagnostics = diagnose(kept, checked, result["divergences"], result["run_seconds"],
                            sampled=first.shape[0] * first.shape[1], least=MIN_KEEP_DRAWS)
-    final = finish(design, kept, keep_draws)
+    extra: dict = {}
+    if name == "laplace":
+        own = [dict(check) for check in result["checks"]]
+        diagnostics["checks"] = diagnostics["checks"] + own + [
+            {"name": "boundary", "value": len(result["boundary"]), "limit": None, "ok": True,
+             "at": list(result["boundary"]), "unchecked": list(result.get("boundary_unchecked", [])),
+             "note": "sds the data cannot tell from 0; not counted in converged"}]
+        diagnostics["converged"] = bool(diagnostics["converged"] and all(check["ok"] for check in own))
+        extra = {"engine": name, "approximate_draws": True, "theta_points": int(result["theta_points"])}
     full_options = {**design.options, "draws": draws, "tune": draws if tune is None else int(tune),
-                    "chains": chains, "keep_draws": int(keep_draws), **(options or {})}
+                    "chains": chains, "keep_draws": int(keep_draws), **extra, **(options or {})}
+    final = finish(design, kept, keep_draws)
     meta = F.assemble(rubric=design.rubric, judges=design.judges, runs=design.runs, draws=final,
                       terms=design.terms, anchor=design.anchor, diagnostics=diagnostics, inputs=inputs,
                       options=full_options, engine={"name": engine.NAME, "version": result["version"]}, seed=seed,
@@ -235,8 +267,8 @@ def _positive(value: Any, option: str, least: int = 1) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """`eval fit`."""
-    from . import engine_pymc as engine
-
+    name = getattr(args, "engine", "pymc") or "pymc"
+    engine = _engine(name)
     _positive(args.draws, "--draws", 20)
     _positive(args.chains, "--chains")
     if args.keep_draws is not None:
@@ -261,7 +293,7 @@ def run(args: argparse.Namespace) -> int:
     inputs = C.input_digests({**study.files(), "rubric": args.rubric, "judges": args.judges})
     meta, draws = fit_design(design, seed=args.seed, draws=args.draws, chains=args.chains,
                              keep_draws=args.keep_draws, inputs=inputs,
-                             options={"allow_simulated": bool(args.allow_simulated)})
+                             options={"allow_simulated": bool(args.allow_simulated)}, engine=name)
     path = F.write_fit(out, meta, draws)
     diagnostics = meta["diagnostics"]
     if args.json:
