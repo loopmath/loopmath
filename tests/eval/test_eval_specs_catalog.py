@@ -153,7 +153,8 @@ def test_the_levels_specs_use_every_level_and_levels_5_has_an_arm_near_the_top()
     assert {row["value"] for row in five.scores} == {1, 2, 3, 4, 5}
     assert array(three, "cuts").shape == (2, 2) and array(five, "cuts").shape == (2, 4)
     assert np.allclose(array(five, "cuts")[0], [0.125, 0.375, 0.625, 0.875])
-    top = [row["value"] for row in five.scores if row["component"] == "clarity" and row["run"].startswith("strong-")]
+    arm_of = {run["run"]: run["arm"] for run in five.runs}
+    top = [row["value"] for row in five.scores if row["component"] == "clarity" and arm_of[row["run"]] == "strong"]
     assert 0.35 < np.mean([value == 5 for value in top]) < 0.75
     # Read as plain numbers the top arm is squeezed: its reported mean trails its hidden mean.
     d, a = place(five, dimension="final/clarity"), place(five, arm="strong")
@@ -187,8 +188,9 @@ def test_mixed_rubric_has_every_scale_kind_and_a_lower_is_better_component():
     # The strong arm is better on `filler`, so the share it is scored at is lower.
     d = place(sim, dimension="final/filler")
     assert array(sim, "mu")[1, d] > array(sim, "mu")[0, d]
+    arm_of = {run["run"]: run["arm"] for run in sim.runs}
     mean = {arm: np.mean([row["value"] for row in sim.scores if row["component"] == "filler"
-                          and row["judge"] == "strong" and row["run"].startswith(f"{arm}-")])
+                          and row["judge"] == "strong" and arm_of[row["run"]] == arm])
             for arm in ("baseline", "strong")}
     assert mean["strong"] < mean["baseline"] and 0 < mean["strong"] < 1
     assert len(sim.items) > 0 and [unit["dimension"] for unit in sim.truth["units"]] == ["final/numbers_right"]
