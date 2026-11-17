@@ -84,12 +84,24 @@ Method
      coordinates, through `NODES`. More than two sharp coordinates go to Gauss-Hermite in `auto`
      (which may refuse) and are refused by `nested`.
    The node count stops when the last two changes of log p plus the largest inner error are within
-   `tol`; the block's `error` is that sum plus the dropped and link terms, summed over blocks. With
-   1 node the rule is the Laplace approximation of the same integral, returned as `laplace`.
+   what is left of the block's share of `tol` (below). With 1 node the rule is the Laplace
+   approximation of the same integral, returned as `laplace`.
+   The tolerance is global: `tol` bounds the reported `error`, which is the sum of every block's
+   error (its rule's convergence term, its inner error, what its dropped directions could move and a
+   roundoff allowance of 16 ulps a unit of the log terms it sums), the flat parts' errors (dropped
+   directions, inner error, roundoff), the first-order effect of the links cut at LINK_TOL and the
+   closed-form part's roundoff. `tol` is split in equal shares over the connected parts plus one for
+   the links and the closed form; a block keeps more directions when its dropped ones would take more
+   than DROP_SHARE of its share, its rule is asked for what is left after the dropped and roundoff
+   terms, and the sum is checked against `tol` before anything is returned. A request that cannot be
+   met (a share smaller than the roundoff of a value of size 5000, a rule that does not settle, a quad
+   warning) raises `OracleNotConverged`; nothing is returned with an error above `tol`.
 6. Posterior moments come from the same nodes, mapped back through steps 1 and 2.
 
 A block of more than `MAX_DIM` directions is refused (`OracleTooLarge`), as is a block that does not
-converge within `max_nodes` nodes or an inner rule that cannot reach its tolerance (`OracleNotConverged`).
+converge within `max_nodes` nodes, an inner rule that cannot reach its tolerance or a total error
+above `tol` (`OracleNotConverged`). Fixed `nodes=` is the one exception: a diagnostic with no
+convergence loop and no refusal, whose `error` is NaN when a block ran a single node count.
 
 All data made here is synthetic.
 """
@@ -98,6 +110,7 @@ from __future__ import annotations
 
 import functools
 import math
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -130,6 +143,8 @@ NESTED_NODES = 2500                           # Gauss-Hermite nodes over the smo
 STEPS_MODE = (0.0,) + tuple(sign * 2.0 ** j for j in range(25) for sign in (-1.0, 1.0))
 STEPS_WALL = (-8.0, -5.0, -2.5, -1.0, 0.0, 1.0, 2.5, 5.0, 8.0)
 LINK_TOL = 1.0e-12                            # relative covariance below this does not link two factors
+ROUND = 16.0 * np.finfo(float).eps            # roundoff allowance per unit of the log terms a value sums
+DROP_SHARE = 0.25                             # of a part's share of tol, what dropped directions may take
 RANDOM_EXTRAS = ("mu", "bias", "position")
 CHUNK = 1 << 17
 
@@ -882,10 +897,13 @@ def _gh_grid(n: int, d: int, start: int, stop: int):
 def _integrate_block(prob: Problem, part, *, tol: float, max_nodes: int, nodes: Sequence[int] | None,
                      method: str, laplace_only: bool = False):
     """The integral over one block's d coordinates y ~ N(0, I) of the product of its factors (with
-    `laplace_only`, just its Laplace value)."""
+    `laplace_only`, just its Laplace value). The block's error (its rule's convergence and inner terms,
+    what its dropped directions could move and a roundoff allowance) must fit `part.share`; its rule is
+    asked for what is left, and the block refuses when nothing is (unless `nodes` fixes the rule)."""
     rows, mu, Mb, basis = part.rows, part.mu, part.Mb, part.basis
     d = Mb.shape[1]
-    F = _Factors(prob, rows, tol)
+    share = min(tol, part.share)
+    F = _Factors(prob, rows, share)
 
     def h(y: np.ndarray):
         lp, d1, d2, _ = F.values(mu + Mb @ y)
@@ -918,20 +936,28 @@ def _integrate_block(prob: Problem, part, *, tol: float, max_nodes: int, nodes: 
     if laplace_only:
         return laplace
     # what the dropped directions could move: second order in their (standardised) variance
-    _, d1, d2, _ = F.values(mu + Mb @ y)
+    lp, d1, d2, _ = F.values(mu + Mb @ y)
     slopes = np.abs(d1) * F.scale
     dropped = 0.5 * part.drop * float(np.sum(np.abs(d2) * F.scale ** 2 + slopes ** 2))
+    # roundoff: a few ulps of every log term the value sums (the factors at the mode, the prior, the
+    # determinant), so a value of -289 is not reported to 1e-14
+    rounding = ROUND * (float(np.abs(lp).sum()) + 0.5 * float(y @ y) + abs(log_det) + 1.0)
+    left = share - dropped - rounding
+    if left <= 0.0 and nodes is None:
+        raise OracleNotConverged(f"a block of {d} directions cannot meet its share {share:.3g} of tol: its dropped "
+                                 f"directions could move {dropped:.3g} and its roundoff is {rounding:.3g}")
+    left = max(left, 0.0)
 
     sharp = int(np.sum(part.strength >= SHARP_AT))
     if method == "nested" or (method == "auto" and d >= 2 and nodes is None and 1 <= sharp <= 2):
         if sharp > 2:
             raise OracleTooLarge(f"a block has {sharp} sharp directions; the nested rule takes at most 2")
-        block = _nested_block(F, part, y, prec, max(1, sharp), laplace, tol, max_nodes)
+        block = _nested_block(F, part, y, prec, max(1, sharp), laplace, left, max_nodes)
     elif method == "auto" and d == 1 and nodes is None:
-        block = _quad_block(F, part, float(y[0]), float(Lc[0, 0]), float(val), laplace)
+        block = _quad_block(F, part, float(y[0]), float(Lc[0, 0]), float(val), laplace, left)
     else:
-        block = _gh_block(F, part, y, Lc, log_det, laplace, tol, max_nodes, nodes)
-    block.error += dropped
+        block = _gh_block(F, part, y, Lc, log_det, laplace, left, max_nodes, nodes)
+    block.error += dropped + rounding
     block.slopes = slopes
     return block
 
@@ -989,9 +1015,13 @@ def _gh_block(F: _Factors, part, y, Lc, log_det, laplace, tol, max_nodes, nodes)
                  history=history, mean=mean, cov=cov, basis=basis)
 
 
-def _quad_block(F: _Factors, part, mode: float, scale: float, top: float, laplace: float) -> Block:
+def _quad_block(F: _Factors, part, mode: float, scale: float, top: float, laplace: float, tol: float) -> Block:
     """One direction: scipy's adaptive Gauss-Kronrod over the range where the integrand is above e^-80 of
-    its peak, with a break point at the mode. Robust to the near-hard walls of a small call noise."""
+    its peak, with a break point at the mode. Robust to the near-hard walls of a small call noise. The
+    integral is asked for relative accuracy 0.4 tol, at most 1e-11 (or the integrand's roundoff, a few ulps
+    of its log top, when that is larger) and at least the 2e-14 scipy accepts; quad's own error
+    estimate plus the inner error must then be within tol, and quad warning (roundoff, subdivisions)
+    refuses."""
     col, mu = part.Mb[:, 0], part.mu
     inner = [0.0]
 
@@ -1010,11 +1040,23 @@ def _quad_block(F: _Factors, part, mode: float, scale: float, top: float, laplac
 
     lo, hi = edge(-1.0), edge(1.0)
     points = [mode + k * scale for k in (-8, -2, 0, 2, 8) if lo < mode + k * scale < hi]
+    # what quad can ask for: the integrand exp(h - top) carries a relative roundoff of a few ulps of |top|
+    reach = max(1e-11, ROUND * (abs(top) + 1.0))
     found = []
     for power in (0, 1, 2):            # a moment near 0 gets an absolute tolerance scaled by the integral
         tol_abs = 0.0 if power == 0 else 1e-13 * found[0][0] * (abs(mode) + scale) ** power
-        value, err = integrate.quad(lambda y: (y ** power) * math.exp(hval(y) - top), lo, hi, points=points,
-                                    epsabs=tol_abs, epsrel=1e-11, limit=2000)
+        if power == 0:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", integrate.IntegrationWarning)
+                value, err = integrate.quad(lambda y: math.exp(hval(y) - top), lo, hi, points=points, epsabs=0.0,
+                                            epsrel=max(min(reach, 0.4 * tol), 2e-14), limit=2000)
+            trouble = [str(w.message) for w in caught if issubclass(w.category, integrate.IntegrationWarning)]
+            if trouble or not err / value + inner[0] <= tol:
+                raise OracleNotConverged(f"a block of one direction: quad error {err / value:.3g} plus inner "
+                                         f"{inner[0]:.3g} against {tol:.3g}" + (f" ({trouble[0][:80]})" if trouble else ""))
+        else:
+            value, err = integrate.quad(lambda y: (y ** power) * math.exp(hval(y) - top), lo, hi, points=points,
+                                        epsabs=tol_abs, epsrel=reach, limit=2000)
         found.append((value, err))
     s0, e0 = found[0]
     mean = found[1][0] / s0
@@ -1116,28 +1158,33 @@ class _Part:
     basis: np.ndarray              # p x d: y = basis' zeta
     strength: np.ndarray           # d standardised singular values (Mb's columns over the factor scales)
     drop: float                    # sum of the squared standardised singular values dropped
+    share: float = math.inf        # this part's share of the requested tol
 
 
 @dataclass
 class _Layout:
     gauss: float                   # the closed-form part
+    gauss_round: float             # its roundoff allowance
     flat: float                    # factors left with no random direction
-    flat_error: float
+    flat_error: float              # their dropped-direction, inner and roundoff error
     mean: np.ndarray               # z given the Gaussian readings: mean + root zeta, zeta ~ N(0, I)
     root: np.ndarray
     parts: list                    # _Part per block
     cross: np.ndarray              # |covariance| of standardised forms in different blocks (unlinked)
     slopes: np.ndarray             # standardised |d log f / dw| of flat factors at their value (0 elsewhere)
+    share: float                   # each part's share of tol; one more share is the links' and the closed form's
 
 
 def _layout(prob: Problem, tol: float = 1e-8) -> _Layout:
     """Steps 2 and 3 of the method. Every rank and link decision is made on the forms standardised by
     their factor's scale (how many noise sds a factor moves per unit of zeta), so it does not depend on
-    the units of theta: two factors are linked when their forms correlate above LINK_TOL, a block keeps
-    the directions whose standardised singular value exceeds DROP_STD, and a block with none is a
-    product of values at the mean."""
+    the units of theta: two factors are linked when their forms correlate above LINK_TOL, and a block
+    keeps the directions whose standardised singular value exceeds DROP_STD and, below that, as many
+    more as it takes for what the rest could move (second order, at the mean) to fit DROP_SHARE of the
+    part's share of `tol`. A block with none is a product of values at the mean. `tol` is split in
+    equal shares over the parts, plus one share for the cut links and the closed-form part."""
     p = prob.p
-    gauss = prob.const
+    gauss, gauss_terms = prob.const, 0.0
     mean, cov = np.zeros(p), np.eye(p)
     if len(prob.g_y):
         G = prob.g_rows
@@ -1147,6 +1194,7 @@ def _layout(prob: Problem, tol: float = 1e-8) -> _Layout:
         alpha = linalg.cho_solve(factor, resid)
         log_det = 2.0 * float(np.log(np.diag(factor[0])).sum())
         gauss += -0.5 * (len(resid) * LOG_2PI + log_det + float(resid @ alpha))
+        gauss_terms = 0.5 * (len(resid) * LOG_2PI + abs(log_det) + abs(float(resid @ alpha)))
         mean = G.T @ alpha
         cov = np.eye(p) - G.T @ linalg.cho_solve(factor, G)
         cov = 0.5 * (cov + cov.T)
@@ -1165,22 +1213,30 @@ def _layout(prob: Problem, tol: float = 1e-8) -> _Layout:
         link &= (sd_w[:, None] > 0) & (sd_w[None, :] > 0)
         n_parts, label = connected_components(link, directed=False)
         cross = np.abs(cw) * (label[:, None] != label[None, :])
+        share = tol / (n_parts + 1)
         for part in range(n_parts):
             rows = np.flatnonzero(label == part)
             U, S, Vt = np.linalg.svd(Bs[rows], full_matrices=False)
-            keep = S > DROP_STD
+            F = _Factors(prob, rows, share)
+            lp, d1, d2, err = F.values(mu_w[rows])
+            curv = float(np.sum(np.abs(d2) * F.scale ** 2 + (d1 * F.scale) ** 2))
+            keep = S > DROP_STD                 # then the next largest while the rest could move too much
+            tail = np.cumsum((S ** 2)[::-1])[::-1]          # tail[k]: sum of S^2 from k on
+            for k in range(len(S)):
+                if not keep[k] and S[k] > 0 and 0.5 * tail[k] * curv > DROP_SHARE * share:
+                    keep[k] = True
             drop = float(np.sum(S[~keep] ** 2))
             if keep.any():
                 parts.append(_Part(rows=rows, mu=mu_w[rows], Mb=scale[rows, None] * (U[:, keep] * S[keep][None, :]),
-                                   basis=Vt[keep].T, strength=S[keep], drop=drop))
+                                   basis=Vt[keep].T, strength=S[keep], drop=drop, share=share))
                 continue
-            F = _Factors(prob, rows, tol)
-            lp, d1, d2, err = F.values(mu_w[rows])
             flat += float(lp.sum())
             slopes[rows] = np.abs(d1) * F.scale
-            flat_error += float(err.sum()) + 0.5 * drop * float(np.sum(np.abs(d2) * F.scale ** 2 + slopes[rows] ** 2))
-    return _Layout(gauss=gauss, flat=flat, flat_error=flat_error, mean=mean, root=root, parts=parts, cross=cross,
-                   slopes=slopes)
+            flat_error += (float(err.sum()) + 0.5 * drop * curv + ROUND * (float(np.abs(lp).sum()) + 1.0))
+    else:
+        share = tol
+    return _Layout(gauss=gauss, gauss_round=ROUND * (abs(prob.const) + gauss_terms), flat=flat,
+                   flat_error=flat_error, mean=mean, root=root, parts=parts, cross=cross, slopes=slopes, share=share)
 
 
 def exact(data: Mapping[str, Any], theta: Mapping[str, Any] | None = None, *, random: Sequence[str] = (),
@@ -1192,7 +1248,11 @@ def exact(data: Mapping[str, Any], theta: Mapping[str, Any] | None = None, *, ra
     one or two sharp directions by the nested rule and other blocks by Gauss-Hermite; `method="gh"` uses
     Gauss-Hermite everywhere and `method="nested"` the nested rule everywhere (checks of one against the
     other). `nodes` fixes the Gauss-Hermite node counts per direction (no convergence loop; the last
-    count is the answer). `items` is "auto", "explicit" or "summed" (the module docstring, step 3)."""
+    count is the answer). `items` is "auto", "explicit" or "summed" (the module docstring, step 3).
+
+    `tol` is global, in log units: the returned `error` (every block, flat part, cut link and roundoff
+    term) is at most `tol`, or `OracleNotConverged` is raised. Except with fixed `nodes`, which never
+    refuses."""
     if method not in ("auto", "gh", "nested"):
         raise ValueError("method= is 'auto', 'gh' or 'nested'")
     if items not in ("auto", "explicit", "summed"):
@@ -1222,11 +1282,16 @@ def exact(data: Mapping[str, Any], theta: Mapping[str, Any] | None = None, *, ra
         blocks.append(block)
         loglik += block.loglik
         lap += block.laplace
-        error += block.error if np.isfinite(block.error) else 0.0
+        error += block.error           # NaN only with fixed nodes and one count: then the error is unknown
         slopes[part.rows] = block.slopes
         z_mean += lay.root @ (part.basis @ block.mean)
         inner += part.basis @ (block.cov - np.eye(d)) @ part.basis.T
     error += 0.5 * float(slopes @ lay.cross @ slopes)      # first order in the covariance left unlinked
+    error += lay.gauss_round
+    if nodes is None and not error <= tol:
+        raise OracleNotConverged(f"the error {error:.3g} is above tol {tol:.3g} (blocks "
+                                 f"{[round(b.error, 15) for b in blocks]}, flat {lay.flat_error:.3g}, "
+                                 f"closed form {lay.gauss_round:.3g})")
     z_cov = lay.root @ inner @ lay.root.T
     posterior = {}
     for name, (off, T) in prob.effects.items():

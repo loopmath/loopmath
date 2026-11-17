@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from scipy import integrate, optimize, special, stats
+from scipy import integrate, linalg, optimize, special, stats
 from scipy.stats import qmc
 
 import laplace_oracle as O
@@ -156,8 +156,10 @@ def log_rect_small(mean, cov, lo, hi) -> float:
 def log_rect_sov(mean, cov, lo, hi, seed: int = 0, m: int = 15, reps: int = 16):
     """log P(lo < X < hi) for X ~ N(mean, cov) by Genz's separation of variables with Genz-Bretz
     ordering, every interval and every inverse taken in log space (so a probability of e^-400 keeps
-    its digits, where scipy's Genz returns 0), over `reps` scrambled Sobol sets of 2^m points. Returns
-    the estimate and its standard error in log units, from the spread of the replicates."""
+    its digits, where scipy's Genz returns 0), over `reps` scrambled Sobol sets of 2^m points of 64
+    bits (the default 30 bits leave a bias of about 3e-10 in a deep tail). Returns the estimate and the
+    standard error of the replicates in log units: their spread, not a bound on numerical bias, so a
+    check against it keeps an absolute floor."""
     n = len(mean)
     a, b = np.asarray(lo, dtype=float) - mean, np.asarray(hi, dtype=float) - mean
     S = np.array(cov, dtype=float)
@@ -186,7 +188,7 @@ def log_rect_sov(mean, cov, lo, hi, seed: int = 0, m: int = 15, reps: int = 16):
                    for sign, x in ((1.0, al), (-1.0, be)) if np.isfinite(x))
     est = []
     for r in range(reps):
-        U = qmc.Sobol(d=max(1, n - 1), scramble=True, seed=seed * 1000 + r).random_base2(m)
+        U = qmc.Sobol(d=max(1, n - 1), scramble=True, seed=seed * 1000 + r, bits=64).random_base2(m)
         z = np.zeros((U.shape[0], n))
         logw = np.zeros(U.shape[0])
         for i in range(n):
@@ -702,6 +704,105 @@ def test_the_nested_rule_equals_gauss_hermite_where_both_settle(kind, options, s
     for name in gh.posterior:
         for key in ("mean", "sd"):
             np.testing.assert_allclose(nested.posterior[name][key], gh.posterior[name][key], atol=1e-6)
+
+
+# ---------------------------------------------------------------------------------------------------
+# the tolerance contract: tol bounds the whole reported error, or the oracle refuses
+
+def one_binary(mu: float, sd_input: float) -> O.Tiny:
+    """One binary reading of 1 with no run, judge or call terms but a unit call noise: log Phi(mu /
+    sqrt(1 + sd_input^2)) exactly."""
+    b = O.tiny("binary", theta={"mu": mu, "sd_input": sd_input, "sd_run": 0.0, "tau": 0.0, "sigma": 1.0}, seed=0)
+    b.data["g_y"][:] = 1.0
+    return b
+
+
+CONTRACT = [(0.3, 1.0, 1e-12, "pass"), (0.3, 1.0, 1e-13, "pass"), (0.3, 1.0, 1e-14, "refuse"),
+            (-100.0, 5e-8, 1e-12, "refuse"), (-100.0, 5e-8, 1e-10, "pass"),
+            (-10000.0, 5e-8, 1e-8, "refuse"), (-10000.0, 5e-8, 1e-6, "pass"), (-10000.0, 5e-8, 1e-5, "pass")]
+
+
+@pytest.mark.parametrize("mu,sd_input,tol,outcome", CONTRACT)
+def test_every_answer_meets_the_requested_tol_or_the_oracle_refuses(mu, sd_input, tol, outcome):
+    """The review's cases (mu 0.3 at tol 1e-12; mu -100 with sd_input 5e-8 at 1e-12; mu -10000 at the
+    default tol) and their neighbours. A value of size 5005 or 5e7 cannot be certified below its
+    roundoff (16 ulps a unit of the log terms), so those requests are refused, by `exact_loglik` too;
+    every answer has its whole error within tol and that error covers the closed form. At mu -10000 and
+    tol 1e-5 the input direction is dropped (what it could move fits its allowance) and the error
+    still covers the difference it leaves."""
+    b = one_binary(mu, sd_input)
+    ref = float(special.log_ndtr(mu / math.sqrt(1.0 + sd_input ** 2)))
+    if outcome == "refuse":
+        with pytest.raises(O.OracleNotConverged):
+            O.exact(b.data, b.theta, tol=tol)
+        with pytest.raises(O.OracleNotConverged):
+            O.exact_loglik(b.data, b.theta, tol=tol)
+        return
+    out = O.exact(b.data, b.theta, tol=tol)
+    assert 0.0 < out.error <= tol
+    assert abs(out.loglik - ref) <= out.error
+    assert sum(block.error for block in out.blocks) <= out.error
+
+
+@pytest.mark.parametrize("tol", [1e-6, 1e-8, 1e-10, 1e-11])
+@pytest.mark.parametrize("kind,options", [("binary", dict(runs=2, judges=2, calls=2)), ("levels", dict(runs=3, judges=1, calls=2)),
+                                          ("items", dict(runs=2, judges=1, calls=2, items=3)),
+                                          ("pairs", dict(runs=3, judges=1, pair_calls=2))])
+def test_tol_is_global_over_the_blocks(kind, options, tol):
+    """tol bounds the sum over blocks, flat parts, cut links and roundoff, which is `error`; each answer
+    is within its error of one at tol 1e-12."""
+    b = O.tiny(kind, seed=7, **options)
+    out = O.exact(b.data, b.theta, tol=tol)
+    assert out.error <= tol
+    assert sum(block.error for block in out.blocks) <= out.error
+    tight = O.exact(b.data, b.theta, tol=1e-12)
+    assert abs(out.loglik - tight.loglik) <= out.error + tight.error
+
+
+def test_fixed_nodes_are_a_diagnostic_that_does_not_refuse():
+    """`nodes=` fixes the Gauss-Hermite rule with no convergence loop and no refusal: an explicit
+    diagnostic. The same block at that tol without it refuses."""
+    b = judges_times(O.tiny("binary", runs=1, judges=2, calls=2, seed=8), 0.03)
+    out = O.exact(b.data, b.theta, method="gh", nodes=[3], tol=1e-14)
+    assert np.isfinite(out.loglik)
+    with pytest.raises(O.OracleNotConverged):
+        O.exact(b.data, b.theta, method="gh", tol=1e-14)
+
+
+def test_the_error_carries_a_roundoff_allowance():
+    """Pairs, 2 runs, 2 pair calls, tau and sigma_pair times 0.03: log p is -289. The review's 70-digit
+    Decimal integral of its one-dimensional contrast gives -289.1146078789756178092186; the double
+    result is about one ulp off, and the reported error covers it."""
+    b = judges_times(O.tiny("pairs", runs=2, pair_calls=2, seed=212), 0.03)
+    out = O.exact(b.data, b.theta)
+    assert abs(out.loglik - (-289.1146078789756178092186)) <= out.error <= 1e-8
+    assert out.error >= 16 * np.finfo(float).eps * 289
+
+
+def _orthant_pair(rho: float) -> float:
+    return math.log(0.25 + math.asin(rho) / (2 * math.pi))
+
+
+SOV_CASES = [
+    # the review's case: a correlated pair at 0 and an independent tail at 12
+    (np.array([[1, .8, 0], [.8, 1, 0], [0, 0, 1.0]]), [0, 0, 12], math.log(special.ndtr(-12.0)) + _orthant_pair(0.8)),
+    # two correlated pairs and a tail at 30
+    (linalg.block_diag([[1, .8], [.8, 1]], [[1, -.6], [-.6, 1]], [[1.0]]), [0, 0, 0, 0, 30],
+     _orthant_pair(0.8) + _orthant_pair(-0.6) + float(special.log_ndtr(-30.0))),
+    # six coordinates of correlation 1/2 (P all > 0 = 1/7) and a tail at 20
+    (linalg.block_diag(0.5 * np.eye(6) + 0.5, [[1.0]]), [0] * 6 + [20], math.log(1 / 7) + float(special.log_ndtr(-20.0))),
+]
+
+
+@pytest.mark.parametrize("case", range(len(SOV_CASES)))
+def test_the_log_space_sov_reference_equals_closed_forms(case):
+    """The sharp grid's reference for 3 to 9 latents against orthant closed forms (1/4 + asin(rho) / 2 pi
+    for a pair, 1/(n + 1) for n coordinates of correlation 1/2) with independent tails, down to e^-460;
+    within 5 replicate standard errors or 1e-9."""
+    cov, lower, exact = SOV_CASES[case]
+    lower = np.asarray(lower, dtype=float)
+    est, se = log_rect_sov(np.zeros(len(lower)), cov, lower, np.full(len(lower), np.inf), seed=3)
+    assert est == pytest.approx(exact, abs=max(1e-9, 5 * se))
 
 
 @pytest.mark.parametrize("kind,calls", [("binary", 2), ("binary", 3), ("levels", 2), ("levels", 3)])
