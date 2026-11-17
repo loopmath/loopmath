@@ -141,10 +141,10 @@ number for that arm should not be trusted yet.
 - **`eval steps` estimates no interactions**: each swap is read alone, against the reference arm.
 - **`eval judges` costs** come from the cost per call in `judges.json`, with no range.
 - **`eval value --check design`** treats every labelled output as drawn alone: it has no variance term for
-  stratified plans and does not use comparisons. Its ranges are not calibrated yet: in the one simulated
-  study where this was measured, they were far too wide when some outputs had no chance of being drawn, and too
-  narrow when all had one (the truth was inside in about 70% of cases under pilot plans and 55% under active
-  plans, against a stated 90%). Read a flag from it as a reason to look, not as a test.
+  stratified plans and does not use comparisons. Its ranges have been measured through the whole
+  chain on one simulated study only: over 25 plans of 30 labels each they held the truth in 90% of cases under
+  pilot plans and in 84% under active plans, against a stated 90%. Read a flag from it as a reason to look, not
+  as a test.
 - **`eval labels next --mode active`** is opt-in; `pilot` is the default. In the simulated comparison, active mode
   had a lower decision loss than pilot and uniform sampling by a small margin. Its scores read yes or no and
   levels components as plain numbers, do not count what a label teaches about a judge, and keep `--minutes` on

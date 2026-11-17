@@ -230,6 +230,26 @@ def summary(rows: list[dict]) -> dict:
             "se": float(errors.std(ddof=1) / np.sqrt(len(errors))) if len(rows) > 1 else None}
 
 
+def by_study(rows: list[dict]) -> dict:
+    """The error of the arm means, one mean per study: the arm means of one study share its inputs, so
+    their errors are not independent and the Monte Carlo standard error is taken across studies."""
+    studies: dict[str, list] = {}
+    for row in rows:
+        studies.setdefault(row["study"], []).append(row["error"])
+    means = np.array([np.mean(errors) for errors in studies.values()], dtype=float)
+    return {"studies": len(means), "mean_error": float(means.mean()),
+            "se": float(means.std(ddof=1) / np.sqrt(len(means))) if len(means) > 1 else None}
+
+
+def arm_means_unbiased(rows: list[dict], got: dict) -> None:
+    """Arm means are unbiased within 3 Monte Carlo standard errors. One study gives no standard error:
+    the bound then cannot be judged, and the report says so."""
+    means = by_study(rows)
+    if means["se"] is None:
+        return
+    assert abs(means["mean_error"]) <= 3.0 * means["se"], ("arm means", means, got.get("spec"))
+
+
 def judges_report(fit: Fitted) -> dict:
     return E.js("eval", "judges", fit.path, *fit.flags)
 
@@ -242,21 +262,20 @@ def judges_report(fit: Fitted) -> dict:
 def test_check_3_intervals_cover_the_truth_and_arm_means_are_unbiased(name, root):
     """Acceptance check 3 on one catalog spec: over the studies, the 90% interval of each identified
     parameter covers the truth in 85% to 95% of cases, and the arm means are unbiased within 3 Monte
-    Carlo standard errors."""
+    Carlo standard errors (taken across studies, so this part needs 2 or more studies)."""
     fits = [fitted(root, name, seed) for seed in seeds()]
     groups: dict[str, list] = {}
     for fit in fits:
         for group, rows in parameter_rows(fit).items():
-            groups.setdefault(group, []).extend(rows)
+            groups.setdefault(group, []).extend(dict(row, study=fit.folder.name) for row in rows)
     parameters = [row for group, rows in groups.items() if group != "arm_difference" for row in rows]
     got = {"spec": name, **base(fits), "parameters": summary(parameters),
            "groups": {group: summary(rows) for group, rows in groups.items()},
-           "diagnostics": [fit.meta["diagnostics"] for fit in fits]}
+           "arm_means": by_study(groups["mu"]), "diagnostics": [fit.meta["diagnostics"] for fit in fits]}
     E.write_report(f"check-03-{name}", got)
     in_bounds([row["hit"] for row in parameters], "identified parameters", got["groups"])
     in_bounds([row["hit"] for row in groups["arm_difference"]], "arm differences", got["groups"])
-    means = got["groups"]["mu"]
-    assert abs(means["mean_error"]) <= 3.0 * means["se"], ("arm means", means)
+    arm_means_unbiased(groups["mu"], got)
 
 
 def test_check_3_pooled_over_the_catalog(root):
@@ -268,16 +287,15 @@ def test_check_3_pooled_over_the_catalog(root):
             fit = fitted(root, name, seed)
             fits.append(fit)
             for group, rows in parameter_rows(fit).items():
-                groups.setdefault(group, []).extend(rows)
+                groups.setdefault(group, []).extend(dict(row, study=fit.folder.name) for row in rows)
     parameters = [row for group, rows in groups.items() if group != "arm_difference" for row in rows]
     got = {"specs": len(specs.names()), **base(fits), "parameters": summary(parameters),
-           "groups": {group: summary(rows) for group, rows in groups.items()}}
+           "groups": {group: summary(rows) for group, rows in groups.items()}, "arm_means": by_study(groups["mu"])}
     got.pop("fit_seconds")
     E.write_report("check-03-pooled", got)
     in_bounds([row["hit"] for row in parameters], "identified parameters", got["groups"])
     in_bounds([row["hit"] for row in groups["arm_difference"]], "arm differences", got["groups"])
-    means = got["groups"]["mu"]
-    assert abs(means["mean_error"]) <= 3.0 * means["se"], ("arm means", means)
+    arm_means_unbiased(groups["mu"], got)
 
 
 # ---------------------------------------------------------------------------------------------------
