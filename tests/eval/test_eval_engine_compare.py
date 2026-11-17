@@ -5,12 +5,18 @@ Every test here is marked `slow` and runs only with LOOPMATH_EVAL_SLOW=1. Most n
 seconds; the last ones run the harness with real fits on small studies.
 
 - The intervals the statistics use, against independent values: binomial tail sums for the exact
-  interval, the score equation for the Wilson interval, and a direct simulation of clustered hits.
+  interval, the score equation for the Wilson interval, the exact variance of a share over clusters of
+  very different sizes, and direct simulations of clustered hits with equal and unequal sizes.
 - The two ways a pooled check misleads, built as records: pooled coverage of 90% with one parameter at
   0%, and one false family contrast in ten in every study. The old checks pass both; these must not.
+- Missing evidence is never a pass: a gate with specs or a scale kind missing, an unconverged or failed
+  size-target timing, constant, missing or non-finite draws of an expected parameter, a class seen in
+  few studies, and records made without the family measurement.
 - The records of catalog designs, through the real `fit.fit_design` with the sampler swapped for draws
   of known law (truth plus a random offset plus noise, both of sd s): the 90% interval of such draws
-  holds the truth with probability 0.90, so every class must cover near 0.90 and show no bias.
+  holds the truth with probability 0.90, so every class must cover near 0.90 and show no bias. One
+  design is unanchored, so its location is the judges' mean bias.
+- The worker budgets: workers together stay inside the run's cores, CPU minutes and fits.
 - The harness with `eval fit` itself, PyMC first, on two small studies; and the Laplace engine once
   `fit.fit_design` takes an engine.
 - With LOOPMATH_EVAL_BENCH_OUT naming the folder of a finished large run, the gate's spec items there.
@@ -84,8 +90,9 @@ def test_wilson_ends_solve_the_score_equation(p, n):
 
 def test_cluster_interval_holds_its_level_when_hits_share_a_study():
     """Hits of one study move together (each study has its own chance, drawn around 0.90). Over 2000
-    simulated runs of 200 studies with 6 rows each, the cluster interval holds 0.90 near its 95%; a
-    plain binomial interval over the 1200 rows, which treats them as independent, holds it far less often."""
+    simulated runs of 200 studies with 6 rows each, the cluster interval holds 0.90 at least at its 95%
+    (it is conservative for equal sizes, allowing for Monte Carlo error); a plain binomial interval over
+    the 1200 rows, which treats them as independent, holds it far less often."""
     rng = np.random.default_rng(20261116)
     reps, studies, rows, mean, spread = 2000, 200, 6, 0.90, 5.0
     chance = rng.beta(mean * spread, (1 - mean) * spread, size=(reps, studies))
@@ -96,8 +103,46 @@ def test_cluster_interval_holds_its_level_when_hits_share_a_study():
         cluster += got["lo"] <= mean <= got["hi"]
         lo, hi = RS.wilson(hits[rep].sum() / (studies * rows), studies * rows)
         plain += lo <= mean <= hi
-    assert 0.93 <= cluster / reps <= 0.97, cluster / reps
+    assert cluster / reps >= 0.94, cluster / reps
     assert plain / reps < 0.88, plain / reps
+
+
+UNEQUAL = np.array([1.0] * 190 + [100.0] * 10)     # 190 studies of one row, 10 of 100 rows
+
+
+def test_cluster_interval_on_190_single_rows_and_10_studies_of_100():
+    """Every study covers with chance 0.9 and a study's rows move together. The pooled share then has
+    variance 0.9 x 0.1 x (190 + 10 x 100^2) / 1190^2 = 0.00636755878822 (written out here, not taken from
+    the helper), an effective 14.1341 trials, far below the 200 studies. With 171 single-row hits and 9
+    large-study hits the share is 0.9; the interval must hold 0.9 and rest on about 14 trials."""
+    exact_var = 0.9 * 0.1 * (190 + 10 * 100 ** 2) / 1190 ** 2
+    assert exact_var == pytest.approx(0.00636755878822, abs=1e-14)
+    hits = np.array([1.0] * 171 + [0.0] * 19 + [100.0] * 9 + [0.0])
+    got = RS.cluster_share(hits, UNEQUAL)
+    assert got["share"] == pytest.approx(0.9, abs=1e-12)
+    assert got["n_size"] == pytest.approx(0.9 * 0.1 / exact_var, abs=1e-9)
+    assert got["n_eff"] <= got["n_size"] + 1e-12 and got["n_eff"] < 15
+    assert got["lo"] <= 0.9 <= got["hi"]
+    assert got["lo"] < 0.75 and got["hi"] > 0.95, got     # about 14 trials, not 200
+
+
+def test_cluster_interval_holds_its_level_with_unequal_study_sizes():
+    """4000 simulated runs of the 190 + 10 layout, each study covering with chance 0.9: the interval holds
+    0.9 in at least 94% of runs (95% less Monte Carlo error). The interval from the variance over studies
+    alone, the part that fails, is shown to fail: when the ten large studies all hit, it is near 0 wide."""
+    rng = np.random.default_rng(1190)
+    reps, held, spread_only = 4000, 0, 0
+    for _ in range(reps):
+        hit = rng.random(200) < 0.9
+        hits = UNEQUAL * hit
+        got = RS.cluster_share(hits, UNEQUAL)
+        held += got["lo"] <= 0.9 <= got["hi"]
+        p, N, S = hits.sum() / UNEQUAL.sum(), UNEQUAL.sum(), 200
+        v = S / (S - 1) * ((hits - p * UNEQUAL) ** 2).sum() / N ** 2
+        lo, hi = RS.wilson(p, p * (1 - p) / v) if 0 < p < 1 else (p, p)
+        spread_only += lo <= 0.9 <= hi
+    assert held / reps >= 0.94, held / reps
+    assert spread_only / reps < 0.90, spread_only / reps
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -111,7 +156,7 @@ def synthetic(studies: int, rows_of) -> list[dict]:
         rows, family = rows_of(seed)
         out.append({"schema": RS.RECORD_SCHEMA, "spec": "synthetic", "seed": seed, "engine": "none", "options": {},
                     "converged": True, "seconds": 1.0, "cpu_seconds": 1.0, "rows": rows, "aggregates": {},
-                    "family": family, "excluded": {}})
+                    "family": family, "expected": {}, "degenerate": [], "no_truth": [], "excluded": {}})
     return out
 
 
@@ -131,7 +176,7 @@ def test_one_parameter_at_0_percent_is_caught_where_pooled_coverage_is_90_percen
     assert summary["classes"]["tau"]["in_band"]
     outside = {p["name"]: p["coverage"] for p in summary["parameters_outside"]}
     assert outside == {f"tau[{n}]": (0.0 if n == 0 else 1.0) for n in range(10)}
-    assert summary["gate"]["items"]["no_parameter_outside_band"] is False
+    assert summary["gate"]["items"]["no_parameter_outside_band"]["state"] == "fail"
     assert summary["gate"]["pass"] is False
 
 
@@ -173,35 +218,189 @@ def test_arm_means_are_judged_one_by_one():
     summary = RS.summarise(records)
     assert abs(summary["classes"]["mu"]["bias"]) < 0.005
     assert sorted(summary["gate"]["arm_means_biased"]) == ["mu[a,d]", "mu[b,d]"]
-    assert summary["gate"]["items"]["arm_means_unbiased"] is False
+    assert summary["gate"]["items"]["arm_means_unbiased"]["state"] == "fail"
+
+
+def test_a_class_seen_in_few_studies_leaves_the_spec_incomplete():
+    """A tau class seen in 10 of 200 studies, 9 of them covered: its rows look fine, but the spec has not
+    measured it 200 times, so the inventory item is incomplete and the spec does not pass."""
+    def one(seed):
+        rows = [row("mu", "mu[a,d]", seed % 10 != 0)]
+        if seed < 10:
+            rows.append(row("tau", "tau[j,d]", seed != 0))
+        return rows, []
+
+    summary = RS.summarise(synthetic(200, one))
+    item = summary["gate"]["items"]["inventory_complete"]
+    assert item["state"] == "incomplete" and "tau" in item["why"], item
+    assert summary["gate"]["state"] != "pass"
+
+
+def test_records_made_without_the_family_measurement_leave_the_spec_incomplete():
+    """200 otherwise clean records made with `--no-family` (`family` null): the family item is incomplete,
+    never a pass. Records that measured and found no contrast to read (`family` an empty list) are a
+    design with nothing to measure, and that item passes."""
+    def clean(family):
+        return lambda seed: ([row("mu", "mu[a,d]", seed % 10 != 0)], family)
+
+    skipped = RS.summarise(synthetic(200, clean(None)))
+    assert skipped["family"]["studies_skipped"] == 200
+    assert skipped["gate"]["items"]["family_false_alarms_within_limit"]["state"] == "incomplete"
+    assert skipped["gate"]["state"] == "incomplete"
+    measured = RS.summarise(synthetic(200, clean([])))
+    assert measured["gate"]["items"]["family_false_alarms_within_limit"]["state"] == "pass"
+    half = RS.summarise(synthetic(200, lambda seed: ([row("mu", "mu[a,d]", seed % 10 != 0)],
+                                                     None if seed % 2 else [])))
+    assert half["gate"]["items"]["family_false_alarms_within_limit"]["state"] == "incomplete"
+
+
+# ---------------------------------------------------------------------------------------------------
+# The engine gate: its required specs and the size-target timing
+
+
+def passing(studies: int = 200) -> dict:
+    """The summary fields `engine_gate` reads, for a spec whose own items all pass."""
+    return {"studies": studies, "failed": [], "unconverged": [], "degenerate_gated": [], "gate": {"state": "pass"}}
+
+
+def timing(**change) -> dict:
+    """A size-target timing that meets every condition; `change` breaks one."""
+    out = {"schema": RS.TIMING_SCHEMA, "spec": "size-target", "full_size": True, "started": "t", "exit_code": 0,
+           "converged": True, "wall_seconds": 90.0, "cores_measured": 1.9, "threads": "1",
+           "counts": {"runs": 500, "readings": 20000, "readings_used": 20000, "dimensions": 5, "judges": 4}}
+    out.update(change)
+    return out
+
+
+ALL_SPECS = ("linear", "one-component", "binary-checks", "levels-3", "levels-5", "cheap-vs-strong-judge", "case-items",
+             "mixed-rubric", "gated", "pairs", "overall-vs-criteria", "own-family", "reference-family", "halo",
+             "panel-vs-per-component", "steps-swap", "case-items-uneven")
+
+
+def test_the_gate_names_its_required_specs_apart_from_the_records():
+    """The required lists are written in the module, and must match the catalog: every catalog spec, and
+    the seven specs where a judge reads a binary or levels component more than once per output (worked
+    out from the catalog). Written out here as well, so a change to either shows."""
+    assert tuple(specs.names()) == RS.CATALOG_SPECS == ALL_SPECS
+    assert tuple(RS.repeated_cut_specs()) == RS.REPEATED_SCALE_SPECS == (
+        "binary-checks", "levels-3", "levels-5", "cheap-vs-strong-judge", "mixed-rubric", "gated",
+        "panel-vs-per-component")
+    assert RS.repeated_scale_kinds("binary-checks") == {"binary"} and RS.repeated_scale_kinds("levels-3") == {"levels"}
+
+
+def test_four_passing_specs_and_a_clean_timing_are_not_a_passing_gate():
+    """Four specs with 200 passing studies each and a clean 90-second size-target timing: the coverage item
+    passes, but the catalog and repeated binary and levels items are incomplete and name what is missing
+    (among them cheap-vs-strong-judge, gated and panel-vs-per-component, and every levels spec), so the
+    gate is incomplete, never all_ok. With every spec present, the same gate passes."""
+    four = {name: passing() for name in ("linear", "one-component", "own-family", "binary-checks")}
+    gate = RS.engine_gate(four, [timing()])
+    items = gate["items"]
+    assert items["coverage_on_4_specs_at_200_studies"]["state"] == "pass"
+    assert items["size_target_under_2_minutes"]["state"] == "pass"
+    assert items["no_optimiser_failure_on_catalog"]["state"] == "incomplete"
+    assert len(items["no_optimiser_failure_on_catalog"]["missing_or_short"]) == 13
+    repeated = items["repeated_binary_levels_clean"]
+    assert repeated["state"] == "incomplete" and repeated["kinds_missing"] == ["levels"]
+    assert {"cheap-vs-strong-judge", "gated", "panel-vs-per-component", "levels-3", "levels-5"} <= set(
+        repeated["missing_or_short"])
+    assert gate["state"] == "incomplete" and gate["all_ok"] is False
+    every = {name: passing() for name in ALL_SPECS}
+    assert RS.engine_gate(every, [timing()])["all_ok"] is True
+    short = dict(every, gated=passing(199))
+    assert RS.engine_gate(short, [timing()])["items"]["repeated_binary_levels_clean"]["missing_or_short"] == ["gated"]
+
+
+def test_a_narrower_gate_needs_a_note_and_both_scale_kinds():
+    """A smaller catalog, fewer studies or fewer repeated specs is refused without a note saying who
+    approved it; with a note it is shown as narrowed. Repeated specs that read no levels component (or no
+    binary one) are refused even with a note."""
+    with pytest.raises(ValueError, match="note"):
+        RS.gate_scope(catalog=["linear", "binary-checks", "levels-3"], repeated=["binary-checks", "levels-3"])
+    with pytest.raises(ValueError, match="note"):
+        RS.gate_scope(studies=100)
+    with pytest.raises(ValueError, match="note"):
+        RS.gate_scope(catalog_studies=20)
+    few = RS.gate_scope(catalog_studies=20, note="approved: 20 studies per spec for the clean-fit items")
+    every = {name: passing(20) for name in ALL_SPECS}
+    gate = RS.engine_gate(every, [timing()], few)
+    assert gate["items"]["no_optimiser_failure_on_catalog"]["state"] == "pass"
+    assert gate["items"]["coverage_on_4_specs_at_200_studies"]["state"] == "incomplete"   # 20 of 200 studies
+    assert RS.engine_gate(every, [timing()])["items"]["no_optimiser_failure_on_catalog"]["state"] == "incomplete"
+    with pytest.raises(ValueError, match="levels"):
+        RS.gate_scope(repeated=["binary-checks"], note="approved for a pilot")
+    with pytest.raises(ValueError, match="binary"):
+        RS.gate_scope(repeated=["levels-3", "levels-5"], note="approved for a pilot")
+    scope = RS.gate_scope(repeated=["binary-checks", "levels-3"], note="approved for a pilot")
+    assert scope["narrowed"] and scope["repeated"] == ["binary-checks", "levels-3"] and not scope["omitted"]
+    assert RS.gate_scope()["narrowed"] is False
+
+
+@pytest.mark.parametrize("attempts,state", [
+    ([], "incomplete"),
+    ([timing()], "pass"),
+    ([timing(converged=False)], "fail"),                                 # fast but not converged
+    ([timing(), timing(exit_code=1, wall_seconds=300.0, converged=None, counts=None)], "fail"),   # a failed retry
+    ([timing(wall_seconds=125.0)], "fail"),
+    ([timing(cores_measured=3.4)], "fail"),
+    ([timing(threads="4")], "fail"),
+    ([timing(counts={"runs": 500, "readings": 15000, "readings_used": 15000, "dimensions": 5, "judges": 4})], "fail"),
+    ([timing(schema="loopmath.eval-engine-bench-timing/1")], "fail"),
+    ([timing(full_size=False, wall_seconds=5.0)], "incomplete"),       # a small copy is not the size target
+])
+def test_size_target_timing_counts_every_attempt(attempts, state):
+    """The timing item passes only when every full-size attempt exited 0, converged, had the size target's
+    counts, used at most 2 cores with one thread per process, and took under 120 s. A failed attempt
+    beside a good one is shown and fails the item; no attempt leaves it incomplete."""
+    got = RS.timing_item(attempts)
+    assert got["state"] == state, got
+    assert len(got["attempts"]) == sum(bool(t["full_size"]) for t in attempts)
+    if state == "fail":
+        assert got["failed_attempts"] >= 1 and any(a["problems"] for a in got["attempts"])
+    every = {name: passing() for name in ALL_SPECS}
+    assert RS.engine_gate(every, attempts)["all_ok"] is (state == "pass")
 
 
 # ---------------------------------------------------------------------------------------------------
 # Records of catalog designs, with draws of known law
 
 
-def study(tmp: Path, name: str, seed: int = 0) -> tuple[M.Design, dict, Path]:
-    folder = tmp / f"{name}-s{seed}"
+def study(tmp: Path, name: str, seed: int = 0, inputs: int | None = None) -> tuple[M.Design, dict, Path]:
+    folder = tmp / f"{name}-i{inputs}-s{seed}"
     if not (folder / simulate.TRUTH_FILE).exists():
-        simulate.write(simulate.generate(specs.get(name), seed=seed), folder)
+        simulate.write(simulate.generate(specs.get(name, inputs=inputs), seed=seed), folder)
     design = M.build(C.read_study(folder), C.read_document(folder / "rubric.json", C.SCHEMA_RUBRIC),
                      C.read_document(folder / "judges.json", C.SCHEMA_JUDGES), allow_simulated=True)
     return design, simulate.read_truth(folder / simulate.TRUTH_FILE), folder
 
 
-def known_law(design: M.Design, truth: dict, rng: np.random.Generator, s: float) -> dict:
-    """What a sampler returns, as draws of known law: per parameter, its value in the engine's terms plus
-    one offset ~ N(0, s), plus independent N(0, s) noise per draw. The engine's terms are read off the
-    truth by position (simulate writes the fit's orders), with the family effects centred over the
-    study's families and their mean moved into the bias, as `engine_pymc` writes them."""
+def in_engine_units(design: M.Design, truth: dict) -> dict:
+    """The truth in the engine's terms, written from the units `engine_pymc` documents: read by position
+    (simulate writes the fit's orders); family effects centred over the study's families where the
+    family term is on, and each judge's mean family effect moved into its bias; then per dimension the
+    biases sum to 0 with the weights `bias_w` (the anchors, or every judge with readings when the
+    dimension is not anchored), the same amount going into the arm means and run qualities."""
     family_on = np.asarray(design.masks["family_on"], dtype=float)                    # J x D
     fam = np.nan_to_num(np.asarray(truth["family"], dtype=float))                      # J x F x D
-    centre = fam.mean(axis=1)
+    centre = fam.mean(axis=1) if fam.shape[1] else np.zeros(family_on.shape)
     target = {name: np.nan_to_num(np.asarray(truth[name], dtype=float))
               for name in ("mu", "sd_input", "sd_run", "corr_input", "corr_run", "q_run", "tau", "sigma", "halo_target",
                            "halo_call", "sd_judge_input", "sigma_pair", "position", "tie_width")}
-    target["bias"] = np.nan_to_num(np.asarray(truth["bias"], dtype=float)) + centre * family_on
+    bias = np.nan_to_num(np.asarray(truth["bias"], dtype=float)) + centre
     target["family"] = (fam - centre[:, None, :]) * family_on[:, None, :]
+    weights = np.asarray(design.data["bias_w"], dtype=float)
+    shift = np.einsum("jd,jd->d", weights, bias)
+    target["bias"] = bias - shift
+    target["mu"] = target["mu"] + shift
+    target["q_run"] = target["q_run"] + shift
+    return target
+
+
+def known_law(design: M.Design, truth: dict, rng: np.random.Generator, s: float) -> dict:
+    """What a sampler returns, as draws of known law: per parameter, its value in the engine's terms
+    (`in_engine_units`) plus one offset ~ N(0, s), plus independent N(0, s) noise per draw."""
+    family_on = np.asarray(design.masks["family_on"], dtype=float)                    # J x D
+    target = in_engine_units(design, truth)
     out = {}
     for name, value in target.items():
         offset = rng.normal(0.0, s, size=value.shape)
@@ -213,15 +412,21 @@ def known_law(design: M.Design, truth: dict, rng: np.random.Generator, s: float)
     return {"draws": out, "divergences": 0, "run_seconds": 0.0, "version": "known-law"}
 
 
-def known_law_records(tmp: Path, name: str, reps: int, monkeypatch, s: float = 0.02, family_every: int = 10) -> tuple:
-    design, truth, _ = study(tmp, name)
-    rng = np.random.default_rng(zlib.crc32(name.encode()))
+def known_law_fit(design: M.Design, truth: dict, rng: np.random.Generator, monkeypatch, seed: int = 0,
+                  s: float = 0.02) -> tuple:
+    fake = known_law(design, truth, rng, s)
+    monkeypatch.setattr(engine_pymc, "sample", lambda data, **kw: fake)
+    return FIT.fit_design(design, seed=seed, draws=FAKE_DRAWS, chains=FAKE_CHAINS, keep_draws=400)
+
+
+def known_law_records(tmp: Path, name: str, reps: int, monkeypatch, s: float = 0.02, family_every: int = 10,
+                      seed: int = 0, inputs: int | None = None) -> tuple:
+    design, truth, _ = study(tmp, name, seed, inputs)
+    rng = np.random.default_rng(zlib.crc32(f"{name}-{inputs}-{seed}".encode()))
     records = []
     for rep in range(reps):
-        fake = known_law(design, truth, rng, s)
-        monkeypatch.setattr(engine_pymc, "sample", lambda data, **kw: fake)
-        meta, draws = FIT.fit_design(design, seed=rep, draws=FAKE_DRAWS, chains=FAKE_CHAINS, keep_draws=400)
-        body = RS.study_record(meta, draws, truth, family=rep % family_every == 0)
+        meta, draws = known_law_fit(design, truth, rng, monkeypatch, rep, s)
+        body = RS.study_record(design, meta, draws, truth, family=rep % family_every == 0)
         records.append({"schema": RS.RECORD_SCHEMA, "spec": name, "seed": rep, "engine": "known-law",
                         "options": {}, "converged": meta["diagnostics"]["converged"], "seconds": 0.0,
                         "cpu_seconds": 0.0, **body})
@@ -300,6 +505,125 @@ def test_true_bias_and_family_effect_keep_the_judges_view(tmp_path, monkeypatch)
     assert {row["judge"] for row in real} == {"strong", "cheap"}, records[0]["family"]
 
 
+def test_unanchored_study_is_compared_in_the_engine_location(tmp_path):
+    """`one-component` with 1 input, seed 437: one anchor target, below the threshold, so the engine sets
+    the mean bias of the three judges with readings to 0. Their simulated biases 0, 0.03 and 0.08 average
+    0.0366666667, so in the engine's units the arm means are 0.42 + that = 0.4566666667 and 0.54 + that
+    = 0.5766666667 (worked by hand), and each bias is 0.0366666667 lower."""
+    design, truth, _ = study(tmp_path, "one-component", 437, 1)
+    assert design.anchor["kind"] == "judges_mean"
+    assert np.asarray(truth["bias"]).ravel().tolist() == pytest.approx([0.0, 0.03, 0.08])
+    got = RS.engine_truth(design, truth)
+    assert got["location"].tolist() == pytest.approx([0.0366666667], abs=1e-10)
+    assert got["mu"].ravel().tolist() == pytest.approx([0.4566666667, 0.5766666667], abs=1e-10)
+    assert got["bias"].ravel().tolist() == pytest.approx([-0.0366666667, -0.0066666667, 0.0433333333], abs=1e-10)
+
+
+@pytest.mark.parametrize("name,seed,inputs", [("one-component", 437, 1), ("own-family", 0, None), ("pairs", 0, 8),
+                                              ("halo", 0, 8), ("panel-vs-per-component", 0, 8)])
+def test_truth_moves_keep_every_judges_view(name, seed, inputs, tmp_path):
+    """Whatever `engine_truth` moves, what a judge sees of a run must stay: for every run, judge with
+    readings, family where the family term is on, and dimension, q_run + bias + family is the simulated
+    sum. And the units hold: the `bias_w` weighted biases are 0 per dimension, the family effects sum to
+    0 over families, and arm differences are unchanged."""
+    design, truth, _ = study(tmp_path, name, seed, inputs)
+    got = RS.engine_truth(design, truth)
+    q0, b0, f0 = (np.nan_to_num(np.asarray(truth[k], dtype=float)) for k in ("q_run", "bias", "family"))
+    has = np.asarray(design.masks["has_score"], dtype=bool)
+    on = np.asarray(design.masks["family_on"], dtype=bool)
+    checked = 0
+    for j, d in zip(*np.nonzero(has)):
+        fams = range(f0.shape[1]) if on[j, d] else [None]
+        for f in fams:
+            before = q0[:, d] + b0[j, d] + (f0[j, f, d] if f is not None else f0[j, :, d].mean())
+            after = got["q_run"][:, d] + got["bias"][j, d] + (got["family"][j, f, d] if f is not None else 0.0)
+            assert after == pytest.approx(before, abs=1e-12), (j, d, f)
+            checked += 1
+    assert checked >= 3
+    w = np.asarray(design.data["bias_w"], dtype=float)
+    weighted = np.where(w > 0, w * got["bias"], 0.0)          # no truth (NaN) where a judge has no readings
+    assert weighted.sum(axis=0) == pytest.approx(np.zeros(w.shape[1]), abs=1e-12)
+    assert got["family"].sum(axis=1) == pytest.approx(np.zeros(on.shape), abs=1e-12)
+    mu0 = np.asarray(truth["mu"], dtype=float)
+    assert got["mu"] - got["mu"][0] == pytest.approx(mu0 - mu0[0], abs=1e-12)
+
+
+def test_known_law_on_an_unanchored_design_covers_the_arm_means(tmp_path, monkeypatch):
+    """The seed 437 design under draws of known law, 200 repetitions: in the engine's location the arm
+    means and run qualities cover near the expected share and the arm means are unbiased. Compared in the
+    simulator's location instead, the 0.0367 shift (about 1.3 sd of the law) would drop them far below."""
+    records, _, _ = known_law_records(tmp_path, "one-component", 200, monkeypatch, family_every=1, seed=437, inputs=1)
+    summary = RS.summarise(records)
+    expected = known_law_coverage(FAKE_DRAWS * FAKE_CHAINS)
+    for klass in ("mu", "arm_difference", "q_run"):
+        c = summary["classes"][klass]
+        assert c["lo"] <= expected <= c["hi"], (klass, c)
+    assert summary["gate"]["items"]["arm_means_unbiased"]["state"] == "pass", summary["arm_means"]
+    assert not summary["degenerate"]
+
+
+def degenerate_case(tmp_path, monkeypatch, change) -> tuple[list, list, dict]:
+    """The real `linear` design, one fit of known-law draws, then `change(draws)` before the record."""
+    design, truth, _ = study(tmp_path, "linear")
+    meta, draws = known_law_fit(design, truth, np.random.default_rng(5), monkeypatch)
+    clean = RS.study_record(design, meta, draws, truth, family=False)
+    draws = {k: np.array(v, dtype=float, copy=True) for k, v in draws.items()}
+    change(draws)
+    bad = RS.study_record(design, meta, draws, truth, family=False)
+    return clean["rows"], bad["rows"], bad
+
+
+def _tau(rows):
+    return [r for r in rows if r["class"].split(":")[0] == "tau"]
+
+
+@pytest.mark.parametrize("what", ["constant", "nonfinite", "missing"])
+def test_bad_tau_draws_stay_as_rows_and_fail_the_spec(what, tmp_path, monkeypatch):
+    """On `linear`, every tau array made constant 0, all NaN, or dropped: the tau rows are all still there,
+    each marked degenerate and not covering its truth (the first is 0.03), and the spec fails its
+    degenerate item. Nothing is read as fixed by the model."""
+    def change(draws):
+        if what == "constant":
+            draws["tau"][...] = 0.0
+        elif what == "nonfinite":
+            draws["tau"][...] = np.nan
+        else:
+            del draws["tau"]
+
+    clean, bad, record = degenerate_case(tmp_path, monkeypatch, change)
+    assert len(_tau(clean)) >= 6 and not any(r.get("degenerate") for r in clean)
+    assert [r["name"] for r in _tau(bad)] == [r["name"] for r in _tau(clean)]
+    assert all(r["degenerate"] == what and r["hit"] is False for r in _tau(bad))
+    assert len(record["degenerate"]) == len(_tau(clean))
+    gated = [r for r in _tau(bad) if ":" not in r["class"]]
+    summary = RS.summarise([{"schema": RS.RECORD_SCHEMA, "spec": "linear", "seed": 0, "engine": "known-law",
+                             "options": {}, "converged": True, "seconds": 0.0, "cpu_seconds": 0.0, **record}])
+    assert gated and summary["gate"]["items"]["no_degenerate_parameters"]["state"] == "fail"
+    assert summary["gate"]["state"] == "fail"
+
+
+def test_a_constant_arm_mean_of_999_is_a_degenerate_miss(tmp_path, monkeypatch):
+    """One arm mean held at 999 against a truth near 0.4: its row stays, marked constant, and misses."""
+    def change(draws):
+        draws["mu"][:, 0, 0] = 999.0
+
+    clean, bad, record = degenerate_case(tmp_path, monkeypatch, change)
+    first = [r for r in bad if r["class"] == "mu"][0]
+    assert first["degenerate"] == "constant" and first["hit"] is False and first["mean"] == 999.0
+    assert len([r for r in bad if r["class"] == "mu"]) == len([r for r in clean if r["class"] == "mu"])
+
+
+def test_parameters_fixed_by_the_units_are_left_out_by_the_design(tmp_path, monkeypatch):
+    """The anchor's bias is 0 by the units (one per dimension on `linear`) and no pair parameter is used
+    without pairs: both are left out from the design (`structural`, `unused`), whatever their draws, and
+    are no failure."""
+    clean, _, record = degenerate_case(tmp_path, monkeypatch, lambda draws: None)
+    excluded = record["excluded"]
+    assert sum(v.get("structural", 0) for k, v in excluded.items() if k.split(":")[0] == "bias") == 2, excluded
+    assert sum(v.get("unused", 0) for k, v in excluded.items() if k.split(":")[0] == "sigma_pair") > 0, excluded
+    assert not record["degenerate"] and not any(r.get("degenerate") for r in clean)
+
+
 def test_size_target_is_the_study_of_check_14():
     """The size target here is the spec of `test_eval_recovery.size_spec`, and it gives 500 runs and
     20,000 readings over 5 components and 4 judges."""
@@ -316,6 +640,65 @@ def test_repeated_binary_and_levels_specs():
     got = RS.repeated_cut_specs()
     assert {"binary-checks", "levels-3", "levels-5", "mixed-rubric"} <= set(got)
     assert not {"linear", "one-component", "pairs", "own-family"} & set(got)
+
+
+# ---------------------------------------------------------------------------------------------------
+# Worker budgets
+
+
+def bench_module():
+    spec = importlib.util.spec_from_file_location("eval_engine_bench", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_workers_share_the_runs_cores_cpu_minutes_and_fits(tmp_path, monkeypatch):
+    """`recover --workers 2 --cpu-minutes 20 --max-fits 2` on the default 2 cores starts two workers of one
+    core per fit, 10 CPU minutes and one fit each (no process starts: Popen is replaced). Together they
+    stay inside the totals. More workers than cores, or cores that pass the total, are refused; a worker
+    whose share of fits is 0 is not started."""
+    bench_py = bench_module()
+    started = []
+
+    class Fake:
+        pid = 0
+
+        def __init__(self, cmd, env=None):
+            started.append(cmd)
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(bench_py.subprocess, "Popen", Fake)
+    base = ["recover", "--engine", "pymc", "--specs", "linear", "--out", str(tmp_path / "out"), "--studies", "4"]
+    assert bench_py.main(base + ["--workers", "2", "--cpu-minutes", "20", "--max-fits", "2"]) == 0
+    assert len(started) == 2
+    for k, cmd in enumerate(started):
+        value = {cmd[i]: cmd[i + 1] for i in range(len(cmd) - 1) if cmd[i].startswith("--")}
+        assert (value["--cores"], value["--total-cores"], value["--workers"]) == ("1", "1", "1")
+        assert float(value["--cpu-minutes"]) == 10.0 and value["--max-fits"] == "1"
+        assert value["--shard"] == f"{k}/2"
+    started.clear()
+    assert bench_py.main(base + ["--workers", "2", "--max-fits", "1"]) == 0
+    assert len(started) == 1
+    for bad in (["--workers", "3"], ["--workers", "2", "--cores", "2"], ["--total-cores", "1", "--workers", "2"]):
+        with pytest.raises(SystemExit):
+            bench_py.main(base + bad)
+
+
+def test_time_refuses_more_chains_than_cores_when_eval_fit_has_no_cores_option(tmp_path):
+    """`eval fit` runs its chains side by side; without a `--cores` option there, `time --chains 4` would use
+    4 cores, so it is refused before any fit."""
+    got = bench("time", "--engines", "pymc", "--specs", "one-component", "--inputs", 4, "--chains", 4,
+                "--out", tmp_path / "out", check=False)
+    help_text = subprocess.run([sys.executable, "-m", "loopmath", "eval", "fit", "--help"], capture_output=True,
+                               text=True, env=dict(os.environ, LOOPMATH_NO_UPDATE_CHECK="1",
+                                                   PYTHONPATH=str(REPO / "src"))).stdout
+    if "--cores" in help_text:
+        pytest.skip("eval fit takes --cores here, so the chains may exceed the cores")
+    assert got.returncode != 0 and "--cores" in got.stderr, got.stderr[-1000:]
+    assert not (tmp_path / "out" / "timing").exists()
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -358,6 +741,7 @@ def test_harness_with_pymc_on_two_small_studies(tmp_path):
         assert not record.get("error") and record["rows"] and record["seconds"] > 0
         assert {"truth", "mean", "lo", "hi", "hit"} <= set(record["rows"][0])
         assert record["family"] is not None and "q_run" in record["aggregates"]
+        assert record["schema"] == RS.RECORD_SCHEMA and record["expected"].get("mu") == 2
     before = [p.stat().st_mtime_ns for p in paths]
     again = bench("recover", "--engine", "pymc", "--studies", 2, "--out", out, *SMALL)
     assert [p.stat().st_mtime_ns for p in paths] == before, again.stdout
@@ -368,12 +752,15 @@ def test_harness_with_pymc_on_two_small_studies(tmp_path):
     assert other.returncode != 0 and "never overwritten" in other.stderr
     shown = bench("stats", "--out", out, "--engine", "pymc")
     assert "pymc one-component-i12: 2 studies" in shown.stdout and "arm means" in shown.stdout
+    assert "gate for this spec: " in shown.stdout and "gate for this spec: pass" not in shown.stdout   # 2 of 200
+    assert "engine gate for pymc: incomplete" in shown.stdout
     saved = json.loads((out / "stats-pymc.json").read_text(encoding="utf-8"))
     assert saved["summaries"]["one-component-i12"]["studies"] == 2
     timed = bench("time", "--engines", "pymc", "--specs", "one-component", "--inputs", 10, "--draws", 200,
                   "--keep-draws", 400, "--out", out)
     line = json.loads(timed.stdout.strip().splitlines()[-1])
     assert line["exit_code"] == 0 and line["wall_seconds"] > 0 and line["engine_seconds"] > 0
+    assert 0 < line["cores_measured"] <= 2.0 * (1 + RS.CORES_SLACK)
 
 
 def test_harness_with_the_laplace_engine_beside_pymc(tmp_path):

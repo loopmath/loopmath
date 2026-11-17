@@ -24,11 +24,25 @@ starts N processes, worker k taking the seeds with seed mod N = k; `--cpu-minute
 once this process and its children have used M CPU minutes; `--dry-run` prints the plan and an estimate
 from records already made.
 
+Budgets are totals. `--total-cores C` (default 2) is shared by the workers: each fit gets `--cores`
+(default: C over the workers), and workers times cores may not pass C. `--cpu-minutes` and
+`--max-fits` are split evenly between the workers, so the run as a whole stays inside them. The fits of
+this process run with one thread per process (`OMP_NUM_THREADS=1`); the harness refuses to start a fit
+otherwise.
+
 `stats` reads the records of each engine and prints, per spec: coverage per parameter class with its
 interval over independent studies, the arm means one by one, bias per class, the parameters whose
-coverage is outside 85% to 95% by their own binomial interval, family false alarms counted once per
-study, and the spec's part of the gate; then the engine gate item by item. `compare` puts
-two engines side by side on the studies both fitted.
+coverage is outside 85% to 95% by their own binomial interval, degenerate parameters, family false
+alarms counted once per study, and the spec's part of the gate; then the engine gate item by item, each
+`pass`, `fail` or `incomplete`. The gate's required specs are the whole catalog and the seven specs that
+read a binary or levels component repeatedly, 200 studies each, whatever records exist; `--catalog`,
+`--repeated`, `--studies`, `--catalog-studies` (studies per spec for the clean-fit items) and
+`--coverage-specs` narrow it only with `--scope-note` saying who approved that. `compare` puts two engines side by side on the studies both fitted.
+
+`time` checks before it starts that a fit cannot use more than `--cores` (default 2) cores: `eval fit`
+runs its chains side by side, so without a `--cores` option in `eval fit` the chains may not exceed it.
+A timing record keeps the cores measured (CPU over wall seconds) and the threads per process, and every
+attempt counts: the gate reads failed and unconverged attempts as failures.
 
 Engines. `pymc` runs `engine_pymc` through `fit.fit_design`. Any other name is passed on as
 `fit_design(..., engine=NAME)` and `eval fit --engine NAME`; in a checkout without that option only
@@ -67,6 +81,7 @@ import numpy as np  # noqa: E402
 import recovery_stats as RS  # noqa: E402
 
 DEFAULT_CHAINS = 2      # 2 cores per fit
+TOTAL_CORES = 2         # cores shared by the workers of one run
 OPTION_KEYS = ("inputs", "draws", "chains", "tune", "keep_draws", "family")
 
 
@@ -123,19 +138,27 @@ def fit_engine_kwargs(engine: str) -> dict:
     return {}
 
 
-def cli_has_engine() -> bool:
-    """Whether `loopmath eval fit` here takes `--engine`."""
+def cli_flags() -> set[str]:
+    """The options `loopmath eval fit` here takes (`--engine`, `--cores` are the ones the harness asks about)."""
     got = subprocess.run([sys.executable, "-m", "loopmath", "eval", "fit", "--help"], capture_output=True, text=True,
                          env=child_env(), timeout=300)
-    return "--engine" in got.stdout
+    return {word.strip(",[]") for word in got.stdout.split() if word.startswith("--")}
 
 
 def child_env() -> dict:
+    """The environment of a child process: this checkout first on the path, no update check, one thread."""
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([str(REPO / "src")] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
     env.setdefault("LOOPMATH_NO_UPDATE_CHECK", "1")
-    env.setdefault("OMP_NUM_THREADS", "1")
+    env["OMP_NUM_THREADS"] = "1"
     return env
+
+
+def one_thread() -> None:
+    """Refuse to fit in this process unless it runs one thread per process."""
+    if os.environ.get("OMP_NUM_THREADS") != "1":
+        raise SystemExit("set OMP_NUM_THREADS=1 before fitting (one thread per process); found "
+                         f"{os.environ.get('OMP_NUM_THREADS')!r}")
 
 
 def csv(text: str) -> list[str]:
@@ -165,10 +188,15 @@ def record_path(out: Path, engine: str, spec: str, inputs: int | None, seed: int
 
 
 def kept(path: Path, options: dict) -> bool:
-    """True when the record exists with the same options; a record with other options stops the run."""
+    """True when the record exists with the same options; a record with other options, or of an older
+    schema, stops the run."""
     if not path.exists():
         return False
-    old = json.loads(path.read_text(encoding="utf-8")).get("options", {})
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    if obj.get("schema") != RS.RECORD_SCHEMA:
+        raise SystemExit(f"{path} is a record of schema {obj.get('schema')}, not {RS.RECORD_SCHEMA}: it has no "
+                         "parameter inventory. Use a new --out folder: a record is never overwritten.")
+    old = obj.get("options", {})
     same = {key: old.get(key) for key in OPTION_KEYS} == {key: options.get(key) for key in OPTION_KEYS}
     if not same:
         raise SystemExit(f"{path} was made with other options ({old}); this run asks for {options}. "
@@ -186,7 +214,7 @@ def fit_study(out: Path, engine: str, spec: str, seed: int, args: argparse.Names
     options = options_of(args)
     record = {"schema": RS.RECORD_SCHEMA, "spec": spec, "seed": seed, "engine": engine, "options": options,
               "cores": args.cores, "started": now(), "converged": False, "rows": [], "aggregates": {}, "family": None,
-              "excluded": {}, "seconds": None, "cpu_seconds": None}
+              "expected": {}, "degenerate": [], "no_truth": [], "excluded": {}, "seconds": None, "cpu_seconds": None}
     folder = ensure_study(out, spec, args.inputs, seed)
     truth = simulate.read_truth(folder / simulate.TRUTH_FILE)
     start, cpu = time.monotonic(), cpu_seconds()
@@ -200,7 +228,7 @@ def fit_study(out: Path, engine: str, spec: str, seed: int, args: argparse.Names
         record["seconds"], record["cpu_seconds"] = time.monotonic() - start, cpu_seconds() - cpu
         record.update(converged=bool(meta["diagnostics"]["converged"]), diagnostics=meta["diagnostics"],
                       engine_meta=meta.get("engine"), counts=meta.get("counts"))
-        record.update(RS.study_record(meta, draws, truth, family=not args.no_family))
+        record.update(RS.study_record(design, meta, draws, truth, family=not args.no_family))
     except Exception as exc:   # a failed fit is a result: it is recorded and counted
         record["seconds"], record["cpu_seconds"] = time.monotonic() - start, cpu_seconds() - cpu
         record["error"] = f"{type(exc).__name__}: {exc}"[:2000]
@@ -222,11 +250,39 @@ def estimate(out: Path, engine: str, spec: str, inputs: int | None) -> float | N
     return float(np.median(cpus)) if cpus else None
 
 
+def budgets(args: argparse.Namespace) -> list[dict]:
+    """The limits of each worker, so that together they stay inside the run's totals: cores per fit
+    (workers times cores at most `--total-cores`), CPU minutes and fits split evenly. A worker left with
+    no fit is not started."""
+    n = args.workers
+    if n < 1:
+        raise SystemExit("--workers must be at least 1")
+    if n > args.total_cores:
+        raise SystemExit(f"{n} workers need at least {n} cores; --total-cores is {args.total_cores}")
+    cores = args.cores if args.cores is not None else args.total_cores // n
+    if cores < 1 or n * cores > args.total_cores:
+        raise SystemExit(f"{n} workers of {cores} cores each pass --total-cores {args.total_cores}")
+    out = []
+    for k in range(n):
+        fits = None if args.max_fits is None else args.max_fits // n + (1 if k < args.max_fits % n else 0)
+        if fits == 0:
+            continue
+        out.append({"shard": k, "cores": cores, "max_fits": fits,
+                    "cpu_minutes": None if args.cpu_minutes is None else args.cpu_minutes / n})
+    return out
+
+
 def recover(args: argparse.Namespace) -> int:
     out = Path(args.out)
     check_specs(args.specs)
+    limits = budgets(args)
+    if not limits:
+        print("nothing to fit: --max-fits is 0", flush=True)
+        return 0
     if args.workers > 1 and args.shard == (0, 1) and not args.dry_run:
-        return spawn_workers(args)
+        return spawn_workers(args, limits)
+    if args.cores is None:
+        args.cores = limits[0]["cores"]
     fit_engine_kwargs(args.engine)
     options = options_of(args)
     todo = [(spec, seed) for spec, seed in plan(args)
@@ -243,6 +299,8 @@ def recover(args: argparse.Namespace) -> int:
                   + (f"median {per:.0f} CPU s per fit from earlier records" if per else "no earlier record to estimate from"))
         print(f"estimated CPU minutes (specs with an estimate): {cost / 60:.1f}")
         return 0
+    one_thread()
+    print(f"limits: {args.cores} cores per fit, CPU minutes {args.cpu_minutes}, fits {args.max_fits}", flush=True)
     used = cpu_seconds()
     done = 0
     for spec, seed in todo:
@@ -267,14 +325,29 @@ def recover(args: argparse.Namespace) -> int:
     return 0
 
 
-def spawn_workers(args: argparse.Namespace) -> int:
-    """Start `--workers` copies of this command, each on one shard of the seeds, and wait for them."""
-    argv = [word for word in sys.argv[1:]]
+def worker_argv(args: argparse.Namespace, limit: dict) -> list[str]:
+    """The command line of one worker, built from the parsed options and the worker's own limits."""
+    argv = ["recover", "--out", str(args.out), "--specs", ",".join(args.specs), "--engine", args.engine,
+            "--studies", str(args.studies), "--start", str(args.start), "--chains", str(args.chains),
+            "--keep-draws", str(args.keep_draws), "--workers", "1", "--total-cores", str(limit["cores"]),
+            "--cores", str(limit["cores"]), "--shard", f"{limit['shard']}/{args.workers}"]
+    for flag, value in (("--inputs", args.inputs), ("--draws", args.draws), ("--tune", args.tune),
+                        ("--max-fits", limit["max_fits"]), ("--cpu-minutes", limit["cpu_minutes"])):
+        if value is not None:
+            argv += [flag, str(value)]
+    if args.no_family:
+        argv.append("--no-family")
+    return argv
+
+
+def spawn_workers(args: argparse.Namespace, limits: list[dict]) -> int:
+    """Start one worker per limit, each on one shard of the seeds with its share of the budgets, and wait."""
     procs = []
-    for k in range(args.workers):
-        cmd = [sys.executable, str(Path(__file__).resolve()), *argv, "--shard", f"{k}/{args.workers}"]
+    for limit in limits:
+        cmd = [sys.executable, str(Path(__file__).resolve()), *worker_argv(args, limit)]
         procs.append(subprocess.Popen(cmd, env=child_env()))
-        print(f"worker {k}: pid {procs[-1].pid}", flush=True)
+        print(f"worker {limit['shard']}: pid {procs[-1].pid}, {limit['cores']} cores per fit, CPU minutes "
+              f"{limit['cpu_minutes']}, fits {limit['max_fits']}", flush=True)
     codes = [proc.wait() for proc in procs]
     return max(codes)
 
@@ -286,10 +359,17 @@ def spawn_workers(args: argparse.Namespace) -> int:
 def time_fits(args: argparse.Namespace) -> int:
     out = Path(args.out)
     check_specs(args.specs)
-    engine_flag = cli_has_engine()
+    flags = cli_flags()
+    engine_flag = "--engine" in flags
     for engine in args.engines:
         if engine != "pymc" and not engine_flag:
             raise SystemExit(f"`loopmath eval fit` in this checkout has no --engine: {engine} cannot be timed yet")
+    if args.cores < 1 or args.cores > RS.GATE_CORES:
+        raise SystemExit(f"--cores {args.cores}: the gate times a fit on at most {RS.GATE_CORES:g} cores")
+    args.pass_cores = "--cores" in flags
+    if not args.pass_cores and args.chains > args.cores:
+        raise SystemExit(f"`loopmath eval fit` here has no --cores and runs its {args.chains} chains side by side; "
+                         f"use --chains at most --cores ({args.cores})")
     for spec in args.specs:
         folder = ensure_study(out, spec, args.inputs, args.seed)
         for engine in args.engines:
@@ -315,36 +395,45 @@ def time_one(out: Path, folder: Path, engine: str, spec: str, args: argparse.Nam
         argv += ["--keep-draws", str(args.keep_draws)]
     if engine_flag:
         argv += ["--engine", engine]
+    if args.pass_cores:
+        argv += ["--cores", str(args.cores)]
     kids = resource.getrusage(resource.RUSAGE_CHILDREN)
     before = kids.ru_utime + kids.ru_stime
     started, start = now(), time.monotonic()
     got = subprocess.run(argv, capture_output=True, text=True, env=child_env())
     wall = time.monotonic() - start
     kids = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = kids.ru_utime + kids.ru_stime - before
     record = {"schema": RS.TIMING_SCHEMA, "spec": spec, "inputs": args.inputs, "seed": args.seed, "engine": engine,
               "repeat": rep, "full_size": spec == RS.SIZE_TARGET and args.inputs is None, "started": started,
-              "wall_seconds": wall, "cpu_seconds": kids.ru_utime + kids.ru_stime - before, "exit_code": got.returncode,
-              "argv": argv[1:], "omp_num_threads": child_env().get("OMP_NUM_THREADS"), "cpu_count": os.cpu_count(),
-              "chains": args.chains, "draws": args.draws}
-    if got.returncode == 0 and fit_json.exists():
+              "wall_seconds": wall, "cpu_seconds": cpu, "cores_measured": cpu / wall if wall > 0 else None,
+              "cores_limit": args.cores, "exit_code": got.returncode, "argv": argv[1:],
+              "threads": child_env().get("OMP_NUM_THREADS"), "cpu_count": os.cpu_count(), "chains": args.chains,
+              "draws": args.draws, "converged": None, "counts": None}
+    fresh = fit_json.exists() and fit_json.stat().st_mtime >= time.time() - wall - 1.0
+    if got.returncode == 0 and fresh:
         meta = json.loads(fit_json.read_text(encoding="utf-8"))
         diagnostics = meta["diagnostics"]
+        counts = dict(meta.get("counts") or {})
+        counts.update(dimensions=len(meta.get("dimensions") or []), judges=len(meta["index"].get("judges") or []))
         record.update(converged=diagnostics["converged"], engine_seconds=diagnostics.get("run_seconds"),
-                      diagnostics=diagnostics, engine_meta=meta.get("engine"), counts=meta.get("counts"))
+                      diagnostics=diagnostics, engine_meta=meta.get("engine"), counts=counts)
     else:
         record["stderr_tail"] = got.stderr[-2000:]
     stamp = _dt.datetime.now().strftime("%Y%m%dT%H%M%S")
     RS.write_json_atomic(where / f"timing-{stamp}-r{rep}.json", record)
     return {key: record.get(key) for key in ("engine", "spec", "inputs", "wall_seconds", "engine_seconds",
-                                             "cpu_seconds", "converged", "exit_code")}
+                                             "cpu_seconds", "cores_measured", "converged", "exit_code")}
 
 
 def load_timings(out: Path, engine: str) -> list[dict]:
+    """Every timing record of an engine, of any schema version: the gate counts every attempt, and an
+    attempt of an older schema fails it rather than disappearing."""
     folder = out / "timing" / engine
     rows = []
     for path in sorted(folder.rglob("timing-*.json")) if folder.exists() else []:
         obj = json.loads(path.read_text(encoding="utf-8"))
-        if obj.get("schema") == RS.TIMING_SCHEMA:
+        if str(obj.get("schema", "")).startswith("loopmath.eval-engine-bench-timing/"):
             rows.append(obj)
     return rows
 
@@ -385,14 +474,21 @@ def render_summary(name: str, s: dict) -> list[str]:
     for p in s["parameters_outside"]:
         lines.append(f"  outside the band by its own interval: {p['name']} {p['hits']}/{p['studies']} "
                      f"(adjusted [{f(p['lo_adj'], 2)}, {f(p['hi_adj'], 2)}])")
+    for d in s["degenerate"][:20]:
+        lines.append(f"  degenerate: s{d['seed']} {d['name']} ({d['why']})")
+    if len(s["degenerate"]) > 20:
+        lines.append(f"  degenerate: {len(s['degenerate']) - 20} more")
     fam = s["family"]
+    if fam["studies_skipped"]:
+        lines.append(f"  family: {fam['studies_skipped']} studies made without the family measurement")
     lines.append(f"  family: {fam['studies_with_a_null_contrast']} studies measured a contrast with no simulated "
                  f"effect, {fam['studies_flagged']} flagged (share {f(fam['share_of_studies'], 2)}, 95% "
                  f"[{f(fam['lo'], 2)}, {f(fam['hi'], 2)}], limit {fam['limit']}); per contrast "
                  f"{f(fam['share_of_contrasts'], 2)}; simulated effects {fam['simulated_effects']}, found "
                  f"{f(fam['found'], 2)}")
-    items = ", ".join(f"{k} {'-' if v is None else ('yes' if v else 'no')}" for k, v in s["gate"]["items"].items())
-    lines.append(f"  gate for this spec: {'pass' if s['gate']['pass'] else 'not passed'} ({items})")
+    lines.append(f"  gate for this spec: {s['gate']['state']}")
+    for key, item in s["gate"]["items"].items():
+        lines.append(f"    {key}: {item['state']} ({item['why']})")
     return lines
 
 
@@ -400,29 +496,40 @@ def stats(args: argparse.Namespace) -> int:
     out = Path(args.out)
     if not (out / "records").is_dir():
         raise SystemExit(f"no records under {out}: run `recover` first")
+    try:
+        scope = RS.gate_scope(args.catalog, args.repeated, args.studies, args.coverage_specs, args.scope_note,
+                              args.catalog_studies)
+    except ValueError as exc:
+        raise SystemExit(f"gate scope: {exc}")
     engines = csv(args.engine) if args.engine else sorted(p.name for p in (out / "records").iterdir() if p.is_dir())
     result = {}
     for engine in engines:
+        old = RS.old_records(out / "records" / engine)
+        if old:
+            print(f"{engine}: {old} records of an older schema are not read (no parameter inventory)")
         groups = grouped(RS.load_records(out / "records" / engine))
-        summaries = {name: RS.summarise(records) for name, records in sorted(groups.items())}
+        summaries = {name: RS.summarise(records, studies_needed=scope["studies"])
+                     for name, records in sorted(groups.items())}
         full = {name.rsplit("-i", 1)[0]: s for name, s in summaries.items() if name.endswith("-iall")}
         timings = load_timings(out, engine)
-        gate = RS.engine_gate(full, timings)
-        result[engine] = {"summaries": summaries, "gate": gate,
+        gate = RS.engine_gate(full, timings, scope)
+        result[engine] = {"summaries": summaries, "gate": gate, "old_records": old,
                           "timings": [{k: t.get(k) for k in ("spec", "inputs", "wall_seconds", "engine_seconds",
-                                                              "cpu_seconds", "converged", "exit_code", "started")}
+                                                              "cpu_seconds", "cores_measured", "threads", "converged",
+                                                              "exit_code", "started")}
                                       for t in timings]}
         for name, s in summaries.items():
             print("\n".join(render_summary(name, s)))
             print()
         for t in result[engine]["timings"]:
             print(f"timing {engine} {label(t['spec'], t['inputs'])}: wall {f(t['wall_seconds'], 1)} s, engine "
-                  f"{f(t['engine_seconds'], 1)} s, CPU {f(t['cpu_seconds'], 1)} s, converged {t['converged']}, "
-                  f"exit {t['exit_code']}")
-        print(f"engine gate for {engine} (catalog-size records only; reported here, decided by people):")
+                  f"{f(t['engine_seconds'], 1)} s, CPU {f(t['cpu_seconds'], 1)} s, cores {f(t['cores_measured'], 2)}, "
+                  f"converged {t['converged']}, exit {t['exit_code']}")
+        print(f"engine gate for {engine}: {gate['state']} (catalog-size records only; reported here, decided by people)")
+        if scope["narrowed"]:
+            print(f"  narrowed scope: {scope['note']}; specs left out: {', '.join(scope['omitted']) or 'none'}")
         for key, item in gate["items"].items():
-            print(f"  {key}: {'-' if item['ok'] is None else ('yes' if item['ok'] else 'no')}  "
-                  + json.dumps({k: v for k, v in item.items() if k != "ok"}))
+            print(f"  {key}: {item['state']}  " + json.dumps({k: v for k, v in item.items() if k != "state"}))
         RS.write_json_atomic(out / f"stats-{engine}.json", result[engine])
     return 0
 
@@ -475,11 +582,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--studies", type=int, default=2)
     p.add_argument("--start", type=int, default=0, help="first seed")
     p.add_argument("--tune", type=int, default=None)
-    p.add_argument("--cores", type=int, default=None, help="cores for the chains of one fit (default: eval fit's)")
+    p.add_argument("--cores", type=int, default=None,
+                   help="cores for the chains of one fit (default: --total-cores over --workers)")
+    p.add_argument("--total-cores", type=int, default=TOTAL_CORES, help="cores for the whole run, all workers")
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--shard", type=shard, default=(0, 1), help=argparse.SUPPRESS)
-    p.add_argument("--cpu-minutes", type=float, default=None)
-    p.add_argument("--max-fits", type=int, default=None)
+    p.add_argument("--cpu-minutes", type=float, default=None, help="for the whole run, split between the workers")
+    p.add_argument("--max-fits", type=int, default=None, help="for the whole run, split between the workers")
     p.add_argument("--no-family", action="store_true", help="skip the family contrasts (eval judges) per study")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(run=recover)
@@ -489,11 +598,20 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--engines", type=csv, default=["pymc"])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--repeat", type=int, default=1)
+    p.add_argument("--cores", type=int, default=int(RS.GATE_CORES), help="cores one fit may use (default 2)")
     p.set_defaults(run=time_fits)
 
     p = sub.add_parser("stats", help="recovery statistics and the gate, from the records")
     p.add_argument("--out", required=True)
     p.add_argument("--engine", default=None, help="engines, comma separated (default: every engine with records)")
+    p.add_argument("--catalog", type=csv, default=None, help="narrow the gate's catalog specs (needs --scope-note)")
+    p.add_argument("--repeated", type=csv, default=None,
+                   help="narrow the gate's repeated binary and levels specs (needs --scope-note)")
+    p.add_argument("--studies", type=int, default=RS.GATE_STUDIES, help="studies per spec for coverage")
+    p.add_argument("--catalog-studies", type=int, default=None,
+                   help="studies per spec for the clean-fit items (default: --studies; fewer than 200 needs --scope-note)")
+    p.add_argument("--coverage-specs", type=int, default=RS.GATE_SPECS, help="specs whose coverage must pass")
+    p.add_argument("--scope-note", default=None, help="who approved a narrower scope, and why")
     p.set_defaults(run=stats)
 
     p = sub.add_parser("compare", help="two engines side by side on the studies both fitted")
