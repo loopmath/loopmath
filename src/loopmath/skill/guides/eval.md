@@ -230,7 +230,7 @@ prints an `error:` line on stderr that names what to fix, and under `--json` the
   (`VERDICT` is `a`, `b` or `tie`, `FIRST` is `a` or `b`); also `--step STEP` (default `final`),
   `--component ID`, `--item ID`, `--of N`, `--call ID`, `--observed-at TIME`, `--replaces ID`,
   `--assignment ID` and `--id ID`.
-- `loopmath eval scores export STUDY --run RUN --json`: `--run` is repeatable; without it, the whole study.
+- `loopmath eval scores export STUDY --run RUN --json`: `--run` is repeatable; without it, the whole study. `--judges ID...` keeps only the readings and pairs of those judges.
 - `loopmath eval simulate SPEC --out DIR --seed S --json`, or `loopmath eval simulate --list`.
 - `loopmath eval fit STUDY --rubric FILE --judges FILE --check-only --allow-simulated --out FILE --json`; also
   `--seed S`, `--draws N`, `--chains N`, `--keep-draws N`, `--components ID ...`, `--structure FORM`,
