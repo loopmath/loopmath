@@ -659,8 +659,10 @@ class _Report:
         out = {name: judge.get(name) for name in ("id", "kind", "model", "effort", "prompt", "mode", "reference",
                                                   "blinded", "cost_usd_per_call", "anchor")}
         halo_ok = self._flag("halo_target, halo_call", ["halo_split"], jid, None)
+        # the shared part of a call exists only where one call reads several components: a `panel` judge
+        in_panel = judge.get("mode") == "panel"
         out["halo"] = {"target": stat(self.draws["halo_target"][:, j]) if halo_ok else None,
-                       "call": stat(self.draws["halo_call"][:, j]) if halo_ok else None,
+                       "call": stat(self.draws["halo_call"][:, j]) if halo_ok and in_panel else None,
                        "state": term_state(self.fit, "halo_split", jid) or "no_entry", "measured": bool(halo_ok)}
         out["dims"] = [row for d, dim in enumerate(self.dims)
                        if (row := self.dimension(j, judge, d, dim)) is not None]
@@ -916,8 +918,10 @@ def render(payload: dict) -> str:
                 lines.append(f"  {row['dimension']} pairs: tie rate {_interval(pairs['tie_rate'])}, picks the better "
                              f"output {_interval(pairs['correct'])}")
         if judge["halo"]["measured"]:
+            call = (_interval(judge["halo"]["call"]) if judge.get("mode") == "panel"
+                    else "does not apply (the judge reads one component per call)")
             lines.append(f"  halo: shared share of output disagreement {_interval(judge['halo']['target'])}, of call "
-                         f"noise {_interval(judge['halo']['call'])}")
+                         f"noise {call}")
         if judge.get("pairs"):
             lines.append(f"  pairs: position bias {_interval(judge['pairs']['position']['fitting'])}, tie width "
                          f"{_interval(judge['pairs']['tie_width']['fitting'])}")

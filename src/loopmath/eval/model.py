@@ -18,11 +18,12 @@ What `build` does
    - A cell is one (judge, run, dimension). A `linear` or `fraction` cell read by `per_component` calls
      goes in as its sufficient statistics: the number of calls, their mean and their sum of squares.
      Its judge-by-output term and its call noise are summed out.
-   - A `binary` or `levels` cell with repeats that no pair looks at goes in as a group: the engine sums
-     its judge-by-output term out by quadrature.
    - Every other reading goes in one by one. A cell with one reading and no pair has its
-     judge-by-output term summed into the reading's noise. Any other cell keeps the term as an
-     explicit unknown; so does every cell a pair looks at.
+     judge-by-output term summed into the reading's noise, which is exact. Any other cell keeps the
+     term as an explicit unknown; so does every cell a pair looks at. That holds for a `binary` or
+     `levels` cell with repeats too: no cell is integrated on a fixed grid of points, because such a
+     grid is wrong by orders of magnitude when the call noise is small against the term. The `k_*`
+     arrays of the layout are kept and are always empty.
    - Every call of a `panel` judge gets one shared unknown for the shared part of its call noise.
    - An `items` reading of more than one item keeps its call noise as an explicit unknown, because the
      binomial does not sum it out.
@@ -35,9 +36,14 @@ Conventions
   fixed at 1 and the term state `off`.
 - A dimension with pairs and no readings is `relative`: arm means sum to 0, the unit is the anchors'
   `sigma_pair`, and bias and `sigma` do not exist there.
-- `family` is on (under `auto`) for a model judge when judges from 2 or more families have readings and
-  the judge read outputs from 2 or more families. `judge_input` is on for a judge and dimension with
-  2 or more runs per input on 10 or more inputs.
+- `family` is on (under `auto`) for a model judge and a dimension when judges from 2 or more families
+  have readings on that dimension and the judge read outputs from 2 or more families there.
+  `judge_input` is on for a judge and dimension with 2 or more runs per input on 10 or more inputs.
+  Both terms are stated per judge and dimension in the identification report, beside one entry for the
+  judge that holds the best of its dimensions; a reader of a number at a dimension takes the entry of
+  that dimension.
+- `halo_split` of a `panel` judge is counted on targets with 2 or more panel calls. A `per_component`
+  judge of the same model does not identify it: the two judges share no parameter in this model.
 """
 
 from __future__ import annotations
@@ -363,17 +369,21 @@ def build(study: C.Study, rubric: dict, judges: dict, *, components: Sequence[st
     sigma_fixed = np.array([kinds[d] == "binary" for d in range(D)]) & has_score.any(axis=0)
 
     # the family term
-    out_families: list[set] = [set() for _ in range(J)]
+    # A family effect is a parameter per judge, family and dimension, so everything about it is counted
+    # at the dimension: on c1, a judge that reads only its own family there cannot tell the effect from
+    # its bias, whatever it reads on c0.
+    out_families: list[list[set]] = [[set() for _ in range(D)] for _ in range(J)]
     for (j, r, d) in list(cells) + sorted(pair_cells):
-        out_families[j].add(F.target_family(runs[r], step_of[d]))
-    judge_families = {declared[j]["model"]["family"] for j in range(J)
-                      if model_judge[j] and (has_score[j].any() or has_pair[j].any())}
-    family_ok = np.array([bool(model_judge[j]) and len(judge_families) >= 2 and len(out_families[j]) >= 2
-                          for j in range(J)])
+        out_families[j][d].add(F.target_family(runs[r], step_of[d]))
+    judge_families = [{declared[j]["model"]["family"] for j in range(J)
+                       if model_judge[j] and (has_score[j, d] or has_pair[j, d])} for d in range(D)]
+    family_ok = np.array([[bool(model_judge[j]) and len(judge_families[d]) >= 2 and len(out_families[j][d]) >= 2
+                           for d in range(D)] for j in range(J)]).reshape(J, D)
     if switches["family"] == "auto":
-        family_on = model_judge & family_ok
+        family_on = family_ok.copy()
     else:
-        family_on = model_judge & (switches["family"] == "on") & np.array([len(x) >= 1 for x in out_families])
+        family_on = np.array([[bool(model_judge[j]) and switches["family"] == "on" and len(out_families[j][d]) >= 1
+                               for d in range(D)] for j in range(J)]).reshape(J, D)
     family_on = family_on & (N >= 2)
 
     # the judge-by-input term
@@ -420,14 +430,6 @@ def build(study: C.Study, rubric: dict, judges: dict, *, components: Sequence[st
             for name, value in (("r", r), ("d", d), ("j", j), ("f", f), ("jt", jt), ("ji", ji), ("n", len(rows)),
                                 ("ybar", float(y.mean())), ("ss", float(((y - y.mean()) ** 2).sum()))):
                 suff[name].append(value)
-            continue
-        if rows[0]["kind"] in (BINARY, LEVELS) and len(rows) >= 2 and key not in pair_cells:
-            start = len(quad["r"])
-            for x in rows:
-                for name, value in (("r", r), ("d", d), ("j", j), ("f", f), ("jt", jt), ("ji", ji),
-                                    ("pc", pc_pos.get((j, x["call"]), -1)), ("lo", x["lo"]), ("hi", x["hi"])):
-                    quad[name].append(value)
-            quad_groups.setdefault(len(rows), []).append(list(range(start, start + len(rows))))
             continue
         cell = -1
         if len(rows) >= 2 or key in pair_cells:
@@ -542,11 +544,22 @@ def build(study: C.Study, rubric: dict, judges: dict, *, components: Sequence[st
         # family effects
         if not model_judge[j]:
             terms.append(F.term("family", "absent", judge=ids[j], reason="not a model judge"))
-        elif not family_on[j]:
-            terms.append(F.term("family", "off", judge=ids[j], count=len(out_families[j])))
         else:
-            terms.append(F.term("family", "identified" if family_ok[j] else "prior_only", judge=ids[j],
-                                count=len(out_families[j])))
+            # one entry for the judge (the best of its dimensions) and one per dimension, which is the
+            # one a reader of a number at that dimension finds first
+            seen_families = max((len(x) for x in out_families[j]), default=0)
+            if not family_on[j].any():
+                terms.append(F.term("family", "off", judge=ids[j], count=seen_families))
+            else:
+                terms.append(F.term("family", "identified" if (family_on[j] & family_ok[j]).any() else "prior_only",
+                                    judge=ids[j], count=seen_families))
+            for d in range(D):
+                if not family_on[j, d]:
+                    state = "off"
+                else:
+                    state = "identified" if family_ok[j, d] else "prior_only"
+                terms.append(F.term("family", state, judge=ids[j], dimension=dim_ids[d],
+                                    count=len(out_families[j][d])))
         reference = row["reference"]
         author = reference.get("author", {}).get("model", {}).get("family") if reference["shown"] else None
         if not reference["shown"]:
@@ -557,13 +570,20 @@ def build(study: C.Study, rubric: dict, judges: dict, *, components: Sequence[st
             terms.append(F.term("reference_family", "absent", judge=ids[j],
                                 reason="the reference was not written by a model"))
         elif author == row["model"]["family"]:
-            terms.append(F.term("reference_family", "confounded", judge=ids[j], count=len(out_families[j])))
-        elif not family_on[j]:
-            terms.append(F.term("reference_family", "off", judge=ids[j], count=len(out_families[j])))
+            terms.append(F.term("reference_family", "confounded", judge=ids[j],
+                                count=max((len(x) for x in out_families[j]), default=0)))
         else:
-            seen = bool(family_ok[j]) and author in out_families[j]
-            terms.append(F.term("reference_family", "identified" if seen else "prior_only", judge=ids[j],
-                                count=len(out_families[j])))
+            for d in range(D):
+                if not family_on[j, d]:
+                    state = "off"
+                else:
+                    state = "identified" if family_ok[j, d] and author in out_families[j][d] else "prior_only"
+                terms.append(F.term("reference_family", state, judge=ids[j], dimension=dim_ids[d],
+                                    count=len(out_families[j][d])))
+            best = [d for d in range(D) if family_on[j, d]]
+            seen = any(family_ok[j, d] and author in out_families[j][d] for d in best)
+            terms.append(F.term("reference_family", ("identified" if seen else "prior_only") if best else "off",
+                                judge=ids[j], count=max((len(x) for x in out_families[j]), default=0)))
         # halo
         if not halo_on[j]:
             terms.append(F.term("halo_split", "absent", judge=ids[j],
@@ -573,18 +593,27 @@ def build(study: C.Study, rubric: dict, judges: dict, *, components: Sequence[st
             wide = int(sum(1 for d in range(D) if tau_state[j, d] in F.MEASURED_STATES))
             count = int(repeats_by[j].max())
             if panel[j]:
-                twin = any(_same_setting(row, other) and halo_on[k] for k, other in enumerate(declared))
-                state = _state(count) if count or not twin else "weak"
+                # Only repeated panel calls tell the shared part of a call from the shared part of a
+                # target. A per_component twin does not: the model gives the two judges separate
+                # parameters, so nothing learnt from the twin reaches this split.
+                state = _state(count)
             else:
                 state = "prior_only" if wide < 2 else _state(count)
             terms.append(F.term("halo_split", state, judge=ids[j], count=count))
         # judge by input
-        count = int(ji_inputs[j].max())
-        if not ji_on[j].any():
-            terms.append(F.term("judge_input", "off", judge=ids[j], count=count))
+        def input_state(count: int) -> str:
+            return "identified" if count >= JUDGE_INPUT_NEEDS else ("weak" if count >= 2 else "prior_only")
+
+        # one entry for the judge (the best of the dimensions where the term is on) and one per dimension
+        on_counts = [int(ji_inputs[j, d]) for d in range(D) if ji_on[j, d]]
+        if not on_counts:
+            terms.append(F.term("judge_input", "off", judge=ids[j], count=int(ji_inputs[j].max())))
         else:
-            state = "identified" if count >= JUDGE_INPUT_NEEDS else ("weak" if count >= 2 else "prior_only")
-            terms.append(F.term("judge_input", state, judge=ids[j], count=count))
+            terms.append(F.term("judge_input", input_state(max(on_counts)), judge=ids[j], count=max(on_counts)))
+        for d in range(D):
+            count = int(ji_inputs[j, d])
+            terms.append(F.term("judge_input", input_state(count) if ji_on[j, d] else "off", judge=ids[j],
+                                dimension=dim_ids[d], count=count))
         # pairs
         mine = [p for p in pairs if p["j"] == j]
         if not mine:
