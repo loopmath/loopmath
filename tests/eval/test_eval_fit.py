@@ -1,9 +1,9 @@
 """`eval fit`: the command, the diagnostics, a smoke fit, and the recovery checks.
 
 The recovery checks need many fits. They are marked `slow` and run only with `LOOPMATH_EVAL_SLOW=1`
-(the shared conftest of this folder skips them otherwise), on studies written by the
-small simulator in this module (it follows the model one reading at a time, so it shares no code with
-the fit). `LOOPMATH_EVAL_RECOVERY_STUDIES` sets the number of studies per spec (default 200) and
+(the shared conftest of this folder skips them otherwise), on studies of the spec catalog written by
+`eval simulate`. `LOOPMATH_EVAL_RECOVERY_STUDIES` sets the number of studies per spec (default 200),
+`LOOPMATH_EVAL_RECOVERY_DRAWS` the draws per chain (default: the default of the command), and
 `LOOPMATH_EVAL_RECOVERY_REPORT` names a folder that gets one JSON file of numbers per spec.
 
 All data here is synthetic.
@@ -18,7 +18,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from scipy.special import ndtr
 
 from loopmath import cli
 from loopmath.eval import contracts as C
@@ -26,111 +25,23 @@ from loopmath.eval import engine_pymc as engine
 from loopmath.eval import fit as FT
 from loopmath.eval import fitfile as F
 from loopmath.eval import model as M
+from loopmath.eval import quality as Q
+from loopmath.eval import simulate as S
+from loopmath.eval import specs
 
 STUDY = Path(__file__).parent / "data" / "study-small"
 RUBRIC, JUDGES = str(STUDY / "rubric.json"), str(STUDY / "judges.json")
 slow = pytest.mark.slow
 needs_engine = pytest.mark.skipif(not engine.available(), reason="needs the [bayes] extra")
 N_STUDIES = int(os.environ.get("LOOPMATH_EVAL_RECOVERY_STUDIES", "200"))
+N_DRAWS = int(os.environ["LOOPMATH_EVAL_RECOVERY_DRAWS"]) if os.environ.get("LOOPMATH_EVAL_RECOVERY_DRAWS") else None
+LINEAR = {"kind": "linear", "range": [0, 10]}
 
 
-# ---------------------------------------------------------------------------------------------------
-# A small simulator: one reading at a time, straight from the model
-
-SCALES = {"linear": {"kind": "linear", "range": [0, 10]}, "binary": {"kind": "binary"},
-          "levels3": {"kind": "levels", "levels": ["poor", "ok", "good"]},
-          "levels5": {"kind": "levels", "levels": [1, 2, 3, 4, 5]}, "items": {"kind": "items"}}
-# per scale: arm means, sd_input, sd_run, then per judge (reviewer, strong, cheap) bias, tau, sigma
-TRUTH = {
-    "linear": {"mu": [0.45, 0.60], "sd_input": 0.08, "sd_run": 0.08, "bias": [0.0, 0.04, -0.06],
-               "tau": [0.03, 0.05, 0.08], "sigma": [0.03, 0.04, 0.08]},
-    "levels3": {"mu": [0.40, 0.60], "sd_input": 0.12, "sd_run": 0.12, "bias": [0.0, 0.05, -0.08],
-                "tau": [0.08, 0.10, 0.15], "sigma": [0.10, 0.12, 0.20]},
-    "levels5": {"mu": [0.40, 0.60], "sd_input": 0.12, "sd_run": 0.12, "bias": [0.0, 0.05, -0.08],
-                "tau": [0.06, 0.08, 0.12], "sigma": [0.06, 0.08, 0.14]},
-    "binary": {"mu": [0.0, 0.7], "sd_input": 0.6, "sd_run": 0.6, "bias": [0.0, 0.3, -0.4],
-               "tau": [0.3, 0.5, 0.7], "sigma": [1.0, 0.7, 1.4]},
-    "items": {"mu": [0.0, 0.5], "sd_input": 0.5, "sd_run": 0.5, "bias": [0.0, 0.2, -0.3],
-              "tau": [0.2, 0.3, 0.5], "sigma": [0.2, 0.3, 0.5]},
-}
-JUDGE_IDS = ("reviewer", "strong", "cheap")
-JUDGE_FAMILY = {"strong": "alpha", "cheap": "beta"}
-ARMS = {"baseline": "beta", "strong-arm": "alpha"}
-
-
-def simulate(kinds, *, seed, n_inputs=40, repeats=2, person_share=0.6, person_repeat=0.3, pairs=False,
-             own_family=0.0, items_n=6, position=0.05, tie_width=0.04, sigma_pair=0.06):
-    """A study with one component per entry of `kinds`. Returns `(study, rubric, judges, truth)`.
-
-    Two arms run once on every input. The reviewer (the anchor) reads a share of the targets, some of
-    them twice; two model judges read every target `repeats` times, one component per call. With
-    `pairs`, the first component is also compared: the strong judge in both orders, the reviewer in one.
-    `own_family` is each model judge's effect on outputs of its own family, less its effect on the other."""
-    rng = np.random.default_rng(seed)
-    comps = [{"id": f"c{n}", "title": f"Component {n}", "scale": SCALES[kind]} for n, kind in enumerate(kinds)]
-    rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "sim", "version": "1", "components": comps})
-    judges = C.validate_judges({"schema": C.SCHEMA_JUDGES, "anchor": ["reviewer"], "judges": [
-        {"id": "reviewer", "kind": "person"},
-        {"id": "strong", "kind": "model", "model": {"id": "model-large", "family": "alpha"}},
-        {"id": "cheap", "kind": "model", "model": {"id": "model-small", "family": "beta"}}]})
-    truth = {name: np.array([TRUTH[kind][name] for kind in kinds]).T for name in ("mu", "bias", "tau", "sigma")}
-    truth["sd_input"] = np.array([TRUTH[kind]["sd_input"] for kind in kinds])
-    truth["sd_run"] = np.array([TRUTH[kind]["sd_run"] for kind in kinds])
-    truth.update({"own_family": own_family, "position": position, "tie_width": tie_width, "sigma_pair": sigma_pair})
-    runs, scores, pair_rows, q = [], [], [], {}
-    stamp = "2026-01-15T09:00:00-08:00"
-    for i in range(n_inputs):
-        v = rng.standard_normal(len(kinds)) * truth["sd_input"]
-        for a, (arm, family) in enumerate(ARMS.items()):
-            run = f"{arm}-{i:03d}"
-            q[run] = truth["mu"][a] + v + rng.standard_normal(len(kinds)) * truth["sd_run"]
-            runs.append(C.validate_run({"schema": C.SCHEMA_RUNS, "run": run, "input": f"case-{i:03d}", "arm": arm,
-                                        "steps": [{"step": "final", "model": {"id": f"model-{family}",
-                                                                              "family": family}}],
-                                        "simulated": True}))
-    views = {}
-    for run_row in runs:
-        run, family = run_row["run"], ARMS[run_row["arm"]]
-        for d, kind in enumerate(kinds):
-            for j, judge in enumerate(JUDGE_IDS):
-                effect = 0.0
-                if judge in JUDGE_FAMILY and own_family:
-                    effect = own_family / 2 if JUDGE_FAMILY[judge] == family else -own_family / 2
-                eta = q[run][d] + truth["bias"][j, d] + effect + truth["tau"][j, d] * rng.standard_normal()
-                views[(judge, run, d)] = eta - truth["bias"][j, d]
-                if judge == "reviewer":
-                    calls = 0 if rng.random() > person_share else (2 if rng.random() < person_repeat else 1)
-                else:
-                    calls = repeats
-                for _ in range(calls):
-                    x = eta + truth["sigma"][j, d] * rng.standard_normal()
-                    row = {"schema": C.SCHEMA_SCORES, "id": f"s{len(scores):06d}", "run": run, "component": f"c{d}",
-                           "judge": judge, "call": f"k{len(scores):06d}", "rubric": "sim@1", "observed_at": stamp}
-                    if kind == "linear":
-                        row["value"] = float(np.clip(x, 0.0, 1.0) * 10.0)
-                    elif kind == "binary":
-                        row["value"] = int(x >= 0)
-                    elif kind in ("levels3", "levels5"):
-                        levels = SCALES[kind]["levels"]
-                        cuts = (np.arange(len(levels) - 1) + 0.5) / (len(levels) - 1)
-                        row["value"] = levels[int((x > cuts).sum())]
-                    else:
-                        row["value"], row["of"] = int(rng.binomial(items_n, ndtr(x))), items_n
-                    scores.append(C.validate_score(row))
-    if pairs:
-        for i in range(n_inputs):
-            a, b = f"baseline-{i:03d}", f"strong-arm-{i:03d}"
-            for judge, orders in (("strong", ("a", "b")), ("reviewer", (("a", "b")[int(rng.random() < 0.5)],))):
-                for first in orders:
-                    z = (views[(judge, a, 0)] - views[(judge, b, 0)] + position * (1 if first == "a" else -1)
-                         + sigma_pair * rng.standard_normal())
-                    verdict = "a" if z > tie_width else ("b" if z < -tie_width else "tie")
-                    pair_rows.append(C.validate_pair({
-                        "schema": C.SCHEMA_PAIRS, "id": f"p{len(pair_rows):05d}", "a": a, "b": b, "component": "c0",
-                        "judge": judge, "call": f"pk{len(pair_rows):05d}", "rubric": "sim@1", "observed_at": stamp,
-                        "shown_first": first, "verdict": verdict}))
-    truth["q"] = q
-    return C.Study(Path("."), runs, scores, pair_rows, []), rubric, judges, truth
+def catalog_study(name: str, seed: int, inputs: int | None = None):
+    """A simulated study of a catalog spec: `(study, simulated)`. The truth is `simulated.truth`."""
+    sim = S.generate(specs.get(name, inputs=inputs), seed)
+    return C.Study(Path("."), sim.runs, sim.scores, sim.pairs, sim.items), sim
 
 
 def covered(draws: np.ndarray, value: float) -> bool:
@@ -163,7 +74,8 @@ def test_diagnose_fails_each_check_alone_and_skips_what_does_not_exist():
     assert not FT.diagnose(raw, {}, 9, 0.0)["converged"]            # more than 1% of 800 draws diverged
     assert FT.diagnose(raw, {}, 8, 0.0)["converged"]
     bad = dict(raw, tau=raw["tau"] + np.array([0.0, 5.0])[:, None, None])
-    assert not FT.diagnose(bad, {}, 0, 0.0)["converged"]
+    failed = FT.diagnose(bad, {}, 0, 0.0)
+    assert not failed["converged"] and failed["checks"][0]["worst"] in ("tau[0]", "tau[1]")
     assert FT.diagnose(bad, {"tau": np.zeros(2, dtype=bool)}, 0, 0.0)["converged"]   # masked out: not checked
     fixed = dict(raw, sigma=np.ones((2, 400, 2)))                                    # a fixed unit: not checked
     assert FT.diagnose(fixed, {}, 0, 0.0)["converged"]
@@ -218,20 +130,16 @@ def test_refusals_are_pinned_and_write_nothing(argv, message, tmp_path, capsys):
 
 
 def test_a_simulated_study_needs_allow_simulated(tmp_path, capsys):
-    study, rubric, judges, _ = simulate(["linear"], seed=0, n_inputs=3)
+    _, sim = catalog_study("one-component", seed=0, inputs=3)
     folder = tmp_path / "study"
-    folder.mkdir()
-    C.write_lines(folder / C.RUNS_FILE, C.SCHEMA_RUNS, study.runs)
-    C.write_lines(folder / C.SCORES_FILE, C.SCHEMA_SCORES, study.scores)
-    C.write_document(folder / "rubric.json", rubric)
-    C.write_document(folder / "judges.json", judges)
+    S.write(sim, folder)
     argv = ["eval", "fit", str(folder), "--rubric", str(folder / "rubric.json"), "--judges",
             str(folder / "judges.json"), "--check-only"]
     assert cli.main(argv) == 1
-    assert capsys.readouterr().err == ('error: runs.jsonl: run "baseline-000": the run is simulated; '
+    assert capsys.readouterr().err == ('error: runs.jsonl: run "baseline-i001": the run is simulated; '
                                        "pass --allow-simulated to fit a simulated study\n")
     assert cli.main(argv + ["--allow-simulated"]) == 0
-    capsys.readouterr()
+    assert "readings: 28 of 28 used" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -290,90 +198,298 @@ def test_smoke_fit_of_the_small_study_writes_a_fit_every_later_stage_can_read(tm
 
 
 # ---------------------------------------------------------------------------------------------------
-# Slow: recovery over many simulated studies, and the size target
+# Slow: recovery over many simulated studies of the catalog, and the size target
 
-SPECS = {
-    "linear": {"kinds": ["linear"]},
-    "binary": {"kinds": ["binary"], "n_inputs": 60},
-    "levels-3": {"kinds": ["levels3"], "n_inputs": 60},
-    "levels-5": {"kinds": ["levels5"], "n_inputs": 60},
-    "items": {"kinds": ["items"]},
-    "mixed": {"kinds": ["binary", "levels3", "linear"], "n_inputs": 60},
-    "pairs": {"kinds": ["linear"], "pairs": True},
-    "own-family": {"kinds": ["linear"], "own_family": 0.08, "n_inputs": 60},
-}
+PER_JUDGE_DIM = {"tau": "tau", "sigma": "sigma", "sd_judge_input": "judge_input", "sigma_pair": "sigma_pair"}
+PER_JUDGE = {"halo_target": "halo_split", "halo_call": "halo_split", "position": "position",
+             "tie_width": "tie_width"}
+PARAMETERS = ("mu", "sd_input", "sd_run", "bias", "own_family", *PER_JUDGE_DIM, *PER_JUDGE)   # not the derived ones
+AT_LEAST_0 = ("sd_input", "sd_run", "tau", "sigma", "sd_judge_input", "sigma_pair", "halo_target", "halo_call",
+              "tie_width")
 
 
-def recover(name: str, n_studies: int, draws: int = 500) -> dict:
-    """Fit `n_studies` studies of one spec and count how often 90% intervals cover the truth."""
-    spec = dict(SPECS[name])
-    kinds = spec.pop("kinds")
-    hits: dict[str, list] = {}
-    errors, flagged, seconds, unconverged = [], [], [], 0
-    for n in range(n_studies):
-        study, rubric, judges, truth = simulate(kinds, seed=1000 + n, **spec)
-        design = M.build(study, rubric, judges, allow_simulated=True)
-        meta, post = FT.fit_design(design, seed=n, draws=draws, chains=2, cores=2)
-        seconds.append(meta["diagnostics"]["run_seconds"])
-        unconverged += not meta["diagnostics"]["converged"]
-        fit = F.Fit(Path("fit.json"), {**meta, "draws": {"n": post["mu"].shape[0]}})
-        for d in range(len(kinds)):
-            dim = meta["dimensions"][d]["id"]
-            hits.setdefault("arm_difference", []).append(
-                covered(post["mu"][:, 1, d] - post["mu"][:, 0, d], truth["mu"][1, d] - truth["mu"][0, d]))
-            for a in range(2):
-                hits.setdefault("mu", []).append(covered(post["mu"][:, a, d], truth["mu"][a, d]))
-                errors.append(float(post["mu"][:, a, d].mean() - truth["mu"][a, d]))
-            for level in ("sd_input", "sd_run"):
-                hits.setdefault(level, []).append(covered(post[level][:, d], truth[level][d]))
-            for j, judge in enumerate(JUDGE_IDS):
-                if j:
-                    hits.setdefault("bias", []).append(covered(post["bias"][:, j, d], truth["bias"][j, d]))
-                for term in ("tau", "sigma"):
-                    if fit.term(term, judge, dim) == "identified":
-                        hits.setdefault(term, []).append(covered(post[term][:, j, d], truth[term][j, d]))
-        if spec.get("pairs"):
-            hits.setdefault("position", []).append(covered(post["position"][:, 1], truth["position"]))
-            hits.setdefault("tie_width", []).append(covered(post["tie_width"][:, 1], truth["tie_width"]))
-            hits.setdefault("sigma_pair", []).append(covered(post["sigma_pair"][:, 1, 0], truth["sigma_pair"]))
-        for j in (1, 2):
-            if fit.term("family", JUDGE_IDS[j]) == "identified":
-                own = meta["index"]["families"].index(JUDGE_FAMILY[JUDGE_IDS[j]])
-                contrast = post["family"][:, j, own, 0] - post["family"][:, j, 1 - own, 0]
-                hits.setdefault("own_family", []).append(covered(contrast, truth["own_family"]))
-                lo, hi = np.percentile(contrast, [5.0, 95.0])
-                flagged.append(bool(lo > 0 or hi < 0))
-    all_hits = [x for rows in hits.values() for x in rows]
-    errors_a = np.array(errors)
-    out = {"spec": name, "studies": n_studies, "draws_per_chain": draws, "chains": 2,
-           "coverage": {key: {"share": float(np.mean(rows)), "n": len(rows)} for key, rows in hits.items()},
-           "coverage_all": {"share": float(np.mean(all_hits)), "n": len(all_hits)},
-           "mu_error": {"mean": float(errors_a.mean()), "se": float(errors_a.std(ddof=1) / np.sqrt(len(errors_a)))},
-           "family_flagged": {"share": float(np.mean(flagged)), "n": len(flagged)} if flagged else None,
-           "unconverged": int(unconverged), "seconds_per_fit": float(np.mean(seconds))}
-    folder = os.environ.get("LOOPMATH_EVAL_RECOVERY_REPORT")
-    if folder:
-        Path(folder).mkdir(parents=True, exist_ok=True)
-        (Path(folder) / f"recovery-{name}.json").write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8")
-    return out
+def study_record(name: str, seed: int, *, draws: int | None = None, chains: int = 2, inputs: int | None = None,
+                 folder: str | os.PathLike | None = None, **build) -> dict:
+    """Fit one simulated study of a catalog spec and compare the 90% intervals with the truth.
+
+    Returns the diagnostics and, per class of parameter, one row per parameter: where it is, whether its
+    interval covers the truth, and the posterior mean less the truth. A scale parameter is compared only
+    where its term is `identified` and its true value is above 0. The fit's family effects sum to 0 over
+    families and its bias holds their mean, so the truth is put on that scale before it is compared.
+
+    Two derived classes ride along. `batching_*`: for two judges that differ only in `mode`, the difference
+    (panel less per_component) of bias, `tau` and `sigma`. With `folder`, the fit is written there and
+    `eval judges` reads it: `false_pass` and `false_fail` of a binary dimension against the simulated rates."""
+    study, sim = catalog_study(name, seed, inputs)
+    design = M.build(study, sim.rubric, sim.judges, allow_simulated=True, **build)
+    meta, post = FT.fit_design(design, seed=seed, draws=draws, chains=chains, cores=2)
+    truth = {key: np.array(value, dtype=float) for key, value in sim.truth.items()
+             if key in F.DRAW_SHAPES or key in ("sd_input", "sd_run")}
+    state = {(row["term"], row["judge"], row["dimension"]): row["state"] for row in meta["terms"]}
+    judges, dims = meta["index"]["judges"], [dim["id"] for dim in meta["dimensions"]]
+    families = meta["index"]["families"]
+    rows: dict[str, list] = {}
+
+    def check(group: str, at: str, draws_of: np.ndarray, value: float) -> None:
+        if group in AT_LEAST_0 and value == 0.0:   # at the edge of its range: no central interval covers it
+            return
+        if np.isfinite(value) and np.isfinite(draws_of).all() and draws_of.std() > 1e-9:
+            rows.setdefault(group, []).append({"at": at, "hit": covered(draws_of, float(value)),
+                                               "error": float(draws_of.mean() - value)})
+
+    shift = np.where(np.isfinite(truth["family"]), truth["family"], 0.0).mean(axis=1)      # J x D
+    for d, dim in enumerate(dims):
+        for a, arm in enumerate(meta["index"]["arms"]):
+            check("mu", f"{arm} {dim}", post["mu"][:, a, d], truth["mu"][a, d])
+            if a:
+                check("arm_difference", f"{arm} {dim}", post["mu"][:, a, d] - post["mu"][:, 0, d],
+                      truth["mu"][a, d] - truth["mu"][0, d])
+        for level in ("sd_input", "sd_run"):
+            check(level, dim, post[level][:, d], truth[level][d])
+        for j, judge in enumerate(judges):
+            check("bias", f"{judge} {dim}", post["bias"][:, j, d], truth["bias"][j, d] + shift[j, d])
+            for key, term in PER_JUDGE_DIM.items():
+                where = (term, judge, dim) if term in ("tau", "sigma") else (term, judge, None)
+                if state.get(where) == "identified":
+                    check(key, f"{judge} {dim}", post[key][:, j, d], truth[key][j, d])
+    for j, judge in enumerate(judges):
+        for key, term in PER_JUDGE.items():
+            if state.get((term, judge, None)) == "identified":
+                check(key, judge, post[key][:, j], truth[key][j])
+    hits = np.array([[covered(post["q_run"][:, r, d], truth["q_run"][r, d]) for d in range(len(dims))]
+                     for r in range(truth["q_run"].shape[0])])
+    family_rows = []
+    declared = {row["id"]: row for row in sim.judges["judges"]}
+    for j, judge in enumerate(judges):
+        if state.get(("family", judge, None)) != "identified":
+            continue
+        own = families.index(declared[judge]["model"]["family"])
+        rest = [f for f in range(len(families)) if f != own]
+        for d, dim in enumerate(dims):
+            contrast = post["family"][:, j, own, d] - post["family"][:, j, rest, d].mean(axis=1)
+            value = truth["family"][j, own, d] - truth["family"][j, rest, d].mean()
+            if not np.isfinite(value) or not np.isfinite(contrast).all():
+                continue
+            check("own_family", f"{judge} {dim}", contrast, value)
+            lo, hi = np.percentile(contrast, [5.0, 95.0])
+            family_rows.append({"at": f"{judge} {dim}", "truth": float(value), "flagged": bool(lo > 0 or hi < 0)})
+    listed = sim.judges["judges"]
+    for jp, panel in enumerate(listed):
+        for js, single in enumerate(listed):
+            if panel["mode"] != "panel" or not M._same_setting(panel, single):
+                continue
+            for d, dim in enumerate(dims):
+                at = f"{panel['id']} less {single['id']} {dim}"
+                check("batching_bias", at, post["bias"][:, jp, d] - post["bias"][:, js, d],
+                      truth["bias"][jp, d] + shift[jp, d] - truth["bias"][js, d] - shift[js, d])
+                for key in ("tau", "sigma"):
+                    if {state.get((key, panel["id"], dim)), state.get((key, single["id"], dim))} == {"identified"}:
+                        check(f"batching_{key}", at, post[key][:, jp, d] - post[key][:, js, d],
+                              truth[key][jp, d] - truth[key][js, d])
+    if folder is not None and sim.truth.get("binary_rates"):
+        from loopmath.eval import judges as judges_stage
+
+        where = Path(folder) / f"{name}-{seed}"
+        where.mkdir(parents=True, exist_ok=True)
+        report = judges_stage.report(F.read_fit(F.write_fit(where / "fit.json", meta, post), allow_unconverged=True))
+        simulated = {(row["judge"], row["dimension"]): row["simulated"] for row in sim.truth["binary_rates"]}
+        for judge in report["judges"]:
+            for dim_row in judge["dims"]:
+                status = dim_row.get("status") or {}
+                rates = simulated.get((judge["id"], dim_row["dimension"]))
+                if rates is None or not status.get("measured"):
+                    continue
+                for key in ("false_pass", "false_fail"):
+                    got, value = status.get(key), rates.get(key)
+                    if got and value is not None and np.isfinite(value):
+                        rows.setdefault(key, []).append({"at": f"{judge['id']} {dim_row['dimension']}",
+                                                         "hit": bool(got["lo"] <= value <= got["hi"]),
+                                                         "error": float(got["mean"] - value)})
+    return {"spec": name, "seed": seed, "diagnostics": meta["diagnostics"], "options": meta["options"],
+            "counts": meta["counts"], "rows": rows, "q_run": {"hits": int(hits.sum()), "n": int(hits.size)},
+            "family": family_rows}
+
+
+def summarise(records: list[dict]) -> dict:
+    """Coverage per class of parameter over the studies of one spec."""
+    groups: dict[str, list] = {}
+    for record in records:
+        for group, rows in record["rows"].items():
+            groups.setdefault(group, []).extend(rows)
+    parameters = [row["hit"] for group, rows in groups.items() if group in PARAMETERS for row in rows]
+    mu = np.array([row["error"] for row in groups.get("mu", [])])
+    family = [row for record in records for row in record["family"]]
+    null = [row["flagged"] for row in family if row["truth"] == 0.0]
+    real = [row["flagged"] for row in family if row["truth"] != 0.0]
+    q_n = sum(r["q_run"]["n"] for r in records)
+    share = lambda hits: {"share": float(np.mean(hits)), "n": len(hits)} if len(hits) else None   # noqa: E731
+    return {"spec": records[0]["spec"], "studies": len(records),
+            "coverage": {group: share([row["hit"] for row in rows]) for group, rows in sorted(groups.items())},
+            "coverage_parameters": share(parameters),
+            "coverage_q_run": {"share": sum(r["q_run"]["hits"] for r in records) / max(1, q_n), "n": q_n},
+            "mu_error": {"mean": float(mu.mean()), "se": float(mu.std(ddof=1) / np.sqrt(len(mu))), "n": len(mu)},
+            "family_flagged_where_none": share(null), "family_flagged_where_simulated": share(real),
+            "unconverged": sum(1 for r in records if not r["diagnostics"]["converged"]),
+            "divergences": sum(r["diagnostics"]["divergences"] for r in records),
+            "seconds_per_fit": float(np.mean([r["diagnostics"]["run_seconds"] for r in records]))}
+
+
+@needs_engine
+def test_recovery_smoke_two_small_studies_wide_bounds():
+    """The default-run version of the recovery checks: two small studies of the simplest spec, wide bounds."""
+    got = summarise([study_record("one-component", seed, draws=150, inputs=20) for seed in (0, 1)])
+    assert got["coverage_parameters"]["n"] >= 16 and got["coverage_parameters"]["share"] >= 0.6, got
+    assert got["coverage_q_run"]["share"] >= 0.7, got
+    assert abs(got["mu_error"]["mean"]) < 0.1, got
 
 
 @slow
 @needs_engine
-@pytest.mark.parametrize("name", sorted(SPECS))
-def test_recovery_intervals_cover_and_arm_means_are_unbiased(name):
-    """Acceptance checks 3, 5, 7 and 9, on this module's simulator: 90% intervals of identified
-    parameters cover the truth in 85% to 95% of studies, and arm means are unbiased within Monte Carlo
-    error. The bounds are the ones of the acceptance check; they are not widened for a small count."""
-    got = recover(name, N_STUDIES)
+@pytest.mark.parametrize("name", specs.names())
+def test_recovery_on_the_catalog_intervals_cover_and_arm_means_are_unbiased(name, tmp_path):
+    """Acceptance checks 3, 5, 7, 9 and 10 as far as the fit alone shows them: over the studies of one
+    spec, 90% intervals cover the truth in 85% to 95% of cases and arm means are unbiased within Monte
+    Carlo error. The bounds are the ones of the acceptance check; they are not widened for a small count."""
+    got = summarise([study_record(name, seed, draws=N_DRAWS, folder=tmp_path) for seed in range(N_STUDIES)])
+    folder = os.environ.get("LOOPMATH_EVAL_RECOVERY_REPORT")
+    if folder:
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        (Path(folder) / f"recovery-{name}.json").write_text(json.dumps(got, indent=1) + "\n", encoding="utf-8")
     assert got["unconverged"] == 0, got
     assert 0.85 <= got["coverage"]["arm_difference"]["share"] <= 0.95, got
-    assert 0.85 <= got["coverage_all"]["share"] <= 0.95, got
+    assert 0.85 <= got["coverage_parameters"]["share"] <= 0.95, got
+    for key in ("false_pass", "false_fail", "position", "tie_width", "halo_target", "halo_call", "batching_sigma"):
+        if got["coverage"].get(key):       # checks 5, 7 and 10: the same bounds, where the spec has the quantity
+            assert 0.85 <= got["coverage"][key]["share"] <= 0.95, (key, got)
     assert abs(got["mu_error"]["mean"]) <= 3 * got["mu_error"]["se"], got
-    if name == "own-family":
-        assert got["family_flagged"]["share"] >= 0.5, got
-    elif got["family_flagged"] is not None:
-        assert got["family_flagged"]["share"] <= 0.10, got
+    if got["family_flagged_where_none"]:
+        assert got["family_flagged_where_none"]["share"] <= 0.10, got
+    if got["family_flagged_where_simulated"]:
+        assert got["family_flagged_where_simulated"]["share"] >= 0.5, got
+
+
+def _write_report(name: str, payload: dict) -> None:
+    folder = os.environ.get("LOOPMATH_EVAL_RECOVERY_REPORT")
+    if folder:
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        (Path(folder) / name).write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+
+
+@slow
+@needs_engine
+def test_pairs_added_to_readings_narrow_the_arm_difference():
+    """Acceptance check 7, second part: on the `pairs` spec, the component that has readings and pairs is
+    fitted with its pairs and without them. The arm difference has a narrower interval with them."""
+    rows = []
+    for seed in range(2):
+        study, sim = catalog_study("pairs", seed)
+        sds = {}
+        for label, pairs in (("with_pairs", study.pairs), ("readings_only", [])):
+            design = M.build(C.Study(Path("."), study.runs, study.scores, pairs), sim.rubric, sim.judges,
+                             allow_simulated=True, components=["depth"])
+            assert design.counts["pairs_used"] == (160 if pairs else 0) and design.relative == []
+            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2)
+            difference = post["mu"][:, 1, 0] - post["mu"][:, 0, 0]
+            sds[label] = {"mean": float(difference.mean()), "sd": float(difference.std()),
+                          "converged": meta["diagnostics"]["converged"]}
+        truth = np.array(sim.truth["mu"], dtype=float)
+        rows.append({"seed": seed, "truth": float(truth[1, 0] - truth[0, 0]), **sds})
+    _write_report("pairs-narrow.json", {"studies": rows})
+    assert np.mean([row["with_pairs"]["sd"] for row in rows]) < np.mean([row["readings_only"]["sd"] for row in rows])
+
+
+@slow
+@needs_engine
+def test_levels_5_beside_a_fit_that_reads_the_levels_as_plain_numbers():
+    """Acceptance check 5, last part: on `levels-5`, the arm difference from the levels model beside the one
+    from a fit that reads the same levels as numbers on a line. Shown, with the truth; nothing is asserted
+    about which is closer in one study."""
+    rows = []
+    for seed in range(1):
+        study, sim = catalog_study("levels-5", seed)
+        dims = C.dimensions(sim.rubric)
+        plain = json.loads(json.dumps(sim.rubric))
+        top = {}
+        for comp in plain["components"]:
+            if comp["scale"]["kind"] == "levels":
+                top[comp["id"]] = len(comp["scale"]["levels"]) - 1
+                comp["scale"] = {"kind": "linear", "range": [0, top[comp["id"]]]}
+        plain = C.validate_rubric(plain)
+        by_id = {dim["component"]: dim for dim in dims}
+        numbers = [dict(row, value=int(Q.fitting_level(by_id[row["component"]], row["value"])))
+                   if row["component"] in top else row for row in study.scores]
+        truth = np.array(sim.truth["mu"], dtype=float)
+        row = {"seed": seed, "truth": (truth[1] - truth[0]).tolist()}
+        for label, rubric, scores in (("levels", sim.rubric, study.scores), ("plain_numbers", plain, numbers)):
+            design = M.build(C.Study(Path("."), study.runs, scores), rubric, sim.judges, allow_simulated=True)
+            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2)
+            difference = post["mu"][:, 1, :] - post["mu"][:, 0, :]
+            lo, hi = np.percentile(difference, [5.0, 95.0], axis=0)
+            row[label] = {"mean": difference.mean(axis=0).tolist(), "lo": lo.tolist(), "hi": hi.tolist(),
+                          "converged": meta["diagnostics"]["converged"]}
+        rows.append(row)
+    _write_report("levels-5-beside-plain-numbers.json", {"studies": rows})
+    assert all(np.isfinite(row[label]["mean"]).all() for row in rows for label in ("levels", "plain_numbers"))
+
+
+LINK_TOLERANCE = 0.01   # on the [0, 1] scale: judge biases, the arm difference, and the mean gap of run quality
+
+
+@slow
+@needs_engine
+def test_link_to_the_flow_fit_on_one_linear_component():
+    """Acceptance check 4: one `linear` component, one reading per judge and output, no repeats. The arm
+    difference, the judge biases and the quality of the runs match the flow fit within `LINK_TOLERANCE`.
+
+    The two fits are not the same model: the flow fit gives every input its own level with a wide prior and
+    has one noise per judge; this fit draws inputs from a common law. So they agree closely, not exactly."""
+    from loopmath.flows import judges as flow_judges
+
+    study, sim = catalog_study("one-component", seed=4)
+    seen, scores = set(), []
+    for row in study.scores:                      # keep the first reading of every judge and output
+        if (row["judge"], row["run"]) not in seen:
+            seen.add((row["judge"], row["run"]))
+            scores.append(row)
+    study = C.Study(Path("."), study.runs, scores)
+    design = M.build(study, sim.rubric, sim.judges, allow_simulated=True, terms=["family=off", "judge_input=off"])
+    assert int(design.data["s_n"].max()) == 1 and design.data["D"] == 1
+    meta, post = FT.fit_design(design, seed=4, chains=2, cores=2)
+
+    dim = design.dims[0]
+    values: dict[str, dict] = {}
+    for row in scores:
+        values.setdefault(row["run"], {})[row["judge"]] = float(Q.fitting_value(dim, row["value"]))
+    judges = [flow_judges._Judge(row["id"], row["kind"], "score") for row in sim.judges["judges"]]
+    runs = [flow_judges._Run(run["run"], run["arm"], run["input"], values[run["run"]]) for run in study.runs
+            if run["run"] in values]
+    flow = flow_judges._fit(judges, runs, None, "score")
+    assert flow["calibrated"] and meta["anchor"]["kind"] == "person"
+
+    names = meta["index"]["judges"]
+    bias = {row["id"]: (row["bias"], float(post["bias"][:, names.index(row["id"]), 0].mean()))
+            for row in flow["judges"]}
+    arms = meta["index"]["arms"]
+    level: dict[str, dict] = {}
+    for row in flow["levels"]:
+        level.setdefault(row["arm"], {})[row["input"]] = row["mean"]
+    shared = sorted(set(level[arms[0]]) & set(level[arms[1]]))
+    flow_difference = float(np.mean([level[arms[1]][i] - level[arms[0]][i] for i in shared]))
+    difference = float((post["mu"][:, 1, 0] - post["mu"][:, 0, 0]).mean())
+    position = {run["run"]: r for r, run in enumerate(study.runs)}
+    gaps = [abs(flow["runs"][run.id]["q"] - float(post["q_run"][:, position[run.id], 0].mean())) for run in runs]
+    got = {"tolerance": LINK_TOLERANCE, "runs": len(runs), "readings": len(scores),
+           "bias_flow_then_eval": bias, "arm_difference": {"flow": flow_difference, "eval": difference},
+           "arm_difference_sd_eval": float((post["mu"][:, 1, 0] - post["mu"][:, 0, 0]).std()),
+           "run_quality_gap": {"mean": float(np.mean(gaps)), "max": float(np.max(gaps))},
+           "diagnostics": meta["diagnostics"]}
+    folder = os.environ.get("LOOPMATH_EVAL_RECOVERY_REPORT")
+    if folder:
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        (Path(folder) / "link.json").write_text(json.dumps(got, indent=1) + "\n", encoding="utf-8")
+    assert all(abs(a - b) <= LINK_TOLERANCE for a, b in bias.values()), got
+    assert abs(flow_difference - difference) <= LINK_TOLERANCE, got
+    assert got["run_quality_gap"]["mean"] <= LINK_TOLERANCE, got
 
 
 @slow
@@ -381,7 +497,7 @@ def test_recovery_intervals_cover_and_arm_means_are_unbiased(name):
 def test_size_500_runs_5_components_4_judges_2_repeats_fits_in_10_minutes():
     """Acceptance check 14: 20,000 readings. A target to measure on the machine at hand."""
     rng = np.random.default_rng(14)
-    comps = [{"id": f"c{n}", "title": f"Component {n}", "scale": SCALES["linear"]} for n in range(5)]
+    comps = [{"id": f"c{n}", "title": f"Component {n}", "scale": LINEAR} for n in range(5)]
     rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "sim", "version": "1", "components": comps})
     judges = C.validate_judges({"schema": C.SCHEMA_JUDGES, "judges": [
         {"id": f"j{n}", "kind": "model", "model": {"id": f"m{n}", "family": "alpha" if n < 2 else "beta"}}
@@ -389,7 +505,7 @@ def test_size_500_runs_5_components_4_judges_2_repeats_fits_in_10_minutes():
     runs, scores = [], []
     for i in range(250):
         v = rng.standard_normal(5) * 0.08
-        for arm, family in ARMS.items():
+        for arm, family in (("baseline", "beta"), ("strong-arm", "alpha")):
             run = f"{arm}-{i:03d}"
             q = 0.5 + v + rng.standard_normal(5) * 0.08
             runs.append(C.validate_run({"schema": C.SCHEMA_RUNS, "run": run, "input": f"case-{i:03d}", "arm": arm,

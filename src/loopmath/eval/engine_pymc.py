@@ -49,6 +49,10 @@ likelihood with near-hard walls when its call noise goes to 0, and a small study
 The sampler then diverges. A Gamma(2) prior has the same mean as the half-normal it replaces and no
 mass at 0, which keeps the walls soft. With enough data the two give the same answer.
 
+Every chain starts at the same point, the centre of the priors, with no jitter. A jittered start puts
+biases far from the data, and the first steps can then throw a chain to where every sd is 0 and it never
+moves again.
+
 Compilation is pinned to pytensor's classic CVM backend for the call, as `loopmath.fit_bayes` does:
 the default backend needs a numba build that matches the installed numpy.
 """
@@ -74,6 +78,7 @@ INSTALL = ("loopmath eval fit needs the optional modelling extra (PyMC). "
 NAME = "pymc"
 PERSON_SIGMA = 0.04   # the half-normal scale of a person's call noise on a linear or fraction dimension
 NODES = 48            # quadrature points of equal probability for a binary or levels cell with repeats
+MAX_CORES = 4         # chains run side by side on at most this many cores unless the caller says otherwise
 TINY = 1.0e-300
 LINEAR, BINARY, LEVELS, ITEMS = 0, 1, 2, 3   # as model.KIND_CODE
 OUTPUTS = ("mu", "sd_input", "sd_run", "corr_input", "corr_run", "q_run", "bias", "tau", "sigma", "halo_target",
@@ -123,7 +128,8 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 1000, tune: i
 
     Returns `{"draws": {name: array[chains, draws, ...]}, "divergences", "run_seconds", "version"}` with
     one array per name of `OUTPUTS`. A parameter the design has no use for comes back as sampled from
-    its prior (or as zeros): `fit.py` writes NaN where the parameter does not exist."""
+    its prior (or as zeros): `fit.py` writes NaN where the parameter does not exist. `tune` defaults to
+    `draws`; `cores` to the number of chains, at most `MAX_CORES` and the machine's count."""
     _prepare()
     import pymc as pm
     import pytensor
@@ -137,7 +143,7 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 1000, tune: i
     if form == "full" and D < 2:
         form = "diag"
     tune = int(draws if tune is None else tune)
-    cores = int(min(chains, 2) if cores is None else cores)
+    cores = int(min(chains, MAX_CORES, os.cpu_count() or 1) if cores is None else cores)
     started = time.time()
 
     def phi(x):
@@ -348,7 +354,7 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 1000, tune: i
         try:
             idata = pm.sample(draws=int(draws), tune=tune, chains=int(chains), cores=cores, random_seed=int(seed),
                               progressbar=False, target_accept=float(target_accept), var_names=keep,
-                              compute_convergence_checks=False)
+                              init="adapt_diag", compute_convergence_checks=False)
         finally:
             quiet.setLevel(before)
 

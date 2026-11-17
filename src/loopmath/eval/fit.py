@@ -71,8 +71,10 @@ def split_rhat_ess(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], divergences: int,
              run_seconds: float) -> dict:
     """The `diagnostics` member, from draws with their chain axis. `exists[name]` masks the parameters
-    that exist; a column that is constant (a fixed unit, a term that is off) is not checked."""
-    rhats, esses = [], []
+    that exist; a column that is constant (a fixed unit, a term that is off) is not checked. The R-hat and
+    effective sample size checks name the parameter they come from as `worst`: the array and the position
+    in it, as in `fitfile.DRAW_SHAPES` without the draw axis."""
+    rhats, esses, labels = [], [], []
     for name in CHECKED:
         x = np.asarray(raw[name], dtype=float)
         flat = x.reshape(x.shape[0], x.shape[1], -1)
@@ -83,12 +85,19 @@ def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], di
             rhat, ess = split_rhat_ess(flat[:, :, keep])
             rhats.append(rhat)
             esses.append(ess)
-    rhat_max = float(np.max(np.concatenate(rhats))) if rhats else 1.0
-    ess_min = float(np.min(np.concatenate(esses))) if esses else 0.0
+            labels += [f"{name}{[int(k) for k in np.unravel_index(n, x.shape[2:])]}" for n in np.flatnonzero(keep)]
+    rhat_all = np.concatenate(rhats) if rhats else np.ones(0)
+    ess_all = np.concatenate(esses) if esses else np.zeros(0)
+    rhat_max = float(rhat_all.max()) if rhats else 1.0
+    ess_min = float(ess_all.min()) if esses else 0.0
+    worst_rhat = labels[int(rhat_all.argmax())] if labels else None
+    worst_ess = labels[int(ess_all.argmin())] if labels else None
     total = int(np.asarray(raw["mu"]).shape[0] * np.asarray(raw["mu"]).shape[1])
     limit = DIVERGENT_SHARE * total
-    checks = [{"name": "rhat", "value": rhat_max, "limit": RHAT_MAX, "ok": bool(rhat_max <= RHAT_MAX)},
-              {"name": "ess", "value": ess_min, "limit": ESS_MIN, "ok": bool(ess_min >= ESS_MIN)},
+    checks = [{"name": "rhat", "value": rhat_max, "limit": RHAT_MAX, "ok": bool(rhat_max <= RHAT_MAX),
+               "worst": worst_rhat},
+              {"name": "ess", "value": ess_min, "limit": ESS_MIN, "ok": bool(ess_min >= ESS_MIN),
+               "worst": worst_ess},
               {"name": "divergences", "value": int(divergences), "limit": limit, "ok": bool(divergences <= limit)}]
     return {"converged": all(check["ok"] for check in checks), "rhat_max": rhat_max, "ess_min": ess_min,
             "divergences": int(divergences), "run_seconds": float(run_seconds), "checks": checks}
@@ -162,7 +171,8 @@ def fit_design(design: M.Design, *, seed: int = 0, draws: int | None = None, cha
     chains = DEFAULT_CHAINS if chains is None else int(chains)
     result = engine.sample(design.data, seed=seed, draws=draws, tune=tune, chains=chains, cores=cores)
     raw = result["draws"]
-    diagnostics = diagnose(raw, existing(design), result["divergences"], result["run_seconds"])
+    checked = {**existing(design), "halo_call": design.masks["panel"]}   # elsewhere it is 0 by definition
+    diagnostics = diagnose(raw, checked, result["divergences"], result["run_seconds"])
     final = finish(design, raw, keep_draws)
     full_options = {**design.options, "draws": draws, "tune": draws if tune is None else int(tune),
                     "chains": chains, "keep_draws": int(keep_draws), **(options or {})}
