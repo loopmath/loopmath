@@ -1,0 +1,16 @@
+{
+ "schema": "loopmath.eval-value/1",
+ "weights": {
+  "clarity": 1,
+  "depth": 2
+ },
+ "gates": [
+  {
+   "component": "correct"
+  }
+ ],
+ "objective": {
+  "kind": "best_value",
+  "reference": "baseline"
+ }
+}

@@ -1,0 +1,25 @@
+{
+ "ocp": "0.4",
+ "producer": {"name": "another-tool", "version": "3"},
+ "privacy": {"profile": "metadata_only"},
+ "run": {
+  "id": "r202",
+  "task": {"id": "q17"},
+  "labels": {"arm": "candidate"},
+  "ext": {"dev.loopmath.simulate": {"note": "made up for the tutorial"}},
+  "configuration": {
+   "workflow": {"pieces": [{"id": "final", "role": "dev"}], "edges": []},
+   "settings": {"final": {"harness": "cli", "effort": "high",
+                          "model": {"raw": "model-large", "id": "model-large", "family": "alpha"}}}
+  },
+  "signals": [
+   {"id": "s1", "kind": "score", "name": "depth", "value": 7.0, "tier": "reported",
+    "observed_at": "2026-03-03T09:05:00+00:00", "source": {"kind": "judge", "ref": "judge-main"}},
+   {"id": "s2", "kind": "score", "name": "depth", "value": 7.5, "tier": "reported",
+    "observed_at": "2026-03-03T09:06:00+00:00", "source": {"kind": "judge", "ref": "judge-main"}},
+   {"id": "s3", "kind": "score", "name": "latency_s", "value": 12.4, "tier": "reported",
+    "observed_at": "2026-03-03T09:06:00+00:00", "source": {"kind": "judge", "ref": "judge-main"}}
+  ]
+ },
+ "nodes": [], "edges": [], "attempts": [], "artifacts": []
+}
