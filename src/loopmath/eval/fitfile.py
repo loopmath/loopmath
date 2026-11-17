@@ -62,12 +62,13 @@ which, as `{"unit", "fitted_in", "judges", "factor"}` (`units.py` has the rules)
 - `scale` (`linear`, `fraction`, `levels`: the [0, 1] fitting scale) and `items` (the item model's
   unit): fixed by the data, the same in both.
 
-`judges` lists who carries the unit (null where the data fix it, or when not recorded). `factor` is
-the stat of the `unit` draws: the size of one reported unit in the engine's unit, per draw. It is null
-where the data fix the unit and in a fit whose draws were written in the reported unit directly
-(`testing.py`). Pass rates and every reported quality are the same in both units. `position` and
-`tie_width` stay in the engine's unit (one number per judge, shared across dimensions); divide them by
-a dimension's `unit` draws to put them on that dimension's unit.
+`judges` lists who carries the unit (null where the data fix it, or when not recorded). `factor` is the
+stat of the `unit` draws: the size of one reported unit in the engine's unit, per draw. It is null where
+the data fix the unit, and where no conversion is recorded: draws written in the stated unit directly,
+as `testing.py` does when its truth holds no `unit`. A null factor means unit draws of 1, so readers
+take the stated unit as the fitted one. Pass rates and every reported quality are the same in both
+units. `position` and `tie_width` stay in the engine's unit (one number per judge, shared across
+dimensions); divide them by a dimension's `unit` draws to put them on that dimension's unit.
 
 A fit of schema `loopmath.eval-fit/1` holds binary and pairs-only draws in the engine's unit and no
 `unit` record. `read_fit` reads it and labels each dimension with `call_noise`, `pair_noise`, `scale`
@@ -78,9 +79,11 @@ The draws
 `DRAW_SHAPES` is the contract every later stage reads. S draws, A arms, D dimensions, R runs, J judges,
 F families, C = Lmax - 1 cut points. Every array is float64. `cuts` is optional. `unit` (S x D, the
 factor per draw) is required when a dimension's `unit.factor` is not null; `Fit.draws` gives 1 where
-the file has none. Its draws are finite and above 0. A fit of schema 1 has no `unit` draws. The draws
-file holds exactly the arrays `draws.arrays` declares, in the declared shapes; `Fit.draws` refuses any
-other file, even one that matches its digest.
+the file has none. Its draws are finite and above 0, 1 on a dimension whose `unit.factor` is null (every
+dimension the data fix, and one written in its stated unit directly), and their stat is the `factor`
+elsewhere (`check_units`). A fit of schema 1 has no `unit` draws. The draws file holds exactly the
+arrays `draws.arrays` declares, in the declared shapes; `Fit.draws` refuses any other file, even one
+that matches its digest.
 """
 
 from __future__ import annotations
@@ -362,6 +365,35 @@ def check_draws(index: dict, draws: Mapping[str, np.ndarray], file: str = "fit.d
             raise ContractError(file, "unit", "a unit draw is not a finite number above 0",
                                 "write the size of one reported unit in the engine's unit, per draw", "bad_unit")
     return sizes
+
+
+def check_units(dimensions: Sequence[dict], draws: Mapping[str, np.ndarray], file: str = "fit.json") -> None:
+    """Refuse `unit` draws that disagree with the dimensions' `unit` records (`write_fit` and `Fit.draws`).
+
+    A dimension whose record has a null `factor` has nothing to convert: its unit draws are 1 in every
+    draw. That is every dimension the data fix (`unit` equals `fitted_in`), and a `binary` or pairs-only
+    one whose draws were written in the stated unit directly; readers then take that unit as the fitted
+    one. A record with a factor holds the stat of its unit draws. Without `unit` draws every factor is
+    null (`validate_fit`) and `Fit.draws` gives 1."""
+    if "unit" not in draws:
+        return
+    unit = np.asarray(draws["unit"], dtype=float)
+    for d, dim in enumerate(dimensions):
+        record, u = dim.get("unit") or {}, unit[:, d]
+        if record.get("factor") is None:
+            if (u == 1.0).all():
+                continue
+            if record.get("unit") == record.get("fitted_in"):
+                raise ContractError(file, f"dimensions[{d}].unit", f"the unit draws of {dim['id']} are not 1, and "
+                                    f'it is fitted in the unit it is stated in, "{record.get("unit")}"',
+                                    "write 1 in every draw: there is nothing to convert", "bad_unit")
+            raise ContractError(file, f"dimensions[{d}].unit.factor", f"the unit draws of {dim['id']} are not 1, "
+                                "and its unit has no factor", "write the stat of the unit draws, or 1 in every draw",
+                                "bad_unit")
+        want = stat(u)
+        if any(not np.isclose(record["factor"][key], want[key], rtol=1e-9, atol=1e-12) for key in want):
+            raise ContractError(file, f"dimensions[{d}].unit.factor", f"the factor of {dim['id']} is not the stat "
+                                "of its unit draws", "write the stat of the unit draws", "bad_unit")
 
 
 INPUT_ROLES = ("runs", "scores", "pairs", "items", "rubric", "judges")
@@ -887,6 +919,7 @@ def write_fit(path: str | os.PathLike, fit: dict, draws: Mapping[str, np.ndarray
     full["draws"] = {"file": draws_path(path).name, "sha256": hashlib.sha256(data).hexdigest(), "n": sizes["S"],
                      "arrays": {name: list(draws[name].shape) for name in sorted(draws)}}
     validate_fit(full, path.name)
+    check_units(full["dimensions"], draws, path.name)
     text = C.dumps(full)
     C.write_text_atomic(draws_path(path), data)
     return C.write_text_atomic(path, text)
@@ -921,6 +954,7 @@ class Fit:
                 arrays = {name: archive[name] for name in archive.files}
             self._same_arrays(arrays, file)
             check_draws(self.index, arrays, file)
+            check_units(self.dimensions, arrays, self.path.name)
             if "unit" not in arrays:
                 arrays["unit"] = np.ones((arrays["mu"].shape[0], len(self.index["dimensions"])))
             self._draws = arrays

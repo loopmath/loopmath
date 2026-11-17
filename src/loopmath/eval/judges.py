@@ -52,7 +52,10 @@ weigh the draws by a unit that differs from draw to draw, and could pick another
 choices names its unit in `unit`.
 
 Family effects per model judge: `own_family` and `reference_family` contrasts (the effect on that family
-minus the mean effect on the other families), flagged when the 90% interval excludes 0.
+minus the mean effect on the other families), flagged when the 90% interval excludes 0. `effect` is in
+the dimension's stated unit; the flag reads the interval of the same draws in the unit the engine fitted
+in, named in `decided_in` (Units), since a percentile interpolates between two draws whose units can
+differ.
 
 Across judges: a table of (judge, repeats) choices per dimension with error and cost, the cheapest choice
 for `--target-error` and the best within `--budget-usd`, whether a second judge beats one more repeat,
@@ -660,10 +663,13 @@ class _Report:
                     continue
                 if not self._flag(name if name == "reference_family" else "own_family", [name], jid, dim["id"]):
                     continue
-                summary = stat(x)
-                block["dims"].append({"dimension": dim["id"], "effect": summary,
+                # the flag reads the interval in the unit the engine fitted in (Units): a percentile
+                # interpolates between two draws, and a unit that differs between them can move it past 0
+                decided = stat(x * self.unit[:, d])
+                block["dims"].append({"dimension": dim["id"], "effect": stat(x),
                                       "own": _scaled(x, own_factor(dim), sign=_sign(dim)),
-                                      "excludes_zero": bool(summary["lo"] > 0 or summary["hi"] < 0)})
+                                      "excludes_zero": bool(decided["lo"] > 0 or decided["hi"] < 0),
+                                      "decided_in": (dim.get("unit") or {}).get("fitted_in")})
             block["measured"] = bool(block["dims"])
             return block
 
@@ -972,7 +978,8 @@ def render(payload: dict) -> str:
             if block["state"] == "confounded":
                 lines.append(f"  {label} ({block['family']}): confounded with the own-family effect")
             for row in block["dims"]:
-                mark = "  <- interval excludes 0" if row["excludes_zero"] else ""
+                mark = ("  <- interval excludes 0" + UNIT_WORDS.get(row.get("decided_in"), "")
+                        if row["excludes_zero"] else "")
                 lines.append(f"  {label} ({block['family']}) on {row['dimension']}: {_interval(row['effect'])}{mark}")
     for block in payload["choices"]:
         for name, label in (("target_error", "cheapest choice for error"), ("budget", "best choice within USD")):

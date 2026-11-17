@@ -18,6 +18,7 @@ import pytest
 from scipy.special import ndtr, ndtri
 
 from loopmath.eval import contracts as C
+from loopmath.eval import designcheck as DC
 from loopmath.eval import engine_pymc
 from loopmath.eval import fit as FIT
 from loopmath.eval import fitfile as F
@@ -608,3 +609,177 @@ def test_rubric_spread_flag_and_ranks_are_read_in_the_fitted_unit(fits, tmp_path
     row = next(row for row in hb["spread"]["dims"] if row["dimension"] == "final/overall")
     assert row["flag"] is False and row["spread"]["mean"] == pytest.approx(0.06, rel=1e-9)
     assert [rank["rank_overall"] for rank in hb["overall"][0]["arms"]["ranks"]] == [3, 2, 1]
+
+
+def _relative_criterion(old, unit_of_pairs: float = 2.0) -> tuple[dict, np.ndarray, dict]:
+    """Draws where the pairs-only `final/overall` arm means are -0.5, 0.5 and 0 with no spread, the rubric
+    that makes it a criterion, and a unit of `unit_of_pairs` on it."""
+    draws = _engine_draws(old)
+    S = draws["q_run"].shape[0]
+    draws["mu"][:, :, 4] = [-0.5, 0.5, 0.0]
+    draws["sd_input"][:, 4] = draws["sd_run"][:, 4] = 0.0
+    draws["q_run"][:, :, 4] = draws["mu"][:, old.run_arm, 4]
+    unit = np.ones((S, 5))
+    unit[:, 4] = unit_of_pairs
+    rubric = testing.example_rubric()
+    rubric["components"][4]["role"] = "criterion"
+    return draws, unit, rubric
+
+
+def _census(fit, arm: str, component: str, value) -> tuple[list[dict], dict]:
+    """A score by the reviewer on every run of `arm`, each naming its assignment of one census plan."""
+    runs = [run for r, run in enumerate(fit.index["runs"]) if fit.run_arm[r] == fit.arm(arm)]
+    rows = [{"id": f"a{n:03}", "ask": "score", "target": {"run": run}, "components": [component], "kind": "active",
+             "inclusion_probability": 1.0, "minutes": 3} for n, run in enumerate(runs)]
+    plan = C.validate_labels({"schema": C.SCHEMA_LABELS, "mode": "active", "reviewer": "reviewer", "assignments": rows})
+    scores = [C.validate_score({"schema": C.SCHEMA_SCORES, "id": f"s{n:03}", "run": run, "component": component,
+                                "judge": "reviewer", "call": f"s{n:03}-call", "value": value, "rubric": "example@1",
+                                "observed_at": "2026-01-05T10:00:00+00:00", "assignment": f"a{n:03}"})
+              for n, run in enumerate(runs)]
+    return scores, plan
+
+
+def test_the_design_check_reads_the_model_in_the_fitted_unit(fits, tmp_path):
+    """`eval value --check design` puts the model's expected reading beside the labels. On a relative
+    criterion a score of 5 on 0 to 10 is 0.5, and the contender's latent quality is 0.5 in the fitted unit,
+    0.25 in a stated unit twice as large: read there, the gap would be 0.25 and flagged. Both files give the
+    fitted figures, and an ordinary binary check is the same in both too."""
+    old, new, _ = fits
+    a, b = write_pair(tmp_path, old.meta, *_relative_criterion(old)[:2], rubric=_relative_criterion(old)[2])
+    scores, plan = _census(a, "strong-draft", "overall", 5.0)
+    ra, rb = DC.check(a, scores, [plan]), DC.check(b, scores, [plan])
+    _close(ra, rb, "relative")
+    cell = rb["cells"][0]
+    assert (cell["arm"], cell["dimension"], cell["n_labels"]) == ("strong-draft", "final/overall", 12)
+    assert cell["design"]["mean"] == pytest.approx(0.5, abs=1e-12) and cell["model"]["mean"] == pytest.approx(0.5)
+    assert cell["gap"] == pytest.approx(0.0, abs=1e-12) and cell["flagged"] is False and rb["flagged"] == 0
+    scores, plan = _census(old, "strong-draft", "numbers_right", 1)
+    _close(DC.check(old, scores, [plan]), DC.check(new, scores, [plan]), "binary")
+
+
+def _family_pair(old, tmp_path, x: np.ndarray, unit_of_draw: np.ndarray):
+    """The strong judge's own-family contrast on `final/numbers_right` is `x` per draw in the fitted unit,
+    with a unit of `unit_of_draw` per draw there."""
+    draws = _engine_draws(old)
+    j = old.judge("strong")
+    own = old.index["families"].index(old["judges"][j]["model"]["family"])
+    draws["family"][:, j, :, 0] = 0.0
+    draws["family"][:, j, own, 0] = x                  # the other families at 0: the contrast is x
+    unit = np.ones((x.size, 5))
+    unit[:, 0] = unit_of_draw
+    return write_pair(tmp_path, old.meta, draws, unit)
+
+
+def test_family_flags_read_the_interval_in_the_fitted_unit(fits, tmp_path):
+    """A percentile interpolates between two draws: 400 draws, -0.2 in 20 and 0.01 in 380 put the 5th
+    percentile at 0.05 x -0.2 + 0.95 x 0.01 = -0.0005, no flag. With a unit of 10 on the negative draws and
+    1.1 on the others the stated interval starts at 0.05 x -0.02 + 0.95 x 0.01 / 1.1 = 0.00764, above 0;
+    the flag still reads the fitted interval. Mirrored, a stated interval across 0 keeps the fitted flag,
+    and the text says which unit the flag read."""
+    old, _, _ = fits
+    S = old.draws["mu"].shape[0]
+    assert S == 400
+    negative = np.arange(S) < 20
+    a, b = _family_pair(old, tmp_path / "up", np.where(negative, -0.2, 0.01), np.where(negative, 10.0, 1.1))
+    rows = [next(row for row in J.report(f)["judges"] if row["id"] == "strong")["family"]["own_family"]["dims"][0]
+            for f in (a, b)]
+    assert rows[0]["effect"]["lo"] == pytest.approx(-0.0005, rel=1e-9) and rows[0]["excludes_zero"] is False
+    assert rows[1]["effect"]["lo"] == pytest.approx(0.05 * -0.02 + 0.95 * 0.01 / 1.1, rel=1e-9)
+    assert rows[1]["excludes_zero"] is False and rows[1]["decided_in"] == "call_noise"
+    flags = lambda f: [[row["excludes_zero"] for row in judge["family"]["own_family"]["dims"]]  # noqa: E731
+                       for judge in J.report(f)["judges"] if judge["family"]]
+    assert flags(a) == flags(b)
+    # mirrored: -0.1 in 20 draws with unit 1, 0.01 in 380 with unit 10
+    a, b = _family_pair(old, tmp_path / "down", np.where(negative, -0.1, 0.01), np.where(negative, 1.0, 10.0))
+    row = next(row for row in J.report(b)["judges"] if row["id"] == "strong")["family"]["own_family"]["dims"][0]
+    assert row["effect"]["lo"] == pytest.approx(0.05 * -0.1 + 0.95 * 0.001, rel=1e-9)   # the stated interval: across 0
+    assert row["excludes_zero"] is True                                       # fitted: 0.05 x -0.1 + 0.95 x 0.01 > 0
+    old_row = next(row for row in J.report(a)["judges"] if row["id"] == "strong")["family"]["own_family"]["dims"][0]
+    assert old_row["effect"]["lo"] == pytest.approx(0.0045, rel=1e-9) and old_row["excludes_zero"] is True
+    assert any(line.endswith("<- interval excludes 0 (in the anchors' call noise)") and "final/numbers_right" in line
+               for line in J.render(J.report(b)).splitlines())
+
+
+def _fixed_scale_draws(old) -> dict:
+    """Two weighted fixed-scale criteria with no spread: clarity 0.8, 0.5, 0.1 and depth 0.2, 0.4, 0.1."""
+    draws = _engine_draws(old)
+    draws["mu"][:, :, 1] = [0.8, 0.5, 0.1]
+    draws["mu"][:, :, 2] = [0.2, 0.4, 0.1]
+    draws["sd_input"][:, 1:3] = draws["sd_run"][:, 1:3] = 0.0
+    draws["q_run"][:, :, 1:3] = draws["mu"][:, old.run_arm, 1:3]
+    return draws
+
+
+def test_unit_draws_agree_with_the_unit_records(fits, tmp_path):
+    """Where the stated and fitted units are one (the data fix the scale), or no factor is recorded, the
+    unit draws are 1; where a factor is recorded it is the stat of the unit draws. The writer and the reader
+    both refuse anything else: a unit of 2 on depth would double its weight in every decision (here 1.2
+    against 1.3, adopt, where the true values are 1.0 against 0.9, reject)."""
+    old, _, _ = fits
+    draws = _fixed_scale_draws(old)
+    S = draws["mu"].shape[0]
+    spec = Q.compile_value(_value({"clarity": 1.0, "depth": 1.0}), old.dimensions)
+    a, b = write_pair(tmp_path / "same", old.meta, draws, np.ones((S, 5)))
+    ra, rb = V.report(a, spec, 0), V.report(b, spec, 0)
+    _close(ra, rb, "value")
+    assert [row["value"]["mean"] for row in rb["arms"]] == pytest.approx([1.0, 0.9, 0.2], abs=1e-12)
+    assert (rb["comparisons"][0]["arm"], rb["comparisons"][0]["verdict"]) == ("strong-draft", "reject")
+    # the writer refuses a unit on a dimension the data fix
+    unit = np.ones((S, 5))
+    unit[:, 2] = 2.0
+    fixed = ('dimensions[2].unit: the unit draws of final/depth are not 1, and it is fitted in the unit it is '
+             'stated in, "scale"; write 1 in every draw: there is nothing to convert')
+    with pytest.raises(C.ContractError) as caught:
+        write_pair(tmp_path / "doubled", old.meta, draws, unit)
+    assert str(caught.value) == "fit.json: " + fixed
+    assert not (tmp_path / "doubled" / "reported").exists()
+    # and so does the reader, given such a file with a digest that matches
+    meta = json.loads(b.path.read_text(encoding="utf-8"))
+    good = {name: np.array(x) for name, x in b.draws.items()}
+
+    def refused(name, change_meta=None, unit_draws=None) -> str:
+        m = json.loads(json.dumps(meta))
+        if change_meta:
+            change_meta(m)
+        d = dict(good, unit=good["unit"] if unit_draws is None else unit_draws)
+        with pytest.raises(C.ContractError) as caught:
+            F.read_fit(_archive(tmp_path / name, m, d)).draws
+        return str(caught.value)
+
+    assert refused("fixed", unit_draws=unit) == "fit.json: " + fixed
+    noisy = np.ones((S, 5))
+    noisy[:, 0] = 1.5
+    assert refused("no-factor", lambda m: m["dimensions"][0]["unit"].update(factor=None), noisy) == (
+        "fit.json: dimensions[0].unit.factor: the unit draws of final/numbers_right are not 1, and its unit has "
+        "no factor; write the stat of the unit draws, or 1 in every draw")
+    assert refused("wrong-factor", unit_draws=noisy) == (
+        "fit.json: dimensions[0].unit.factor: the factor of final/numbers_right is not the stat of its unit "
+        "draws; write the stat of the unit draws")
+    # a null factor with unit draws of 1 is the stated unit read as the fitted one
+    bare = json.loads(json.dumps(meta))
+    for dim in bare["dimensions"]:
+        dim["unit"]["factor"] = None
+    assert np.array_equal(F.read_fit(_archive(tmp_path / "bare", bare, good)).draws["unit"], np.ones((S, 5)))
+
+
+def test_the_synthetic_writer_keeps_identity_units_and_records_its_factors(tmp_path):
+    """`testing.build_fit` writes a truth's `unit` as it is in every draw, with no posterior noise, 1 on the
+    dimensions the data fix, and its stat as the factor where there is one; it refuses a unit on a
+    dimension the data fix and writes nothing. Without a `unit` it writes no unit draws and no factor."""
+    built = testing.build_fit(tmp_path / "ones" / "fit.json", truth={"unit": np.ones(5)}, n_draws=400,
+                              posterior_sd=0.05, seed=19)
+    assert np.array_equal(built.fit.draws["unit"], np.ones((400, 5)))
+    built = testing.build_fit(tmp_path / "factor" / "fit.json", truth={"unit": [1.5, 1.0, 1.0, 1.0, 1.0]},
+                              posterior_sd=0.05)
+    assert built.fit.dimensions[0]["unit"] == {"unit": "total_noise", "fitted_in": "call_noise",
+                                               "judges": ["reviewer"],
+                                               "factor": {"mean": 1.5, "sd": 0.0, "lo": 1.5, "hi": 1.5}}
+    assert all(dim["unit"]["factor"] is None for dim in built.fit.dimensions[1:])
+    assert np.array_equal(built.fit.draws["unit"][:, 0], np.full(200, 1.5))
+    with pytest.raises(C.ContractError) as caught:
+        testing.build_fit(tmp_path / "refused" / "fit.json", truth={"unit": [1.0, 1.0, 2.0, 1.0, 1.0]})
+    assert str(caught.value).startswith("fit.json: dimensions[2].unit: the unit draws of final/depth are not 1")
+    assert not (tmp_path / "refused").exists()
+    plain = testing.build_fit(tmp_path / "plain" / "fit.json")
+    assert "unit" not in plain.fit["draws"]["arrays"] and all(dim["unit"]["factor"] is None
+                                                               for dim in plain.fit.dimensions)

@@ -62,7 +62,9 @@ noise term of a reading by that reviewer (judge by output, call noise, judge by 
 and `Phi((q + bias) / sqrt(1 + s^2))` for `items`. A person has no family effect. On `levels`, `binary`
 and `items` the expected reading depends on `s`: when the fit says one of the three terms is not
 measured by the design (`prior_only` or `confounded`), the cell shows the design side and is not
-checked.
+checked. The model's side, its gap and the flag are computed on the draws in the unit the engine fitted
+them in (`units.in_fitted_unit`), so a fit file of either schema gives the same check; a score on 0 to 1
+is read against the latent quality of a relative dimension there.
 
 The gap between the two is flagged when it is larger than 1.645 times their joint sd. In the joint sd
 the design side is taken without the finite population correction: the model's side is an expectation,
@@ -88,6 +90,7 @@ from scipy.stats import t as student
 from . import contracts as C
 from . import fitfile as F
 from . import quality as Q
+from .units import in_fitted_unit
 
 LEVEL = 0.90
 BOOTSTRAP_BELOW = 50
@@ -386,7 +389,7 @@ def check(fit: F.Fit, scores: Sequence[dict], plans: Sequence[dict], *, seed: in
                                               "pi": float(plan_row["inclusion_probability"])})
 
     rng = np.random.default_rng(seed)
-    draws = fit.draws
+    draws = in_fitted_unit(fit.draws)                     # the model's side decides in the fitted unit
     z = float(ndtri(0.5 + LEVEL / 2))
     run_arm = fit.run_arm
     cells = []

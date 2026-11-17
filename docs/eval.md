@@ -123,6 +123,8 @@ with `--allow-simulated`, so that simulated runs never mix into real ones by acc
   judge, by call (`halo_call`).
 - **Family effect** is the extra a judge gives to outputs written by its own model family, or by the family that
   wrote the reference answer it was shown. It is reported with a range and flagged when the range excludes 0.
+  On a yes or no component the flag reads the range on the scale the engine fits, which can differ a little
+  from the range shown; the marker then says "(in the anchors' call noise)".
 - **Relative** marks a component that has comparisons but no scores. Its arms can be ordered but not placed on the
   scale, so a gate on it is refused.
 - **p_pass** is the chance that one output of an arm passes every gate. It is computed from the joint fit: gated

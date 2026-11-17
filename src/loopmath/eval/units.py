@@ -158,8 +158,8 @@ def records(dims: Sequence[dict], relative: Sequence[str], who: Sequence[Sequenc
     """Per dimension, the `unit` record of the fit file: `{"unit", "fitted_in", "judges", "factor"}`.
 
     `who[d]` lists the judges whose noise is the unit (null for a dimension the data fix, or when not
-    known); `unit[S, D]` gives the factor's stat on the dimensions it applies to (null when the draws
-    were written in the reported unit directly, as `testing.py` does)."""
+    known); `unit[S, D]` gives the factor's stat on the dimensions it applies to (null when no conversion
+    is recorded: the unit draws are then 1, `fitfile.check_units`)."""
     from .fitfile import stat
 
     out = []
