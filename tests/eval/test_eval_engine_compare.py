@@ -10,7 +10,9 @@ seconds; the last ones run the harness with real fits on small studies.
 - The two ways a pooled check misleads, built as records: pooled coverage of 90% with one parameter at
   0%, and one false family contrast in ten in every study. The old checks pass both; these must not.
 - A class whose truth is 0 in every row: it over-covers by nature, so it is judged by its false alarms
-  once per study (limit 10%) and not by the band; one nonzero truth puts it back in the band.
+  once per study (limit 10%) and not by the band; one nonzero truth puts it back in the band. An item
+  with nothing to judge (no such class, or no class left for the band) is not applicable: it never
+  blocks a spec, and never stands in for missing studies or an empty inventory.
 - Missing evidence is never a pass: a gate with specs or a scale kind missing, an unconverged or failed
   size-target timing, constant, missing or non-finite draws of an expected parameter, a class seen in
   few studies, and records made without the family measurement.
@@ -355,9 +357,68 @@ def test_one_nonzero_truth_keeps_a_class_in_the_band():
     assert items["coverage_per_class_in_band"]["state"] == "fail"
     assert summary["gate"]["classes_out_of_band"] == ["family"]
     assert items["no_parameter_outside_band"]["state"] == "fail"
-    assert items["zero_classes_false_alarms_within_limit"]["state"] == "pass"
+    assert items["zero_classes_false_alarms_within_limit"]["state"] == "not applicable"
     assert "no gated class has truth 0" in items["zero_classes_false_alarms_within_limit"]["why"]
     assert summary["gate"]["state"] == "fail"
+
+
+@pytest.mark.parametrize("studies", [200, 400, 1000])
+def test_a_spec_whose_every_gated_class_has_truth_0_can_pass(studies):
+    """One arm mean in each study with truth 0, mean 0, sd 0.1 and interval [-0.2, 0.2], the family measured
+    with no contrast: every gated class has truth 0 in every row, so no class is left for the band. The
+    band item is not applicable (not incomplete for ever); the false-alarm item counts 0 studies, whose exact
+    interval is [0, 1 - 0.025^(1/n)]; and the spec passes."""
+    summary = RS.summarise(synthetic(studies, lambda seed: ([zero_row("mu", "mu[a,d]", False)], [])))
+    assert set(summary["zero_classes"]) == {"mu"}
+    z = summary["zero_classes"]["mu"]
+    assert (z["studies"], z["studies_flagged"]) == (studies, 0)
+    assert z["lo"] == 0.0 and z["hi"] == pytest.approx(1.0 - 0.025 ** (1.0 / studies), abs=1e-9)
+    items = summary["gate"]["items"]
+    band = items["coverage_per_class_in_band"]
+    assert band["state"] == "not applicable" and "every gated class has truth 0" in band["why"], band
+    assert items["zero_classes_false_alarms_within_limit"]["state"] == "pass"
+    assert items["no_parameter_outside_band"]["state"] == "pass"
+    assert "1 more in classes judged by false alarms" in items["no_parameter_outside_band"]["why"]
+    assert {k for k, v in items.items() if v["state"] != "pass"} == {"coverage_per_class_in_band"}
+    assert summary["gate"]["state"] == "pass" and summary["gate"]["pass"] is True
+
+
+def test_not_applicable_never_stands_in_for_missing_evidence():
+    """The same all-zero spec at 50 of 200 studies: the band item is still not applicable, but the study
+    count item is incomplete, so the spec is. Records with no gated class at all measured nothing: there
+    the band item stays incomplete, and so does the spec."""
+    short = RS.summarise(synthetic(50, lambda seed: ([zero_row("mu", "mu[a,d]", False)], [])))
+    assert short["gate"]["items"]["coverage_per_class_in_band"]["state"] == "not applicable"
+    assert short["gate"]["items"]["enough_studies"]["state"] == "incomplete"
+    assert short["gate"]["state"] == "incomplete"
+    empty = RS.summarise(synthetic(200, lambda seed: ([], [])))
+    assert empty["classes"] == {} and empty["zero_classes"] == {}
+    assert empty["gate"]["items"]["coverage_per_class_in_band"]["state"] == "incomplete"
+    assert empty["gate"]["items"]["inventory_complete"]["state"] == "incomplete"
+    assert empty["gate"]["state"] == "incomplete"
+
+
+@pytest.mark.parametrize("studies, state", [(50, "incomplete"), (199, "incomplete"), (200, "pass"), (400, "pass")])
+def test_a_spec_with_no_truth_0_class_marks_that_item_not_applicable(studies, state):
+    """A spec whose only class has truth 0.5: the false-alarm item has nothing to judge at any count, so it
+    is not applicable, below and at the 200 studies the gate wants. The spec is incomplete below 200 because
+    of the study count, and passes at 200 and above."""
+    summary = RS.summarise(probe_records(studies=studies))
+    item = summary["gate"]["items"]["zero_classes_false_alarms_within_limit"]
+    assert item == {"state": "not applicable", "why": "no gated class has truth 0 in every row"}
+    assert summary["gate"]["items"]["enough_studies"]["state"] == ("pass" if studies >= 200 else "incomplete")
+    assert summary["gate"]["state"] == state
+    shown = "\n".join(bench_module().render_summary("probe", summary))
+    assert "zero_classes_false_alarms_within_limit: not applicable" in shown
+
+
+def test_combine_leaves_not_applicable_items_out():
+    """`not applicable` never blocks and never passes alone: with nothing else, nothing was judged."""
+    assert RS.combine(["pass", "not applicable"]) == "pass"
+    assert RS.combine(["incomplete", "not applicable"]) == "incomplete"
+    assert RS.combine(["fail", "not applicable", "pass"]) == "fail"
+    assert RS.combine(["not applicable"]) == "incomplete"
+    assert RS.combine([]) == "incomplete"
 
 
 # ---------------------------------------------------------------------------------------------------

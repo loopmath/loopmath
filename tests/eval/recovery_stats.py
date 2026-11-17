@@ -102,12 +102,15 @@ Statistics
   misses, that is if its interval excludes 0 (a degenerate row is a miss); the share of studies must
   stay within `ZERO_CLASS_LIMIT`, as for family contrasts. The class and its parameters stay in the
   tables with their coverage; only the two band items of the gate leave them out, and the rule is its
-  own gate item. Every other class keeps the two-sided band.
+  own gate item. Every other class keeps the two-sided band. When every gated class is judged this way,
+  the band item is `not applicable`; when no class is, the false-alarm item is. A spec with no gated
+  class at all has nothing measured, and its band item stays incomplete.
 
 The gate (`spec_gate`, `engine_gate`, `gate_scope`) is reported here, not decided: people decide it. Its
 required specs are named here (`CATALOG_SPECS`, `REPEATED_SCALE_SPECS`), not taken from the records
-found; a spec that is missing leaves its items incomplete. A narrower scope needs a note saying who
-approved it, and must still read both `binary` and `levels` repeatedly.
+found; a spec that is missing leaves its items incomplete. An item with nothing to judge in a spec is
+`not applicable` and never blocks it; the study count and inventory items still apply. A narrower
+scope needs a note saying who approved it, and must still read both `binary` and `levels` repeatedly.
 
 All data is synthetic.
 """
@@ -144,6 +147,7 @@ ARM_CLASSES = ("mu", "arm_difference")
 SIZE_TARGET = "size-target"
 SIZE_COUNTS = {"runs": 500, "readings": 20000, "dimensions": 5, "judges": 4}
 PASS, FAIL, INCOMPLETE = "pass", "fail", "incomplete"
+NOT_APPLICABLE = "not applicable"   # an item with nothing to judge in this spec; it never blocks the spec
 
 # The required matrix of the gate, named here so that records found cannot define it. A test checks it
 # against the catalog.
@@ -783,8 +787,11 @@ def place(lo: float | None, hi: float | None, band: tuple[float, float] = BAND) 
 
 
 def combine(states: Iterable[str]) -> str:
-    """`fail` if any item fails, else `incomplete` if any is incomplete, else `pass`."""
-    states = list(states)
+    """`fail` if any item fails, else `incomplete` if any is incomplete, else `pass`. Items that are
+    `not applicable` are left out; if nothing else is left, nothing was judged, which is incomplete."""
+    states = [state for state in states if state != NOT_APPLICABLE]
+    if not states:
+        return INCOMPLETE
     return FAIL if FAIL in states else (INCOMPLETE if INCOMPLETE in states else PASS)
 
 
@@ -991,7 +998,8 @@ def _spread(values: Sequence[float]) -> dict:
 
 
 def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed: int = GATE_STUDIES) -> dict:
-    """The spec's part of the gate, item by item: `pass`, `fail` or `incomplete`, with the reasons."""
+    """The spec's part of the gate, item by item: `pass`, `fail`, `incomplete` or `not applicable` (nothing
+    to judge here, which never blocks the spec), with the reasons."""
     enough = summary["studies"] >= studies_needed
     until = PASS if enough else INCOMPLETE              # what a clean item is worth before enough studies
     gated = {k: v for k, v in summary["classes"].items() if v["gated"] and v["coverage"] is not None}
@@ -1003,7 +1011,7 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
     outside_zero = len(summary["parameters_outside"]) - len(outside)
     over = {k: z for k, z in zero.items() if z["within_limit"] is False}
     if not zero:
-        zero_state, zero_why = until, "no gated class has truth 0 in every row"
+        zero_state, zero_why = NOT_APPLICABLE, "no gated class has truth 0 in every row"
     elif over:
         zero_state = FAIL if enough or any(z["place"] == "above" for z in over.values()) else INCOMPLETE
         zero_why = "; ".join(f"{k}: share of studies {z['share_of_studies']:.3f} above {z['limit']}"
@@ -1040,8 +1048,10 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
                                + ("; no gated class" if not gated else "")),
         "no_degenerate_parameters": (FAIL if summary["degenerate_gated"] else PASS,
                                      f"{len(summary['degenerate_gated'])} degenerate gated parameters"),
-        "coverage_per_class_in_band": ((FAIL if enough else INCOMPLETE) if low else (until if banded else INCOMPLETE),
-                                       f"classes out of band: {low}"
+        "coverage_per_class_in_band": ((FAIL if enough else INCOMPLETE) if low
+                                       else until if banded else NOT_APPLICABLE if gated else INCOMPLETE,
+                                       (f"classes out of band: {low}" if banded or not gated
+                                        else "every gated class has truth 0 in every row")
                                        + (f"; judged by false alarms instead: {sorted(zero)}" if zero else "")),
         "no_parameter_outside_band": (FAIL if outside else until,
                                       f"{len(outside)} parameters outside"
