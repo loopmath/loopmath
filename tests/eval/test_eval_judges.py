@@ -628,8 +628,20 @@ def test_halo_is_reported_only_when_the_split_is_identified(tmp_path):
     payload = J.report(exact(tmp_path, terms=terms).fit)
     strong = judge_row(payload, "strong")["halo"]
     assert strong["measured"] is True and strong["target"]["mean"] == pytest.approx(0.2)
-    assert strong["call"]["mean"] == pytest.approx(0.1)
+    # `strong` reads one component per call: a shared part of a call does not exist, so no number for it
+    assert strong["call"] is None
+    assert ("  halo: shared share of output disagreement 0.20 (0.20 to 0.20), of call noise does not apply "
+            "(the judge reads one component per call)") in J.render(payload)
+    assert "of call noise 0.00" not in J.render(payload)
     assert judge_row(payload, "cheap")["halo"]["measured"] is False
+    # the same judge in panel mode: one call reads several components, and the share is reported
+    judges = testing.example_judges()
+    judges["judges"][1]["mode"] = "panel"
+    judges["judges"][1]["components"] = ["clarity", "depth"]
+    payload = J.report(exact(tmp_path, "panel.json", judges=C.validate_judges(judges), terms=terms).fit)
+    panel = judge_row(payload, "strong")["halo"]
+    assert panel["measured"] is True and panel["call"]["mean"] == pytest.approx(0.1)
+    assert "of call noise 0.10 (0.10 to 0.10)" in J.render(payload)
 
 
 # ---------------------------------------------------------------------------------------------------
