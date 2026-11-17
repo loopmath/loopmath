@@ -1,0 +1,61 @@
+{
+ "ocp": "0.4",
+ "producer": {
+  "name": "example",
+  "version": "1"
+ },
+ "privacy": {
+  "profile": "metadata_only"
+ },
+ "run": {
+  "id": "r4",
+  "task": {
+   "id": "case-02"
+  },
+  "labels": {
+   "arm": "strong"
+  },
+  "configuration": {
+   "workflow": {
+    "pieces": [
+     {
+      "id": "final",
+      "role": "dev"
+     }
+    ],
+    "edges": []
+   },
+   "settings": {
+    "final": {
+     "harness": "cli",
+     "effort": "low",
+     "model": {
+      "id": "model-strong",
+      "family": "strong"
+     }
+    }
+   }
+  },
+  "signals": [],
+  "preferences": [
+   {
+    "id": "g1",
+    "slate": "eval.case-02",
+    "winner": "r4",
+    "members": [
+     "r3",
+     "r4"
+    ],
+    "observed_at": "2026-02-03T10:06:00-08:00",
+    "judge": {
+     "kind": "model",
+     "model": "judge-1"
+    }
+   }
+  ]
+ },
+ "nodes": [],
+ "edges": [],
+ "attempts": [],
+ "artifacts": []
+}

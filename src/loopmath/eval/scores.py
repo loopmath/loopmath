@@ -238,21 +238,6 @@ def _other(side: str) -> str:
     return "b" if side == "a" else "a"
 
 
-def _as_recorded(row: dict, kept: str) -> str:
-    """The record a row was made from: the id it has in the tool that made it (`ext[kept]["id"]` when the
-    study names the row otherwise, else the row's id), and the row's content without the names the study
-    gives it (`id`, `call`, `replaces`). Two rows with one answer are one record imported under two ids."""
-    ext = dict(row.get("ext") or {})
-    own = row["id"]
-    if isinstance(ext.get(kept), dict):
-        held = dict(ext.pop(kept))
-        own = held.pop("id", own)
-        if held:
-            ext[kept] = held
-    body = {key: value for key, value in row.items() if key not in ("id", "call", "replaces", "ext")}
-    return json.dumps([own, body, ext], sort_keys=True, ensure_ascii=False)
-
-
 def _join_score(raw: dict, plan: dict, used: set) -> str | None:
     """Fill a form row from the assignment that asked for it. Returns why it cannot be joined, or None."""
     if "assignment" in raw:
@@ -313,17 +298,18 @@ def _join_pair(raw: dict, plan: dict, used: set) -> str | None:
 def _table_csv(path: str, table: str, rubric: dict | None, plan: dict | None) -> dict:
     """Read a CSV of readings (`table` is `scores`) or of pairs.
 
-    Returns `{"rows", "refused", "not_used", "ignored", "file_time"}`. `rows` holds `(raw row, source)` and
-    `file_time` the ids of the rows whose time is the file's. A row with an empty value or verdict is a blank
-    line of a form: it is listed in `not_used`. Without an `id` column a row's id is made from its content,
-    so the same file gives the same ids. Without a `call`, a reading is its own call; item lines of one
-    target, component and judge share one. Without `observed_at`, the file's modification time is used."""
+    Returns `{"rows", "refused", "not_used", "ignored", "file_time", "modified"}`. `rows` holds `(raw row,
+    source)`, `file_time` the ids of the rows whose time is the file's and `modified` that time. A row with
+    an empty value or verdict is a blank line of a form: it is listed in `not_used`. Without an `id` column
+    a row's id is made from its content, so the same file gives the same ids. Without a `call`, a reading is
+    its own call; item lines of one target, component and judge share one. Without `observed_at`, the
+    file's modification time is used."""
     name, header, records, modified = _csv(path)
     pairs = table == "pairs"
     columns = PAIR_COLUMNS if pairs else SCORE_COLUMNS
     _need_columns(name, header, ("verdict|choice",) if pairs else ("component", "value"), columns, rubric)
     known = columns + MORE_COLUMNS + (("choice",) if pairs else ())
-    out: dict = {"rows": [], "refused": [], "not_used": [], "file_time": set(),
+    out: dict = {"rows": [], "refused": [], "not_used": [], "file_time": set(), "modified": modified,
                  "ignored": [column for column in header if column and column not in known]}
     text_columns = [column for column in known if column not in ("value", "of", "cost_usd", "choice", "verdict")]
     seen: Counter = Counter()
@@ -417,11 +403,14 @@ def import_(args: argparse.Namespace) -> int:
                 incoming[name] += [(row, batch.source.get((name, str(row.get(key))), ""))
                                    for row in getattr(batch, name)]
             not_used += batch.not_used
-    for path, table in ((args.csv, "scores"), (args.pairs_csv, "pairs")):
+    file_times: dict[str, str] = {}  # per CSV source, the time it gave the rows that had none
+    for path, table, role in ((args.csv, "scores", "csv"), (args.pairs_csv, "pairs", "pairs_csv")):
         if path:
             read = _table_csv(path, table, rubric, plan)
             incoming[table] += read["rows"]
             file_time[table] |= read["file_time"]
+            if read["file_time"]:
+                file_times[role] = read["modified"]
             refused += read["refused"]
             not_used += read["not_used"]
             if read["ignored"]:
@@ -437,7 +426,7 @@ def import_(args: argparse.Namespace) -> int:
     files.update({f"study.{name}": folder / file for name, (file, _) in TABLES.items() if (folder / file).is_file()})
     inputs = C.input_digests(files)
     options = {"allow_simulated": bool(args.allow_simulated), "pair_component": args.pair_component,
-               "rubric": None if rubric is None else C.rubric_ref(rubric)}
+               "rubric": None if rubric is None else C.rubric_ref(rubric), "file_times": file_times}
 
     tallies: dict[str, Counter] = {}
     merged: dict[str, list[dict]] = {}
@@ -447,7 +436,8 @@ def import_(args: argparse.Namespace) -> int:
         key, validate = C.LINE_KEY[schema], C.LINES[schema]
         rows = list(tables[name])
         have = {row[key]: row for row in rows}
-        recorded: dict[str, str] | None = None  # the study's rows by the record they were made from
+        before = {row[key]: row for row in tables[name]}  # the study's rows as they were
+        inputs_of: dict[str, str] | None = None  # run id to input id, the study's runs and the new ones
         tally = Counter({"refused": sum(1 for entry in refused if entry["table"] == COUNTED[name])})
         for raw, source in incoming[name]:
             reason = None
@@ -474,16 +464,18 @@ def import_(args: argparse.Namespace) -> int:
                           "--allow-simulated mixes the two")
             held = (row.get("ext") or {}).get(kept) if row is not None and kept is not None else None
             if reason is None and isinstance(held, dict) and "id" in held and name in ("scores", "pairs"):
-                # a record of another tool that the study holds under another id (0.4.4 named such records
-                # otherwise): taking it again would read it twice
-                if recorded is None:
-                    recorded = {_as_recorded(old, kept): old[key] for old in tables[name]}
-                earlier = recorded.get(_as_recorded(row, kept))
-                if earlier is not None:
-                    reason = (f'the {"signal" if name == "scores" else "preference"} "{held["id"]}" is already in the '
-                              f'study as the {NOUN[name]} "{earlier}", and would now be the {NOUN[name]} '
-                              f'"{row[key]}" (loopmath 0.4.4 named it otherwise); import the documents into a new '
-                              "study folder")
+                # a record of another tool that a study made by loopmath 0.4.4 holds under the id 0.4.4 gave
+                # it: whatever its content now, taking it again would read one record twice
+                if inputs_of is None:
+                    inputs_of = {run["run"]: run["input"] for run in merged["runs"]}
+                origin = adapter.source_of(name, row, inputs_of)
+                old = before.get(adapter.id_in_0_4_4(origin))
+                if old is not None and old[key] != row[key] and adapter.source_of(name, old, inputs_of) == origin:
+                    kind, scope, own = origin
+                    reason = (f'the {kind} "{own}" of the {"run" if kind == "signal" else "slate"} "{scope}" is '
+                              f'already in the study as the {NOUN[name]} "{old[key]}", and would now be the '
+                              f'{NOUN[name]} "{row[key]}" (loopmath 0.4.4 named it otherwise); import the documents '
+                              "into a new study folder")
             if reason is not None:
                 tally["refused"] += 1
                 refused.append({"table": COUNTED[name], "id": raw.get(key), "source": source, "reason": reason})
@@ -970,7 +962,7 @@ def export(args: argparse.Namespace) -> int:
             raise _usage("scores export", "--judges", f'no reading or pair of the judge "{name}" in the study',
                          f"use one of {', '.join(judged)}" if judged else "the study holds no reading or pair",
                          "unknown_judge")
-    files: dict[str, Any] = {role: path for role, path in study.files().items() if role != "items"}
+    files: dict[str, Any] = dict(study.files())  # read_study reads and checks items.jsonl too
     persons: list[str] = []
     if (study.folder / "judges.json").is_file():  # `eval simulate` writes one beside the tables
         judges = C.read_document(study.folder / "judges.json", C.SCHEMA_JUDGES)
@@ -979,7 +971,8 @@ def export(args: argparse.Namespace) -> int:
     readings, pairs, warnings = study.scores, study.pairs, []
     if getattr(args, "judges", None):
         readings, pairs, warnings = _by_judges(study, args.judges)
-    entries, not_used = adapter.export(study.runs, readings, pairs, only=args.run, persons=persons)
+    entries, not_used = adapter.export(study.runs, readings, pairs, only=args.run, persons=persons,
+                                       every_pair=study.pairs)
     if args.run is None:
         entries = [entry for entry in entries if entry["signals"] or entry["preferences"]]
     if args.json:

@@ -556,6 +556,32 @@ def test_merge_adds_only_what_the_document_does_not_hold():
         A.merge(document(study.runs[1]), entries[0])
 
 
+def test_merge_keeps_one_preference_id_apart_on_two_slates_and_refuses_one_off_the_runs_slate():
+    run = run_row("r1")
+
+    def entry(on: str, other: str, **more) -> dict:
+        record = {"id": "f1", "slate": on, "winner": "r1", "members": ["r1", other], "observed_at": AT,
+                  "judge": {"kind": "model"}}
+        return {"run": "r1", "signals": [], "preferences": [record], **more}
+
+    one = entry("slate-1", "r2", slate={"id": "slate-1", "members": ["r1", "r2"]})
+    two = entry("slate-2", "r3", slates=[{"id": "slate-2", "members": ["r1", "r3"]}])
+    # no slate in the document: both preferences are kept, and the run gets no slate, as neither covers both
+    doc = A.merge(A.merge(document(run), two), one)
+    assert [(p["slate"], p["id"]) for p in doc["run"]["preferences"]] == [("slate-2", "f1"), ("slate-1", "f1")]
+    assert "slate" not in doc["run"] and errors(doc) == []
+    assert A.merge(doc, one) == doc and A.merge(doc, two) == doc  # by slate and id: nothing twice
+    # a document on slate-1 takes slate-1's preference and refuses slate-2's by name; OCP finds E194 in it
+    on_one = A.merge(document(run), one)
+    assert on_one["run"]["slate"] == one["slate"] and errors(on_one) == []
+    with pytest.raises(ValueError, match=r"^the preference 'f1' is on the slate 'slate-2', and the document gives the "
+                                         r"run 'r1' the slate 'slate-1' \(OCP E194\)"):
+        A.merge(on_one, two)
+    forced = copy.deepcopy(on_one)
+    forced["run"]["preferences"] += two["preferences"]
+    assert [line.split(" ")[0] for line in errors(forced)] == ["E194"]
+
+
 def test_the_adapter_is_not_a_command_and_hands_over_to_scores(capsys):
     import argparse
 
