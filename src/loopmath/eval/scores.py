@@ -10,10 +10,15 @@
 - `check` validates a study folder against the rubric and the judges file, lists every problem by name,
   reports arms with mixed settings and prints the design table (what the design can identify).
 - `add` appends one reading or one pair.
-- `export` prints, per run, the OCP signals and preferences of the study as JSON Lines. It writes no file.
+- `export` prints, per run, the OCP signals and preferences of the study as JSON Lines, all of them or
+  those of the judges named by `--judges`. It writes no file.
 
 Repeats are the default: two readings of one target, component and judge with different calls are both
 read. A correction is explicit, through `replaces`.
+
+The JSON reports of `import`, `add` and `export` carry `inputs`, per role the name and SHA-256 of every
+file read (`contracts.input_digests`, as the fit, judges and rubric reports do), and `options`, the
+settings the command ran with after defaults were applied.
 
 This module reads OCP and harness-runs data only through `adapters/ocp.py`, which it loads when a
 command needs it.
@@ -233,6 +238,21 @@ def _other(side: str) -> str:
     return "b" if side == "a" else "a"
 
 
+def _as_recorded(row: dict, kept: str) -> str:
+    """The record a row was made from: the id it has in the tool that made it (`ext[kept]["id"]` when the
+    study names the row otherwise, else the row's id), and the row's content without the names the study
+    gives it (`id`, `call`, `replaces`). Two rows with one answer are one record imported under two ids."""
+    ext = dict(row.get("ext") or {})
+    own = row["id"]
+    if isinstance(ext.get(kept), dict):
+        held = dict(ext.pop(kept))
+        own = held.pop("id", own)
+        if held:
+            ext[kept] = held
+    body = {key: value for key, value in row.items() if key not in ("id", "call", "replaces", "ext")}
+    return json.dumps([own, body, ext], sort_keys=True, ensure_ascii=False)
+
+
 def _join_score(raw: dict, plan: dict, used: set) -> str | None:
     """Fill a form row from the assignment that asked for it. Returns why it cannot be joined, or None."""
     if "assignment" in raw:
@@ -378,8 +398,11 @@ def import_(args: argparse.Namespace) -> int:
     not_used: list[dict] = []
     ignored: dict[str, list[str]] = {}
     file_time: dict[str, set] = {name: set() for name in TABLES}
+    kept = None  # where the adapter keeps the id another tool gave a record
     if args.ocp or args.rows:
         from .adapters import ocp as adapter
+
+        kept = adapter.KEPT
 
         batches = []
         if args.ocp:
@@ -405,6 +428,16 @@ def import_(args: argparse.Namespace) -> int:
                 ignored[Path(path).name] = read["ignored"]
     if args.items:
         incoming["items"] += [(row, Path(args.items).name) for row in C.read_lines(args.items, C.SCHEMA_ITEMS)]
+    # every file read, before anything is written: the sources, and the study's tables as they were
+    width = len(str(len(args.ocp or [])))
+    files: dict[str, Any] = {f"ocp.{n:0{width}d}": path for n, path in enumerate(args.ocp or [], 1)}
+    files.update({role: path for role, path in (("rows", args.rows), ("csv", args.csv), ("pairs_csv", args.pairs_csv),
+                                                ("items", args.items), ("labels", args.labels),
+                                                ("rubric", args.rubric)) if path})
+    files.update({f"study.{name}": folder / file for name, (file, _) in TABLES.items() if (folder / file).is_file()})
+    inputs = C.input_digests(files)
+    options = {"allow_simulated": bool(args.allow_simulated), "pair_component": args.pair_component,
+               "rubric": None if rubric is None else C.rubric_ref(rubric)}
 
     tallies: dict[str, Counter] = {}
     merged: dict[str, list[dict]] = {}
@@ -414,6 +447,7 @@ def import_(args: argparse.Namespace) -> int:
         key, validate = C.LINE_KEY[schema], C.LINES[schema]
         rows = list(tables[name])
         have = {row[key]: row for row in rows}
+        recorded: dict[str, str] | None = None  # the study's rows by the record they were made from
         tally = Counter({"refused": sum(1 for entry in refused if entry["table"] == COUNTED[name])})
         for raw, source in incoming[name]:
             reason = None
@@ -438,6 +472,18 @@ def import_(args: argparse.Namespace) -> int:
             elif row is not None and name == "runs" and not args.allow_simulated and simulated_study:
                 reason = (f'the study holds simulated runs and the run "{row[key]}" is not simulated; '
                           "--allow-simulated mixes the two")
+            held = (row.get("ext") or {}).get(kept) if row is not None and kept is not None else None
+            if reason is None and isinstance(held, dict) and "id" in held and name in ("scores", "pairs"):
+                # a record of another tool that the study holds under another id (0.4.4 named such records
+                # otherwise): taking it again would read it twice
+                if recorded is None:
+                    recorded = {_as_recorded(old, kept): old[key] for old in tables[name]}
+                earlier = recorded.get(_as_recorded(row, kept))
+                if earlier is not None:
+                    reason = (f'the {"signal" if name == "scores" else "preference"} "{held["id"]}" is already in the '
+                              f'study as the {NOUN[name]} "{earlier}", and would now be the {NOUN[name]} '
+                              f'"{row[key]}" (loopmath 0.4.4 named it otherwise); import the documents into a new '
+                              "study folder")
             if reason is not None:
                 tally["refused"] += 1
                 refused.append({"table": COUNTED[name], "id": raw.get(key), "source": source, "reason": reason})
@@ -480,6 +526,7 @@ def import_(args: argparse.Namespace) -> int:
               "written": written}
     if ignored:
         report["ignored_columns"] = ignored
+    report.update(inputs=inputs, options=options)
     lines = [f"study {folder}"]
     lines += [f"{name}: {c['new']} new, {c['unchanged']} unchanged, {c['refused']} refused"
               for name, c in counts.items()]
@@ -866,14 +913,47 @@ def add(args: argparse.Namespace) -> int:
             raise _usage("scores add", "--call", f'the call "{row["call"]}" already has the {NOUN[table]} "{other}" '
                          f'for the component "{comp_id}"', f"give a repeat its own call, or name the {NOUN[table]} "
                          "it corrects in --replaces", "call_twice")
+    inputs = C.input_digests({**study.files(), "rubric": args.rubric})  # the study as it was read, before the write
+    options = {"run": args.run, "pair": list(args.pair) if pair else None, "step": args.step, "component": comp_id,
+               "judge": args.judge, "value": args.value, "item": args.item, "of": args.of, "verdict": args.verdict,
+               "shown_first": args.shown_first, "call": row["call"], "observed_at": row["observed_at"],
+               "replaces": args.replaces, "assignment": args.assignment, "id": ident,
+               "defaults": [name for name, given in (("id", args.id), ("call", args.call),
+                                                     ("observed_at", args.observed_at), ("component", args.component))
+                            if given is None]}
     C.write_lines(study.folder / file, schema, [*rows, row])
     report = {"ok": True, "study": str(study.folder), "added": NOUN[table], "file": file,
-              "row": {key: value for key, value in row.items() if value is not None}}
+              "row": {key: value for key, value in row.items() if value is not None}, "inputs": inputs,
+              "options": options}
     return _finish(args, "loopmath.eval-scores-add/1", report, [f"added {NOUN[table]} {ident} to {file}"])
 
 
 # ---------------------------------------------------------------------------------------------------
 # eval scores export
+
+def _by_judges(study: C.Study, judges: list[str]) -> tuple[list[dict], list[dict], list[str]]:
+    """`(readings, pairs, warnings)`: the rows of the judges `judges`, and a warning per correction that
+    crosses the cut. A row is written with its `replaces` as it is, so a correction whose other end is a
+    row of another judge reads otherwise once exported alone."""
+    wanted = set(judges)
+    kept: dict[str, list[dict]] = {}
+    warnings: list[str] = []
+    for name, rows, file in (("scores", study.scores, C.SCORES_FILE), ("pairs", study.pairs, C.PAIRS_FILE)):
+        by_id = {row["id"]: row for row in rows}
+        kept[name] = [row for row in rows if row["judge"] in wanted]
+        for row in rows:
+            old = by_id.get(row["replaces"]) if row.get("replaces") is not None else None
+            if old is None or (row["judge"] in wanted) == (old["judge"] in wanted):
+                continue
+            if row["judge"] in wanted:
+                warnings.append(f'{file}: the {NOUN[name]} "{row["id"]}" corrects "{old["id"]}", a {NOUN[name]} of '
+                                f'the judge "{old["judge"]}", which --judges leaves out')
+            else:
+                warnings.append(f'{file}: the {NOUN[name]} "{old["id"]}" is corrected by "{row["id"]}", a '
+                                f'{NOUN[name]} of the judge "{row["judge"]}", which --judges leaves out: it is '
+                                "written as if it were not corrected")
+    return kept["scores"], kept["pairs"], warnings
+
 
 def export(args: argparse.Namespace) -> int:
     from .adapters import ocp as adapter
@@ -884,19 +964,35 @@ def export(args: argparse.Namespace) -> int:
         if name not in known:
             raise _usage("scores export", "--run", f'no run "{name}" in {C.RUNS_FILE}', "name a run of the study",
                          "no_run")
+    judged = list(dict.fromkeys(row["judge"] for row in [*study.scores, *study.pairs]))
+    for name in getattr(args, "judges", None) or []:
+        if name not in judged:
+            raise _usage("scores export", "--judges", f'no reading or pair of the judge "{name}" in the study',
+                         f"use one of {', '.join(judged)}" if judged else "the study holds no reading or pair",
+                         "unknown_judge")
+    files: dict[str, Any] = {role: path for role, path in study.files().items() if role != "items"}
     persons: list[str] = []
     if (study.folder / "judges.json").is_file():  # `eval simulate` writes one beside the tables
         judges = C.read_document(study.folder / "judges.json", C.SCHEMA_JUDGES)
         persons = [row["id"] for row in judges["judges"] if row["kind"] == "person"]
-    entries, not_used = adapter.export(study.runs, study.scores, study.pairs, only=args.run, persons=persons)
+        files["judges"] = study.folder / "judges.json"
+    readings, pairs, warnings = study.scores, study.pairs, []
+    if getattr(args, "judges", None):
+        readings, pairs, warnings = _by_judges(study, args.judges)
+    entries, not_used = adapter.export(study.runs, readings, pairs, only=args.run, persons=persons)
     if args.run is None:
         entries = [entry for entry in entries if entry["signals"] or entry["preferences"]]
     if args.json:
-        emit_json("loopmath.eval-scores-export/1", {"ok": True, "study": str(study.folder), "runs": entries,
-                                                    "not_used": not_used})
+        emit_json("loopmath.eval-scores-export/1", {
+            "ok": True, "study": str(study.folder), "runs": entries, "not_used": not_used, "warnings": warnings,
+            "inputs": C.input_digests(files),
+            "options": {"run": args.run, "judges": list(dict.fromkeys(args.judges)) if getattr(args, "judges", None)
+                        else None, "persons": persons}})
         return EXIT_OK
     for entry in entries:
         print(json.dumps(entry, ensure_ascii=False, allow_nan=False))
     for entry in not_used:
         print(f"not used: {entry['kind']} {entry['id']!r}: {entry['reason']}", file=sys.stderr)
+    for line in warnings:
+        print(f"warning: {line}", file=sys.stderr)
     return EXIT_OK

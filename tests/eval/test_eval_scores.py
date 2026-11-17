@@ -5,6 +5,7 @@ Every refusal message is pinned. All data is synthetic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -864,3 +865,221 @@ def test_import_takes_documents_that_share_signal_ids_and_a_second_import_change
     code, out, _ = scores(capsys, "export", folder)
     assert code == 0 and [[s["id"] for s in json.loads(line)["signals"]] for line in out.splitlines()] == [
         ["s1"], ["s1"]]
+
+
+# ---------------------------------------------------------------------------------------------------
+# Ids of records made by other tools (review 2 item 10, and preferences)
+
+def sha(path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def other_score(ident: str, value, minute: int = 0, judge: str = "reviewer") -> dict:
+    return {"id": ident, "kind": "score", "name": "depth", "value": value, "tier": "reported",
+            "observed_at": f"2026-02-03T10:{minute:02d}:00-08:00", "source": {"kind": "judge", "ref": judge}}
+
+
+def run_of(name: str, input_id: str = "case-01", arm: str = "baseline") -> dict:
+    return {"run": name, "input": input_id, "arm": arm, "steps": [
+        {"step": "final", "model": {"id": f"model-{arm}", "family": arm}, "effort": "low"}]}
+
+
+def write_doc(path: Path, run: dict, **more) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document(run, **more)), encoding="utf-8")
+    return path
+
+
+def test_import_takes_runs_a_dot_b_and_a_whose_signal_ids_gave_one_id_in_0_4_4(tmp_path, capsys):
+    docs = [write_doc(tmp_path / "in" / "ab.json", run_of("a.b"), signals=[other_score("c", 4, 1)]),
+            write_doc(tmp_path / "in" / "a.json", run_of("a", arm="strong"), signals=[other_score("b.c", 9, 1)])]
+    folder = tmp_path / "study"
+    base = ("import", "--ocp", *docs, "--rubric", RUBRIC, "--out", folder)
+    code, report = scores_json(capsys, *base)
+    assert code == 0 and report["readings"] == {"new": 2, "unchanged": 0, "refused": 0} and report["refused"] == []
+    assert [(row["id"], row["run"], row["value"]) for row in C.read_study(folder).scores] == [
+        ("a%2Eb.c", "a.b", 4), ("a.b.c", "a", 9)]
+    assert scores(capsys, "check", folder, "--rubric", RUBRIC)[0] == 0
+    before = snapshot(folder)
+    assert scores_json(capsys, *base)[1]["readings"] == {"new": 0, "unchanged": 2, "refused": 0}
+    assert snapshot(folder) == before
+    code, out, _ = scores(capsys, "export", folder)
+    assert code == 0 and [[(s["id"], s["ext"][A.NS]["id"]) for s in json.loads(line)["signals"]]
+                          for line in out.splitlines()] == [[("c", "a%2Eb.c")], [("b.c", "a.b.c")]]
+
+
+def test_import_takes_preferences_of_another_tool_in_two_slates_and_refuses_a_taken_id(tmp_path, capsys):
+    def pref(slate: str, winner: str) -> dict:
+        return {"id": "f1", "slate": slate, "winner": winner, "observed_at": AT, "judge": {"kind": "model"}}
+
+    runs = [run_of("r1"), run_of("r2", arm="strong"), run_of("r3", "case-02"), run_of("r4", "case-02", "strong")]
+    slates = [{"id": "sl-1", "members": ["r1", "r2"]}, {"id": "sl-2", "members": ["r3", "r4"]}]
+    docs = [write_doc(tmp_path / "in" / f"{run['run']}.json", run, slate=slate, preferences=[pref(slate["id"], win)])
+            for run, slate, win in zip(runs, (slates[0], slates[0], slates[1], slates[1]), ("r2", "r2", "r3", "r3"))]
+    folder = tmp_path / "study"
+    code, report = scores_json(capsys, "import", "--ocp", *docs, "--rubric", RUBRIC, "--out", folder)
+    assert code == 0 and report["pairs"] == {"new": 2, "unchanged": 0, "refused": 0}
+    assert [(row["id"], row["a"], row["b"], row["verdict"]) for row in C.read_study(folder).pairs] == [
+        ("sl-1.f1", "r1", "r2", "b"), ("sl-2.f1", "r3", "r4", "a")]
+    assert scores(capsys, "check", folder, "--rubric", RUBRIC)[0] == 0
+    # a later file with the same preference id in the same slate and another verdict is refused by id
+    later = write_doc(tmp_path / "later" / "r1.json", runs[0], slate=slates[0], preferences=[pref("sl-1", "r1")])
+    before = snapshot(folder)
+    code, out, err = scores(capsys, "import", "--ocp", later, "--rubric", RUBRIC, "--out", folder)
+    assert code == 1 and snapshot(folder) == before
+    assert err == ('error: r1.json: the pair id "sl-1.f1" is already in the study with other content; give a changed '
+                   "pair a new id, and name the one it corrects in replaces\n")
+
+
+def test_import_refuses_a_record_that_a_0_4_4_study_holds_under_its_old_id(tmp_path, capsys):
+    runs = [run_of("team/r 3"), run_of("r2", arm="strong")]
+    slate = {"id": "sl-1", "members": ["team/r 3", "r2"]}
+    pref = {"id": "f1", "slate": "sl-1", "winner": "r2", "observed_at": AT, "judge": {"kind": "model"}}
+    docs = [write_doc(tmp_path / "in" / "t.json", runs[0], slate=slate, preferences=[pref],
+                      signals=[other_score("s1", 4)]),
+            write_doc(tmp_path / "in" / "r2.json", runs[1], slate=slate, preferences=[pref],
+                      signals=[other_score("s1", 7)])]
+    folder = tmp_path / "study"
+    base = ("import", "--ocp", *docs, "--rubric", RUBRIC, "--out", folder)
+    assert scores_json(capsys, *base)[0] == 0
+    # the study as 0.4.4 wrote it: "team/r 3" and "s1" gave "team_r_3.s1", and a preference kept its own id
+    old_ids = {"team%2Fr%203.s1": "team_r_3.s1", "r2.s1": "r2.s1"}
+    edit_lines(folder, C.SCORES_FILE, lambda rows: [{**row, "id": old_ids[row["id"]], "call": old_ids[row["id"]]}
+                                                    for row in rows])
+    edit_lines(folder, C.PAIRS_FILE, lambda rows: [
+        {**row, "id": "f1", "call": "f1", "ext": {A.KEPT: {"slate": "sl-1"}}} for row in rows])
+    assert scores(capsys, "check", folder, "--rubric", RUBRIC)[0] == 0
+    before = snapshot(folder)
+    code, report = scores_json(capsys, *base)
+    assert code == 1 and snapshot(folder) == before
+    assert report["readings"] == {"new": 0, "unchanged": 1, "refused": 1}  # r2.s1 is the id 0.4.4 gave too
+    assert report["refused"] == [
+        {"table": "readings", "id": "team%2Fr%203.s1", "source": "t.json", "reason": (
+            'the signal "s1" is already in the study as the reading "team_r_3.s1", and would now be the reading '
+            '"team%2Fr%203.s1" (loopmath 0.4.4 named it otherwise); import the documents into a new study folder')},
+        {"table": "pairs", "id": "sl-1.f1", "source": "t.json", "reason": (
+            'the preference "f1" is already in the study as the pair "f1", and would now be the pair "sl-1.f1" '
+            "(loopmath 0.4.4 named it otherwise); import the documents into a new study folder")}]
+    # into a new folder the same documents are taken
+    assert scores_json(capsys, "import", "--ocp", *docs, "--rubric", RUBRIC, "--out", tmp_path / "new")[0] == 0
+
+
+# ---------------------------------------------------------------------------------------------------
+# Provenance of import, add and export (review 2 item 11)
+
+def test_import_reports_the_digest_of_every_file_it_read_and_its_options(tmp_path, capsys):
+    docs = [write_doc(tmp_path / "in" / f"r{n}.ocp.json", run_of(f"r{n}", arm="baseline" if n % 2 else "strong"),
+                      signals=[other_score("s1", n % 10)]) for n in range(1, 11)]
+    folder = tmp_path / "study"
+    code, report = scores_json(capsys, "import", "--ocp", *docs[:2], "--rubric", RUBRIC, "--out", folder)
+    assert code == 0 and report["inputs"] == {
+        "ocp.1": {"file": "r1.ocp.json", "sha256": sha(docs[0])},
+        "ocp.2": {"file": "r2.ocp.json", "sha256": sha(docs[1])},
+        "rubric":{"file": "rubric.json", "sha256": sha(RUBRIC)}}
+    assert report["options"] == {"allow_simulated": False, "pair_component": None, "rubric": "brief@1"}
+    # ten documents into the study as it is now: the roles sort in file order, and the study's tables are
+    # recorded as they were before the import wrote them
+    tables = {name: sha(folder / name) for name in (C.RUNS_FILE, C.SCORES_FILE)}
+    code, report = scores_json(capsys, "import", "--ocp", *docs, "--rubric", RUBRIC, "--out", folder)
+    assert code == 0 and report["readings"] == {"new": 8, "unchanged": 2, "refused": 0}
+    assert list(report["inputs"]) == [*(f"ocp.{n:02d}" for n in range(1, 11)), "rubric", "study.runs", "study.scores"]
+    assert report["inputs"]["ocp.10"] == {"file": "r10.ocp.json", "sha256": sha(docs[9])}
+    assert (report["inputs"]["study.runs"], report["inputs"]["study.scores"]) == (
+        {"file": C.RUNS_FILE, "sha256": tables[C.RUNS_FILE]}, {"file": C.SCORES_FILE, "sha256": tables[C.SCORES_FILE]})
+    assert sha(folder / C.SCORES_FILE) != tables[C.SCORES_FILE]
+    # two sources that differ by one byte give two reports that differ
+    edited = tmp_path / "in2" / "r1.ocp.json"
+    edited.parent.mkdir()
+    edited.write_bytes(docs[0].read_bytes() + b"\n")
+    first = scores_json(capsys, "import", "--ocp", docs[0], "--rubric", RUBRIC, "--out", folder)[1]["inputs"]
+    second = scores_json(capsys, "import", "--ocp", edited, "--rubric", RUBRIC, "--out", folder)[1]["inputs"]
+    assert first["ocp.1"]["file"] == second["ocp.1"]["file"] and first["ocp.1"]["sha256"] != second["ocp.1"]["sha256"]
+    # tables, a labels-free form with options
+    small = small_study(tmp_path)
+    readings = write_csv(tmp_path / "r.csv", "id,run,component,judge,call,value,observed_at",
+                         f"s1,r1,depth,reviewer,k1,4,{AT}")
+    pairs = write_csv(tmp_path / "p.csv", "id,a,b,judge,call,verdict,observed_at", f"p1,r1,r2,reviewer,q1,a,{AT}")
+    code, report = scores_json(capsys, "import", "--csv", readings, "--pairs-csv", pairs, "--rubric", RUBRIC,
+                               "--pair-component", "depth", "--allow-simulated", "--out", small)
+    assert code == 0 and report["inputs"] == {
+        "csv": {"file": "r.csv", "sha256": sha(readings)}, "pairs_csv": {"file": "p.csv", "sha256": sha(pairs)},
+        "rubric": {"file": "rubric.json", "sha256": sha(RUBRIC)},
+        "study.runs": {"file": C.RUNS_FILE, "sha256": sha(small / C.RUNS_FILE)}}
+    assert report["options"] == {"allow_simulated": True, "pair_component": "depth", "rubric": "brief@1"}
+
+
+def test_add_reports_the_files_as_it_read_them_and_its_options(tmp_path, capsys):
+    folder = copy_study(tmp_path)
+    before = {name: sha(folder / name) for name in (C.RUNS_FILE, C.SCORES_FILE, C.PAIRS_FILE)}
+    code, report = scores_json(capsys, "add", folder, "--rubric", RUBRIC, "--run", "baseline-01", "--component",
+                               "depth", "--judge", "reviewer", "--value", "5")
+    assert code == 0 and report["inputs"] == {
+        "pairs": {"file": C.PAIRS_FILE, "sha256": before[C.PAIRS_FILE]},
+        "rubric": {"file": "rubric.json", "sha256": sha(RUBRIC)},
+        "runs": {"file": C.RUNS_FILE, "sha256": before[C.RUNS_FILE]},
+        "scores": {"file": C.SCORES_FILE, "sha256": before[C.SCORES_FILE]}}
+    assert sha(folder / C.SCORES_FILE) != before[C.SCORES_FILE]  # the digest is of the file before the reading
+    assert report["options"] == {
+        "run": "baseline-01", "pair": None, "step": "final", "component": "depth", "judge": "reviewer", "value": "5",
+        "item": None, "of": None, "verdict": None, "shown_first": None, "call": "c-s0306",
+        "observed_at": report["row"]["observed_at"], "replaces": None, "assignment": None, "id": "s0306",
+        "defaults": ["id", "call", "observed_at"]}
+    code, report = scores_json(capsys, "add", folder, "--rubric", RUBRIC, "--pair", "baseline-01", "strong-01",
+                               "--judge", "reviewer", "--verdict", "b", "--call", "k9", "--observed-at", AT,
+                               "--id", "mine")
+    assert code == 0 and report["inputs"]["pairs"]["sha256"] == before[C.PAIRS_FILE]
+    assert report["inputs"]["scores"]["sha256"] == sha(folder / C.SCORES_FILE)
+    assert {key: report["options"][key] for key in ("pair", "component", "call", "observed_at", "id", "defaults")} == {
+        "pair": ["baseline-01", "strong-01"], "component": "overall", "call": "k9", "observed_at": AT, "id": "mine",
+        "defaults": ["component"]}
+
+
+# ---------------------------------------------------------------------------------------------------
+# export --judges
+
+def test_export_keeps_to_the_judges_asked_for_and_reports_its_inputs(tmp_path, capsys):
+    folder = copy_study(tmp_path)
+    study = C.read_study(folder)
+    code, report = scores_json(capsys, "export", folder, "--judges", "reviewer")
+    assert code == 0 and report["warnings"] == [] and report["not_used"] == []
+    signals = [s for entry in report["runs"] for s in entry["signals"]]
+    prefs = {p["id"]: p for entry in report["runs"] for p in entry["preferences"]}
+    assert {s["source"]["ref"] for s in signals} == {"reviewer"} and len(signals) == 49
+    assert {p["judge"]["ext"][A.NS]["id"] for p in prefs.values()} == {"reviewer"} and len(prefs) == 6
+    by_reviewer = ({row["run"] for row in study.scores if row["judge"] == "reviewer"}
+                   | {row[side] for row in study.pairs if row["judge"] == "reviewer" for side in ("a", "b")})
+    assert [entry["run"] for entry in report["runs"]] == [row["run"] for row in study.runs if row["run"] in by_reviewer]
+    assert report["options"] == {"run": None, "judges": ["reviewer"], "persons": ["reviewer"]}
+    assert report["inputs"] == {name.split(".")[0]: {"file": name, "sha256": sha(folder / name)}
+                                for name in ("judges.json", C.PAIRS_FILE, C.RUNS_FILE, C.SCORES_FILE)}
+    # repeated, and with --run; the text form prints the same lines
+    code, report = scores_json(capsys, "export", folder, "--judges", "reviewer", "--judges", "judge-cheap", "reviewer")
+    assert code == 0 and report["options"]["judges"] == ["reviewer", "judge-cheap"]
+    assert sum(len(entry["signals"]) for entry in report["runs"]) == 49 + 128
+    code, out, err = scores(capsys, "export", folder, "--judges", "judge-strong", "--run", "strong-01")
+    assert code == 0 and err == "" and len(out.splitlines()) == 1
+    entry = json.loads(out)
+    assert {s["source"]["ref"] for s in entry["signals"]} == {"judge-strong"} and len(entry["signals"]) == sum(
+        1 for row in study.scores if row["judge"] == "judge-strong" and row["run"] == "strong-01")
+    assert scores(capsys, "export", folder, "--judges", "nobody") == (
+        1, "", 'error: eval scores export: --judges: no reading or pair of the judge "nobody" in the study; use one '
+               "of judge-strong, judge-cheap, reviewer\n")
+
+
+def test_export_by_judges_warns_of_a_correction_that_crosses_judges(tmp_path, capsys):
+    folder = small_study(tmp_path)
+    base = {"schema": C.SCHEMA_SCORES, "run": "r1", "step": "final", "component": "depth", "rubric": "brief@1",
+            "observed_at": AT}
+    C.write_lines(folder / C.SCORES_FILE, C.SCHEMA_SCORES, [
+        {**base, "id": "s1", "judge": "judge-a", "call": "k1", "value": 4},
+        {**base, "id": "s2", "judge": "judge-b", "call": "k2", "value": 6, "replaces": "s1"},
+        {**base, "id": "s3", "judge": "judge-a", "call": "k3", "value": 5}])
+    code, out, err = scores(capsys, "export", folder, "--judges", "judge-a")
+    assert code == 0 and [s["id"] for s in json.loads(out)["signals"]] == ["s1", "s3"]
+    assert err == ('warning: scores.jsonl: the reading "s1" is corrected by "s2", a reading of the judge "judge-b", '
+                   "which --judges leaves out: it is written as if it were not corrected\n")
+    code, report = scores_json(capsys, "export", folder, "--judges", "judge-b")
+    assert code == 0 and [s["id"] for s in report["runs"][0]["signals"]] == ["s2"]
+    assert report["warnings"] == ['scores.jsonl: the reading "s2" corrects "s1", a reading of the judge "judge-a", '
+                                  "which --judges leaves out"]
+    assert scores(capsys, "export", folder, "--judges", "judge-a", "judge-b")[2] == ""
