@@ -5,7 +5,10 @@ Not a command: `fit.py` calls `build`, prints `report_lines`, and hands `Design.
 What `build` does
 -----------------
 1. Reads the live readings and pairs of a study (a replaced row is not read) and lists every row it
-   does not use in `notes`, with the reason. Item lines of one call are summed to k of n.
+   does not use in `notes`, with the reason. Item lines of one call are summed to k of n. Two refusals
+   come first: a call that holds more than a call can (the rules of `eval scores check`, such as
+   `call_twice`), because its rows would be fitted as independent repeats; and a selected dimension with
+   no usable reading and no usable pair, because its quality would come from the prior alone.
 2. Maps every reading to the fitting scale (`quality.fitting_value` and friends) and to positions in
    the axes of `fitfile.build_index`.
 3. Works out the identification report of the model (`terms`), the anchor state per dimension, and
@@ -133,6 +136,15 @@ def _same_setting(a: dict, b: dict) -> bool:
     return a["id"] != b["id"] and a["mode"] != b["mode"] and all(a.get(k) == b.get(k) for k in keys)
 
 
+def _refuse_call_clash(table: str, rows: list, file: str, rubric: dict) -> None:
+    """Refuse a call that holds more than a call can, by the rules of `eval scores check`
+    (`scores.call_problems`): two rows of one call would be fitted as two independent repeats."""
+    from . import scores
+
+    for found in scores.call_problems(table, rows, rubric):
+        raise ContractError(file, f'call "{found["call"]}"', found["problem"], found["fix"], found["code"])
+
+
 def build(study: C.Study, rubric: dict, judges: dict, *, components: Sequence[str] | None = None,
           structure: str | None = None, halo: str = "factor", cuts: str = "fixed",
           terms: Sequence[str] | None = None, allow_simulated: bool = False) -> Design:
@@ -176,6 +188,7 @@ def build(study: C.Study, rubric: dict, judges: dict, *, components: Sequence[st
     # ---- readings ------------------------------------------------------------------------------
     live, dropped = C.live(study.scores, C.SCORES_FILE)
     notes += [_note("reading", row["id"], f'replaced by {row["by"]}') for row in dropped]
+    _refuse_call_clash("scores", live, C.SCORES_FILE, rubric)
     readings: list[dict] = []          # one per fitted reading (item lines already summed)
     item_calls: dict[tuple, dict] = {}
     for row in live:
@@ -239,6 +252,7 @@ def build(study: C.Study, rubric: dict, judges: dict, *, components: Sequence[st
     # ---- pairs ---------------------------------------------------------------------------------
     live_pairs, dropped_pairs = C.live(study.pairs, C.PAIRS_FILE)
     notes += [_note("pair", row["id"], f'replaced by {row["by"]}') for row in dropped_pairs]
+    _refuse_call_clash("pairs", live_pairs, C.PAIRS_FILE, rubric)
     pairs: list[dict] = []
     for row in live_pairs:
         comp_id = row["component"] or C.overall_component(rubric, row["step"])
@@ -266,6 +280,17 @@ def build(study: C.Study, rubric: dict, judges: dict, *, components: Sequence[st
     if not readings and not pairs:
         raise ContractError(str(study.folder), "", "no reading and no pair can be fitted",
                             "see eval scores check for what is wrong with the rows", "nothing_to_fit")
+    # a dimension nothing was read on would be fitted from its prior alone, and reported as a quality
+    with_rows = {x["d"] for x in readings} | {p["d"] for p in pairs}
+    empty = [dim for d, dim in enumerate(dims) if d not in with_rows]
+    if empty:
+        named = ", ".join(f'"{dim["id"]}"' for dim in empty)
+        rest = list(dict.fromkeys(dim["component"] for d, dim in enumerate(dims) if d in with_rows
+                                  and dim["component"] not in {e["component"] for e in empty}))
+        fix = (f"score it, or fit the components that have rows: --components {' '.join(rest)}" if rest
+               else "score it: no component has rows on every step it applies to")
+        raise ContractError(str(study.folder), f"dimension {named}", "no reading and no pair of the dimension can "
+                            "be fitted, so its quality would come from the prior alone", fix, "empty_dimension")
 
     # ---- what was read by whom -----------------------------------------------------------------
     has_score = np.zeros((J, D), dtype=bool)

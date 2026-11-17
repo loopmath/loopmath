@@ -5,13 +5,21 @@
 1. `model.build` reads the study and prints the identification report. With `--check-only` it stops there.
 2. The engine samples (`engine_pymc.sample`). Without the [bayes] extra the command prints the install
    line, returns 1 and writes nothing.
-3. The draws are thinned to `--keep-draws`, a parameter that does not exist is set to NaN (each NaN has
-   a term in state `absent` with its reason), and `fitfile.assemble` and `fitfile.write_fit` write
-   `fit.json` and its draws.
+3. The draws are thinned to `--keep-draws` (every chain keeps the same evenly spaced draws), a parameter
+   that does not exist is set to NaN (each NaN has a term in state `absent` with its reason), and
+   `fitfile.assemble` and `fitfile.write_fit` write `fit.json` and its draws.
 
-Convergence. `diagnostics.checks` lists three checks over the parameters that exist: split R-hat at most
-`RHAT_MAX`, effective sample size at least `ESS_MIN`, and divergent transitions at most
-`DIVERGENT_SHARE` of the draws. `converged` is false when any fails; the fit is written either way.
+Saved draws. Every later command reads its intervals from the saved draws, so `--keep-draws` below
+`MIN_KEEP_DRAWS` is refused. A 90% interval ends at the 5% and 95% points of the draws: with 400
+independent draws each tail holds 20 draws and the share beyond a reported bound is 5% give or take
+1.1 points (sqrt(0.05 * 0.95 / 400)). Below that the bounds are too rough to report.
+
+Convergence. `diagnostics` describes the saved draws, not the chains before thinning. `diagnostics.checks`
+lists four checks over the parameters that exist: split R-hat at most `RHAT_MAX`, effective sample size at
+least `ESS_MIN` (both over `CHECKED`, which holds every draws array a later command reads: the
+correlations and the target qualities too), divergent transitions at most `DIVERGENT_SHARE` of the draws
+sampled, and at least `MIN_KEEP_DRAWS` saved draws. `converged` is false when any fails; the fit is
+written either way.
 
 Defaults: 4 chains of 1000 draws after 1000 warm-up draws. `fit_design` is the same path as a function,
 for tests and other callers.
@@ -36,8 +44,11 @@ RHAT_MAX = 1.05
 ESS_MIN = 100.0
 DIVERGENT_SHARE = 0.01
 DEFAULT_DRAWS, DEFAULT_CHAINS = 1000, 4
+MIN_KEEP_DRAWS = 400       # the fewest saved draws a reported 90% interval can stand on (see the module text)
+BLOCK = 256                # columns per pass of the R-hat and effective sample size: bounds the memory
 CHECKED = ("mu", "sd_input", "sd_run", "bias", "tau", "sigma", "halo_target", "halo_call", "family",
-           "sd_judge_input", "sigma_pair", "position", "tie_width")
+           "sd_judge_input", "sigma_pair", "position", "tie_width", "corr_input", "corr_run", "q_run")
+LATER = ("corr_input", "corr_run", "q_run")   # checked when the engine returns them
 
 
 def split_rhat_ess(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -69,22 +80,30 @@ def split_rhat_ess(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], divergences: int,
-             run_seconds: float) -> dict:
+             run_seconds: float, *, sampled: int | None = None, least: int | None = None) -> dict:
     """The `diagnostics` member, from draws with their chain axis. `exists[name]` masks the parameters
-    that exist; a column that is constant (a fixed unit, a term that is off) is not checked. The R-hat and
-    effective sample size checks name the parameter they come from as `worst`: the array and the position
-    in it, as in `fitfile.DRAW_SHAPES` without the draw axis."""
+    that exist; a column that is constant (a fixed unit, a term that is off, the diagonal of a
+    correlation) is not checked. The R-hat and effective sample size checks name the parameter they come
+    from as `worst`: the array and the position in it, as in `fitfile.DRAW_SHAPES` without the draw axis.
+
+    `raw` holds the draws the checks describe: `fit_design` passes the saved draws. `sampled` is the number
+    of draws the sampler made, which the share of divergent transitions is of (default: the draws in
+    `raw`). With `least`, a fourth check `saved_draws` fails when `raw` holds fewer draws than that."""
     rhats, esses, labels = [], [], []
     for name in CHECKED:
+        if name in LATER and name not in raw:
+            continue
         x = np.asarray(raw[name], dtype=float)
         flat = x.reshape(x.shape[0], x.shape[1], -1)
         keep = np.broadcast_to(exists[name], x.shape[2:]).reshape(-1) if name in exists else np.ones(
             flat.shape[2], dtype=bool)
         keep = keep & np.isfinite(flat).all(axis=(0, 1)) & (flat.std(axis=(0, 1)) > 1e-12)
-        if keep.any():
-            rhat, ess = split_rhat_ess(flat[:, :, keep])
+        columns = np.flatnonzero(keep)
+        for start in range(0, len(columns), BLOCK):
+            rhat, ess = split_rhat_ess(flat[:, :, columns[start:start + BLOCK]])
             rhats.append(rhat)
             esses.append(ess)
+        if keep.any():
             labels += [f"{name}{[int(k) for k in np.unravel_index(n, x.shape[2:])]}" for n in np.flatnonzero(keep)]
     rhat_all = np.concatenate(rhats) if rhats else np.ones(0)
     ess_all = np.concatenate(esses) if esses else np.zeros(0)
@@ -92,13 +111,15 @@ def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], di
     ess_min = float(ess_all.min()) if esses else 0.0
     worst_rhat = labels[int(rhat_all.argmax())] if labels else None
     worst_ess = labels[int(ess_all.argmin())] if labels else None
-    total = int(np.asarray(raw["mu"]).shape[0] * np.asarray(raw["mu"]).shape[1])
-    limit = DIVERGENT_SHARE * total
+    saved = int(np.asarray(raw["mu"]).shape[0] * np.asarray(raw["mu"]).shape[1])
+    limit = DIVERGENT_SHARE * (saved if sampled is None else int(sampled))
     checks = [{"name": "rhat", "value": rhat_max, "limit": RHAT_MAX, "ok": bool(rhat_max <= RHAT_MAX),
                "worst": worst_rhat},
               {"name": "ess", "value": ess_min, "limit": ESS_MIN, "ok": bool(ess_min >= ESS_MIN),
                "worst": worst_ess},
               {"name": "divergences", "value": int(divergences), "limit": limit, "ok": bool(divergences <= limit)}]
+    if least is not None:
+        checks.append({"name": "saved_draws", "value": saved, "limit": int(least), "ok": bool(saved >= least)})
     return {"converged": all(check["ok"] for check in checks), "rhat_max": rhat_max, "ess_min": ess_min,
             "divergences": int(divergences), "run_seconds": float(run_seconds), "checks": checks}
 
@@ -114,18 +135,37 @@ def existing(design: M.Design) -> dict[str, np.ndarray]:
             "sd_judge_input": has_score, "sigma_pair": has_pair, "position": judge_pairs, "tie_width": judge_pairs}
 
 
+def check_keep_draws(keep_draws: int) -> None:
+    """Refuse a `--keep-draws` that cannot carry the reported intervals (see the module text)."""
+    if keep_draws < MIN_KEEP_DRAWS:
+        raise C.ContractError("eval fit", "--keep-draws", f"{keep_draws} is below {MIN_KEEP_DRAWS}: the reported "
+                              "90% intervals are read from the saved draws and need that many",
+                              f"give {MIN_KEEP_DRAWS} or more (the default is 1000)", "bad_option")
+
+
+def thin(raw: Mapping[str, np.ndarray], keep_draws: int = 1000) -> dict[str, np.ndarray]:
+    """The draws that are saved, with their chain axis: at most `keep_draws` in all. Every chain keeps the
+    same evenly spaced draws, so the saved draws are still chains and `diagnose` can describe them."""
+    check_keep_draws(keep_draws)
+    chains, draws = np.asarray(raw["mu"]).shape[:2]
+    if chains * draws <= keep_draws:
+        return {name: np.asarray(x) for name, x in raw.items()}
+    picks = np.round(np.linspace(0, draws - 1, max(1, keep_draws // chains))).astype(int)
+    return {name: np.asarray(x)[:, picks] for name, x in raw.items()}
+
+
 def finish(design: M.Design, raw: Mapping[str, np.ndarray], keep_draws: int = 1000) -> dict[str, np.ndarray]:
-    """Draws with a chain axis to the arrays of the fit file: chains joined, thinned, NaN where absent."""
+    """Draws with a chain axis to the arrays of the fit file: thinned (`thin`), chains joined, NaN where absent."""
     exists = existing(design)
+    raw = thin(raw, keep_draws)
     first = np.asarray(raw["mu"])
     total = first.shape[0] * first.shape[1]
-    picks = np.arange(total) if total <= keep_draws else np.round(np.linspace(0, total - 1, keep_draws)).astype(int)
     out = {}
     for name in F.DRAW_SHAPES:
         if name not in raw:
             continue
         x = np.asarray(raw[name], dtype=np.float64)
-        x = x.reshape((total,) + x.shape[2:])[picks].copy()
+        x = x.reshape((total,) + x.shape[2:]).copy()
         if name == "halo_call":   # calls of a per_component judge are independent: the shared share is 0
             x[:, ~design.masks["panel"]] = 0.0
         if name == "sd_judge_input":
@@ -167,13 +207,17 @@ def fit_design(design: M.Design, *, seed: int = 0, draws: int | None = None, cha
     """Sample a design and assemble the fit: `(every member of fit.json but draws, the draws)`."""
     from . import engine_pymc as engine
 
+    check_keep_draws(keep_draws)   # before the engine runs: nothing is sampled for a file that is refused
     draws = DEFAULT_DRAWS if draws is None else int(draws)
     chains = DEFAULT_CHAINS if chains is None else int(chains)
     result = engine.sample(design.data, seed=seed, draws=draws, tune=tune, chains=chains, cores=cores)
     raw = result["draws"]
+    first = np.asarray(raw["mu"])
+    kept = thin(raw, keep_draws)   # the diagnostics describe these draws, the ones the file holds
     checked = {**existing(design), "halo_call": design.masks["panel"]}   # elsewhere it is 0 by definition
-    diagnostics = diagnose(raw, checked, result["divergences"], result["run_seconds"])
-    final = finish(design, raw, keep_draws)
+    diagnostics = diagnose(kept, checked, result["divergences"], result["run_seconds"],
+                           sampled=first.shape[0] * first.shape[1], least=MIN_KEEP_DRAWS)
+    final = finish(design, kept, keep_draws)
     full_options = {**design.options, "draws": draws, "tune": draws if tune is None else int(tune),
                     "chains": chains, "keep_draws": int(keep_draws), **(options or {})}
     meta = F.assemble(rubric=design.rubric, judges=design.judges, runs=design.runs, draws=final,
@@ -195,7 +239,8 @@ def run(args: argparse.Namespace) -> int:
 
     _positive(args.draws, "--draws", 20)
     _positive(args.chains, "--chains")
-    _positive(args.keep_draws, "--keep-draws")
+    if args.keep_draws is not None:
+        check_keep_draws(args.keep_draws)
     rubric = C.read_document(args.rubric, C.SCHEMA_RUBRIC)
     judges = C.read_document(args.judges, C.SCHEMA_JUDGES)
     study = C.read_study(args.study)
@@ -228,6 +273,7 @@ def run(args: argparse.Namespace) -> int:
               f"effective sample size {diagnostics['ess_min']:.0f}, {diagnostics['divergences']} divergences, "
               f"{diagnostics['run_seconds']:.0f} s)")
         if not diagnostics["converged"]:
-            print("the fit did not converge: later commands refuse it without --allow-unconverged; "
-                  "try more --draws")
+            failed = ", ".join(check["name"] for check in diagnostics["checks"] if not check["ok"])
+            print(f"the fit did not converge (failed: {failed}): later commands refuse it without "
+                  "--allow-unconverged; try more --draws")
     return EXIT_OK
