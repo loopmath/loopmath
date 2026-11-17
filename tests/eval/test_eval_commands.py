@@ -96,6 +96,7 @@ def test_option_values_and_defaults():
         "study", "rubric.json", "judges.json", 1, "factor:2", "full", "free")
     assert fit.terms == ["family=off", "judge_input=auto"] and fit.components == ["depth", "clarity"]
     assert (fit.draws, fit.chains, fit.keep_draws, fit.check_only, fit.out) == (500, 2, 400, True, "study/fit.json")
+    assert fit.engine == "laplace" and p.parse_args(FULL["fit"] + ["--engine", "pymc"]).engine == "pymc"
     fit = p.parse_args(MINIMAL["fit"])
     assert (fit.seed, fit.structure, fit.halo, fit.cuts, fit.terms, fit.draws, fit.chains, fit.keep_draws,
             fit.components, fit.check_only, fit.allow_simulated, fit.out) == (

@@ -628,7 +628,7 @@ def known_law_fit(design: M.Design, truth: dict, rng: np.random.Generator, monke
                   s: float = 0.02) -> tuple:
     fake = known_law(design, truth, rng, s)
     monkeypatch.setattr(engine_pymc, "sample", lambda data, **kw: fake)
-    return FIT.fit_design(design, seed=seed, draws=FAKE_DRAWS, chains=FAKE_CHAINS, keep_draws=400)
+    return FIT.fit_design(design, seed=seed, draws=FAKE_DRAWS, chains=FAKE_CHAINS, keep_draws=400, engine="pymc")
 
 
 def known_law_records(tmp: Path, name: str, reps: int, monkeypatch, s: float = 0.02, family_every: int = 10,

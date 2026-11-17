@@ -217,7 +217,7 @@ def fit_from_truth(folder: Path, seed: int = 0) -> dict:
 def fit_by_sampling(folder: Path, seed: int = 0, draws: int | None = DRAWS) -> dict:
     """`eval fit` on the study, on 2 chains. Returns the diagnostics, and the flag a later stage needs."""
     argv = ["eval", "fit", folder, "--rubric", folder / "rubric.json", "--judges", folder / "judges.json",
-            "--seed", seed, "--out", folder / "fit.json", "--allow-simulated", "--chains", 2]
+            "--seed", seed, "--out", folder / "fit.json", "--allow-simulated", "--chains", 2, "--engine", "pymc"]
     if draws is not None:
         argv += ["--draws", draws]
     start = time.monotonic()

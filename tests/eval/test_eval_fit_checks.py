@@ -13,6 +13,7 @@ import pytest
 
 from loopmath import cli
 from loopmath.eval import contracts as C
+from loopmath.eval import engine_laplace
 from loopmath.eval import engine_pymc as engine
 from loopmath.eval import fit as FT
 from loopmath.eval import model as M
@@ -61,6 +62,7 @@ def chains(rng, shape=(2, 400)) -> dict:
 def test_keep_draws_below_the_minimum_is_refused_before_anything_is_sampled(loaded, monkeypatch, tmp_path, capsys):
     design = M.build(*loaded)
     monkeypatch.setattr(engine, "sample", lambda *args, **kwargs: pytest.fail("the engine ran"))
+    monkeypatch.setattr(engine_laplace, "sample", lambda *args, **kwargs: pytest.fail("the engine ran"))
     for keep in (1, FT.MIN_KEEP_DRAWS - 1):
         found = refusal(lambda: FT.fit_design(design, keep_draws=keep))
         assert found.code == "bad_option" and found.where == "--keep-draws"
