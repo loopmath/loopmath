@@ -245,3 +245,362 @@ def test_mixed_arm_is_marked(tmp_path):
     runs[0]["steps"][0]["effort"] = "high"
     fit = testing.build_fit(tmp_path / "fit.json", runs=runs, n_draws=5).fit
     assert [arm["mixed"] for arm in fit["arms"]] == [True, False, False]
+
+
+# ---------------------------------------------------------------------------------------------------
+# Every nested record of fit.json is checked: members, types, and agreement with the index
+
+@pytest.fixture(scope="module")
+def small(tmp_path_factory):
+    """A fit over 2 inputs (6 runs) with recorded inputs and a note, as JSON."""
+    folder = tmp_path_factory.mktemp("small")
+    files = testing.write_study_files(folder, runs=testing.example_runs(n_inputs=2))
+    path = testing.build_fit(folder / "fit.json", runs=testing.example_runs(n_inputs=2), n_draws=5,
+                             inputs=C.input_digests(files)).path
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta["notes"] = [{"kind": "reading", "id": "s1", "reason": "the judge is not in the judges file"}]
+    F.validate_fit(meta)
+    return meta
+
+
+# Maps from a free name to a value: a role, an array name, a reference name, a judge id.
+FREE_MAPS = ("inputs", "draws.arrays")
+FREE_LAST = ("refs", "judges")  # under targets[n] and targets[n].dims[d]
+# `options` belongs to the engine, and an entry of `diagnostics.checks` is any object.
+FREE_TREES = ("options", "diagnostics.checks")
+# Members the contract lets a writer leave out, by the place of their record with list positions dropped.
+OPTIONAL = {"terms": {"judge", "dimension", "count", "needs", "reason"},
+            "diagnostics": {"rhat_max", "ess_min", "divergences", "run_seconds", "checks"},
+            "anchor": {"judges", "min_anchor_targets"}, "anchor.dimensions": {"n_targets"},
+            "index.dimensions": {"cuts"}, "judges": {"effort", "prompt", "cost_usd_per_call"},
+            "arms.steps": {"effort", "variant"}}
+
+
+def _free(path: tuple) -> bool:
+    text = ".".join(str(part) for part in path if not isinstance(part, int))
+    return text in FREE_MAPS or any(text == name or text.startswith(name + ".") for name in FREE_TREES) or (
+        text.startswith("targets") and any(part in FREE_LAST for part in path[1:]))
+
+
+def _records(node, path=()):
+    """Every object of the document that is a record, with its path. Lists are walked at their ends."""
+    if isinstance(node, dict):
+        if not _free(path):
+            yield path, node
+        for name, value in node.items():
+            yield from _records(value, path + (name,))
+    elif isinstance(node, list):
+        for n in sorted({0, len(node) - 1} & set(range(len(node)))):
+            yield from _records(node[n], path + (n,))
+
+
+def _where(path: tuple) -> str:
+    out = ""
+    for part in path:
+        out += f"[{part}]" if isinstance(part, int) else (f".{part}" if out else part)
+    return out
+
+
+def _at(obj, path: tuple):
+    for part in path:
+        obj = obj[part]
+    return obj
+
+
+def _refusal(meta: dict, path: tuple, change) -> C.ContractError | None:
+    obj = json.loads(json.dumps(meta))
+    change(_at(obj, path))
+    try:
+        F.validate_fit(obj)
+    except C.ContractError as exc:
+        return exc
+    return None
+
+
+def test_an_unknown_member_is_refused_in_every_record(small):
+    places = [path for path, _ in _records(small)]
+    assert len(places) >= 100
+    assert {"dimensions[0]", "dimensions[0].scale", "arms[2].dims[4].fitting", "levels.run.corr", "judges[2].model",
+            "judges[2].family[9]", "targets[5].dims[4].pooled", "counts", "engine", "inputs.rubric", "notes[0]",
+            "draws", "arms[0].steps[1].model", "judges[0].reference"} <= {_where(p) for p in places}
+    for path in places:
+        got = _refusal(small, path, lambda record: record.update(unexpected=1))
+        want = _where(path + ("unexpected",))
+        assert got is not None and str(got) == f'fit.json: {want}: unknown member; remove it, or move it under "ext"'
+        assert _refusal(small, path, lambda record: record.update(ext={"vendor": 1})) is None  # ext is the way out
+
+
+def test_a_missing_member_is_refused_in_every_record(small):
+    checked = 0
+    for path, record in _records(small):
+        if "reference" in path:  # a reference with no member is one that is not shown
+            continue
+        place = ".".join(part for part in path if not isinstance(part, int))
+        for name in record:
+            got = _refusal(small, path, lambda rec, name=name: rec.pop(name))
+            if name in OPTIONAL.get(place, ()):
+                assert got is None, (_where(path), name, str(got))
+            else:
+                assert got is not None and got.file == "fit.json", (_where(path), name)
+                assert got.where.startswith(_where(path)[:len(got.where)]) and got.fix
+                checked += 1
+    assert checked >= 400
+
+
+def test_a_value_of_the_wrong_type_is_refused_everywhere(small):
+    def leaves(node, path=()):
+        if isinstance(node, dict):
+            for name, value in node.items():
+                yield from leaves(value, path + (name,))
+        elif isinstance(node, list):
+            for n in sorted({0, len(node) - 1} & set(range(len(node)))):
+                yield from leaves(node[n], path + (n,))
+        elif node is not None:
+            yield path, node
+
+    checked = 0
+    for path, value in leaves(small):
+        # options is the engine's, a check entry is free, and a level of a scale may be a word or a whole number
+        if path[0] == "options" or path[:2] == ("diagnostics", "checks") or "levels" in path[2:] or path[-1] == "ext":
+            continue
+        wrong = 7 if isinstance(value, str) else "seven"
+        got = _refusal(small, path[:-1], lambda parent, key=path[-1], wrong=wrong: parent.__setitem__(key, wrong))
+        assert got is not None and got.file == "fit.json" and got.fix, (_where(path), value)
+        checked += 1
+    assert checked >= 400
+
+
+def test_nested_fit_refusals_are_pinned(built, tmp_path):
+    meta = json.loads(built.path.read_text(encoding="utf-8"))
+
+    def refused(change) -> str:
+        obj = json.loads(json.dumps(meta))
+        change(obj)
+        (tmp_path / "fit.json").write_text(json.dumps(obj), encoding="utf-8")
+        with pytest.raises(C.ContractError) as caught:
+            F.read_fit(tmp_path / "fit.json")
+        return str(caught.value)
+
+    def at(*path):
+        return lambda o: _at(o, path[:-2]).__setitem__(path[-2], path[-1])
+
+    # dimensions
+    assert refused(lambda o: o["dimensions"][0].update(unexpected=1)) == (
+        'fit.json: dimensions[0].unexpected: unknown member; remove it, or move it under "ext"')
+    assert refused(lambda o: o["dimensions"][0].pop("scale")) == (
+        'fit.json: dimensions[0]: missing member "scale"; add it')
+    assert refused(lambda o: o["dimensions"][3].pop("cuts")) == 'fit.json: dimensions[3]: missing member "cuts"; add it'
+    assert refused(at("dimensions", 2, "scale", {"kind": "fraction"})) == (
+        'fit.json: dimensions[2].scale.kind: "fraction" is not the kind of index.dimensions[2], "linear"; '
+        "write the dimension as the index has it")
+    assert refused(at("dimensions", 2, "scale", "range", [10, 0])) == (
+        "fit.json: dimensions[2].scale.range: low 10 is not below high 0; give [low, high]")
+    assert refused(at("dimensions", 1, "step", "draft")) == (
+        'fit.json: dimensions[1].step: "draft" is not the step of index.dimensions[1], "final"; '
+        "write the dimension as the index has it")
+    assert refused(at("dimensions", 4, "review_minutes", 0)) == (
+        "fit.json: dimensions[4].review_minutes: 0 is out of range; give a number above 0")
+    assert refused(at("dimensions", 0, "human_only", "yes")) == (
+        "fit.json: dimensions[0].human_only: expected true or false, got a string; write true or false")
+    assert refused(at("dimensions", 0, "cuts", "fixed")) == (
+        'fit.json: dimensions[0].cuts: a "binary" scale has no cuts; write null')
+    assert refused(at("dimensions", 1, "cuts", "loose")) == (
+        'fit.json: dimensions[1].cuts: "loose" is not one of fixed, free; use one of them')
+    # the index
+    assert refused(at("index", "dimensions", 1, "cuts", [0.75, 0.25])) == (
+        "fit.json: index.dimensions[1].cuts: the cuts do not rise; list the cuts lowest first")
+    assert refused(at("index", "dimensions", 1, "cuts", [0.5])) == (
+        "fit.json: index.dimensions[1].cuts: 1 cuts for 3 levels; give one cut between each two levels")
+    assert refused(at("index", "dimensions", 0, "cuts", [0.5])) == (
+        'fit.json: index.dimensions[0].cuts: a "binary" scale has no cuts; write null')
+    assert refused(at("index", "dimensions", 0, "component", "numbers")) == (
+        'fit.json: index.dimensions[0].id: "final/numbers_right" is not the step and the component, "final/numbers"; '
+        "write the id as step/component")
+    assert refused(at("index", "runs", 0, 7)) == (
+        "fit.json: index.runs[0]: expected a non-empty string, got a number; write a string here")
+    # arms
+    assert refused(lambda o: o["arms"][1].pop("steps")) == 'fit.json: arms[1]: missing member "steps"; add it'
+    assert refused(lambda o: o["arms"][1].pop("cost_usd")) == 'fit.json: arms[1]: missing member "cost_usd"; add it'
+    assert refused(at("arms", 1, "n_runs", 5)) == (
+        "fit.json: arms[1].n_runs: 5 is not the count of its runs in index.run_arm, 12; count the runs of the arm")
+    assert refused(at("arms", 1, "n_inputs", 36)) == (
+        "fit.json: arms[1].n_inputs: 36 is not the count of its inputs in index.run_input, 12; "
+        "count the inputs of the arm")
+    assert refused(at("arms", 0, "cost_usd", -1)) == (
+        "fit.json: arms[0].cost_usd: -1 is out of range; give a number at least 0")
+    assert refused(lambda o: o["arms"][2]["steps"][0]["model"].pop("family")) == (
+        'fit.json: arms[2].steps[0].model: missing member "family"; add it')
+    assert refused(lambda o: o["arms"][0]["dims"].pop()) == (
+        "fit.json: arms[0].dims: 4 entries for 5 dimensions; write one entry per dimension, in the order of "
+        "index.dimensions")
+    assert refused(lambda o: o["arms"][0]["dims"].reverse()) == (
+        'fit.json: arms[0].dims[0].dimension: "final/overall" is not the dimension at this place, '
+        '"final/numbers_right"; write one entry per dimension, in the order of index.dimensions')
+    assert refused(lambda o: o["arms"][0]["dims"][2]["reported"].pop("lo")) == (
+        'fit.json: arms[0].dims[2].reported: missing member "lo"; add it')
+    assert refused(lambda o: o["arms"][0]["dims"][2].pop("own")) == (
+        'fit.json: arms[0].dims[2]: missing member "own"; add it')
+    assert refused(at("arms", 0, "dims", 2, "fitting", "sd", -0.5)) == (
+        "fit.json: arms[0].dims[2].fitting.sd: -0.5 is out of range; give a number at least 0")
+    # levels
+    assert refused(lambda o: o["levels"].pop("run")) == 'fit.json: levels: missing member "run"; add it'
+    assert refused(at("levels", "input", "sd", 0, 0.3)) == (
+        "fit.json: levels.input.sd[0]: expected an object, got a number; write a JSON object here")
+    assert refused(lambda o: o["levels"]["input"]["sd"].pop()) == (
+        "fit.json: levels.input.sd: 4 entries for 5 dimensions; write one entry per dimension, in the order of "
+        "index.dimensions")
+    assert refused(lambda o: o["levels"]["run"]["corr"]["mean"][0].pop()) == (
+        "fit.json: levels.run.corr.mean: it is not a 5 by 5 matrix; write one row and one column per dimension")
+    assert refused(at("levels", "run", "corr", "hi", 4, 4, None)) == (
+        "fit.json: levels.run.corr.hi[4][4]: expected a finite number, got null; write a number here")
+    # judges
+    assert refused(lambda o: o["judges"][1].pop("model")) == (
+        'fit.json: judges[1]: a judge of kind "model" has no model; add model with id and family')
+    assert refused(lambda o: o["judges"][1].pop("mode")) == 'fit.json: judges[1]: missing member "mode"; add it'
+    assert refused(lambda o: o["judges"][2].pop("position")) == (
+        'fit.json: judges[2]: missing member "position"; add it')
+    assert refused(at("judges", 0, "anchor", 1)) == (
+        "fit.json: judges[0].anchor: expected true or false, got a number; write true or false")
+    assert refused(at("judges", 1, "dims", 0, "tau", "mean", "high")) == (
+        "fit.json: judges[1].dims[0].tau.mean: expected a finite number, got a string; write a number here")
+    assert refused(at("judges", 0, "dims", 0, "n_calls", -1)) == (
+        "fit.json: judges[0].dims[0].n_calls: -1 is out of range; give a whole number at least 0")
+    assert refused(at("judges", 0, "dims", 3, "dimension", "final/depth")) == (
+        'fit.json: judges[0].dims[3].dimension: "final/depth" is not the dimension at this place, "final/coverage"; '
+        "write one entry per dimension, in the order of index.dimensions")
+    assert refused(lambda o: o["judges"][2]["family"].reverse()) == (
+        'fit.json: judges[2].family[0].family: "beta" is not the family at this place, "alpha"; '
+        "write one entry per family and dimension, families first")
+    assert refused(lambda o: o["judges"][2]["family"].pop()) == (
+        "fit.json: judges[2].family: 9 entries for 2 families and 5 dimensions; "
+        "write one entry per family and dimension, families first")
+    assert refused(at("judges", 1, "cost_usd_per_call", 10 ** 400)) == (
+        "fit.json: judges[1].cost_usd_per_call: expected a finite number, got a number too large to read; "
+        "write a number here")
+    assert refused(at("dimensions", 2, "scale", "range", [0, 10 ** 400])) == (
+        "fit.json: a number is too large to read; write finite numbers")
+    # targets
+    assert refused(lambda o: o["targets"][0].pop("refs")) == 'fit.json: targets[0]: missing member "refs"; add it'
+    assert refused(at("targets", 0, "run", "nobody-i001")) == (
+        'fit.json: targets[0].run: unknown run "nobody-i001"; name a run of index.runs')
+    assert refused(at("targets", 0, "step", "draft")) == (
+        'fit.json: targets[0].step: no dimension of index.dimensions is on the step "draft"; '
+        "name a step that has a dimension")
+    assert refused(at("targets", 0, "arm", "strong-all")) == (
+        'fit.json: targets[0].arm: "strong-all" is not the arm of the run in index.run_arm, "baseline"; '
+        "write the arm of the run")
+    assert refused(at("targets", 1, "input", "i002")) == (
+        'fit.json: targets[1].input: "i002" is not the input of the run in index.run_input, "i001"; '
+        "write the input of the run")
+    assert refused(lambda o: o["targets"].append(o["targets"][0])) == (
+        'fit.json: targets[36]: the run "baseline-i001" at the step "final" appears twice; give every target once')
+    assert refused(at("targets", 0, "refs", "output", 3)) == (
+        "fit.json: targets[0].refs.output: expected a non-empty string, got a number; write a string here")
+    assert refused(at("targets", 0, "dims", 0, "judges", {"nobody": 1})) == (
+        'fit.json: targets[0].dims[0].judges.nobody: unknown judge "nobody"; name a judge of index.judges')
+    assert refused(at("targets", 0, "dims", 0, "judges", "strong", 1.5)) == (
+        "fit.json: targets[0].dims[0].judges.strong: expected a whole number, got a number; "
+        "write a whole number here")
+    assert refused(lambda o: o["targets"][0]["dims"][0]["pooled"].pop("sd")) == (
+        'fit.json: targets[0].dims[0].pooled: missing member "sd"; add it')
+    assert refused(lambda o: o["targets"][0]["dims"][0].pop("unpooled")) == (
+        'fit.json: targets[0].dims[0]: missing member "unpooled"; add it')
+    assert refused(lambda o: o["targets"][0]["dims"].pop()) == (
+        'fit.json: targets[0].dims: 4 entries for 5 dimensions of the step "final"; write one entry per dimension '
+        "of the step, in the order of index.dimensions")
+    # counts, terms, diagnostics, anchor, notes
+    assert refused(lambda o: o["counts"].pop("pairs")) == 'fit.json: counts: missing member "pairs"; add it'
+    assert refused(at("counts", "runs", 35)) == (
+        "fit.json: counts.runs: 35 is not the length of index.runs, 36; count the entries of index.runs")
+    assert refused(at("counts", "targets", 35)) == (
+        "fit.json: counts.targets: 35 is not the length of targets, 36; count the entries of targets")
+    assert refused(at("counts", "readings", 2.5)) == (
+        "fit.json: counts.readings: expected a whole number, got a number; write a whole number here")
+    assert refused(at("terms", 0, "term", "speed")).startswith(
+        'fit.json: terms[0].term: "speed" is not one of sigma, tau, levels_split, anchor_bias, family, ')
+    assert refused(at("terms", 0, "judge", "nobody")) == (
+        'fit.json: terms[0].judge: unknown judge "nobody"; name a judge of the index, or write null')
+    assert refused(at("terms", 0, "dimension", "final/speed")) == (
+        'fit.json: terms[0].dimension: unknown dimension "final/speed"; name a dimension of the index, or write null')
+    assert refused(at("terms", 0, "count", "many")) == (
+        "fit.json: terms[0].count: expected a whole number, got a string; write a whole number here")
+    assert refused(at("diagnostics", "rhat_max", "fine")) == (
+        "fit.json: diagnostics.rhat_max: expected a finite number, got a string; write a number here")
+    assert refused(at("diagnostics", "checks", [1])) == (
+        "fit.json: diagnostics.checks[0]: expected an object, got a number; write a JSON object here")
+    assert refused(at("anchor", "judges", ["nobody"])) == (
+        'fit.json: anchor.judges[0]: unknown judge "nobody"; name a judge of index.judges')
+    assert refused(at("anchor", "dimensions", 0, "dimension", "final/speed")) == (
+        'fit.json: anchor.dimensions[0].dimension: unknown dimension "final/speed"; '
+        "name a dimension of index.dimensions")
+    assert refused(at("anchor", "dimensions", 1, "dimension", "final/numbers_right")) == (
+        'fit.json: anchor.dimensions: dimension "final/numbers_right" appears twice; give every dimension once')
+    assert refused(at("notes", [{"kind": "reading"}])) == 'fit.json: notes[0]: missing member "id"; add it'
+    assert refused(at("notes", {})) == "fit.json: notes: expected a list, got an object; write a JSON list here"
+    # inputs, options, engine, seed, draws
+    digest = {"file": "labels.json", "sha256": "0" * 64}
+    assert refused(at("inputs", {"labels": digest})) == (
+        "fit.json: inputs.labels: unknown member; use one of runs, scores, pairs, items, rubric, judges")
+    assert refused(at("inputs", {"runs": {"file": "runs.jsonl"}})) == (
+        'fit.json: inputs.runs: missing member "sha256"; add it')
+    assert refused(at("options", [])) == "fit.json: options: expected an object, got a list; write a JSON object here"
+    assert refused(lambda o: o["engine"].pop("version")) == 'fit.json: engine: missing member "version"; add it'
+    assert refused(at("seed", 1.5)) == (
+        "fit.json: seed: expected a whole number, got a number; write a whole number here")
+    assert refused(at("draws", "file", "../fit.draws.npz")) == (
+        'fit.json: draws.file: "../fit.draws.npz" is not a file name; name the draws file that sits beside fit.json')
+    assert refused(at("draws", "sha256", "abc")) == (
+        "fit.json: draws.sha256: it is not a SHA-256 digest; write 64 hex digits, lower case")
+    assert refused(at("draws", "n", 0)) == "fit.json: draws.n: 0 is out of range; give a whole number at least 1"
+    assert refused(at("draws", "arrays", "mu", [200, 3, 4])) == (
+        "fit.json: draws.arrays.mu: shape (200, 3, 4) is not (S, A, D) = (200, 3, 5); match the index of fit.json")
+    assert refused(lambda o: o["draws"]["arrays"].pop("tau")) == 'fit.json: draws.arrays: missing member "tau"; add it'
+    assert refused(at("draws", "arrays", "extra", [200])) == (
+        "fit.json: draws.arrays.extra: unknown array; write only the arrays of fitfile.DRAW_SHAPES")
+
+
+def test_a_later_stage_refuses_a_fit_with_a_missing_member_by_place(built, tmp_path, capsys):
+    from loopmath import cli
+
+    value = tmp_path / "value.json"
+    value.write_text(json.dumps(testing.example_value()), encoding="utf-8")
+    assert cli.main(["eval", "value", str(built.path), "--value", str(value)]) == 0
+    capsys.readouterr()
+    meta = json.loads(built.path.read_text(encoding="utf-8"))
+    del meta["dimensions"][0]["scale"]
+    (tmp_path / "fit.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert cli.main(["eval", "value", str(tmp_path / "fit.json"), "--value", str(value)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == 'error: fit.json: dimensions[0]: missing member "scale"; add it\n'
+
+
+def test_write_fit_refuses_a_nested_record_and_writes_nothing(built, tmp_path):
+    meta = {k: v for k, v in json.loads(built.path.read_text(encoding="utf-8")).items() if k != "draws"}
+    meta["arms"][0]["dims"][0]["surprise"] = 1
+    with pytest.raises(C.ContractError) as caught:
+        F.write_fit(tmp_path / "out" / "fit.json", meta, dict(built.fit.draws))
+    assert str(caught.value) == ('fit.json: arms[0].dims[0].surprise: unknown member; remove it, or move it under '
+                                 '"ext"')
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_list_or_object_of_the_wrong_type_is_refused_everywhere(small):
+    def containers(node, path=()):
+        if isinstance(node, (dict, list)) and path:
+            yield path, node
+        if isinstance(node, dict):
+            for name, value in node.items():
+                yield from containers(value, path + (name,))
+        elif isinstance(node, list):
+            for n in sorted({0, len(node) - 1} & set(range(len(node)))):
+                yield from containers(node[n], path + (n,))
+
+    checked = 0
+    for path, node in containers(small):
+        if path[0] == "options" and len(path) > 1:  # what is under options is the engine's
+            continue
+        for wrong in ("seven", 7, True, [] if isinstance(node, dict) else {}):
+            got = _refusal(small, path[:-1], lambda parent, key=path[-1], wrong=wrong: parent.__setitem__(key, wrong))
+            assert got is not None and got.file == "fit.json" and got.fix, (_where(path), wrong)
+            checked += 1
+    assert checked >= 600

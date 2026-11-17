@@ -295,9 +295,9 @@ def _table_csv(path: str, table: str, rubric: dict | None, plan: dict | None) ->
 
     Returns `{"rows", "refused", "not_used", "ignored", "file_time"}`. `rows` holds `(raw row, source)` and
     `file_time` the ids of the rows whose time is the file's. A row with an empty value or verdict is a blank
-    line of a form: it is listed in `not_used`. Without an `id` column a row's id is made from its content, so the same file gives
-    the same ids. Without a `call`, a reading is its own call; item lines of one target, component and judge
-    share one. Without `observed_at`, the file's modification time is used."""
+    line of a form: it is listed in `not_used`. Without an `id` column a row's id is made from its content,
+    so the same file gives the same ids. Without a `call`, a reading is its own call; item lines of one
+    target, component and judge share one. Without `observed_at`, the file's modification time is used."""
     name, header, records, modified = _csv(path)
     pairs = table == "pairs"
     columns = PAIR_COLUMNS if pairs else SCORE_COLUMNS
