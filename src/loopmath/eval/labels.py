@@ -121,7 +121,10 @@ scored before; with pairs asked, the pairs they compared before, read live from 
 rows left out) on the components this plan compares. A pair repeat is shown in the other order: the
 output the reviewer saw first less often in those comparisons goes first, and when both went first
 equally often, or no order was recorded, the order is drawn at random. Repeats measure the reviewer's
-own noise; a pair repeat in the other order also measures their position bias.
+own noise; a pair repeat in the other order also measures their position bias. A plan can be repeats
+only: when no new candidate is left (every pair compared, say), or when the repeat share takes the
+whole count budget once rounded. The repeat share still sets their number, and what the main draw
+would have spent is not spent. With neither a new candidate nor a repeat the share pays for, it refuses.
 
 Assignment ids carry a digest of every input (the fit, the draws, the value file, and `pairs.jsonl` and
 `items.jsonl` of the study folder when they are read), the options, the seed and the assignments
@@ -935,6 +938,14 @@ def build(args: argparse.Namespace) -> Result:
             notes.append(f"no {C.PAIRS_FILE} beside the fit: pairs this reviewer already judged are not known "
                          "and may be offered again")
         offers += pair_offers(fit, targets, reviewer, pair_dims(fit, named), arms, set(judged or {}))
+    # The repeat pool: what this reviewer labelled before. Built first, so a plan can be repeats only.
+    again = []
+    for target in targets:
+        mine = [d for d, row in sorted(target.read.items()) if d in keep and _calls(row, reviewer)]
+        if mine and int(fit.run_arm[target.run]) in arms and ask != "pairs":
+            again.append(Offer("score", (target.run,), target.step, mine, dict(target.refs)))
+    if judged:
+        again += pair_repeats(fit, judged, pair_dims(fit, named), arms, by_run)
 
     model = None
     if mode == "active":
@@ -949,8 +960,8 @@ def build(args: argparse.Namespace) -> Result:
                          "estimate for them (pilot mode can draw them)")
         if model.note:
             notes.append(model.note)
-    if not offers:
-        what = {"scores": "target", "pairs": "pair", "auto": "target or pair"}[ask]
+    what = {"scores": "target", "pairs": "pair", "auto": "target or pair"}[ask]
+    if not offers and not again:
         raise _usage("candidates", f'no {what} is left for "{reviewer}" to label',
                      "widen --components or --arms, name another reviewer, or add judge readings and fit again",
                      "no_candidates")
@@ -988,13 +999,6 @@ def build(args: argparse.Namespace) -> Result:
 
     # The budget: a share for repeats and overlaps, the rest for the main draw.
     rng = np.random.default_rng(seed)
-    again = []
-    for target in targets:
-        mine = [d for d, row in sorted(target.read.items()) if d in keep and _calls(row, reviewer)]
-        if mine and int(fit.run_arm[target.run]) in arms and ask != "pairs":
-            again.append(Offer("score", (target.run,), target.step, mine, dict(target.refs)))
-    if judged:
-        again += pair_repeats(fit, judged, pair_dims(fit, named), arms, by_run)
     extra = repeat_share * budget if (again or second) else 0.0
     if unit_name == "n":
         extra = float(int(round(extra)))
@@ -1052,7 +1056,10 @@ def build(args: argparse.Namespace) -> Result:
 
     main = []
     n_uniform = 0
-    if mode == "pilot":
+    noun = "assignments" if by_count else "minutes"
+    if not units or main_budget <= 1e-9:
+        pass                                             # no main draw: the plan can still be repeats only
+    elif mode == "pilot":
         # One probability for every candidate of one cost. With a count budget that is every candidate.
         cost = np.array([1.0 if by_count else unit.minutes for unit in units])
         pi, laid = allocate(cost, np.full(len(units), 1.0 / len(units)), main_budget)
@@ -1129,9 +1136,6 @@ def build(args: argparse.Namespace) -> Result:
             by_unit.setdefault(key, []).extend(group)
             main += [(row, offer, unit) for row in group]
         groups += list(by_unit.values())
-    if not main:
-        raise _usage("--" + unit_name, f"the budget of {budget:g} {'assignments' if unit_name == 'n' else 'minutes'} "
-                     "pays for no assignment", "raise the budget", "budget_too_small")
 
     def count(pool: Sequence[Offer], amount: float) -> int:
         """How many of `pool` the amount pays for, whichever are drawn."""
@@ -1147,6 +1151,22 @@ def build(args: argparse.Namespace) -> Result:
     spent = n_overlap if unit_name == "n" else (
         float(np.sort([row["minutes"] for row, _, _ in pool])[::-1][:n_overlap].sum()) if n_overlap else 0.0)
     n_repeat = count(again, extra - spent)
+    if not main and not n_repeat:                        # neither draw can supply an assignment
+        if not units:
+            raise _usage("candidates", f'no new {what} is left for "{reviewer}" to label, and the repeat share '
+                         "pays for no repeat", "raise --repeat-share or the budget to ask repeats, widen "
+                         "--components or --arms, name another reviewer, or add judge readings and fit again",
+                         "no_candidates")
+        raise _usage("--" + unit_name, f"the budget of {budget:g} {noun} pays for no assignment",
+                     "raise the budget", "budget_too_small")
+    if not main:
+        why = (f'no new {what} is left for "{reviewer}" to label' if not units
+               else "the repeat share takes the whole budget once rounded" if main_budget <= 1e-9
+               else f"the {main_budget:g} {noun} left for the main draw pay for no new assignment")
+        notes.append(f"{why}, so the plan asks repeats only" + (
+            f": the {main_budget:g} {noun} left for the main draw are not spent" if not units and main_budget > 1e-9
+            else "") + (f'; no overlap for "{second}" either (an overlap repeats a new assignment of this plan)'
+                        if second else ""))
     for n in sorted(rng.choice(len(again), size=n_repeat, replace=False).tolist()) if n_repeat else []:
         groups.append([record(again[n], "repeat", n_repeat / len(again), reviewer)])
     for n in sorted(rng.choice(len(pool), size=n_overlap, replace=False).tolist()) if n_overlap else []:

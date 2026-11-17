@@ -7,6 +7,7 @@ import csv
 import hashlib
 import io
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -133,11 +134,20 @@ def test_refuses_an_unknown_arm(built, capsys):
 
 
 def test_refuses_when_the_reviewer_scored_everything(tmp_path, capsys):
-    fit = testing.build_fit(tmp_path / "fit.json", person_share=1.0)
+    fit = testing.build_fit(tmp_path / "fit.json", runs=neutral_runs(), person_share=1.0)
+    # Every target is a repeat candidate, but the default share of 0.1 of 5 assignments rounds to none.
     code, _, err = run_cli(capsys, fit.path, "--n", "5")
     assert code == 1
-    assert err == ('error: eval labels next: candidates: no target is left for "reviewer" to label; widen '
+    assert err == ('error: eval labels next: candidates: no new target is left for "reviewer" to label, and the '
+                   "repeat share pays for no repeat; raise --repeat-share or the budget to ask repeats, widen "
                    "--components or --arms, name another reviewer, or add judge readings and fit again\n")
+    # A share that pays for repeats gives a plan of repeats only.
+    rows = L.build(ns(fit.path, n=5, repeat_share=0.5)).plan["assignments"]
+    assert [row["kind"] for row in rows] == ["repeat", "repeat"]
+    # Repeats are candidates, so run ids that name the arm are refused before that.
+    fit = testing.build_fit(tmp_path / "named" / "fit.json", person_share=1.0)
+    code, _, err = run_cli(capsys, fit.path, "--n", "5")
+    assert code == 1 and "so the plan would not be blind" in err
 
 
 def test_two_persons_need_a_named_reviewer(tmp_path, capsys):
@@ -344,6 +354,93 @@ def test_pairs_repeat_earlier_comparisons_in_the_other_order(tmp_path, capsys, v
     repeat = next(row["id"] for row in plan["assignments"] if row["kind"] == "repeat")
     code, out, _ = run_cli(capsys, fit.path, "--n", "10", "--ask", "pairs", "--repeat-share", "0.5", "--explain", repeat)
     assert code == 0 and "a repeat of a pair this reviewer compared before" in out
+
+
+def two_arm_runs(n_inputs: int) -> list[dict]:
+    """Neutral runs of the first two arms of the example only."""
+    rows = testing.example_runs(n_inputs=n_inputs)
+    keep = list(dict.fromkeys(row["arm"] for row in rows))[:2]
+    return [C.validate_run(dict(row, run=f"r{n:03d}", refs={"input": row["refs"]["input"],
+                                                             "output": f"outputs/r{n:03d}"}))
+            for n, row in enumerate([row for row in rows if row["arm"] in keep], 1)]
+
+
+def one_comparison(folder: Path) -> None:
+    """One live comparison by the reviewer: r001 against r002 on overall, r001 shown first."""
+    C.write_lines(folder / C.PAIRS_FILE, C.SCHEMA_PAIRS, [
+        {"schema": C.SCHEMA_PAIRS, "id": "p1", "a": "r001", "b": "r002", "judge": "reviewer", "call": "c1",
+         "shown_first": "a", "verdict": "tie", "rubric": "example@1", "observed_at": "2026-01-15T09:30:00-08:00"}])
+
+
+def test_a_plan_can_be_repeats_only_and_refuses_when_neither_draw_supplies(tmp_path, capsys, value_file):
+    # F1 review: with every pair compared, a first pass still gets its repeats (the main draw is empty).
+    fit = testing.build_fit(tmp_path / "fit.json", runs=two_arm_runs(1), person_share=0.0)
+    assert fit.fit.index["runs"] == ["r001", "r002"]
+    one_comparison(tmp_path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)          # no division by zero on an empty main draw
+        for mode, value in (("pilot", None), ("active", None), ("active", str(value_file))):
+            for budget, noun in (({"n": 10}, "assignments"), ({"n": None, "minutes": 10}, "minutes")):
+                for seed in range(3):
+                    result = L.build(ns(fit.path, mode=mode, ask="pairs", repeat_share=0.2, seed=seed, value=value,
+                                        **budget))
+                    # A share of 2 assignments (or minutes) and a pool of one pair of 1 minute: that pair, surely.
+                    [row] = result.plan["assignments"]
+                    assert row["kind"] == "repeat" and row["inclusion_probability"] == 1.0 and row["minutes"] == 1
+                    assert pair_key(row) == {"r001", "r002"} and row[row["shown_first"]]["run"] == "r002"
+                    assert result.report["candidates"]["assignments"] == 0
+                    assert (f'no new pair is left for "reviewer" to label, so the plan asks repeats only: the 9 '
+                            f"{noun} left for the main draw are not spent") in result.report["notes"]
+    code, out, _ = run_cli(capsys, fit.path, "--ask", "pairs", "--n", "10", "--repeat-share", "0.2")
+    assert code == 0 and "1 assignments for reviewer (1 repeat)" in out
+    # With --overlap the share is not cut to the pool, and an overlap needs a new assignment: one repeat only.
+    other = testing.build_fit(tmp_path / "two" / "fit.json", runs=two_arm_runs(1), person_share=0.0,
+                              judges=two_person_judges())
+    one_comparison(tmp_path / "two")
+    for mode in ("pilot", "active"):
+        result = L.build(ns(other.path, mode=mode, ask="pairs", n=10, repeat_share=0.2, reviewer="reviewer",
+                            overlap="second"))
+        assert result.report["kinds"] == {"repeat": 1}
+        assert any(note.endswith('no overlap for "second" either (an overlap repeats a new assignment of this plan)')
+                   for note in result.report["notes"])
+
+    # Neither draw can supply: a share of 0, or one that rounds to no repeat. Nothing is written.
+    refusal = ('error: eval labels next: candidates: no new pair is left for "reviewer" to label, and the repeat '
+               "share pays for no repeat; raise --repeat-share or the budget to ask repeats, widen --components "
+               "or --arms, name another reviewer, or add judge readings and fit again\n")
+    out_file = tmp_path / "plan.json"
+    for mode in ("pilot", "active"):
+        for argv in (["--n", "10", "--repeat-share", "0"], ["--n", "2", "--repeat-share", "0.2"],
+                     ["--minutes", "10", "--repeat-share", "0"]):
+            code, out, err = run_cli(capsys, fit.path, "--ask", "pairs", "--mode", mode, *argv, "--out", out_file)
+            assert (code, out, err) == (1, "", refusal) and not out_file.exists()
+    # No new pair and no repeat candidate (one arm has no pair at all): the refusal it always was.
+    code, _, err = run_cli(capsys, fit.path, "--ask", "pairs", "--n", "10", "--arms", arm_of(fit.fit)["r001"])
+    assert (code, err) == (1, 'error: eval labels next: candidates: no pair is left for "reviewer" to label; widen '
+                              "--components or --arms, name another reviewer, or add judge readings and fit again\n")
+
+    # A count budget rounded wholly to repeats: 11 new pairs and 1 repeat, --n 1 with a share of 0.75.
+    folder = tmp_path / "four"
+    folder.mkdir()
+    fit = testing.build_fit(folder / "fit.json", runs=neutral_runs(n_inputs=4), person_share=0.0)
+    one_comparison(folder)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        for mode in ("pilot", "active"):
+            result = L.build(ns(fit.path, mode=mode, ask="pairs", n=1, repeat_share=0.75))
+            assert result.report["candidates"]["assignments"] == 11 and result.report["candidates"]["repeats"] == 1
+            [row] = result.plan["assignments"]
+            assert row["kind"] == "repeat" and row["inclusion_probability"] == 1.0
+            assert pair_key(row) == {"r001", "r002"} and row[row["shown_first"]]["run"] == "r002"
+            assert ("the repeat share takes the whole budget once rounded, so the plan asks repeats only"
+                    in result.report["notes"])
+            # A share of 0.25 rounds to no repeat: one new pair. A share of 0.75 of 2 rounds to 2, the pool caps
+            # it at 1: one repeat and one new pair.
+            rows = L.build(ns(fit.path, mode=mode, ask="pairs", n=1, repeat_share=0.25)).plan["assignments"]
+            assert len(rows) == 1 and rows[0]["kind"] != "repeat" and pair_key(rows[0]) != {"r001", "r002"}
+            rows = L.build(ns(fit.path, mode=mode, ask="pairs", n=2, repeat_share=0.75)).plan["assignments"]
+            assert sorted(row["kind"] == "repeat" for row in rows) == [False, True]
+            assert [pair_key(row) for row in rows if row["kind"] != "repeat"] != [{"r001", "r002"}]
 
 
 # ---------------------------------------------------------------------------------------------------
