@@ -66,6 +66,17 @@ It names unknown components, values off their scale and arms that mix settings, 
 design can identify and what each term needs. For example, a judge's call noise needs 2 or more calls by that judge
 on the same output and component. Tell the user which terms the design cannot identify and what would fix them.
 
+The table has an `anchor` row for each dimension (a component at a step) with its count: how many outputs a person
+in the `anchor` list of `judges.json` scored on it. A judge's bias is measured against that person only on a
+dimension with enough such outputs, and its state says how many there are:
+
+- below `min_anchor_targets` (6 unless `judges.json` sets another number): `relative`. Biases on it are relative to
+  the mean of the judges, even with a person declared.
+- from `min_anchor_targets` to 29: `weak`. Biases are against the person, measured from few outputs.
+- 30 or more (and at least `min_anchor_targets`): `anchored`.
+
+Tell the user which dimensions are `relative`, and how many more outputs a person must score to anchor them.
+
 ## 4. Fit
 
 ```sh
@@ -77,9 +88,16 @@ loopmath eval fit study/ --rubric rubric.json --judges judges.json
 optional modelling extra: if it prints the install line for it, tell the user and stop, and install nothing
 without their agreement. A fit takes minutes: say so before it starts (the "Limits" section has measured times).
 
+Both print `anchor: person` or `anchor: judges_mean`, then one line per dimension with its anchor state and count,
+as in step 3. `anchor: person` only says that some dimension is `weak` or `anchored`: take each dimension's own
+state.
+
 The fit samples, checks convergence and writes `study/fit.json`. If it prints "the fit did not converge", the fit
-is written but every later command refuses it. Tell the user; fit again with more `--draws` if they agree. Pass
-`--allow-unconverged` to a later command only when the user asks for it, and say that its numbers come from a fit
+is written but marked: `eval judges`, `eval value`, `eval steps`, `eval rubric check --fit` and
+`eval labels next --mode active` refuse it. Tell the user; fit again with more `--draws` if they agree. A pilot
+batch still works: `eval labels next --mode pilot` takes an unconverged fit without `--allow-unconverged`, because
+it uses no number from the model, so a reviewer batch can be collected meanwhile (step 7). Pass
+`--allow-unconverged` to another command only when the user asks for it, and say that its numbers come from a fit
 that did not converge.
 
 ## 5. The judges
@@ -88,10 +106,15 @@ that did not converge.
 loopmath eval judges study/fit.json
 ```
 
-Per judge and component it prints the bias against the anchor (the people, when there are any), the per-output
-disagreement, the call noise, the error of a mean of 1 to 5 calls, and for a yes or no component the false pass and
-false fail rates. Add `--target-error X` to list the cheapest judge and repeats that reach an error, or
-`--budget-usd USD` for the best judge and repeats within a budget per output.
+Per judge and component it prints the bias, the per-output disagreement, the call noise, the error of a mean of 1
+to 5 calls, and for a yes or no component the false pass and false fail rates. Add `--target-error X` to list the
+cheapest judge and repeats that reach an error, or `--budget-usd USD` for the best judge and repeats within a budget
+per output.
+
+A bias is against the person only on a `weak` or `anchored` dimension; on a `relative` one it is against the mean
+of the judges. The table does not say which: take it from the anchor lines of step 4, or under `--json` from each
+bias's `relative_to` (`anchor` or `judges_mean`) and `anchor_state`. Never call a bias on a `relative` dimension a
+disagreement with the person.
 
 ## 6. Value, and what each step adds
 
@@ -115,15 +138,17 @@ loopmath eval scores import --csv labels-001.csv --labels study/labels-001.json 
 ```
 
 The first command draws a random, blind batch: the plan names outputs and components, never the arm, the model or a
-judge's score. Give the user the form to fill in. When it comes back filled, import it with the second command,
-then fit again (step 4). After a reviewer batch, `eval value --check design --labels PLAN` adds an estimate that
-does not rely on the model, and flags arms where the two disagree; a flag is a reason to look, not a test.
+judge's score. It works on a fit that did not converge (step 4). Give the user the form to fill in. When it comes
+back filled, import it with the second command, then fit again (step 4). After a reviewer batch,
+`eval value --check design --labels PLAN` adds an estimate that does not rely on the model, and flags arms where
+the two disagree; a flag is a reason to look, not a test.
 
 The plan is refused when run ids or refs spell out an arm, a model or a model family, because it would not be
 blind. Tell the user to give the runs neutral ids (`r001`), import the scores under those ids and fit again.
 
 `--mode active --minutes M --value value.json` in place of `--mode pilot --n N` picks the outputs where a label is
-expected to move the decision most per minute. It is opt-in: offer it only after a pilot batch.
+expected to move the decision most per minute. It is opt-in: offer it only after a pilot batch, and only on a fit
+that converged.
 
 ## Try it without data
 
@@ -143,8 +168,9 @@ with `--allow-simulated`. Never pass `--allow-simulated` for the user's own scor
 
 - Quality is on 0 to 1 for every scale: the place on a `linear` range, the pass rate of a `binary` component, the
   expected level of a `levels` component, the share of items passed.
-- Bias is how much higher a judge scores than the anchor on average. Without a person in `judges.json`, biases are
-  relative to the mean of the judges, and the report says so.
+- Bias is how much higher a judge scores than the anchor on average, dimension by dimension. The anchor is the
+  person on a `weak` or `anchored` dimension (step 3), and the mean of the judges on a `relative` one, which is
+  every dimension when no person is declared.
 - Per-output disagreement (`tau`) repeats when the same output is scored again: more calls do not remove it,
   another judge or a person does. Call noise (`sigma`) changes from call to call: repeats average it away.
 - `p_pass` is the chance that one output of an arm passes every gate, from the joint fit; the product of the single
@@ -179,10 +205,19 @@ Give the ones that touch the user's study before they rely on a number:
 ## The eval commands
 
 Every eval command takes `--json`, and then prints one object on stdout with a `schema` member, for example
-`loopmath.eval-judges-report/1`. Exit codes: 0 ok, also for a fit written as not converged; 1 a refusal (an
-`error:` line on stderr names what to fix); 2 usage (a flag missing or wrong). Under `--json` a refusal prints
-`schema` (`loopmath.error/1`), `ok` (false), `command`, `error` and `exit`. `FIT` is a fit file; `STUDY` and `DIR`
-are study folders.
+`loopmath.eval-judges-report/1`. Exit codes: 0 ok, also for a fit written as not converged; 1 a refusal; 2 usage (a
+flag missing or wrong). Check the exit code first, then the object. A refusal takes one of two forms.
+
+`eval scores import` and `eval scores check` refuse with their own report, with `ok` false. The import lists the
+`refused` rows (each with `table`, `id`, `source`, `reason`) and writes nothing: one refused row refuses the whole
+import. The check lists its `problems` (each with `file`, `where`, `problem`, `fix`, `code`, `message`). Under
+`--json` they print nothing on stderr; without it, each reason is an `error:` line on stderr.
+
+Every other refusal, and these two when they stop before their report (a file that is missing, for example),
+prints an `error:` line on stderr that names what to fix, and under `--json` the fallback object: `schema`
+(`loopmath.error/1`), `ok` (false), `command`, `error` and `exit`.
+
+`FIT` is a fit file; `STUDY` and `DIR` are study folders.
 
 - `loopmath eval rubric check RUBRIC --judges FILE --value FILE --items FILE --json`; `--fit FILE` adds a report
   on the rubric itself from a fit, with `--allow-unconverged` to take one that did not converge.
@@ -209,4 +244,5 @@ are study folders.
   `--repeat-share X`, `--seed S` and `--explain ID`.
 
 `eval judges`, `eval value`, `eval steps` and `eval labels next` also take `--study DIR` (default: the folder of
-`FIT`), `--strict` (refuse when the study files changed since the fit; the default warns) and `--allow-unconverged`.
+`FIT`), `--strict` (refuse when the study files changed since the fit; the default warns) and `--allow-unconverged`
+(`eval labels next --mode pilot` does not need it).
