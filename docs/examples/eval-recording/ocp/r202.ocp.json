@@ -6,6 +6,7 @@
   "id": "r202",
   "task": {"id": "q17"},
   "labels": {"arm": "candidate"},
+  "ext": {"dev.loopmath.simulate": {"note": "made up for the tutorial"}},
   "configuration": {
    "workflow": {"pieces": [{"id": "final", "role": "dev"}], "edges": []},
    "settings": {"final": {"harness": "cli", "effort": "high",

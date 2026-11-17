@@ -6,18 +6,23 @@ here against the real commands and the real validators:
 - the example study under `docs/examples/eval-recording/` is what `record_study.py` writes, byte for byte, and
   every example passes `eval rubric check` and `eval scores check`, with the counts its design gives;
 - a block marked `<!-- file: NAME -->` holds lines of that example file, word for word;
-- a block marked `<!-- output: NAME -->` is the standard output of the command of that name, run here;
+- a block marked `<!-- output: NAME -->` is the standard output of the command of that name, run here, and a
+  block marked `<!-- stderr: NAME -->` is its standard error;
 - a table marked `<!-- fields: SCHEMA -->` names members of that format: each one is known to the validator
   (a name it does not know is caught), and its "Required" cell is what the validator does when it is left out;
 - a table marked `<!-- columns: TABLE -->` names the columns `eval scores import` reads from a CSV;
 - a block marked `<!-- refusal: NAME -->` is the message `eval scores check` prints for that mistake, made here
   by breaking a copy of the example in one place;
 - what the tutorial says the check lets through, it lets through;
+- what the recording rules are for is checked on the model the fit builds, not only on the schema: the item
+  lines of one call are one reading, the calls in the files are the requests the generator made, and a
+  correction leaves the number of panel requests as it was;
+- every example run is marked simulated, and the fit takes the examples only with `--allow-simulated`;
 - every `loopmath eval` command shown parses, every link to a heading lands, and the agent guide's JSON
   examples validate.
 
 A block marked `<!-- recorded: NAME -->` is output that depends on the sampler. The test marked `slow` runs the
-fit of the walk (about 3 minutes on 2 cores) and compares those blocks with the numbers masked. It runs only
+fit of the walk (about 2 minutes on 2 cores) and compares those blocks with the numbers masked. It runs only
 with LOOPMATH_EVAL_SLOW=1.
 """
 
@@ -34,6 +39,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import types
+from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -42,6 +49,7 @@ import pytest
 from loopmath import cli
 from loopmath.eval import contracts as C
 from loopmath.eval import engine_pymc as engine
+from loopmath.eval import model as M
 from loopmath.eval import scores as S
 
 REPO = Path(__file__).parents[2]
@@ -78,7 +86,7 @@ def report(study: object, rubric: object = None, judges: object = None) -> dict:
 # ---------------------------------------------------------------------------------------------------
 # Reading the tutorial
 
-TAG = re.compile(r"<!-- (file|output|recorded|refusal|fields|columns): (.+?) -->")
+TAG = re.compile(r"<!-- (file|output|stderr|recorded|refusal|fields|columns): (.+?) -->")
 
 
 def tagged(text: str, kind: str) -> list[tuple[str, list[str]]]:
@@ -146,6 +154,7 @@ def guide() -> str:
 # The walk of the tutorial, up to the fit
 
 STUDY_ARGS = ("--rubric", "my-study/rubric.json", "--judges", "my-study/judges.json")
+OCP_IMPORT = ("eval", "scores", "import", "--ocp", EX / "ocp" / "r201.ocp.json", EX / "ocp" / "r202.ocp.json")
 REVIEWER_IMPORT = ("eval", "scores", "import", "--csv", "my-study-reviewer.csv", "--pairs-csv",
                    "my-study-reviewer-pairs.csv", "--rubric", "my-study/rubric.json", "--out", "my-study")
 
@@ -172,8 +181,8 @@ def walk(tmp_path_factory) -> tuple[Path, dict[str, str]]:
         step("import-reviewer", *REVIEWER_IMPORT)
         step("import-reviewer-again", *REVIEWER_IMPORT)
         step("check", "eval", "scores", "check", "my-study", *STUDY_ARGS)
-        step("import-ocp", "eval", "scores", "import", "--ocp", EX / "ocp" / "r201.ocp.json",
-             EX / "ocp" / "r202.ocp.json", "--rubric", "my-study/rubric.json", "--out", "ocp-study")
+        step("import-ocp", *OCP_IMPORT, "--rubric", "my-study/rubric.json", "--out", "ocp-study",
+             "--allow-simulated")
         step("check-ocp", "eval", "scores", "check", "ocp-study", *STUDY_ARGS)
     finally:
         os.chdir(before)
@@ -195,16 +204,19 @@ def test_the_committed_study_is_what_the_generator_writes(walk):
 def test_the_generated_study_has_the_readings_its_design_gives(walk):
     """Counts worked out from the design, not from the files: 16 inputs on 2 arms; `judge-main` scores 4
     components per output and 2 again on every other output; `judge-cheap` makes one panel call per output and
-    a second on every fourth; the reviewer scores 12 outputs, 4 of them twice on 2 components, and corrects
-    one slip; `judge-main` compares 8 pairs in both orders and the reviewer 6 pairs."""
+    a second on every fourth, and one of its lines is corrected; the reviewer scores 12 outputs, 4 of them
+    twice on 2 components, and corrects one slip; `judge-main` compares 8 pairs in both orders and the reviewer
+    6 pairs."""
     root, _ = walk
     got = report(root / "my-study")
     assert got["ok"] is True and got["problems"] == [] and got["warnings"] == [] and got["mixed_arm"] == []
-    main, cheap, reviewer = 32 * 4 + 16 * 2, (32 + 8) * 4, 12 * 4 + 4 * 2 + 1
-    assert got["counts"] == {"runs": 32, "readings": main + cheap + reviewer, "readings_read": main + cheap + reviewer - 1,
+    main, cheap, reviewer = 32 * 4 + 16 * 2, (32 + 8) * 4 + 1, 12 * 4 + 4 * 2 + 1
+    assert (main, cheap, reviewer) == (160, 161, 57)
+    assert got["counts"] == {"runs": 32, "readings": main + cheap + reviewer, "readings_read": main + cheap + reviewer - 2,
                              "pairs": 8 * 2 + 6, "pairs_read": 22, "items": 0}
-    assert got["not_read"] == [{"table": "readings", "id": "rv.r026.depth", "reason": "replaced",
-                                "by": "rv.r026.depth.fixed"}]
+    assert sorted((row["id"], row["by"]) for row in got["not_read"]) == [
+        ("c0161.depth", "c0161.depth.fix1"), ("rv.r026.depth", "rv.r026.depth.fixed")]
+    assert {(row["table"], row["reason"]) for row in got["not_read"]} == {("readings", "replaced")}
     design = {(row["term"], row["judge"], row["dimension"]): row for row in got["design"]}
     for dim, repeated in (("final/correct", 0), ("final/clarity", 0), ("final/depth", 16), ("final/overall", 16)):
         row = design[("sigma", "judge-main", dim)]
@@ -216,8 +228,8 @@ def test_the_generated_study_has_the_readings_its_design_gives(walk):
 
 
 @pytest.mark.parametrize("folder, counts", [
-    ("study", {"runs": 32, "readings": 320, "readings_read": 320, "pairs": 16, "pairs_read": 16, "items": 0}),
-    ("scales", {"runs": 2, "readings": 20, "readings_read": 19, "pairs": 2, "pairs_read": 2, "items": 3}),
+    ("study", {"runs": 32, "readings": 321, "readings_read": 320, "pairs": 16, "pairs_read": 16, "items": 0}),
+    ("scales", {"runs": 2, "readings": 25, "readings_read": 22, "pairs": 5, "pairs_read": 4, "items": 3}),
 ])
 def test_each_committed_example_passes_the_checks(folder, counts):
     """`eval rubric check` and `eval scores check` pass on the example folders as they are in the repository.
@@ -251,6 +263,7 @@ def test_the_ocp_examples_import_as_the_tutorial_says(walk):
     assert (runs["r201"]["input"], runs["r201"]["arm"], runs["r202"]["arm"]) == ("q17", "baseline", "candidate")
     assert runs["r202"]["steps"] == [{"step": "final", "model": {"id": "model-large", "family": "alpha"},
                                       "effort": "high"}]
+    assert runs["r201"]["simulated"] is True and runs["r202"]["simulated"] is True
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -298,13 +311,13 @@ def test_the_fit_report_shown_is_the_one_check_only_prints(doc, walk, monkeypatc
     `eval fit --check-only` prints, and that command writes nothing."""
     root, _ = walk
     monkeypatch.chdir(root)
-    code, out, err = lm("eval", "fit", "my-study", *STUDY_ARGS, "--check-only")
+    code, out, err = lm("eval", "fit", "my-study", *STUDY_ARGS, "--allow-simulated", "--check-only")
     assert code == 0, err
     assert not (root / "my-study" / "fit.json").exists() or os.environ.get("LOOPMATH_EVAL_SLOW") == "1"
     (block,) = [block for name, block in tagged(doc, "recorded") if name == "fit"]
     assert block[-2].startswith("fit: my-study/fit.json") and block[-1].startswith("converged: yes")
     assert shown_in(block[:-2] + ["..."], out.splitlines()), out
-    assert "readings: 376 of 377 used; pairs: 22 of 22 used; 1 rows not used" in out
+    assert "readings: 376 of 378 used; pairs: 22 of 22 used; 2 rows not used" in out
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -517,6 +530,24 @@ def test_a_choice_is_read_by_the_output_shown_first(tmp_path):
         assert [row["verdict"] for row in pairs if row["id"] == "h0901"] == [verdict]
 
 
+def test_a_value_changed_in_a_sheet_without_ids_comes_in_as_a_repeat(tmp_path):
+    """The trap the CSV reference names: with no `id` column the id of a row is made from its content, so a
+    changed value is a new row beside the old one, under its own call, and nothing is replaced."""
+    study, sheet = tmp_path / "study", tmp_path / "sheet.csv"
+    shutil.copytree(EX / "scales", study)
+    for value, new in (("6", 1), ("6", 0), ("7", 1)):
+        sheet.write_text("run,component,judge,value,observed_at\n"
+                         f"r102,depth,reviewer-1,{value},2026-03-02T16:00:00+00:00\n", encoding="utf-8")
+        code, out, err = lm("eval", "scores", "import", "--csv", sheet, "--rubric", study / "rubric.json", "--out",
+                            study, "--json")
+        assert code == 0 and json.loads(out)["readings"]["new"] == new, (value, out, err)
+    assert check(study)[0] == 0
+    rows = [row for row in C.read_lines(study / C.SCORES_FILE, C.SCHEMA_SCORES)
+            if (row["judge"], row["run"], row["component"]) == ("reviewer-1", "r102", "depth")]
+    assert sorted(row["value"] for row in rows) == [6, 7] and len({row["call"] for row in rows}) == 2
+    assert not any("replaces" in row for row in rows)
+
+
 # ---------------------------------------------------------------------------------------------------
 # The mistakes the tutorial names, made on a copy of `scales`
 
@@ -581,7 +612,8 @@ MISTAKES = {
                    "items_and_count"),
     "unknown-item": (score(8)(item="doc-01.none"), "unknown_item"),
     "pair-inputs": (_other_input, "different_inputs"),
-    "replaces-unknown": (score(20)(replaces="h0000"), "replaces_unknown"),
+    "replaces-unknown": (score(12)(replaces="c0000.depth"), "replaces_unknown"),
+    "replaces-self": (score(12)(replaces="c0010.depth"), "replaces_self"),
 }
 
 
@@ -646,11 +678,31 @@ def _arm_in_run_id(tables):
         row["a"], row["b"] = new[row["a"]], new[row["b"]]
 
 
-@pytest.mark.parametrize("change", [_own_calls, _tenth, _arm_in_run_id], ids=["panel-calls-split", "wrong-scale-in-range",
-                                                                               "arm-in-run-id"])
-def test_what_the_tutorial_says_the_check_lets_through_passes(change, tmp_path):
+def _own_item_calls(tables):
+    for row in tables["scores"]:
+        if "item" in row:
+            row["call"] = row["id"]
+
+
+def _fix_under_a_new_call(tables):
+    for row in tables["scores"]:
+        if "replaces" in row:
+            row["call"] = row["id"]
+
+
+def _unmarked(tables):
+    for row in tables["runs"]:
+        row.pop("simulated", None)
+
+
+@pytest.mark.parametrize("change, source", [
+    (_own_calls, "study"), (_tenth, "study"), (_arm_in_run_id, "study"), (_own_item_calls, "scales"),
+    (_fix_under_a_new_call, "study"), (_fix_under_a_new_call, "scales"), (_unmarked, "study")],
+    ids=["panel-calls-split", "wrong-scale-in-range", "arm-in-run-id", "item-calls-split", "fix-under-a-new-call",
+         "fix-under-a-new-call-scales", "made-up-runs-unmarked"])
+def test_what_the_tutorial_says_the_check_lets_through_passes(change, source, tmp_path):
     """The tutorial warns that these pass. If the check learns to refuse one, the warning goes."""
-    code, out, err = check(broken(tmp_path, change, "study"))
+    code, out, err = check(broken(tmp_path, change, source))
     assert code == 0 and out.rstrip().endswith("\nok"), err
 
 
@@ -682,9 +734,288 @@ def test_the_fit_leaves_out_a_row_the_check_refuses(tmp_path):
     study = broken(tmp_path, change, "study")
     assert check(study)[0] == 1
     code, out, err = lm("eval", "fit", study, "--rubric", study / "rubric.json", "--judges", study / "judges.json",
-                        "--check-only")
+                        "--allow-simulated", "--check-only")
     assert code == 0, err
-    assert "readings: 319 of 320 used; pairs: 16 of 16 used; 1 rows not used" in out
+    assert "readings: 319 of 321 used; pairs: 16 of 16 used; 2 rows not used" in out      # 1 replaced, 1 unknown judge
+
+
+# ---------------------------------------------------------------------------------------------------
+# What the recording rules are for: the model the fit builds
+
+def design(study: Path, **options) -> M.Design:
+    """The model `eval fit` builds from a study folder (the examples are simulated, so that is allowed)."""
+    rubric = C.read_document(study / "rubric.json", C.SCHEMA_RUBRIC)
+    judges = C.read_document(study / "judges.json", C.SCHEMA_JUDGES)
+    return M.build(C.read_study(study), rubric, judges, allow_simulated=True, **options)
+
+
+def item_readings(built: M.Design) -> list[tuple[str, int, int]]:
+    """`(judge, passed, of)` of every `items` reading of a model."""
+    data, judges = built.data, [row["id"] for row in built.judges["judges"]]
+    return sorted((judges[j], int(k), int(n)) for kind, j, k, n in
+                  zip(data["g_kind"], data["g_j"], data["g_k"], data["g_n"]) if kind == M.ITEMS)
+
+
+def _drop(reading_id: str):
+    def change(tables):
+        tables["scores"] = [row for row in tables["scores"] if row["id"] != reading_id]
+    return change
+
+
+def test_the_item_lines_of_one_call_are_one_reading_of_the_model(tmp_path):
+    """Call `c0008` of `scales` has three item lines, passed 1, 0, 1: the model reads one reading, 2 of 3. With
+    the correction of its `owner` line, which keeps the call, it reads 3 of 3. Under a call id per line, which
+    the check lets through, the same lines are three readings of one item each."""
+    lines = [json.loads(line) for line in (EX / "scales" / "scores.jsonl").read_text(encoding="utf-8").splitlines()]
+    first = [(row["item"], row["value"]) for row in lines if row["call"] == "c0008" and "replaces" not in row]
+    assert first == [("doc-01.deadline", 1), ("doc-01.owner", 0), ("doc-01.cost", 1)]
+    count = ("judge-cheap", 2, 3)                                   # the count line of the panel call
+    for name in ("as-written", "split"):
+        (tmp_path / name).mkdir()
+    before = broken(tmp_path / "as-written", _drop("c0008.covers.owner.fix1"))
+    assert item_readings(design(before)) == [count, ("judge-main", 2, 3)]
+    assert item_readings(design(EX / "scales")) == [count, ("judge-main", 3, 3)]
+
+    def split(tables):
+        _drop("c0008.covers.owner.fix1")(tables)
+        _own_item_calls(tables)
+    study = broken(tmp_path / "split", split)
+    assert check(study)[0] == 0
+    assert item_readings(design(study)) == [count, ("judge-main", 0, 1), ("judge-main", 1, 1), ("judge-main", 1, 1)]
+
+
+def generator():
+    """`record_study.py`, loaded as a module. Compiled here, so that no bytecode file is left beside it."""
+    path = EX / "record_study.py"
+    module = types.ModuleType("record_study")
+    module.__file__ = str(path)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), module.__dict__)
+    return module
+
+
+def test_the_recorded_calls_are_the_requests_the_generator_made(tmp_path):
+    """The generator keeps a list of every request it made of a judge. The files show the same requests: each
+    `call` is one request, by that judge, about that output, for those components, and each judge's `mode` in
+    the judges file is how it was asked. Counts by hand: `judge-main` 32 x 4 and 16 x 2 repeats, `judge-cheap`
+    32 and 8 panel requests, the reviewer 12 x 4 and 4 x 2 second looks; 16 and 6 comparisons."""
+    study = tmp_path / "my-study"
+    made = generator().main(study)
+    for name in (C.RUNS_FILE, C.SCORES_FILE, C.PAIRS_FILE):
+        assert (study / name).read_bytes() == (EX / "study" / name).read_bytes(), name
+    code, _, err = lm("eval", "scores", "import", "--csv", tmp_path / "my-study-reviewer.csv", "--pairs-csv",
+                      tmp_path / "my-study-reviewer-pairs.csv", "--rubric", study / "rubric.json", "--out", study)
+    assert code == 0, err
+
+    asked = Counter((judge, run, frozenset(parts)) for kind, judge, run, parts in
+                    (entry for entry in made.asked if entry[0] == "score"))
+    by_call: dict[str, list[dict]] = {}
+    for row in C.read_lines(study / C.SCORES_FILE, C.SCHEMA_SCORES):
+        by_call.setdefault(row["call"], []).append(row)
+    recorded = Counter()
+    for call, rows in by_call.items():
+        assert len({(row["judge"], row["run"]) for row in rows}) == 1, call
+        recorded[(rows[0]["judge"], rows[0]["run"], frozenset(row["component"] for row in rows))] += 1
+    assert recorded == asked
+    assert sum(asked.values()) == (32 * 4 + 16 * 2) + (32 + 8) + (12 * 4 + 4 * 2) == 256
+
+    sizes: dict[str, set[int]] = {}
+    for judge, _, parts in asked:
+        sizes.setdefault(judge, set()).add(len(parts))
+    modes = {row["id"]: row["mode"] for row in C.read_document(study / "judges.json", C.SCHEMA_JUDGES)["judges"]}
+    assert modes == {"reviewer-1": "per_component", "judge-main": "per_component", "judge-cheap": "panel"}
+    assert sizes == {"reviewer-1": {1}, "judge-main": {1}, "judge-cheap": {4}}
+
+    asked_pairs = Counter(entry[1:] for entry in made.asked if entry[0] == "pair")
+    pairs = C.read_lines(study / C.PAIRS_FILE, C.SCHEMA_PAIRS)
+    assert len({row["call"] for row in pairs}) == len(pairs) == 16 + 6
+    assert Counter((row["judge"], row["a"], row["b"], row["shown_first"]) for row in pairs) == asked_pairs
+    assert len(made.asked) == 256 + 22
+
+
+def test_a_correction_keeps_its_call_so_a_panel_request_stays_one_request(tmp_path):
+    """The model has one call variable per panel request. The generated study has 32 + 8 panel requests and
+    one corrected line; `scales` has one panel request of `judge-cheap` and one sitting of `reviewer-2` with a
+    corrected line. The corrections keep their calls, so the counts are 40 and 2. Under a new call id, which
+    the check lets through, each correction adds a request that was never made."""
+    for name in ("study", "scales"):
+        (tmp_path / name).mkdir()
+    assert design(EX / "study").data["n_pc"] == 32 + 8
+    assert design(broken(tmp_path / "study", _fix_under_a_new_call, "study")).data["n_pc"] == 32 + 8 + 1
+    assert design(EX / "scales").data["n_pc"] == 2
+    assert design(broken(tmp_path / "scales", _fix_under_a_new_call)).data["n_pc"] == 2 + 1
+    got = report(EX / "scales")
+    assert sorted((row["table"], row["id"], row["by"]) for row in got["not_read"]) == [
+        ("pairs", "h0003.overall", "h0003.overall.fix1"), ("readings", "c0008.covers.owner", "c0008.covers.owner.fix1"),
+        ("readings", "h0001", "h0001.fix1"), ("readings", "h0002.depth", "h0002.depth.fix1")]
+    for table in ("scores", "pairs"):
+        rows = {row["id"]: row for row in C.read_lines(EX / "scales" / f"{table}.jsonl",
+                                                       C.SCHEMA_SCORES if table == "scores" else C.SCHEMA_PAIRS)}
+        fixes = [row for row in rows.values() if "replaces" in row]
+        assert fixes and all(row["call"] == rows[row["replaces"]]["call"] and row["id"] != row["replaces"]
+                             for row in fixes), table
+
+
+def test_the_helpers_write_a_correction_under_the_old_call_and_a_new_answer_under_a_new_one(tmp_path):
+    """`record_reading` and `record_pair` take the id of the line apart from the call. A correction with its
+    own id keeps the call, and the panel request count stays. Without its own id it would be the old line
+    again, which is refused. A new answer of the judge is a new call: one more panel request."""
+    record, study = generator(), tmp_path / "study"
+    shutil.copytree(EX / "study", study)
+    at = "2026-03-02T12:00:00+00:00"
+    line = dict(run="r001", component="overall", judge="judge-cheap", observed_at=at)
+    assert record.record_reading(study, call="c0161", value=5.0, **line) == "c0161.overall"
+    code, _, err = check(study)
+    assert code == 1 and '"c0161.overall"' in err and "is already on line" in err, err
+
+    shutil.copyfile(EX / "study" / C.SCORES_FILE, study / C.SCORES_FILE)
+    fixed = record.record_reading(study, call="c0161", value=5.0, reading_id="c0161.overall.fix1",
+                                  replaces="c0161.overall", **line)
+    assert fixed == "c0161.overall.fix1"
+    got = report(study)
+    assert got["ok"] is True and got["warnings"] == []
+    assert (got["counts"]["readings"], got["counts"]["readings_read"]) == (322, 320)
+    assert design(study).data["n_pc"] == 32 + 8
+
+    for component, value in (("correct", 1), ("clarity", "ok"), ("depth", 5.5), ("overall", 6.0)):
+        new = record.record_reading(study, run="r001", component=component, judge="judge-cheap", call="c0999",
+                                    value=value, observed_at=at)
+        assert new == f"c0999.{component}"
+    assert report(study)["ok"] is True and design(study).data["n_pc"] == 32 + 8 + 1
+
+    first = C.read_lines(study / C.PAIRS_FILE, C.SCHEMA_PAIRS)[0]
+    pair = dict(a=first["a"], b=first["b"], judge="judge-main", call="c0998", shown_first="a", observed_at=at)
+    assert record.record_pair(study, verdict="a", **{**pair, "call": "c0997"}) == "c0997"
+    assert record.record_pair(study, component="depth", verdict="a", **pair) == "c0998.depth"
+    assert record.record_pair(study, component="overall", verdict="tie", **pair) == "c0998.overall"
+    assert record.record_pair(study, component="overall", verdict="b", pair_id="c0998.overall.fix1",
+                              replaces="c0998.overall", **pair) == "c0998.overall.fix1"
+    got = report(study)
+    assert got["ok"] is True and got["warnings"] == []
+    assert (got["counts"]["pairs"], got["counts"]["pairs_read"]) == (16 + 4, 16 + 3)
+    live = {row["id"]: row for row in C.live(C.read_lines(study / C.PAIRS_FILE, C.SCHEMA_PAIRS), C.PAIRS_FILE)[0]}
+    assert {row["id"] for row in live.values() if row["call"] == "c0998"} == {"c0998.depth", "c0998.overall.fix1"}
+    assert live["c0998.overall.fix1"]["verdict"] == "b"
+    record.record_pair(study, component="depth", verdict="b", pair_id="c0998.depth.again", **pair)
+    assert [row["code"] for row in report(study)["problems"]] == ["call_twice"]
+
+
+def test_the_helpers_leave_out_what_has_no_value(tmp_path):
+    """No member is written as null, and `simulated` is written only when asked for."""
+    record = generator()
+    record.record_run(tmp_path, run="r900", input="q90", arm="baseline", steps=[record.ARMS["baseline"]])
+    record.record_run(tmp_path, run="r901", input="q90", arm="candidate", steps=[record.ARMS["candidate"]],
+                      simulated=True)
+    record.record_reading(tmp_path, run="r900", component="depth", judge="judge-main", call="c9000", value=5.0,
+                          observed_at="2026-03-02T12:00:00+00:00")
+    text = (tmp_path / C.RUNS_FILE).read_text(encoding="utf-8") + (tmp_path / C.SCORES_FILE).read_text(encoding="utf-8")
+    assert "null" not in text
+    real, made_up = C.read_lines(tmp_path / C.RUNS_FILE, C.SCHEMA_RUNS)
+    raw = [json.loads(line) for line in (tmp_path / C.RUNS_FILE).read_text(encoding="utf-8").splitlines()]
+    assert "simulated" not in raw[0] and "cost_usd" not in raw[0] and raw[1]["simulated"] is True
+    assert real["simulated"] is False and made_up["simulated"] is True
+
+
+# ---------------------------------------------------------------------------------------------------
+# Simulated runs, and null
+
+def test_every_example_run_is_marked_simulated(guide):
+    """All example data is made up, and every run of it says so: the study folders, the OCP documents and the
+    run lines of the agent guide."""
+    seen = 0
+    for folder in ("study", "scales"):
+        for line in (EX / folder / C.RUNS_FILE).read_text(encoding="utf-8").splitlines():
+            assert json.loads(line)["simulated"] is True, (folder, line[:60])
+            seen += 1
+    for name in ("r201.ocp.json", "r202.ocp.json"):
+        document = json.loads((EX / "ocp" / name).read_text(encoding="utf-8"))
+        assert isinstance(document["run"]["ext"]["dev.loopmath.simulate"], dict), name
+        seen += 1
+    for line in re.findall(r'^\{"schema": "loopmath\.eval-runs/1".*$', guide, flags=re.M):
+        assert json.loads(line)["simulated"] is True, line[:60]
+        seen += 1
+    assert seen == 32 + 2 + 2 + 2
+
+
+@pytest.mark.parametrize("folder", ["study", "scales"])
+def test_the_model_takes_an_example_only_when_simulated_runs_are_allowed(folder):
+    study = EX / folder
+    rubric = C.read_document(study / "rubric.json", C.SCHEMA_RUBRIC)
+    judges = C.read_document(study / "judges.json", C.SCHEMA_JUDGES)
+    with pytest.raises(C.ContractError) as refused:
+        M.build(C.read_study(study), rubric, judges)
+    assert refused.value.code == "simulated"
+    assert M.build(C.read_study(study), rubric, judges, allow_simulated=True).counts["readings_used"] > 0
+
+
+@needs_engine
+def test_the_fit_refuses_the_example_without_the_flag_as_the_tutorial_shows(doc, walk, monkeypatch, tmp_path):
+    """`eval fit` on the walk's study: refused without `--allow-simulated`, with the message the tutorial
+    shows, and taken with it. The same study with the marks removed, as real runs would be, needs no flag."""
+    root, _ = walk
+    monkeypatch.chdir(root)
+    code, out, err = lm("eval", "fit", "my-study", *STUDY_ARGS, "--check-only")
+    assert code == 1 and out == "", (out, err)
+    (block,) = [block for name, block in tagged(doc, "stderr") if name == "fit-refused"]
+    assert block == err.splitlines() and "--allow-simulated" in err
+    assert lm("eval", "fit", "my-study", *STUDY_ARGS, "--allow-simulated", "--check-only")[0] == 0
+    real = broken(tmp_path, _unmarked, "study")
+    code, _, err = lm("eval", "fit", real, "--rubric", real / "rubric.json", "--judges", real / "judges.json",
+                      "--check-only")
+    assert code == 0, err
+
+
+def test_the_ocp_import_refuses_the_simulated_runs_without_the_flag(tmp_path):
+    """Both OCP examples carry the simulate mark: without `--allow-simulated` nothing is written."""
+    rubric = EX / "study" / "rubric.json"
+    code, out, err = lm(*OCP_IMPORT, "--rubric", rubric, "--out", tmp_path / "refused")
+    assert code == 1 and "nothing written" in out, (out, err)
+    assert err.count("--allow-simulated takes simulated runs") == 2
+    assert not (tmp_path / "refused" / C.RUNS_FILE).exists()
+    code, out, err = lm(*OCP_IMPORT, "--rubric", rubric, "--out", tmp_path / "taken", "--allow-simulated")
+    assert code == 0 and "runs: 2 new" in out, err
+
+
+def test_null_is_refused_for_mode_and_blinded_and_leaving_them_out_is_fine(doc, guide):
+    """The tutorial says to leave out an optional member with no value, not to write null. `mode` and `blinded`
+    of a judge show why: left out they get their defaults, set to null they are refused."""
+    base = {"schema": C.SCHEMA_JUDGES, "judges": [{"id": "reviewer-1", "kind": "person"}]}
+    (judge,) = C.validate_judges(copy.deepcopy(base))["judges"]
+    assert (judge["mode"], judge["blinded"]) == ("per_component", False)
+    for name, code in (("mode", "bad_choice"), ("blinded", "type")):
+        document = copy.deepcopy(base)
+        document["judges"][0][name] = None
+        assert code_of(C.validate_judges, document) == code, name
+    assert "counts as absent" not in doc
+    assert "Do not write `null`" in doc and '`"mode": null`' in doc and '`"blinded": null`' in doc
+    assert "null" in guide
+
+
+# ---------------------------------------------------------------------------------------------------
+# The order of the page
+
+def test_the_page_walks_first_and_keeps_the_reference_for_the_end(doc):
+    """A contents list, the short version, then the checked walk. The field tables, the CSV columns and the
+    refusals are in reference sections, which are the last sections of the page."""
+    lines = doc.splitlines()
+    heads = [line[3:] for line in lines if line.startswith("## ")]
+    assert heads[:3] == ["Contents", "The short version", "A first study, start to end"]
+    assert heads[-3:] == ["Reference: the files, member by member", "Reference: CSV columns",
+                          "Reference: what the check refuses, and the fix"]
+    assert all(not head.startswith("Reference") for head in heads[:-3])
+    at = {head: n for n, line in enumerate(lines) for head in heads if line == "## " + head}
+    assert at["A first study, start to end"] < 70
+    contents = "\n".join(lines[at["Contents"]:at["The short version"]])
+    for head in heads[1:]:
+        assert f"](#{slug(head)})" in contents, head
+    walked = "\n".join(lines[at["A first study, start to end"]:at["The words"]])
+    for command in TUTORIAL_COMMANDS:
+        assert "$ loopmath " + command in walked, command
+    for name in ("record", "rubric-check", "check"):
+        assert f"<!-- output: {name} -->" in walked, name
+    reference = at["Reference: the files, member by member"]
+    marks = [n for n, line in enumerate(lines) if re.match(r"<!-- (fields|columns|refusal): ", line)]
+    assert len(marks) >= 7 + 2 + 9 and min(marks) > reference
+    assert reference > len(lines) * 0.55
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -769,8 +1100,9 @@ def test_the_tutorial_says_eval_is_experimental_and_links_the_limits(doc):
 
 
 def test_no_em_dash_in_the_tutorial_the_guide_or_the_examples():
-    files = [DOC, GUIDE, Path(__file__)] + [path for path in EX.rglob("*") if path.is_file()]
-    assert len(files) >= 18
+    files = [DOC, GUIDE, Path(__file__)] + [path for path in EX.rglob("*")
+                                             if path.is_file() and "__pycache__" not in path.parts]
+    assert len(files) == 3 + 17
     for path in files:
         assert EM_DASH not in path.read_text(encoding="utf-8"), path
 
@@ -778,9 +1110,8 @@ def test_no_em_dash_in_the_tutorial_the_guide_or_the_examples():
 # ---------------------------------------------------------------------------------------------------
 # The agent guide
 
-def test_the_guide_examples_are_valid_records(guide, tmp_path):
-    """Each JSON block of the guide validates under the format its `schema` names, and its blocks together make
-    a study that passes `eval rubric check` and `eval scores check`."""
+def guide_study(guide: str, folder: Path) -> tuple[Path, set[str]]:
+    """The JSON blocks of the guide, written out as the study folder they describe, and the formats seen."""
     validators = {C.SCHEMA_RUBRIC: C.validate_rubric, C.SCHEMA_JUDGES: C.validate_judges,
                   C.SCHEMA_RUNS: C.validate_run, C.SCHEMA_SCORES: C.validate_score, C.SCHEMA_PAIRS: C.validate_pair,
                   C.SCHEMA_ITEMS: C.validate_item, C.SCHEMA_VALUE: C.validate_value}
@@ -788,7 +1119,7 @@ def test_the_guide_examples_are_valid_records(guide, tmp_path):
              C.SCHEMA_SCORES: C.SCORES_FILE, C.SCHEMA_PAIRS: C.PAIRS_FILE, C.SCHEMA_ITEMS: C.ITEMS_FILE}
     blocks = re.findall(r"```json\n(.*?)```", guide, flags=re.S)
     assert len(blocks) >= 5
-    study, seen = tmp_path / "study", set()
+    study, seen = folder / "study", set()
     study.mkdir()
     for block in blocks:
         try:
@@ -800,11 +1131,43 @@ def test_the_guide_examples_are_valid_records(guide, tmp_path):
             seen.add(row["schema"])
             with open(study / files[row["schema"]], "a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row) + "\n")
-    assert seen >= {C.SCHEMA_RUBRIC, C.SCHEMA_JUDGES, C.SCHEMA_RUNS, C.SCHEMA_SCORES, C.SCHEMA_PAIRS}
-    code, _, err = lm("eval", "rubric", "check", study / "rubric.json", "--judges", study / "judges.json")
+    for name in ("rubric.json", "judges.json"):
+        (study / name).write_text((study / name).read_text(encoding="utf-8").strip() + "\n", encoding="utf-8")
+    return study, seen
+
+
+def test_the_guide_examples_are_valid_records(guide, tmp_path):
+    """Each JSON block of the guide validates under the format its `schema` names, and its blocks together make
+    a study that passes `eval rubric check` and `eval scores check`."""
+    study, seen = guide_study(guide, tmp_path)
+    assert seen == {C.SCHEMA_RUBRIC, C.SCHEMA_JUDGES, C.SCHEMA_RUNS, C.SCHEMA_SCORES, C.SCHEMA_PAIRS, C.SCHEMA_ITEMS}
+    code, _, err = lm("eval", "rubric", "check", study / "rubric.json", "--judges", study / "judges.json", "--items",
+                      study / C.ITEMS_FILE)
     assert code == 0, err
     code, out, err = check(study)
     assert code == 0 and out.rstrip().endswith("\nok"), err
+    got = report(study)
+    assert got["warnings"] == [] and got["mixed_arm"] == []
+
+
+def test_the_guide_item_example_is_one_reading_of_two_of_three(guide, tmp_path):
+    """The guide shows a list of checks answered in one request: three item lines under one call, passed 1, 0
+    and 1. The model reads them as one reading, 2 of 3. Its corrections keep the call of the line they
+    correct, and its panel answer and its sitting stay one request each."""
+    study, _ = guide_study(guide, tmp_path)
+    rows = C.read_lines(study / C.SCORES_FILE, C.SCHEMA_SCORES)
+    items = [row for row in rows if "item" in row]
+    assert [row["value"] for row in items] == [1, 0, 1] and len({row["call"] for row in items}) == 1
+    assert len({row["id"] for row in items}) == 3 and all(row["id"].startswith(row["call"] + ".") for row in items)
+    built = design(study)
+    assert item_readings(built) == [("judge-main", 2, 3)]
+    by_id = {row["id"]: row for row in rows}
+    fixes = [row for row in rows if "replaces" in row]
+    assert fixes and all(row["call"] == by_id[row["replaces"]]["call"] for row in fixes)
+    modes = {row["id"]: row["mode"] for row in built.judges["judges"]}
+    panel_calls = {row["call"] for row in rows if modes[row["judge"]] == "panel"}
+    assert built.data["n_pc"] == len(panel_calls) >= 2
+    assert {modes[row["judge"]] for row in fixes} >= {"panel"}
 
 
 def test_the_guide_names_the_rules_the_tutorial_gives(guide):
@@ -812,7 +1175,8 @@ def test_the_guide_names_the_rules_the_tutorial_gives(guide):
     neutral run ids, the check before the fit."""
     assert guide.startswith("# ") and "experimental" in guide and "loopmath guide eval" in guide
     for words in ("run `--help`", "`call`", "`replaces`", "repeat", "neutral", "`ext`", "eval scores check",
-                  "`cost_usd`", "`cost_usd_per_call`", "## Never"):
+                  "`cost_usd`", "`cost_usd_per_call`", "## Never", "`item`", "`simulated`", "--allow-simulated",
+                  "sitting", "null"):
         assert words in guide, words
 
 
@@ -842,6 +1206,8 @@ def test_the_walk_fits_and_the_recorded_outputs_have_their_shape(doc, walk, monk
     assert set(recorded) == {"fit", "judges", "value", "labels", "not-blind"}
     monkeypatch.chdir(root)
     code, out, err = lm("eval", "fit", "my-study", *STUDY_ARGS, "--chains", "2")
+    assert code == 1 and "--allow-simulated" in err and not (root / "my-study" / "fit.json").exists(), err
+    code, out, err = lm("eval", "fit", "my-study", *STUDY_ARGS, "--allow-simulated", "--chains", "2")
     assert code == 0 and "converged: yes" in out, (out[-400:], err[-400:])
     assert shown_in(masked(recorded["fit"]), masked(out.splitlines())), out
     code, out, err = lm("eval", "judges", "my-study/fit.json")
@@ -855,6 +1221,7 @@ def test_the_walk_fits_and_the_recorded_outputs_have_their_shape(doc, walk, monk
                         "my-study/labels-001.json", "--form", "labels-001.csv")
     assert code == 0, err
     assert masked(recorded["labels"])[1:] == masked(out.splitlines())[1:], out
+    assert "not blind" not in out                # neutral run ids: no note, although the study is simulated
     with open("labels-001.csv", encoding="utf-8", newline="") as handle:
         form = list(csv.DictReader(handle))
     plan = (root / "my-study" / "labels-001.json").read_text(encoding="utf-8")
@@ -864,12 +1231,42 @@ def test_the_walk_fits_and_the_recorded_outputs_have_their_shape(doc, walk, monk
     for word in ("baseline", "candidate", "model-small", "model-large", "alpha", "beta"):
         assert word not in plan, f"the plan names {word}"
 
-    # the same study under run ids that name the arm: the check passes, the plan is refused
-    named_study = broken(tmp_path, _arm_in_run_id, "study")
-    assert check(named_study)[0] == 0
-    code, out, err = lm("eval", "fit", named_study, "--rubric", named_study / "rubric.json", "--judges",
-                        named_study / "judges.json", "--components", "depth", "--chains", "2", "--draws", "300")
-    assert code == 0, err
-    code, out, err = lm("eval", "labels", "next", named_study / "fit.json", "--mode", "pilot", "--n", "6", "--out",
-                        tmp_path / "labels.json", "--allow-unconverged")
-    assert code == 1 and masked(err.splitlines()) == masked(recorded["not-blind"]), err
+    # the filled form: without a `call` column every row is its own call; with one, a sitting is one call
+    answer = {"correct": "1", "clarity": "ok", "depth": "6", "overall": "6"}
+    filled = [{**row, "value": answer[row["component"]], "observed_at": "2026-03-05T10:00:00+00:00"} for row in form]
+    assert len({row["assignment"] for row in filled}) < len(filled)       # the form groups rows by assignment
+    for name, with_call in (("own", False), ("sittings", True)):
+        study = tmp_path / name
+        shutil.copytree(root / "my-study", study)
+        rows = [{**row, "call": "sit-" + row["assignment"]} for row in filled] if with_call else filled
+        with open(tmp_path / f"{name}.csv", "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        code, out, err = lm("eval", "scores", "import", "--csv", tmp_path / f"{name}.csv", "--labels",
+                            study / "labels-001.json", "--rubric", study / "rubric.json", "--out", study)
+        assert code == 0, err
+        new = [row for row in C.read_lines(study / C.SCORES_FILE, C.SCHEMA_SCORES) if "assignment" in row]
+        assert len(new) == len(filled)
+        calls = {row["call"] for row in new}
+        assert len(calls) == (len({row["assignment"] for row in filled}) if with_call else len(filled)), name
+
+    # the same study under run ids that name the arm. As real runs: the check passes, the plan is refused.
+    # Marked simulated, as the examples are: the plan is written with a note that it is not blind.
+    def named_real(tables):
+        _arm_in_run_id(tables)
+        _unmarked(tables)
+    for name, change, flags in (("real", named_real, ()), ("simulated", _arm_in_run_id, ("--allow-simulated",))):
+        (tmp_path / name).mkdir()
+        named_study = broken(tmp_path / name, change, "study")
+        assert check(named_study)[0] == 0
+        code, out, err = lm("eval", "fit", named_study, "--rubric", named_study / "rubric.json", "--judges",
+                            named_study / "judges.json", *flags, "--components", "depth", "--chains", "2",
+                            "--draws", "300")
+        assert code == 0, err
+        code, out, err = lm("eval", "labels", "next", named_study / "fit.json", "--mode", "pilot", "--n", "6",
+                            "--out", tmp_path / f"labels-{name}.json", "--allow-unconverged")
+        if name == "real":
+            assert code == 1 and masked(err.splitlines()) == masked(recorded["not-blind"]), err
+        else:
+            assert code == 0 and "note: the plan is not blind: the study is simulated" in out, (out, err)

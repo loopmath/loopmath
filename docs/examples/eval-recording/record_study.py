@@ -9,6 +9,9 @@ Everything here is made up. No model is called: the "pipeline" and the "judges" 
 drawn from fixed formulas, so the same command always writes the same files. What is real is the shape of
 every record. `record_run`, `record_reading` and `record_pair` are the part to copy into your own code.
 
+Because the runs are made up, every run line is marked `"simulated": true`, and `eval fit` takes the study
+only with `--allow-simulated`. Runs of a real system carry no such mark.
+
 Standard library only.
 """
 
@@ -70,39 +73,54 @@ ARMS = {
 # The part to copy: one function per kind of record. Each appends one JSON line.
 
 def _append(path: Path, record: dict) -> None:
+    """Append one JSON line. A member with no value is left out, never written as null."""
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps({k: v for k, v in record.items() if v is not None}) + "\n")
 
 
 def record_run(study: Path, *, run: str, input: str, arm: str, steps: list[dict], cost_usd: float | None = None,
-               refs: dict | None = None) -> None:
-    """One output of the pipeline: which input it answers, under which arm, and what each step ran on."""
+               refs: dict | None = None, simulated: bool | None = None) -> None:
+    """One output of the pipeline: which input it answers, under which arm, and what each step ran on.
+    Pass `simulated=True` only for made-up runs. Leave it out for the runs of a real system."""
     _append(study / "runs.jsonl", {"schema": "loopmath.eval-runs/1", "run": run, "input": input, "arm": arm,
-                                   "steps": steps, "cost_usd": cost_usd, "refs": refs})
+                                   "steps": steps, "cost_usd": cost_usd, "simulated": simulated, "refs": refs})
 
 
 def record_reading(study: Path, *, run: str, component: str, judge: str, call: str, value, observed_at: str,
-                   step: str | None = None, item: str | None = None, of: int | None = None,
-                   cost_usd: float | None = None, replaces: str | None = None,
-                   assignment: str | None = None) -> str:
-    """One score a judge gave in one call. Returns the reading's id: the call, the component and the item."""
-    reading_id = ".".join(part for part in (call, component, item) if part)   # unique, and the same on a rerun
+                   rubric: str = RUBRIC_REF, step: str | None = None, item: str | None = None,
+                   of: int | None = None, cost_usd: float | None = None, reading_id: str | None = None,
+                   replaces: str | None = None, assignment: str | None = None) -> str:
+    """One score out of one request to a judge. Returns the id of the line.
+
+    `call` is the id of the request. Every line that came out of one request has the same `call`: the
+    components of a panel answer, and the check items of an items answer. A new request is a new `call`.
+
+    The id of the line is the call, the component and the item, so it is the same on every rerun. To correct
+    a line that was stored wrong, write a new line with its own `reading_id`, the SAME `call` (no new request
+    was made) and the id of the wrong line in `replaces`."""
+    reading_id = reading_id or ".".join(part for part in (call, component, item) if part)
     _append(study / "scores.jsonl", {
         "schema": "loopmath.eval-scores/1", "id": reading_id, "run": run, "step": step, "component": component,
-        "judge": judge, "call": call, "value": value, "item": item, "of": of, "rubric": RUBRIC_REF,
+        "judge": judge, "call": call, "value": value, "item": item, "of": of, "rubric": rubric,
         "observed_at": observed_at, "cost_usd": cost_usd, "replaces": replaces, "assignment": assignment})
     return reading_id
 
 
 def record_pair(study: Path, *, a: str, b: str, judge: str, call: str, verdict: str, shown_first: str,
-                observed_at: str, component: str | None = None, step: str | None = None,
-                cost_usd: float | None = None) -> str:
-    """One comparison of two outputs of the same input. `verdict` is "a", "b" or "tie"."""
+                observed_at: str, rubric: str = RUBRIC_REF, component: str | None = None,
+                step: str | None = None, cost_usd: float | None = None, pair_id: str | None = None,
+                replaces: str | None = None) -> str:
+    """One comparison of two outputs of the same input. `verdict` is "a", "b" or "tie". Returns the id.
+
+    A request that compares on several components writes one line per component, all with the same `call`.
+    The id of the line is the call, and the component when one is named. A correction is a new line with its
+    own `pair_id`, the same `call` and the id of the wrong line in `replaces`."""
+    pair_id = pair_id or ".".join(part for part in (call, component) if part)
     _append(study / "pairs.jsonl", {
-        "schema": "loopmath.eval-pairs/1", "id": call, "a": a, "b": b, "step": step, "component": component,
-        "judge": judge, "call": call, "shown_first": shown_first, "verdict": verdict, "rubric": RUBRIC_REF,
-        "observed_at": observed_at, "cost_usd": cost_usd})
-    return call
+        "schema": "loopmath.eval-pairs/1", "id": pair_id, "a": a, "b": b, "step": step, "component": component,
+        "judge": judge, "call": call, "shown_first": shown_first, "verdict": verdict, "rubric": rubric,
+        "observed_at": observed_at, "cost_usd": cost_usd, "replaces": replaces})
+    return pair_id
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -117,7 +135,10 @@ PER_CALL = {"reviewer-1": 0.04, "judge-main": 0.04, "judge-cheap": 0.07}    # wh
 
 
 class Made:
-    """The made-up world: a hidden quality per output, and what each judge would say about it."""
+    """The made-up world: a hidden quality per output, and what each judge would say about it.
+
+    `asked` lists every request made of a judge, in order: ("score", judge, run, components) for `ask` and
+    ("pair", judge, a, b, shown_first) for `compare`. The recorded files must show the same requests."""
 
     def __init__(self, seed: int) -> None:
         self.rng = random.Random(seed)
@@ -125,9 +146,10 @@ class Made:
         self.view: dict[tuple[str, str, str], float] = {}
         self.clock = dt.datetime(2026, 3, 2, 9, 0, 0, tzinfo=dt.timezone.utc)
         self.calls = 0
+        self.asked: list[tuple] = []
 
     def call_id(self) -> str:
-        """A new id for one judge call. In your code: the request id your judge API returns, or a UUID."""
+        """A new id for one request to a judge. In your code: the request id your judge API returns, or a UUID."""
         self.calls += 1
         return f"c{self.calls:04d}"
 
@@ -143,15 +165,19 @@ class Made:
             self.quality[(run, component)] = mean + input_level[component] + whole + self.rng.gauss(0, 0.04)
         return round(RUN_COST[arm] * self.rng.uniform(0.8, 1.25), 4)
 
+    def _look(self, judge: str, run: str, component: str, shared: float) -> float:
+        if (judge, run, component) not in self.view:
+            self.view[(judge, run, component)] = (self.quality[(run, component)] + BIAS[judge]
+                                                  + self.rng.gauss(0, PER_OUTPUT[judge]))
+        return self.view[(judge, run, component)] + shared + self.rng.gauss(0, PER_CALL[judge])
+
     def ask(self, judge: str, run: str, components: list[str]) -> dict:
-        """One call of a judge on one output: a raw score per component asked, each on its own scale."""
-        shared = self.rng.gauss(0, 0.03) if len(components) > 1 else 0.0   # scores of one call move together
+        """One request to a judge about one output: a raw score per component asked, each on its own scale."""
+        self.asked.append(("score", judge, run, tuple(components)))
+        shared = self.rng.gauss(0, 0.03) if len(components) > 1 else 0.0   # scores of one request move together
         out = {}
         for component in components:
-            if (judge, run, component) not in self.view:
-                self.view[(judge, run, component)] = (self.quality[(run, component)] + BIAS[judge]
-                                                      + self.rng.gauss(0, PER_OUTPUT[judge]))
-            x = self.view[(judge, run, component)] + shared + self.rng.gauss(0, PER_CALL[judge])
+            x = self._look(judge, run, component, shared)
             if component == "correct":
                 out[component] = 1 if x > 0.5 else 0
             elif component == "clarity":
@@ -161,12 +187,14 @@ class Made:
         return out
 
     def compare(self, judge: str, a: str, b: str, shown_first: str) -> str:
-        gap = self.ask(judge, a, ["overall"])["overall"] - self.ask(judge, b, ["overall"])["overall"]
+        """One request to a judge to compare two outputs overall."""
+        self.asked.append(("pair", judge, a, b, shown_first))
+        gap = 10 * (self._look(judge, a, "overall", 0.0) - self._look(judge, b, "overall", 0.0))
         gap += 0.3 if shown_first == "a" else -0.3                         # a small lean to the first one shown
         return "tie" if abs(gap) < 0.4 else "a" if gap > 0 else "b"
 
 
-def main(out: Path, seed: int = 7, inputs: int = 16) -> None:
+def main(out: Path, seed: int = 7, inputs: int = 16) -> Made:
     out.mkdir(parents=True, exist_ok=True)
     for name in ("runs.jsonl", "scores.jsonl", "pairs.jsonl"):
         (out / name).write_text("", encoding="utf-8")                      # start the tables again
@@ -186,12 +214,13 @@ def main(out: Path, seed: int = 7, inputs: int = 16) -> None:
         run_of[(input_id, arm)] = run
         cost = made.run_pipeline(run, arm, level[input_id])
         record_run(out, run=run, input=input_id, arm=arm, steps=[ARMS[arm]], cost_usd=cost,
-                   refs={"input": f"inputs/{input_id}.md", "output": f"outputs/{run}.md"})
+                   refs={"input": f"inputs/{input_id}.md", "output": f"outputs/{run}.md"},
+                   simulated=True)                                         # made up: real runs leave it out
     runs = sorted(run_of.values())
 
-    # 2. judge-main scores one component per call (mode per_component): one reading per call. Every other
-    #    output gets a second call on the two number scales: a repeat is a new call, never a second line
-    #    under the old call.
+    # 2. judge-main is asked for one component per request (mode per_component): one line per request.
+    #    Every other output gets a second request on the two number scales. A repeat is a new request, so it
+    #    has a new call id. It is never a second line under the old call.
     for n, run in enumerate(runs):
         for component in components:
             record_reading(out, run=run, component=component, judge="judge-main", call=made.call_id(),
@@ -201,17 +230,25 @@ def main(out: Path, seed: int = 7, inputs: int = 16) -> None:
                 record_reading(out, run=run, component=component, judge="judge-main", call=made.call_id(),
                                value=made.ask("judge-main", run, [component])[component], observed_at=made.now())
 
-    # 3. judge-cheap scores every component in one call (mode panel): the readings of the call share its id.
-    #    Every fourth output gets a second panel call.
+    # 3. judge-cheap is asked for every component in one request (mode panel): the lines of the request
+    #    share its call id. Every fourth output gets a second panel request.
     for n, run in enumerate(runs):
         for _ in range(2 if n % 4 == 1 else 1):
             call = made.call_id()
             answer, at = made.ask("judge-cheap", run, components), made.now()
             for component in components:
+                slip = n == 0 and component == "depth"                     # stored with the point one place off
                 record_reading(out, run=run, component=component, judge="judge-cheap", call=call,
-                               value=answer[component], observed_at=at)
+                               value=round(answer[component] / 10, 2) if slip else answer[component],
+                               observed_at=at)
+            if n == 0:
+                # The fix for the slip: a new line with its own id, the SAME call (the judge was not asked
+                # again) and the id of the wrong line in `replaces`. The panel request stays one request.
+                record_reading(out, run=run, component="depth", judge="judge-cheap", call=call,
+                               value=answer["depth"], observed_at=at, reading_id=f"{call}.depth.fix1",
+                               replaces=f"{call}.depth")
 
-    # 4. Comparisons by judge-main on half of the inputs, each pair in both orders (two calls).
+    # 4. Comparisons by judge-main on half of the inputs, each pair in both orders (two requests).
     for n in range(1, inputs + 1, 2):
         a, b = run_of[(f"q{n:02d}", "baseline")], run_of[(f"q{n:02d}", "candidate")]
         if made.rng.random() < 0.5:
@@ -220,27 +257,31 @@ def main(out: Path, seed: int = 7, inputs: int = 16) -> None:
             record_pair(out, a=a, b=b, judge="judge-main", call=made.call_id(),
                         verdict=made.compare("judge-main", a, b, first), shown_first=first, observed_at=made.now())
 
-    # 5. The reviewer's tables. A person scored both outputs of 6 inputs, saw only the output files, and
-    #    typed the scores into a sheet. One score was mistyped and corrected on a new row.
+    # 5. The reviewer's sheets. A person scored both outputs of 6 inputs and saw only the output files. The
+    #    reviewer worked one component at a time: all 12 outputs on the first component, then the next. So
+    #    every score is a request of its own (mode per_component, the default), and the sheet gives each one
+    #    its own `call`. A reviewer who scores all components of an output in one sitting is a panel judge:
+    #    then the rows of one sitting share a `call`, and the judges file says "mode": "panel".
+    reviewed = [run_of[(f"q{n:02d}", arm)] for n in range(2, 13, 2) for arm in ARMS]
     rows, pair_rows = [], []
-    for n in range(2, 13, 2):
-        for arm in ARMS:
-            run = run_of[(f"q{n:02d}", arm)]
-            answer = made.ask("reviewer-1", run, components)
-            for component in components:
-                rows.append({"id": f"rv.{run}.{component}", "run": run, "component": component,
-                             "judge": "reviewer-1", "value": answer[component], "observed_at": made.now(),
-                             "replaces": ""})
-    for n in (2, 8):                                                       # a second look: repeats
-        for arm in ARMS:
-            run = run_of[(f"q{n:02d}", arm)]
-            for component in ("depth", "overall"):
-                rows.append({"id": f"rv.{run}.{component}.2", "run": run, "component": component,
-                             "judge": "reviewer-1", "value": made.ask("reviewer-1", run, [component])[component],
-                             "observed_at": made.now(), "replaces": ""})
-    slip = dict(rows[2])                                                   # the third row is a depth score
-    rows[2]["value"] = round(min(slip["value"] + 3.0, 9.7), 1)
-    rows.append({**slip, "id": slip["id"] + ".fixed", "observed_at": made.now(), "replaces": slip["id"]})
+    for component in components:
+        for run in reviewed:
+            look = f"rv.{run}.{component}"
+            rows.append({"id": look, "call": look, "run": run, "component": component, "judge": "reviewer-1",
+                         "value": made.ask("reviewer-1", run, [component])[component],
+                         "observed_at": made.now(), "replaces": ""})
+    for component in ("depth", "overall"):                                 # a second look at 4 outputs: repeats
+        for run in reviewed[:2] + reviewed[6:8]:
+            look = f"rv.{run}.{component}.2"
+            rows.append({"id": look, "call": look, "run": run, "component": component, "judge": "reviewer-1",
+                         "value": made.ask("reviewer-1", run, [component])[component],
+                         "observed_at": made.now(), "replaces": ""})
+    slip = next(row for row in rows if row["component"] == "depth")         # one depth score was mistyped
+    right = slip["value"]
+    slip["value"] = round(min(right + 3.0, 9.7), 1)
+    # The fix: a new row with its own id, the same call (the reviewer did not look again) and `replaces`.
+    rows.append({**slip, "id": slip["id"] + ".fixed", "value": right, "observed_at": made.now(),
+                 "replaces": slip["id"]})
     for k, n in enumerate(range(2, 13, 2)):
         a, b = run_of[(f"q{n:02d}", "candidate")], run_of[(f"q{n:02d}", "baseline")]
         if k % 3 == 0:
@@ -256,6 +297,7 @@ def main(out: Path, seed: int = 7, inputs: int = 16) -> None:
             writer = csv.DictWriter(handle, fieldnames=list(table[0]), lineterminator="\n")
             writer.writeheader()
             writer.writerows(table)
+    return made
 
 
 if __name__ == "__main__":
