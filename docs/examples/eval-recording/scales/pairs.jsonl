@@ -1,0 +1,2 @@
+{"schema": "loopmath.eval-pairs/1", "id": "p0001", "a": "r101", "b": "r102", "judge": "reviewer-1", "call": "p0001", "shown_first": "b", "verdict": "a", "rubric": "report@2", "observed_at": "2026-03-02T14:20:00+00:00"}
+{"schema": "loopmath.eval-pairs/1", "id": "p0002", "a": "r101", "b": "r102", "step": "draft", "component": "depth", "judge": "judge-main", "call": "c0012", "shown_first": "a", "verdict": "tie", "rubric": "report@2", "observed_at": "2026-03-02T09:04:00+00:00", "cost_usd": 0.05}

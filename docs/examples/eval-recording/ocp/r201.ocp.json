@@ -1,0 +1,30 @@
+{
+ "ocp": "0.4",
+ "producer": {"name": "example-pipeline", "version": "1"},
+ "privacy": {"profile": "metadata_only"},
+ "run": {
+  "id": "r201",
+  "task": {"id": "q17"},
+  "labels": {"arm": "baseline"},
+  "configuration": {
+   "workflow": {"pieces": [{"id": "final", "role": "dev"}], "edges": []},
+   "settings": {"final": {"harness": "cli", "effort": "low",
+                          "model": {"raw": "model-small", "id": "model-small", "family": "beta"}}}
+  },
+  "signals": [
+   {"id": "c0901.depth", "kind": "score", "name": "depth", "value": 5.5, "tier": "reported",
+    "observed_at": "2026-03-03T09:00:00+00:00", "source": {"kind": "judge", "ref": "judge-main"},
+    "ext": {"dev.loopmath.eval": {"call": "c0901", "rubric": "answer@1"}}},
+   {"id": "c0902.depth", "kind": "score", "name": "depth", "value": 6.0, "tier": "reported",
+    "observed_at": "2026-03-03T09:00:20+00:00", "source": {"kind": "judge", "ref": "judge-main"},
+    "ext": {"dev.loopmath.eval": {"call": "c0902", "rubric": "answer@1"}}},
+   {"id": "c0903.clarity", "kind": "score", "name": "clarity", "value": null, "tier": "reported",
+    "observed_at": "2026-03-03T09:00:40+00:00", "source": {"kind": "judge", "ref": "judge-main"},
+    "ext": {"dev.loopmath.eval": {"call": "c0903", "rubric": "answer@1", "level": "ok"}}},
+   {"id": "h0901.correct", "kind": "score", "name": "correct", "value": 1, "tier": "reported",
+    "observed_at": "2026-03-03T11:30:00+00:00", "source": {"kind": "user", "ref": "reviewer-1"},
+    "ext": {"dev.loopmath.eval": {"call": "h0901", "rubric": "answer@1"}}}
+  ]
+ },
+ "nodes": [], "edges": [], "attempts": [], "artifacts": []
+}

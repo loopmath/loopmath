@@ -1,0 +1,50 @@
+{
+ "schema": "loopmath.eval-rubric/1",
+ "id": "answer",
+ "version": "1",
+ "components": [
+  {
+   "id": "correct",
+   "title": "The facts are right",
+   "scale": {
+    "kind": "binary"
+   }
+  },
+  {
+   "id": "clarity",
+   "title": "Clear to a new reader",
+   "scale": {
+    "kind": "levels",
+    "levels": [
+     "poor",
+     "ok",
+     "good"
+    ]
+   }
+  },
+  {
+   "id": "depth",
+   "title": "Depth of the answer",
+   "scale": {
+    "kind": "linear",
+    "range": [
+     0,
+     10
+    ]
+   },
+   "review_minutes": 2
+  },
+  {
+   "id": "overall",
+   "title": "Overall",
+   "role": "overall",
+   "scale": {
+    "kind": "linear",
+    "range": [
+     0,
+     10
+    ]
+   }
+  }
+ ]
+}

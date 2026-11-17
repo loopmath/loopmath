@@ -1,0 +1,16 @@
+{
+ "schema": "loopmath.eval-judges/1",
+ "anchor": ["reviewer-1"],
+ "min_anchor_targets": 6,
+ "judges": [
+  {"id": "reviewer-1", "kind": "person", "blinded": true},
+  {"id": "judge-main", "kind": "model",
+   "model": {"id": "model-large", "family": "alpha", "provider": "example-cloud"},
+   "effort": "high", "prompt": "rubric-prompt-v2", "mode": "per_component",
+   "reference": {"shown": true, "author": {"kind": "person"}, "version": "ref-2026-03"},
+   "blinded": true, "cost_usd_per_call": 0.03},
+  {"id": "judge-cheap", "kind": "model", "model": {"id": "model-small", "family": "beta"},
+   "effort": "low", "prompt": "rubric-prompt-v2", "mode": "panel", "blinded": true, "cost_usd_per_call": 0.004,
+   "components": ["correct", "clarity", "depth", "sourced", "covers", "overall"]}
+ ]
+}
