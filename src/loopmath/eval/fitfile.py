@@ -31,6 +31,8 @@ judges as declared, the arms with their step settings and mean cost, and every t
                step settings), `mixed` (true for a `mixed_arm`), and `dims`: per dimension `{"dimension",
                "reported", "own", "fitting"}`, each a stat (below); `own` is null where the scale has none.
 `levels`       `input` and `run`: each `{"sd": [stat per dimension], "corr": {"mean", "lo", "hi"}}`, D x D.
+               `corr` is null when its draws hold NaN, which only a fit that did not converge may have
+               (an engine that loses a draw of the hyperparameters writes its rows as NaN).
 `judges`       per judge: the declaration of the judges file (`id`, `kind`, `model`, `effort`, `prompt`,
                `mode`, `reference`, `blinded`, `cost_usd_per_call`, `components`), `anchor` (true or false),
                `halo_target`, `halo_call`, `position`, `tie_width` (stats), `dims`: per dimension
@@ -152,7 +154,10 @@ def stat(x: Any) -> dict | None:
     return {"mean": float(x.mean()), "sd": float(x.std()), "lo": float(lo), "hi": float(hi)}
 
 
-def _corr_stat(corr: np.ndarray) -> dict:
+def _corr_stat(corr: np.ndarray) -> dict | None:
+    """Mean and 90% interval of correlation matrices `corr[S, D, D]`. None when any draw is NaN, as `stat`."""
+    if np.isnan(corr).any():
+        return None
     lo, hi = np.percentile(corr, [5.0, 95.0], axis=0)
     return {"mean": corr.mean(axis=0).tolist(), "lo": lo.tolist(), "hi": hi.tolist()}
 
@@ -451,13 +456,15 @@ def _check_levels(c: C._Check, levels: Any, index: dict) -> None:
     _record(c, levels, "levels", ("input", "run"))
     for level in ("input", "run"):
         w = f"levels.{level}"
-        _record(c, levels[level], w, ("sd", "corr"))
+        _record(c, levels[level], w, ("sd", "corr"), nullable=("corr",))
         sds = c.array(levels[level]["sd"], f"{w}.sd")
         if len(sds) != size:
             raise c.fail(f"{w}.sd", f"{len(sds)} entries for {size} dimensions",
                          "write one entry per dimension, in the order of index.dimensions", "bad_index")
         for d, one in enumerate(sds):
             _stat(c, one, f"{w}.sd[{d}]")
+        if levels[level]["corr"] is None:   # allowed only when the fit did not converge (checked in `_validate`)
+            continue
         corr = _record(c, levels[level]["corr"], f"{w}.corr", ("mean", "lo", "hi"))
         for name in ("mean", "lo", "hi"):
             _matrix(c, corr[name], f"{w}.corr.{name}", size)
@@ -716,6 +723,11 @@ def _validate(obj: Any, file: str) -> dict:
     diagnostics = c.obj(obj["diagnostics"], "diagnostics",
                         {"converged", "rhat_max", "ess_min", "divergences", "run_seconds", "checks"}, {"converged"})
     c.boolean(diagnostics["converged"], "diagnostics.converged")
+    for level in ("input", "run"):
+        if diagnostics["converged"] and obj["levels"][level]["corr"] is None:
+            raise c.fail(f"levels.{level}.corr", "null in a fit that converged",
+                         "write the correlation summary: only a fit that did not converge may lack one",
+                         "missing_member")
     for name in ("rhat_max", "ess_min", "run_seconds"):
         if diagnostics.get(name) is not None:
             _number(c, diagnostics[name], f"diagnostics.{name}", low=0)

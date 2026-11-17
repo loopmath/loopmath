@@ -10,6 +10,12 @@ from __future__ import annotations
 
 import functools
 import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -708,6 +714,156 @@ def test_theta_points_in_a_helper_process_give_the_draws_of_one_process(monkeypa
         np.testing.assert_array_equal(alone["draws"][name], split["draws"][name], err_msg=name)
 
 
+def _helper_setup(monkeypatch, worker: str):
+    """The review's helper case: a linear design of 8 inputs, 7 theta-point jobs of 2 draws, 2 workers, helpers
+    whatever the time, each running `worker`. Returns (problem, theta, chol, start, jobs, the helper processes
+    started, as handles)."""
+    design, _ = catalog_design("linear", inputs=8)
+    prob = EL.Problem(design.data)
+    prob.workers = 2
+    theta = prob.params.init
+    start = prob.evaluate(theta)["mode"]
+    monkeypatch.setattr(EL, "THETA_PARALLEL_SECONDS", 0.0)
+    monkeypatch.setattr(EL, "_THETA_WORKER", worker)
+    procs: list = []
+
+    class Recorded(subprocess.Popen):
+        def __init__(self, *args, **kw):
+            super().__init__(*args, **kw)
+            procs.append(self)
+
+    monkeypatch.setattr(subprocess, "Popen", Recorded)
+    jobs = [(gen, 2) for gen in np.random.default_rng(0).spawn(7)]
+    return prob, theta, np.eye(len(theta)) * 0.01, start, jobs, procs
+
+
+@pytest.mark.parametrize("failure", ["interrupt while waiting", "wait fails", "pipe thread cannot start"])
+def test_a_failure_while_a_helper_runs_kills_and_reaps_it_and_keeps_the_exception(monkeypatch, failure):
+    """The review's cleanup cases, with a helper that holds its share for a minute: a real SIGINT while the
+    caller waits for the helper, an exception from that wait, or a pipe thread that cannot start. The
+    original exception reaches the caller at once; the helper was killed and reaped by its handle (its
+    return code is set without the test polling it); no pipe thread is left and its pipes are closed; the
+    cell rule has its threads back."""
+    prob, theta, chol, start, jobs, procs = _helper_setup(monkeypatch, "import time\ntime.sleep(60)")
+    real_join, real_start, timers = threading.Thread.join, threading.Thread.start, []
+
+    def join(self, timeout=None):
+        if self.name == "theta-helper" and not timers:
+            if failure == "wait fails":
+                timers.append(None)
+                raise RuntimeError("the wait failed")
+            timers.append(threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGINT)))   # while blocked below
+            timers[0].start()
+        return real_join(self, timeout)
+
+    def start_thread(self):
+        if self.name == "theta-helper":
+            raise RuntimeError("can't start new thread")
+        return real_start(self)
+
+    if failure == "pipe thread cannot start":
+        monkeypatch.setattr(threading.Thread, "start", start_thread)
+    else:
+        monkeypatch.setattr(threading.Thread, "join", join)
+    raised = {"interrupt while waiting": (KeyboardInterrupt, None), "wait fails": (RuntimeError, "the wait failed"),
+              "pipe thread cannot start": (RuntimeError, "can't start new thread")}[failure]
+    handler = signal.signal(signal.SIGINT, signal.default_int_handler)
+    began = time.time()
+    try:
+        with pytest.raises(raised[0], match=raised[1]):
+            EL._theta_points(prob, theta, chol, start, jobs)
+        took = time.time() - began
+        codes = [proc.returncode for proc in procs]
+        threads = [t for t in threading.enumerate() if t.name == "theta-helper"]
+        pipes = [pipe.closed for proc in procs for pipe in (proc.stdin, proc.stdout, proc.stderr)]
+    finally:
+        for timer in timers:
+            if timer is not None:
+                timer.cancel()
+        signal.signal(signal.SIGINT, handler)
+        for proc in procs:   # a net for this test only: the asserts below have already read the state
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+    assert codes == [-signal.SIGKILL] and threads == [] and pipes == [True] * 3
+    assert took < 20 and prob.workers == 2
+
+
+_KILLED_CALLER = """
+import subprocess
+from pathlib import Path
+import numpy as np
+from loopmath.eval import contracts as C, engine_laplace as EL, model as M, simulate as S, specs
+sim = S.generate(specs.get("linear", inputs=8), 0)
+design = M.build(C.Study(Path("."), sim.runs, sim.scores, sim.pairs, sim.items), sim.rubric, sim.judges,
+                 allow_simulated=True)
+prob = EL.Problem(design.data)
+prob.workers = 2
+theta = prob.params.init
+start = prob.evaluate(theta)["mode"]
+EL.THETA_PARALLEL_SECONDS = 0.0
+EL._THETA_WORKER = HELD_SOURCE
+real = subprocess.Popen
+class Told(real):
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        print(self.pid, flush=True)
+subprocess.Popen = Told
+jobs = [(gen, 2) for gen in np.random.default_rng(0).spawn(7)]
+EL._theta_points(prob, theta, np.eye(len(theta)) * 0.01, start, jobs)
+"""
+# the real helper, whose every point holds for a minute once it has read its share
+_HELD_WORKER = ("import os, sys, time\nif sys.argv[1] not in sys.path: sys.path.insert(0, sys.argv[1])\n"
+                "import loopmath.eval.engine_laplace as E\n"
+                "def held(*args, **kw):\n    open(os.environ['THETA_READY'], 'w').close()\n    time.sleep(60)\n"
+                "E._theta_point = held\nE._theta_worker()")
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def test_a_helper_exits_by_itself_when_its_caller_is_killed(tmp_path):
+    """A caller killed outright (SIGKILL: no cleanup of its own can run) leaves no helper behind. The helper
+    has read its share and is holding it for a minute; it sees its parent change and exits within a few
+    `PARENT_POLL_SECONDS`."""
+    ready, script = tmp_path / "ready", tmp_path / "caller.py"
+    script.write_text(_KILLED_CALLER.replace("HELD_SOURCE", repr(_HELD_WORKER)))
+    env = {**os.environ, "PYTHONPATH": str(Path(EL.__file__).parents[2]), "THETA_READY": str(ready),
+           "OMP_NUM_THREADS": "1", "LOOPMATH_NO_UPDATE_CHECK": "1"}
+    caller = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, env=env)
+    helper = None
+    try:
+        line = caller.stdout.readline()
+        assert line.strip().isdigit(), caller.stderr.read()
+        helper = int(line)
+        deadline = time.time() + 60
+        while not ready.exists():
+            assert caller.poll() is None and time.time() < deadline, caller.stderr.read()
+            time.sleep(0.05)
+        caller.kill()
+        caller.wait()
+        killed = time.time()
+        while _alive(helper) and time.time() < killed + 15:
+            time.sleep(0.05)
+        assert not _alive(helper), "the helper outlived its caller"
+    finally:
+        if caller.poll() is None:
+            caller.kill()
+        caller.communicate()
+        if helper is not None and _alive(helper):   # a net for this test only: our helper, by its pid
+            told = subprocess.run(["ps", "-o", "command=", "-p", str(helper)], capture_output=True, text=True)
+            if "_theta_worker" in told.stdout:
+                os.kill(helper, signal.SIGKILL)
+
+
 _SPOIL_CALL = dict(seed=2, draws=60, chains=2, theta_points=12, cores=1)
 
 
@@ -881,6 +1037,52 @@ def test_a_fit_whose_final_evaluation_is_not_finite_is_written_and_not_converged
     assert checks["optimizer"]["finite"] is False and checks["optimizer"]["value"] is None
     path = F.write_fit(tmp_path / "fit.json", meta, draws)
     assert F.read_fit(path, allow_unconverged=True).meta["diagnostics"]["converged"] is False
+
+
+@pytest.mark.parametrize("lost", ["the first point", "every point"])
+def test_a_fit_with_lost_theta_points_is_written_and_not_converged(monkeypatch, tmp_path, lost):
+    """The review's lost-point probe: levels-3, 3 inputs, simulation seed 2, fit seed 9, 4 chains, 1000 saved
+    draws, 1 core, one group's log Z NaN in all six attempts of the first theta point, or of every point (no
+    usable draw row at all). The lost rows are NaN, so no summary that reads them is given: each stat and
+    each correlation summary is null, never an estimate from the other rows. The fit fails `inner_newton`
+    and `finite_draws`, is not converged, is written, and reads back only with `allow_unconverged`."""
+    design, _ = catalog_design("levels-3", inputs=3, seed=2)
+    _spoil(monkeypatch, "_theta_points", calls=set(range(1, 7)) if lost == "the first point" else None)
+    meta, draws = FT.fit_design(design, seed=9, cores=1, engine="laplace")
+    diagnostics = meta["diagnostics"]
+    checks = {c["name"]: c for c in diagnostics["checks"]}
+    assert diagnostics["converged"] is False
+    assert not checks["inner_newton"]["ok"] and not checks["finite_draws"]["ok"]
+    assert checks["inner_newton"]["lost_theta_points"] == (1 if lost == "the first point" else EL.THETA_POINTS)
+    rows = np.isfinite(draws["mu"]).all(axis=(1, 2))   # saved draw rows, chains flattened
+    assert not rows.all() and (rows.any() if lost == "the first point" else not rows.any())
+    for level in ("input", "run"):
+        assert meta["levels"][level]["corr"] is None
+        assert all(one is None for one in meta["levels"][level]["sd"])
+    assert all(row[name] is None for arm in meta["arms"] for row in arm["dims"] for name in ("reported", "fitting"))
+    cells = [row for target in meta["targets"] for row in target["dims"]]
+    assert cells and all(row["pooled"] is None and row["unpooled"] is None for row in cells)
+    path = F.write_fit(tmp_path / "fit.json", meta, draws)
+    with pytest.raises(C.ContractError, match="did not converge"):
+        F.read_fit(path)
+    back = F.read_fit(path, allow_unconverged=True)
+    assert back.converged is False and back.meta["levels"] == meta["levels"]
+    assert {c["name"]: c["ok"] for c in back.meta["diagnostics"]["checks"]} == {n: c["ok"] for n, c in checks.items()}
+    for name in draws:
+        np.testing.assert_array_equal(back.draws[name], draws[name], err_msg=name)
+
+
+def test_a_correlation_summary_may_be_null_only_in_a_fit_that_did_not_converge(tmp_path):
+    """A null correlation summary stands for draws a lost theta point left NaN. In a fit marked converged it
+    is refused: such a fit has every draw."""
+    design, _ = catalog_design("linear", inputs=4, seed=3)
+    meta, draws = FT.fit_design(design, seed=1, cores=1, engine="laplace")
+    assert meta["diagnostics"]["converged"] and meta["levels"]["run"]["corr"] is not None
+    gone = dict(meta, levels={**meta["levels"], "run": {**meta["levels"]["run"], "corr": None}})
+    with pytest.raises(C.ContractError, match="levels.run.corr"):
+        F.write_fit(tmp_path / "fit.json", gone, draws)
+    failed = dict(gone, diagnostics={**meta["diagnostics"], "converged": False})
+    assert F.read_fit(F.write_fit(tmp_path / "fit.json", failed, draws), allow_unconverged=True).converged is False
 
 
 def test_the_s3_pilot_case_fits_without_overflow_or_an_untrusted_cell():

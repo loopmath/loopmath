@@ -243,12 +243,12 @@ def finish(design: M.Design, raw: Mapping[str, np.ndarray], keep_draws: int = 10
 
 def unpooled(design: M.Design, draws: Mapping[str, np.ndarray]) -> dict:
     """Per (run, dimension): calls per judge, and for a [0, 1] dimension the unpooled estimate, as the flow
-    fit defines it: the readings less each judge's bias, weighted by 1 / noise^2, with no prior on quality."""
+    fit defines it: the readings less each judge's bias, weighted by 1 / noise^2, with no prior on quality.
+    A cell whose judges' posterior means are not all known (draws a lost theta point left NaN) has none."""
     def mean(name: str) -> np.ndarray:
-        """The posterior mean. A parameter that does not exist is NaN in every draw, and is not read below."""
-        x = np.asarray(draws[name])
-        gone = np.isnan(x).all(axis=0)
-        return np.where(gone, np.nan, np.where(np.isnan(x), 0.0, x).mean(axis=0))
+        """The posterior mean, NaN where any draw is NaN: a parameter that does not exist (NaN in every draw,
+        and not read below), or draws an engine could not make."""
+        return np.asarray(draws[name], dtype=float).mean(axis=0)
 
     bias, tau, sigma = mean("bias"), mean("tau"), mean("sigma")
     dim_ids = [dim["id"] for dim in design.dims]
@@ -256,13 +256,14 @@ def unpooled(design: M.Design, draws: Mapping[str, np.ndarray]) -> dict:
     for (r, d), rows in design.unit_values.items():
         weights, values, calls = [], [], 0
         for j, mean, n in rows:
-            noise = tau[j, d] ** 2 + sigma[j, d] ** 2 / n
-            weights.append(1.0 / max(float(noise), 1e-12))
+            noise = float(tau[j, d] ** 2 + sigma[j, d] ** 2 / n)
+            weights.append(1.0 / max(noise, 1e-12) if np.isfinite(noise) else np.nan)
             values.append(mean - bias[j, d])
             calls += n
         total = float(np.sum(weights))
+        estimate = float(np.dot(weights, values) / total)
         out[(design.runs[r]["run"], dim_ids[d])]["unpooled"] = {
-            "mean": float(np.dot(weights, values) / total), "sd": float(np.sqrt(1.0 / total)), "n": int(calls)}
+            "mean": estimate, "sd": float(np.sqrt(1.0 / total)), "n": int(calls)} if np.isfinite(estimate) else None
     return out
 
 

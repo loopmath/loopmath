@@ -1898,16 +1898,33 @@ def _theta_point(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any,
 THETA_PARALLEL_SECONDS = 4.0   # theta points go to helper processes only when they would take longer
 _THETA_WORKER = ("import sys\nif sys.argv[1] not in sys.path: sys.path.insert(0, sys.argv[1])\n"
                  "from loopmath.eval.engine_laplace import _theta_worker\n_theta_worker()")
+PARENT_POLL_SECONDS = 1.0   # how often a helper looks whether the process that started it is still there
+
+
+def _exit_with_parent(parent: int) -> None:
+    """In a helper: end this process as soon as its parent is no longer `parent` (the caller was killed, so
+    the helper was handed to another parent), rather than run its share for nobody. Checks every
+    `PARENT_POLL_SECONDS` on a daemon thread."""
+    import threading
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(PARENT_POLL_SECONDS)
+        os._exit(3)
+
+    threading.Thread(target=watch, name="theta-parent", daemon=True).start()
 
 
 def _theta_worker() -> None:
     """A helper process of `_theta_points`: reads (problem, theta, chol, start, jobs) pickled on stdin, runs
     `_theta_point` on each job with a one-thread cell rule and writes the results pickled on stdout. It
-    exits with 2, unread, when it imported another copy of this module than the caller (argv[2])."""
+    exits with 2, unread, when it imported another copy of this module than the caller (argv[2]), and with 3
+    when the caller (argv[3], its pid) is gone."""
     import pickle
     import sys
     if os.path.realpath(__file__) != os.path.realpath(sys.argv[2]):
         sys.exit(2)
+    _exit_with_parent(int(sys.argv[3]))
     raw = sys.stdout.buffer
     sys.stdout = sys.stderr   # nothing but the results on the pipe
     prob, theta, chol, start, jobs = pickle.load(sys.stdin.buffer)
@@ -1915,6 +1932,41 @@ def _theta_worker() -> None:
     out = [_theta_point(prob, theta, chol, start, gen, n) for gen, n in jobs]
     pickle.dump(out, raw, protocol=pickle.HIGHEST_PROTOCOL)
     raw.flush()
+
+
+def _talk(proc: Any, payload: bytes, box: list) -> None:
+    """The pipe thread of one helper: sends its payload and keeps (stdout, stderr). A pipe that fails leaves
+    `box` empty, which `_theta_points` treats as a helper that failed."""
+    try:
+        box.append(proc.communicate(payload))
+    except Exception:
+        pass
+
+
+def _stop_helpers(helpers: list[dict], wait: float = 5.0) -> None:
+    """Kill the helper processes still running, by their handles, end their pipe threads and reap them.
+    Called while an exception is on its way: it never raises one of its own."""
+    for helper in helpers:
+        proc = helper["proc"]
+        try:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
+    for helper in helpers:
+        proc, talk = helper["proc"], helper["talk"]
+        if proc is None:
+            continue
+        try:
+            if talk is not None and talk.is_alive():
+                talk.join(wait)   # the helper is gone, so its pipes close and communicate returns
+            if talk is None or talk.ident is None:   # no pipe thread ever ran: close the pipes here
+                for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        pipe.close()
+            proc.wait(wait)
+        except Exception:
+            pass
 
 
 def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any,
@@ -1927,8 +1979,12 @@ def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any
     pickled on a pipe; not multiprocessing, which would import the caller's main script again). Each
     runs a one-thread cell rule, so no more than `prob.workers` cores are busy. Every point carries its
     own generator, so the draws are the same wherever it runs. A helper that fails, or that imports
-    another copy of this module, has its share run here instead; helpers still running when this
-    process raises are killed."""
+    another copy of this module, has its share run here instead.
+
+    Every helper is ours from the moment it starts: when this process raises anywhere after that (an
+    interrupt while it waits, a pipe thread that cannot start, a failure in a share run here), the helpers
+    still running are killed and reaped by their handles and the original exception goes on
+    (`_stop_helpers`). A helper whose caller is killed outright exits by itself (`_exit_with_parent`)."""
     import pickle
     import subprocess
     import sys
@@ -1937,6 +1993,7 @@ def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any
         return [], 0
     keep = prob.workers
     prob.workers = 1 if keep > 1 else keep
+    helpers: list[dict] = []
     try:
         t0 = time.time()
         results = [_theta_point(prob, theta, chol, start, *jobs[0])]
@@ -1949,43 +2006,39 @@ def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any
         parts = [rest[cuts[k]:cuts[k + 1]] for k in range(share)]
         here = os.path.abspath(__file__)
         root = os.path.dirname(os.path.dirname(os.path.dirname(here)))   # the folder holding `loopmath`
-        helpers = []
-        try:
-            for part in parts[1:]:
-                payload = pickle.dumps((prob, theta, chol, start, part), protocol=pickle.HIGHEST_PROTOCOL)
-                try:
-                    proc = subprocess.Popen([sys.executable, "-c", _THETA_WORKER, root, here], stdin=subprocess.PIPE,
-                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                except OSError:
-                    helpers.append((part, None, None))
-                    continue
-                box: list = []
-                talk = threading.Thread(target=lambda p=proc, d=payload, b=box: b.append(p.communicate(d)),
-                                        daemon=True)
-                talk.start()
-                helpers.append((part, proc, (talk, box)))
-            results += [_theta_point(prob, theta, chol, start, *job) for job in parts[0]]
-        except BaseException:
-            for _, proc, _ in helpers:
-                if proc is not None and proc.poll() is None:
-                    proc.kill()   # our own child, by its handle
-            raise
+        for part in parts[1:]:
+            payload = pickle.dumps((prob, theta, chol, start, part), protocol=pickle.HIGHEST_PROTOCOL)
+            helper = {"part": part, "proc": None, "talk": None, "box": []}
+            helpers.append(helper)
+            try:
+                helper["proc"] = subprocess.Popen([sys.executable, "-c", _THETA_WORKER, root, here, str(os.getpid())],
+                                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                                  stderr=subprocess.PIPE)
+            except OSError:
+                continue   # no helper: its share is run here
+            helper["talk"] = threading.Thread(target=_talk, args=(helper["proc"], payload, helper["box"]),
+                                              name="theta-helper", daemon=True)
+            helper["talk"].start()
+        results += [_theta_point(prob, theta, chol, start, *job) for job in parts[0]]
         used = 0
-        for part, proc, link in helpers:
-            got = None
+        for helper in helpers:
+            got, proc = None, helper["proc"]
             if proc is not None:
-                link[0].join()
-                if proc.returncode == 0 and link[1]:
+                helper["talk"].join()
+                if proc.returncode == 0 and helper["box"]:
                     try:
-                        got = pickle.loads(link[1][0][0])
+                        got = pickle.loads(helper["box"][0][0])
                     except Exception:
                         got = None
-            if got is None or len(got) != len(part):
-                got = [_theta_point(prob, theta, chol, start, *job) for job in part]
+            if got is None or len(got) != len(helper["part"]):
+                got = [_theta_point(prob, theta, chol, start, *job) for job in helper["part"]]
             else:
                 used += 1
             results += got
         return results, used
+    except BaseException:
+        _stop_helpers(helpers)
+        raise
     finally:
         prob.workers = keep
 
