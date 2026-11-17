@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+This release adds `loopmath eval` (experimental). Everything else is 0.4.3's.
+
+### `loopmath eval` (experimental)
+
+A new command group for outputs that are scored on a rubric by model judges and by people, where no test says pass or fail. You bring the scores; it runs no pipeline and calls no judge. It is experimental: it works and has tests, but it has been checked on simulated studies only, and its files and output may change. The guide is [`docs/eval.md`](docs/eval.md).
+
+What each command does:
+
+- `eval rubric check RUBRIC` reads a rubric, and with `--judges`, `--value` and `--items` the files that go with it, and names what does not fit. With `--fit` it also reports on the rubric itself: components that move together, components with little spread, and how much of an overall score the criteria explain.
+- `eval scores import` builds or extends a study folder from OCP run documents with score signals and preferences (`--ocp`), harness-runs rows (`--rows`), or plain tables of readings and comparisons (`--csv`, `--pairs-csv`). Importing the same rows twice changes nothing. `eval scores add` adds single readings, `eval scores check` reads a study against its rubric and judges and says what the design can tell apart, and `eval scores export` prints the study as OCP signals and preferences.
+- `eval simulate SPEC` writes a practice study with known truth from one of 17 specs (`--list`). Simulated runs are marked, and `eval fit` and `eval scores import` take them only with `--allow-simulated`.
+- `eval fit STUDY` fits one model to all scores and comparisons: the quality of each arm on each rubric component, and for each judge its bias, its disagreement with the others on one output, and its noise from call to call. It handles yes or no, levels, linear, fraction and per-item scales, and comparisons with a position bias and ties. It prints which terms the design identifies before it samples (`--check-only` stops there), checks convergence, and writes `fit.json`, which every later command reads. It needs the optional modelling extra: `pip install 'loopmath[bayes]'`.
+- `eval judges FIT` prints each judge's bias, disagreement and noise per component, the error of a mean of 1 to 5 calls, false pass and false fail rates on yes or no components, the effect of a judge's own model family, and what batching all components into one call costs. `--target-error` and `--budget-usd` list the judge and repeat counts that fit.
+- `eval value FIT --value FILE` gives each arm a value from your weights and gates: the chance an output passes every gate, computed with the correlation between gated components, and each arm against the reference with a range and P(better). `--check design --labels PLAN` adds an estimate from a reviewer batch that does not rely on the model, and flags where the two disagree.
+- `eval steps FIT --value FILE` reports what each step of a pipeline adds: measured effects for swaps that were run, and, kept apart and labelled correlational, hints from how step scores move with the result.
+- `eval labels next FIT` plans what to ask a reviewer: `--mode pilot` (the default) draws a random blind batch, `--mode active` picks where a label is expected to move the decision most per minute. `--form` writes a table to fill in, which comes back through `eval scores import --csv FORM --labels PLAN --rubric RUBRIC`.
+
+Known limits:
+
+- **Scores at the ends of a scale.** The simulator clips continuous readings (`linear`, `fraction`) at the ends of the scale, while the likelihood is an uncensored Gaussian. So the recovery claims hold for studies whose readings sit inside the scale. A censored likelihood is planned for 0.4.5.
+- **Checked on simulated studies only, and on few.** The acceptance checks ask for 200 simulated studies per spec. They were run on far fewer, with fewer draws; the slow suites `tests/eval/test_eval_recovery.py` and `tests/eval/test_eval_end_to_end.py` (run with `LOOPMATH_EVAL_SLOW=1`) take the counts from the environment. No real study has been through the group yet.
+
+Not built, or not yet checked:
+
+- `eval fit --halo full` and `--cuts free` are not built and are refused by name.
+- A reference answer's family has no parameter of its own; it is read as a family effect of the judge that was shown the reference.
+- `eval scores export` has no filter by judge. Importing preferences made by another tool keeps their ids, and an id that is already taken is refused.
+- `eval steps` estimates no interactions between steps.
+- Costs in `eval judges` have no range.
+- `eval value --check design` has no variance term for stratified plans and does not use comparisons. Its ranges ran wide in the checks.
+- `eval labels next --mode active` is opt-in. In simulation it beat pilot and uniform sampling by a small margin only. Its scores read yes or no and levels components as plain numbers, do not count what a label teaches about a judge, and keep the minutes budget on average, not exactly.
+- `eval` is not a topic of `loopmath guide` and is not in the installed skill yet.
+
 ## 0.4.3 (2026-11-16)
 
 0.4.3 follows 0.4.2. It adds one price row. Everything else is 0.4.2's.

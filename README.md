@@ -145,6 +145,7 @@ The workflow builder is the one page that is served: `loopmath builder --type bu
 | Record | `run` (start, record, import, attempt, artifact, finish, sessions), `outcome`, `budget`, `config` (get, set, unset) |
 | Flows | `flow` (init, show, export, import, plan, next, record, score, status, check) |
 | Frontier | `frontier` (init, next, record, report) (experimental) |
+| Rubric scores | `eval` (scores, simulate, fit, judges, rubric check, value, steps, labels next) (experimental) |
 | Learn | `fit`, `onboard`, `share`, `prior` |
 | View | `runs`, `posterior`, `status`, `report`, `doctor`, `verify-receipts`, `update` |
 | Harness testing | `check-change`, `gate` (experimental), `screen` (experimental) |
@@ -155,7 +156,7 @@ The workflow builder is the one page that is served: `loopmath builder --type bu
 | OCP | `ocp` (validate, migrate) |
 | Log analysis | `analyze`, `graph`, `adapt`, `prices`, `validate-prices` |
 
-These are experimental: `harness`, `gate`, `screen`, `tasks pick`, `frontier`, the harness-part estimates (`recommend --harness-variants` and `--harness`, `posterior --level harness` and its `factors`), `recommend --role`, `adapt harness2`, `adapt plugin-eval`, `adapt openevolve`, `adapt shinkaevolve` and the ADE adapters (`adapt NAME`). Each works and has tests, but has had little use on real work so far, and its output may change. Their help says so too. The gate at DSPy's GEPA and MIPROv2 accept step (`loopmath.integrations.dspy`, Python) is experimental too: it is tested against fakes written from their source, not yet with DSPy installed, and its guide says so. So is the opt-in cost model for arms that mix models, `loopmath.compare.model.COST_MODEL = "sw"`, a Python setting with no help of its own; the [changelog](CHANGELOG.md) describes it.
+These are experimental: `harness`, `gate`, `screen`, `tasks pick`, `frontier`, `eval`, the harness-part estimates (`recommend --harness-variants` and `--harness`, `posterior --level harness` and its `factors`), `recommend --role`, `adapt harness2`, `adapt plugin-eval`, `adapt openevolve`, `adapt shinkaevolve` and the ADE adapters (`adapt NAME`). Each works and has tests, but has had little use on real work so far, and its output may change. Their help says so too. The gate at DSPy's GEPA and MIPROv2 accept step (`loopmath.integrations.dspy`, Python) is experimental too: it is tested against fakes written from their source, not yet with DSPy installed, and its guide says so. So is the opt-in cost model for arms that mix models, `loopmath.compare.model.COST_MODEL = "sw"`, a Python setting with no help of its own; the [changelog](CHANGELOG.md) describes it.
 
 Each command prints a short summary by default. With `--json`, it prints exactly one JSON object instead. One exception: `loopmath adapt harness2`, `adapt harness-runs`, `adapt plugin-eval`, `adapt openevolve` and `adapt shinkaevolve` without `--out` print the run documents on stdout, one per line, so their `--json` summary goes to stderr. Exit codes: 0 ok, 1 user error, 2 not found, 3 not implemented, 4 store locked, 5 no fit yet. For flags, `loopmath <command> --help` is the source of truth. Commands, pages and the `runs` table show times in your local time with the zone; the store and `--json` keep UTC. A cost under a cent shows one significant digit (`$0.004`), and an exact zero is `$0`.
 
@@ -299,6 +300,21 @@ loopmath frontier report
 
 `tasks.jsonl` holds one task per line (`{"id": "t1"}`); `settings.toml` holds `[[settings]]` blocks with `name`, `model` and `effort`. TRL is the trial id `next` gave, PASSED is 1 for a pass and 0 for a fail, and USD is what the run cost in dollars. It is experimental: on simulated fresh DeepSWE runs it found the right frontier in about a quarter of runs at a $8,000 budget, level with the study design it is ported from. P is not yet calibrated, so do not stop on it.
 
+## Scoring outputs on a rubric (experimental)
+
+`loopmath eval` is for outputs with no test to pass (reports, briefs, answers) that model judges and people score on a rubric. It reads the scores you bring; it runs no pipeline and calls no judge. From them it works out how much of each score is the judge (its bias, its disagreement with a person on one output, its noise from call to call), compares the arms with ranges that count that error, says which judge and how many repeats are worth their price, and plans what to ask a reviewer next.
+
+```sh
+loopmath eval simulate gated --out study --seed 0
+loopmath eval scores check study --rubric study/rubric.json --judges study/judges.json
+loopmath eval fit study --rubric study/rubric.json --judges study/judges.json --allow-simulated
+loopmath eval judges study/fit.json
+loopmath eval labels next study/fit.json --mode pilot --n 30 --out study/labels-001.json --form labels-001.csv
+loopmath eval value study/fit.json --value study/value.json
+```
+
+`eval simulate` writes a practice study with known truth (`--list` names the 17 specs); with your own scores, start from `eval scores import` and leave out `--allow-simulated`. `eval fit` needs the optional modelling extra, `pip install 'loopmath[bayes]'`. `value.json`, which the `gated` spec writes for you, holds a weight per rubric component and the gates an output must pass. `eval steps` reports what each step of a pipeline adds, and `eval rubric check` reads a rubric, its judges and a fit for problems. It is experimental: it has been checked on simulated studies only, on far fewer than its acceptance checks ask for, and it reads `linear` scores at the ends of their scale as if they were not cut off there. The files, each command, how to read the output and the full list of limits are in [`docs/eval.md`](docs/eval.md).
+
 ## The store and privacy
 
 The store is `~/.loopmath`. Set `LOOPMATH_HOME` or pass `--home` to put it elsewhere; the log parse cache moves with it, to `cache/` inside the store, unless you set `LOOPMATH_CACHE_DIR`. It holds:
@@ -339,6 +355,7 @@ loopmath graph --workspace NAME --format html --out graph.html
 - [Plugin eval results](docs/plugin-eval.md): `adapt plugin-eval`
 - [OpenEvolve and ShinkaEvolve runs](docs/adapters.md#openevolve-and-shinkaevolve): `adapt openevolve`, `adapt shinkaevolve` and `recommend --role`, which model to give an evolution loop's mutator
 - [Release policy](docs/release.md)
+- [Reading rubric scores from judges and reviewers](docs/eval.md): `eval`, the files, the walk from scores to a decision, and its limits
 - [Screening harness edits](docs/screen.md): `screen`, with a worked 48-session example and its limits
 - [Tuning a Claude Code harness](docs/harness.md): `loopmath harness`, the `/harness` mod and the herdr runner
 - [Packaged model prices](src/loopmath/prices.toml)
