@@ -23,6 +23,17 @@ written either way.
 
 Defaults: 4 chains of 1000 draws after 1000 warm-up draws. `fit_design` is the same path as a function,
 for tests and other callers.
+
+Engines. `--engine pymc` (the default) samples with `engine_pymc`. `--engine laplace` fits with
+`engine_laplace` (Laplace or, with cut readings, EP marginal likelihood, empirical Bayes hyperparameters;
+no [bayes] extra) and makes `--keep-draws` approximate draws unless `--draws` says otherwise. Its fit
+file names the engine and says the draws are approximate (`engine.version`, `options.approximate_draws`),
+and its `diagnostics.checks` add the engine's own checks (`optimizer`, `inner_newton`, `theta_hessian`,
+and `cell_rule` when cut readings are integrated by the cell rule; each counted in `converged`) and
+`boundary`, the sds the data cannot tell from 0 (not counted). Its draws repeat each of a few hundred
+random theta points, so its effective sample size counts theta points, not saved draws (`cluster_ess`):
+for the hyperparameters it is at most the number of theta points, and more saved draws per point do not
+raise it.
 """
 
 from __future__ import annotations
@@ -49,6 +60,7 @@ BLOCK = 256                # columns per pass of the R-hat and effective sample 
 CHECKED = ("mu", "sd_input", "sd_run", "bias", "tau", "sigma", "halo_target", "halo_call", "family",
            "sd_judge_input", "sigma_pair", "position", "tie_width", "corr_input", "corr_run", "q_run")
 LATER = ("corr_input", "corr_run", "q_run")   # checked when the engine returns them
+ENGINES = ("pymc", "laplace")
 
 
 def split_rhat_ess(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -79,8 +91,38 @@ def split_rhat_ess(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return rhat, chains * draws / spent
 
 
+def cluster_ess(x: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """Effective sample size of the mean of each column of `x[chains, draws, P]` when draws with one label
+    share one random draw of the hyperparameters and are independent given it (`engine_laplace` draws
+    many conditional draws per theta point). With N draws in K groups of n_k, between-group variance
+    s_b^2 and within-group s_w^2 (the unbalanced one-way analysis of variance estimates), the variance of
+    the mean is s_b^2 sum(n_k^2) / N^2 + s_w^2 / N, and the effective size is (s_b^2 + s_w^2) over that.
+    A function of theta alone has s_w^2 = 0 and gets N^2 / sum(n_k^2), at most K however many draws
+    repeat each point; one group gives 1."""
+    flat = x.reshape(-1, x.shape[2])
+    _, group = np.unique(np.asarray(labels).reshape(-1), return_inverse=True)
+    group = group.ravel()
+    N, K = len(group), int(group.max()) + 1 if len(group) else 0
+    if K <= 1:
+        return np.ones(flat.shape[1])
+    n_k = np.bincount(group, minlength=K).astype(float)
+    sums = np.zeros((K, flat.shape[1]))
+    np.add.at(sums, group, flat)
+    means = sums / n_k[:, None]
+    grand = flat.mean(axis=0)
+    ssw = ((flat - means[group]) ** 2).sum(axis=0)
+    ssb = (n_k[:, None] * (means - grand) ** 2).sum(axis=0)
+    msw = ssw / (N - K) if N > K else np.zeros(flat.shape[1])
+    n0 = (N - (n_k ** 2).sum() / N) / (K - 1)
+    s_b = np.maximum(0.0, (ssb / (K - 1) - msw) / n0)
+    var_mean = s_b * (n_k ** 2).sum() / N ** 2 + msw / N
+    total = s_b + msw
+    return np.where(var_mean > 0, total / np.where(var_mean > 0, var_mean, 1.0), float(N))
+
+
 def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], divergences: int,
-             run_seconds: float, *, sampled: int | None = None, least: int | None = None) -> dict:
+             run_seconds: float, *, sampled: int | None = None, least: int | None = None,
+             clusters: np.ndarray | None = None) -> dict:
     """The `diagnostics` member, from draws with their chain axis. `exists[name]` masks the parameters
     that exist; a column that is constant (a fixed unit, a term that is off, the diagonal of a
     correlation) is not checked. The R-hat and effective sample size checks name the parameter they come
@@ -88,19 +130,38 @@ def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], di
 
     `raw` holds the draws the checks describe: `fit_design` passes the saved draws. `sampled` is the number
     of draws the sampler made, which the share of divergent transitions is of (default: the draws in
-    `raw`). With `least`, a fourth check `saved_draws` fails when `raw` holds fewer draws than that."""
+    `raw`). With `least`, a fourth check `saved_draws` fails when `raw` holds fewer draws than that.
+
+    `clusters[chains, draws]` labels draws that share a draw of the hyperparameters (the theta points of
+    `engine_laplace`). Then each column's effective sample size is the smaller of the autocorrelation
+    figure and `cluster_ess`, so repeating a theta point cannot raise it, and the `ess` check names the
+    number of distinct labels as `theta_points`.
+
+    The last check, `finite_draws`, counts the draws of parameters that exist that are not finite, and
+    names the first such parameter as `worst`. R-hat cannot be computed on such a column, so it is left
+    out of the R-hat and effective sample size checks and fails here instead."""
     rhats, esses, labels = [], [], []
+    nonfinite, first_nonfinite = 0, None
     for name in CHECKED:
         if name in LATER and name not in raw:
             continue
         x = np.asarray(raw[name], dtype=float)
         flat = x.reshape(x.shape[0], x.shape[1], -1)
-        keep = np.broadcast_to(exists[name], x.shape[2:]).reshape(-1) if name in exists else np.ones(
+        active = np.broadcast_to(exists[name], x.shape[2:]).reshape(-1) if name in exists else np.ones(
             flat.shape[2], dtype=bool)
-        keep = keep & np.isfinite(flat).all(axis=(0, 1)) & (flat.std(axis=(0, 1)) > 1e-12)
+        finite = np.isfinite(flat).all(axis=(0, 1))
+        broken = np.flatnonzero(active & ~finite)
+        if len(broken):
+            nonfinite += int((~np.isfinite(flat[:, :, broken])).sum())
+            if first_nonfinite is None:
+                first_nonfinite = f"{name}{[int(k) for k in np.unravel_index(broken[0], x.shape[2:])]}"
+        keep = active & finite & (flat.std(axis=(0, 1)) > 1e-12)
         columns = np.flatnonzero(keep)
         for start in range(0, len(columns), BLOCK):
-            rhat, ess = split_rhat_ess(flat[:, :, columns[start:start + BLOCK]])
+            block = flat[:, :, columns[start:start + BLOCK]]
+            rhat, ess = split_rhat_ess(block)
+            if clusters is not None:
+                ess = np.minimum(ess, cluster_ess(block, clusters))
             rhats.append(rhat)
             esses.append(ess)
         if keep.any():
@@ -118,8 +179,12 @@ def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], di
               {"name": "ess", "value": ess_min, "limit": ESS_MIN, "ok": bool(ess_min >= ESS_MIN),
                "worst": worst_ess},
               {"name": "divergences", "value": int(divergences), "limit": limit, "ok": bool(divergences <= limit)}]
+    if clusters is not None:
+        checks[1]["theta_points"] = int(len(np.unique(np.asarray(clusters))))
     if least is not None:
         checks.append({"name": "saved_draws", "value": saved, "limit": int(least), "ok": bool(saved >= least)})
+    checks.append({"name": "finite_draws", "value": nonfinite, "limit": 0, "ok": nonfinite == 0,
+                   "worst": first_nonfinite})
     return {"converged": all(check["ok"] for check in checks), "rhat_max": rhat_max, "ess_min": ess_min,
             "divergences": int(divergences), "run_seconds": float(run_seconds), "checks": checks}
 
@@ -178,12 +243,12 @@ def finish(design: M.Design, raw: Mapping[str, np.ndarray], keep_draws: int = 10
 
 def unpooled(design: M.Design, draws: Mapping[str, np.ndarray]) -> dict:
     """Per (run, dimension): calls per judge, and for a [0, 1] dimension the unpooled estimate, as the flow
-    fit defines it: the readings less each judge's bias, weighted by 1 / noise^2, with no prior on quality."""
+    fit defines it: the readings less each judge's bias, weighted by 1 / noise^2, with no prior on quality.
+    A cell whose judges' posterior means are not all known (draws a lost theta point left NaN) has none."""
     def mean(name: str) -> np.ndarray:
-        """The posterior mean. A parameter that does not exist is NaN in every draw, and is not read below."""
-        x = np.asarray(draws[name])
-        gone = np.isnan(x).all(axis=0)
-        return np.where(gone, np.nan, np.where(np.isnan(x), 0.0, x).mean(axis=0))
+        """The posterior mean, NaN where any draw is NaN: a parameter that does not exist (NaN in every draw,
+        and not read below), or draws an engine could not make."""
+        return np.asarray(draws[name], dtype=float).mean(axis=0)
 
     bias, tau, sigma = mean("bias"), mean("tau"), mean("sigma")
     dim_ids = [dim["id"] for dim in design.dims]
@@ -191,35 +256,62 @@ def unpooled(design: M.Design, draws: Mapping[str, np.ndarray]) -> dict:
     for (r, d), rows in design.unit_values.items():
         weights, values, calls = [], [], 0
         for j, mean, n in rows:
-            noise = tau[j, d] ** 2 + sigma[j, d] ** 2 / n
-            weights.append(1.0 / max(float(noise), 1e-12))
+            noise = float(tau[j, d] ** 2 + sigma[j, d] ** 2 / n)
+            weights.append(1.0 / max(noise, 1e-12) if np.isfinite(noise) else np.nan)
             values.append(mean - bias[j, d])
             calls += n
         total = float(np.sum(weights))
+        estimate = float(np.dot(weights, values) / total)
         out[(design.runs[r]["run"], dim_ids[d])]["unpooled"] = {
-            "mean": float(np.dot(weights, values) / total), "sd": float(np.sqrt(1.0 / total)), "n": int(calls)}
+            "mean": estimate, "sd": float(np.sqrt(1.0 / total)), "n": int(calls)} if np.isfinite(estimate) else None
     return out
+
+
+def _engine(name: str):
+    if name not in ENGINES:
+        raise C.ContractError("eval fit", f"--engine {name}", "not an engine", f"use one of {', '.join(ENGINES)}",
+                              "bad_option")
+    if name == "laplace":
+        from . import engine_laplace as engine
+    else:
+        from . import engine_pymc as engine
+    return engine
 
 
 def fit_design(design: M.Design, *, seed: int = 0, draws: int | None = None, chains: int | None = None,
                tune: int | None = None, cores: int | None = None, keep_draws: int = 1000,
-               inputs: dict | None = None, options: dict | None = None) -> tuple[dict, dict[str, np.ndarray]]:
-    """Sample a design and assemble the fit: `(every member of fit.json but draws, the draws)`."""
-    from . import engine_pymc as engine
-
+               inputs: dict | None = None, options: dict | None = None,
+               engine: str = "pymc") -> tuple[dict, dict[str, np.ndarray]]:
+    """Fit a design with `engine` and assemble the fit: `(every member of fit.json but draws, the draws)`."""
+    name = engine
+    engine = _engine(name)
     check_keep_draws(keep_draws)   # before the engine runs: nothing is sampled for a file that is refused
-    draws = DEFAULT_DRAWS if draws is None else int(draws)
     chains = DEFAULT_CHAINS if chains is None else int(chains)
+    if draws is None:   # the laplace engine makes as many draws as the file keeps
+        draws = -(-int(keep_draws) // chains) if name == "laplace" else DEFAULT_DRAWS
+    draws = int(draws)
     result = engine.sample(design.data, seed=seed, draws=draws, tune=tune, chains=chains, cores=cores)
     raw = result["draws"]
     first = np.asarray(raw["mu"])
     kept = thin(raw, keep_draws)   # the diagnostics describe these draws, the ones the file holds
     checked = {**existing(design), "halo_call": design.masks["panel"]}   # elsewhere it is 0 by definition
+    clusters = None
+    if result.get("theta_point") is not None:   # draws that share a theta point: thinned with the draws
+        clusters = thin({"mu": first, "theta_point": np.asarray(result["theta_point"])}, keep_draws)["theta_point"]
     diagnostics = diagnose(kept, checked, result["divergences"], result["run_seconds"],
-                           sampled=first.shape[0] * first.shape[1], least=MIN_KEEP_DRAWS)
-    final = finish(design, kept, keep_draws)
+                           sampled=first.shape[0] * first.shape[1], least=MIN_KEEP_DRAWS, clusters=clusters)
+    extra: dict = {}
+    if name == "laplace":
+        own = [dict(check) for check in result["checks"]]
+        diagnostics["checks"] = diagnostics["checks"] + own + [
+            {"name": "boundary", "value": len(result["boundary"]), "limit": None, "ok": True,
+             "at": list(result["boundary"]), "unchecked": list(result.get("boundary_unchecked", [])),
+             "note": "sds the data cannot tell from 0; not counted in converged"}]
+        diagnostics["converged"] = bool(diagnostics["converged"] and all(check["ok"] for check in own))
+        extra = {"engine": name, "approximate_draws": True, "theta_points": int(result["theta_points"])}
     full_options = {**design.options, "draws": draws, "tune": draws if tune is None else int(tune),
-                    "chains": chains, "keep_draws": int(keep_draws), **(options or {})}
+                    "chains": chains, "keep_draws": int(keep_draws), **extra, **(options or {})}
+    final = finish(design, kept, keep_draws)
     meta = F.assemble(rubric=design.rubric, judges=design.judges, runs=design.runs, draws=final,
                       terms=design.terms, anchor=design.anchor, diagnostics=diagnostics, inputs=inputs,
                       options=full_options, engine={"name": engine.NAME, "version": result["version"]}, seed=seed,
@@ -235,8 +327,8 @@ def _positive(value: Any, option: str, least: int = 1) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """`eval fit`."""
-    from . import engine_pymc as engine
-
+    name = getattr(args, "engine", "pymc") or "pymc"
+    engine = _engine(name)
     _positive(args.draws, "--draws", 20)
     _positive(args.chains, "--chains")
     if args.keep_draws is not None:
@@ -261,7 +353,7 @@ def run(args: argparse.Namespace) -> int:
     inputs = C.input_digests({**study.files(), "rubric": args.rubric, "judges": args.judges})
     meta, draws = fit_design(design, seed=args.seed, draws=args.draws, chains=args.chains,
                              keep_draws=args.keep_draws, inputs=inputs,
-                             options={"allow_simulated": bool(args.allow_simulated)})
+                             options={"allow_simulated": bool(args.allow_simulated)}, engine=name)
     path = F.write_fit(out, meta, draws)
     diagnostics = meta["diagnostics"]
     if args.json:

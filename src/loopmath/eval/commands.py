@@ -172,6 +172,8 @@ def add(sub) -> None:
     q.add_argument("--check-only", action="store_true", help="print the identification report and stop")
     q.add_argument("--allow-simulated", action="store_true", help="fit a study that holds simulated runs")
     q.add_argument("--out", default=None, metavar="FILE", help="the fit file to write (default: STUDY/fit.json)")
+    q.add_argument("--engine", choices=["pymc", "laplace"], default="pymc",
+                   help="pymc samples (the default); laplace fits fast, with approximate draws, and needs no extra")
 
     # eval judges
     q = _command(es, "judges", "judges", "judges", "each judge's bias, disagreement, noise and cost, from a fit")
