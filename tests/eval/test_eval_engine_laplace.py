@@ -714,11 +714,11 @@ def test_theta_points_in_a_helper_process_give_the_draws_of_one_process(monkeypa
         np.testing.assert_array_equal(alone["draws"][name], split["draws"][name], err_msg=name)
 
 
-def _helper_setup(monkeypatch, worker: str):
-    """The review's helper case: a linear design of 8 inputs, 7 theta-point jobs of 2 draws, 2 workers, helpers
-    whatever the time, each running `worker`. Returns (problem, theta, chol, start, jobs, the helper processes
-    started, as handles)."""
-    design, _ = catalog_design("linear", inputs=8)
+def _helper_setup(monkeypatch, worker: str, seed: int = 0, jobs_seed: int = 0):
+    """The review's helper case: a linear design of 8 inputs (simulation `seed`), 7 theta-point jobs of 2 draws
+    (generators spawned from `jobs_seed`), 2 workers, helpers whatever the time, each running `worker`.
+    Returns (problem, theta, chol, start, jobs, the helper processes started, as handles)."""
+    design, _ = catalog_design("linear", inputs=8, seed=seed)
     prob = EL.Problem(design.data)
     prob.workers = 2
     theta = prob.params.init
@@ -733,7 +733,7 @@ def _helper_setup(monkeypatch, worker: str):
             procs.append(self)
 
     monkeypatch.setattr(subprocess, "Popen", Recorded)
-    jobs = [(gen, 2) for gen in np.random.default_rng(0).spawn(7)]
+    jobs = [(gen, 2) for gen in np.random.default_rng(jobs_seed).spawn(7)]
     return prob, theta, np.eye(len(theta)) * 0.01, start, jobs, procs
 
 
@@ -787,6 +787,40 @@ def test_a_failure_while_a_helper_runs_kills_and_reaps_it_and_keeps_the_exceptio
                 proc.wait()
     assert codes == [-signal.SIGKILL] and threads == [] and pipes == [True] * 3
     assert took < 20 and prob.workers == 2
+
+
+def test_a_helper_whose_pipe_fails_is_over_before_its_share_runs_here(monkeypatch):
+    """The review's case: linear, 8 inputs, simulation seed 11, 7 jobs of 2 draws from generator seed 19, 2
+    workers, the real helper, and its `communicate` raising before the payload is sent. The pipe thread keeps
+    nothing, so the share is run here and the call returns normally: the results are those of one process
+    and no helper counts as used. On return, before any net of the test, the helper was killed and reaped
+    (its return code is set without the test polling it), no pipe thread is left and its pipes are closed."""
+    prob, theta, chol, start, jobs, procs = _helper_setup(monkeypatch, EL._THETA_WORKER, seed=11, jobs_seed=19)
+    prob.workers = 1
+    alone = [EL._theta_point(prob, theta, chol, start, gen, n)
+             for gen, n in [(gen, 2) for gen in np.random.default_rng(19).spawn(7)]]
+    prob.workers = 2
+
+    def broken(self, *args, **kw):
+        raise OSError("injected pipe failure")
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", broken)   # the recording class of `_helper_setup`
+    try:
+        results, used = EL._theta_points(prob, theta, chol, start, jobs)
+        codes = [proc.returncode for proc in procs]
+        threads = [t for t in threading.enumerate() if t.name == "theta-helper"]
+        pipes = [pipe.closed for proc in procs for pipe in (proc.stdin, proc.stdout, proc.stderr)]
+    finally:
+        for proc in procs:   # a net for this test only: the asserts below have already read the state
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+    assert used == 0 and len(results) == len(alone) == 7
+    for got, want in zip(results, alone):
+        assert got[1:] == want[1:] and set(got[0]) == set(want[0])
+        for name in want[0]:
+            np.testing.assert_array_equal(got[0][name], want[0][name], err_msg=name)
+    assert codes == [-signal.SIGKILL] and threads == [] and pipes == [True] * 3 and prob.workers == 2
 
 
 _KILLED_CALLER = """

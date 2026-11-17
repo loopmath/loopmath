@@ -1943,30 +1943,48 @@ def _talk(proc: Any, payload: bytes, box: list) -> None:
         pass
 
 
+def _end_helper(helper: dict, wait: float = 5.0) -> None:
+    """Make sure one helper is over: kill its process by its handle if it still runs, join its pipe thread,
+    close every stream still open once that thread has ended (or never ran), and reap the process. For a
+    helper whose pipe thread finished normally this changes nothing. Each step catches its own errors, so
+    this never raises."""
+    proc, talk = helper["proc"], helper["talk"]
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            proc.kill()
+    except Exception:
+        pass
+    if talk is not None and talk.is_alive():
+        try:
+            talk.join(wait)   # the helper is gone, so its pipes close and communicate returns
+        except Exception:
+            pass
+    if talk is None or not talk.is_alive():   # nothing reads or writes the pipes any more
+        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
+    try:
+        proc.wait(wait)
+    except Exception:
+        pass
+
+
 def _stop_helpers(helpers: list[dict], wait: float = 5.0) -> None:
-    """Kill the helper processes still running, by their handles, end their pipe threads and reap them.
-    Called while an exception is on its way: it never raises one of its own."""
+    """Kill every helper process still running, by its handle, then end each one (`_end_helper`). Called while
+    an exception is on its way: it never raises one of its own."""
     for helper in helpers:
-        proc = helper["proc"]
         try:
-            if proc is not None and proc.poll() is None:
-                proc.kill()
+            if helper["proc"] is not None and helper["proc"].poll() is None:
+                helper["proc"].kill()
         except Exception:
             pass
     for helper in helpers:
-        proc, talk = helper["proc"], helper["talk"]
-        if proc is None:
-            continue
-        try:
-            if talk is not None and talk.is_alive():
-                talk.join(wait)   # the helper is gone, so its pipes close and communicate returns
-            if talk is None or talk.ident is None:   # no pipe thread ever ran: close the pipes here
-                for pipe in (proc.stdin, proc.stdout, proc.stderr):
-                    if pipe is not None:
-                        pipe.close()
-            proc.wait(wait)
-        except Exception:
-            pass
+        _end_helper(helper, wait)
 
 
 def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any,
@@ -1979,7 +1997,8 @@ def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any
     pickled on a pipe; not multiprocessing, which would import the caller's main script again). Each
     runs a one-thread cell rule, so no more than `prob.workers` cores are busy. Every point carries its
     own generator, so the draws are the same wherever it runs. A helper that fails, or that imports
-    another copy of this module, has its share run here instead.
+    another copy of this module, has its share run here instead, once that helper is over: killed if it
+    still runs, its pipe thread joined, its pipes closed and the process reaped (`_end_helper`).
 
     Every helper is ours from the moment it starts: when this process raises anywhere after that (an
     interrupt while it waits, a pipe thread that cannot start, a failure in a share run here), the helpers
@@ -2025,6 +2044,7 @@ def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any
             got, proc = None, helper["proc"]
             if proc is not None:
                 helper["talk"].join()
+                _end_helper(helper)   # a helper whose pipe failed may still run, its pipes open: end it first
                 if proc.returncode == 0 and helper["box"]:
                     try:
                         got = pickle.loads(helper["box"][0][0])
