@@ -7,7 +7,8 @@ reads back.
 Blind by construction: no plan, form or printed output holds an arm, a model name or a judge score. The
 options record `--arms` as a count and a digest only. Run ids and refs come from the user's run records
 as they are, so the command refuses, and writes nothing, when a candidate's run id or ref spells out an
-arm, a model id or a model family.
+arm, a model id or a model family. One exception: when the study's run records mark every candidate run
+as simulated, the plan is written and a note says it is not blind. One real run keeps the refusal.
 
 Candidates
 ----------
@@ -753,6 +754,20 @@ def identifying(fit: F.Fit, offers: Sequence[Offer]) -> int:
                    + list(texts(offer.refs))) for offer in offers)
 
 
+def all_simulated(fit: F.Fit, study: Path, offers: Sequence[Offer]) -> bool:
+    """Whether the study's run records mark every run of the offers as simulated.
+
+    False when the study folder has no run records, when a run has no record there, or when any record
+    of a run says it is not simulated: one real run keeps the blind refusal."""
+    path = study / C.RUNS_FILE
+    if not path.is_file():
+        return False
+    marked: dict[str, bool] = {}
+    for row in C.read_lines(path, C.SCHEMA_RUNS):
+        marked[row["run"]] = marked.get(row["run"], True) and bool(row.get("simulated", False))
+    return all(marked.get(fit.index["runs"][r], False) for offer in offers for r in offer.runs)
+
+
 def _budget(args: argparse.Namespace) -> tuple[str, float]:
     n, minutes = getattr(args, "n", None), getattr(args, "minutes", None)
     if (n is None) == (minutes is None):
@@ -906,7 +921,12 @@ def build(args: argparse.Namespace) -> Result:
                      "second reviewer, so their share of the budget goes to the main draw")
     # Blind or nothing: a run id or a ref that names the configuration would tell the reviewer the arm.
     n_named = identifying(fit, offers + again)
-    if n_named:
+    simulated = n_named > 0 and all_simulated(fit, study, offers + again)
+    if simulated:
+        notes.append(f"the plan is not blind: the study is simulated, and {n_named} of {len(offers) + len(again)} "
+                     "candidates have a run id or a ref that spells out the configuration. With real runs this is "
+                     "refused")
+    elif n_named:
         raise C.ContractError(fit.path.name, "runs", f"{n_named} of {len(offers) + len(again)} candidates have a run "
                               "id or a ref that spells out an arm, a model id or a model family, so the plan "
                               "would not be blind",
@@ -1061,6 +1081,8 @@ def build(args: argparse.Namespace) -> Result:
         files["pairs"] = study / C.PAIRS_FILE
     if (study / C.ITEMS_FILE).is_file():
         files["items"] = study / C.ITEMS_FILE
+    if simulated:
+        files["runs"] = study / C.RUNS_FILE          # its simulated marks let the plan through
     inputs = C.input_digests(files)
     rows = [groups[g][n] for g in rng.permutation(len(groups)).tolist()
             for n in rng.permutation(len(groups[g])).tolist()]

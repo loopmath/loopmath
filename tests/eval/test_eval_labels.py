@@ -645,6 +645,40 @@ def test_run_ids_that_name_the_arm_are_refused_and_nothing_is_written(tmp_path, 
     assert code == 1 and out == ""
 
 
+def test_a_simulated_study_is_let_through_with_a_note_and_real_runs_are_not(tmp_path, capsys):
+    refusal = ("error: fit.json: runs: 36 of 36 candidates have a run id or a ref that spells out an arm, a model id "
+               "or a model family, so the plan would not be blind; give the runs ids and refs that do not name the "
+               "configuration (r001, outputs/r001), import the scores under those ids and fit again\n")
+    runs = testing.example_runs()                                             # run ids like <arm>-i001
+    assert all(row["simulated"] for row in runs) and "baseline" in runs[0]["run"]
+    cases = {"simulated": runs,
+             "real": [dict(row, simulated=False) for row in runs],
+             "mixed": [dict(row, simulated=n != 5) for n, row in enumerate(runs)]}
+    for name, rows in cases.items():
+        folder = tmp_path / name
+        folder.mkdir()
+        files = testing.write_study_files(folder, runs=[C.validate_run(row) for row in rows])
+        fit = testing.build_fit(folder / "fit.json", runs=rows, person_share=0.0, inputs=C.input_digests(files))
+        out_file = folder / "plan.json"
+        code, out, err = run_cli(capsys, fit.path, "--study", folder, "--mode", "pilot", "--n", "10", "--out",
+                                 out_file)
+        if name != "simulated":
+            assert (code, out, err) == (1, "", refusal) and not out_file.exists()
+            continue
+        assert code == 0 and err == ""
+        assert out.count("note: the plan is not blind: the study is simulated, and 36 of 36 candidates have a run "
+                         "id or a ref that spells out the configuration. With real runs this is refused") == 1
+        plan = C.read_document(out_file, C.SCHEMA_LABELS)
+        assert len(plan["assignments"]) == 10 and "baseline" in out_file.read_text()
+        digest = hashlib.sha256(files["runs"].read_bytes()).hexdigest()
+        assert plan["inputs"]["runs"] == {"file": C.RUNS_FILE, "sha256": digest}
+        code, out, _ = run_cli(capsys, fit.path, "--study", folder, "--mode", "active", "--n", "10")
+        assert code == 0 and "note: the plan is not blind: the study is simulated" in out
+    # The same simulated fit with no run records beside it: nothing says the runs are simulated.
+    alone = testing.build_fit(tmp_path / "fit.json", runs=runs, person_share=0.0)
+    assert run_cli(capsys, alone.path, "--n", "10") == (1, "", refusal)
+
+
 def test_short_arm_names_and_refs_count_as_naming_the_arm(tmp_path, capsys):
     step = [{"step": "final", "model": {"id": "m", "family": "f"}, "effort": "low"}]
     arms = {"k0": step, "k1": step}
