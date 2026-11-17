@@ -44,9 +44,15 @@ keeps a variance near 0 harmless: its unknowns stay at their prior and the coeff
    is exact at the EP fixed point. Where one site holds every reading of its unknowns, the EP value is
    the exact marginal likelihood; where sites share unknowns it is an approximation (measured against
    an exact oracle in the tests). `sample(inner="laplace")` keeps the Laplace step.
-3. Draws. theta is drawn from N(theta-hat, Sigma), Sigma the inverse of minus the Hessian of step 2 at
-   theta-hat on the unconstrained scale (forward differences of the exact gradient). For each of
-   `theta_points` theta draws the inner step is solved again and z is drawn from N(z-hat, H^-1); the
+3. Draws. Sigma is the inverse of minus the Hessian of step 2 at theta-hat on the unconstrained scale
+   (forward differences of the exact gradient). theta is drawn from a split normal around theta-hat
+   (`split_axes`, `split_normal`): along each principal axis of Sigma a half-Gaussian on each side,
+   joined at theta-hat, whose sd is set from how far the objective of step 2 falls `SPLIT_REACH` sds out
+   on that side. Where the objective is Gaussian this is N(theta-hat, Sigma); where it is skewed, as for
+   an sd the data barely inform, it follows the skew (a Gaussian in the log of such an sd puts its mean
+   too high: e^(1/4) = 1.28 times the scale for a half-normal(1) sd fixed by its prior, whose mean is
+   0.80; the split normal gives 0.76). `sample(theta_draws="gaussian")` keeps N(theta-hat, Sigma). For
+   each of `theta_points` theta draws the inner step is solved again and z is drawn from N(z-hat, H^-1); the
    parameters of the fit file follow from (theta, z). Every theta point is a random draw (theta-hat
    stands in only where five draws in a row fail, and those stand-ins share one label). Each chain has
    its own theta points in random order, about equal shares, the draws of one point in one run, so the
@@ -57,8 +63,10 @@ keeps a variance near 0 harmless: its unknowns stay at their prior and the coeff
 What is approximate
 -------------------
 The draws are approximate posterior draws: Gaussian in z given theta (exact for `linear` and
-`fraction` readings, the EP or Laplace Gaussian for cut readings and pairs) and Gaussian in theta on the
-unconstrained scale. The fit file names the engine and says its draws are approximate (`fit.py`).
+`fraction` readings, the EP or Laplace Gaussian for cut readings and pairs) and split normal in theta on
+the unconstrained scale (one side scale per side of each principal axis, not a full fit of the
+posterior's shape; the points are not reweighted). The fit file names the engine and says its draws are
+approximate (`fit.py`).
 
 Likelihood kernels
 ------------------
@@ -106,7 +114,12 @@ VALUE_TOL = 1e-6      # where only the value is used (the boundary scan): its er
 DRAW_TOL = 1e-3       # at the theta points: the draws' mean and covariance move by about 1e-3 of an sd
 THETA_POINTS = 500    # default: R-hat between chains of their own theta points stays under 1.05
                       # (at 250, 2 of 57 catalog fits failed it, at 1.050 and 1.054)
-ANDERSON = 4          # memory of the Anderson acceleration of EP sweeps
+SPLIT_REACH = 2.0     # split-normal theta draws: each side scale matches the objective this many sds out
+                      # (on 1-D log-sd posteriors, prior only to 20 readings, the mean sd is within 5% of the
+                      # exact one at 2; within 7% at 1.5, 14% at 2.5; the Gaussian is off by up to 61%)
+SPLIT_LEAST = 0.5     # a side with less room than this many sds inside the bounds keeps the Gaussian's scale
+SPLIT_RANGE = (0.25, 4.0)   # side scales are held within these multiples of the Gaussian's sd
+ANDERSON = 4         # memory of the Anderson acceleration of EP sweeps
 DECREMENT_MAX = 1e-4  # the optimiser has converged when a Newton step would gain less log likelihood than this
 OUTPUTS = ("mu", "sd_input", "sd_run", "corr_input", "corr_run", "q_run", "bias", "tau", "sigma", "halo_target",
            "halo_call", "family", "sd_judge_input", "sigma_pair", "position", "tie_width")
@@ -1871,17 +1884,97 @@ def cell_rule_check(prob: "Problem", theta: np.ndarray, start: Any) -> dict | No
             "max_group": float(diff.max(initial=0.0)) if good else None, "bad_groups": bad}
 
 
-def _theta_point(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any, gen: np.random.Generator,
+def _room(theta: np.ndarray, step: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> float:
+    """The largest r >= 0 with theta + r * step inside [lo, hi] (infinite for a zero step)."""
+    up, down = step > 0, step < 0
+    room = np.concatenate([(hi[up] - theta[up]) / step[up], (lo[down] - theta[down]) / step[down]])
+    return float(max(0.0, room.min(initial=np.inf)))
+
+
+def split_axes(prob: Problem, theta: np.ndarray, axes: np.ndarray, start: Any, top: float) -> dict:
+    """The side scales of the split-normal theta draws (step 3 of the module text).
+
+    `axes` holds the principal axes of Sigma as columns, each scaled to its sd (Sigma = axes axes'), and
+    `top` is the objective of step 2 at theta-hat. On each side of axis k the objective is evaluated
+    (value only, at `VALUE_TOL`) at theta-hat +- r axes[:, k], r = `SPLIT_REACH`, and the side scale is the
+    sd, in units of that axis's sd, of the half-Gaussian that falls from `top` to that value over r:
+    c = r / sqrt(2 (top - value)). Both are 1 where the objective is Gaussian along the axis.
+
+    Where the bounds leave less room than r on a side, r is cut to the room. A point is used only when the
+    inner step takes it (`_attempt`) and finishes (`mode["ok"]`): an inner step that stops at its iteration
+    limit can give a finite value that is not the objective, and such a value never sets a scale. A point
+    that is not used is tried again at r / 2. With less room than `SPLIT_LEAST`, with no point used at r
+    or at r / 2, or when `top` is not finite, the side keeps 1, the Gaussian's scale. A scale outside
+    `SPLIT_RANGE` (a value that does not fall included) is held at its limit. Returns `{"minus", "plus"}`
+    (the side scales per axis, below and above theta-hat) and the counts `evaluations`, `refused` (points
+    not used), `unfinished` (those of them with a finite value from an inner step that did not finish),
+    `kept` (sides that kept 1) and `held` (sides held at a limit)."""
+    P = prob.params
+    n = axes.shape[1]
+    scales = {-1.0: np.ones(n), 1.0: np.ones(n)}
+    evaluations = refused = unfinished = kept = held = 0
+    low, high = SPLIT_RANGE
+    for k in range(n):
+        for side in (-1.0, 1.0):
+            step = side * axes[:, k]
+            reach = min(SPLIT_REACH, _room(theta, step, P.lo, P.hi))
+            got = None
+            if np.isfinite(top) and reach >= SPLIT_LEAST:
+                for r in (reach, 0.5 * reach):
+                    evaluations += 1
+                    res = _attempt(prob, theta + r * step, start, grad=False, tol=VALUE_TOL)
+                    if res is not None and res["mode"]["ok"]:
+                        got = (r, top - float(res["value"]))
+                        break
+                    refused += 1
+                    unfinished += res is not None
+            if got is None:
+                kept += 1
+                continue
+            r, drop = got
+            c = r / np.sqrt(2.0 * drop) if drop > 0 else np.inf
+            if not low <= c <= high:
+                held += 1
+                c = min(max(c, low), high)
+            scales[side][k] = c
+    return {"minus": scales[-1.0], "plus": scales[1.0], "evaluations": evaluations, "refused": refused,
+            "unfinished": unfinished, "kept": kept, "held": held}
+
+
+def split_normal(u: np.ndarray, minus: np.ndarray, plus: np.ndarray) -> np.ndarray:
+    """Standard normal values u to split-normal ones, t = F^-1(Phi(u)) per axis, F the distribution function
+    of the density proportional to exp(-t^2 / (2 minus^2)) below 0 and exp(-t^2 / (2 plus^2)) above:
+    continuous at 0, so the side above holds plus / (minus + plus) of the mass. With minus = plus = 1,
+    t = u to rounding. Each side is computed from its own tail probability, so far draws keep their
+    accuracy."""
+    a, b = np.asarray(minus, dtype=float), np.asarray(plus, dtype=float)
+    below = special.ndtr(u) * (a + b) / (2.0 * a)    # Phi(t / a) for a draw below 0
+    above = special.ndtr(-u) * (a + b) / (2.0 * b)   # Phi(-t / b) for a draw above 0
+    left = special.ndtr(u) < a / (a + b)
+    return np.where(left, a * special.ndtri(np.minimum(below, 0.5)), -b * special.ndtri(np.minimum(above, 0.5)))
+
+
+def _theta_draw(theta: np.ndarray, spread: Any, u: np.ndarray) -> np.ndarray:
+    """theta-hat moved by one draw from standard normal values u. `spread` is a square root of Sigma
+    (Gaussian draws) or `(axes, minus, plus)`: split-normal draws along the axes (`split_axes`)."""
+    if isinstance(spread, np.ndarray):
+        return theta + spread @ u
+    axes, minus, plus = spread
+    return theta + axes @ split_normal(u, minus, plus)
+
+
+def _theta_point(prob: Problem, theta: np.ndarray, spread: Any, start: Any, gen: np.random.Generator,
                  n: int) -> tuple[dict, bool, int, bool, bool, int]:
-    """One theta point: a draw of theta the inner step can take (`_attempt`; drawn again up to five times,
-    then theta-hat stands in), the inner step there at `DRAW_TOL`, and n draws of z from its Gaussian.
+    """One theta point: a draw of theta (`_theta_draw` with `spread`, cut to the bounds) the inner step can
+    take (`_attempt`; drawn again up to five times, then theta-hat stands in), the inner step there at
+    `DRAW_TOL`, and n draws of z from its Gaussian.
     When no attempt can be taken, theta-hat included, the point is lost: its outputs are NaN, never draws
     from a rejected result. Returns (the outputs of the n draws, whether the inner step converged, failed
     attempts, stood in, lost, groups the cell rule could not integrate on the way)."""
     P = prob.params
     res, failed, before = None, 0, prob.bad_cells
     for attempt in range(6):
-        t = theta if attempt == 5 else np.clip(theta + chol @ gen.standard_normal(len(theta)), P.lo, P.hi)
+        t = theta if attempt == 5 else np.clip(_theta_draw(theta, spread, gen.standard_normal(len(theta))), P.lo, P.hi)
         res = _attempt(prob, t, start, grad=False, tol=DRAW_TOL)
         if res is not None:
             break
@@ -1916,7 +2009,7 @@ def _exit_with_parent(parent: int) -> None:
 
 
 def _theta_worker() -> None:
-    """A helper process of `_theta_points`: reads (problem, theta, chol, start, jobs) pickled on stdin, runs
+    """A helper process of `_theta_points`: reads (problem, theta, spread, start, jobs) pickled on stdin, runs
     `_theta_point` on each job with a one-thread cell rule and writes the results pickled on stdout. It
     exits with 2, unread, when it imported another copy of this module than the caller (argv[2]), and with 3
     when the caller (argv[3], its pid) is gone."""
@@ -1927,9 +2020,9 @@ def _theta_worker() -> None:
     _exit_with_parent(int(sys.argv[3]))
     raw = sys.stdout.buffer
     sys.stdout = sys.stderr   # nothing but the results on the pipe
-    prob, theta, chol, start, jobs = pickle.load(sys.stdin.buffer)
+    prob, theta, spread, start, jobs = pickle.load(sys.stdin.buffer)
     prob.workers = 1
-    out = [_theta_point(prob, theta, chol, start, gen, n) for gen, n in jobs]
+    out = [_theta_point(prob, theta, spread, start, gen, n) for gen, n in jobs]
     pickle.dump(out, raw, protocol=pickle.HIGHEST_PROTOCOL)
     raw.flush()
 
@@ -1987,7 +2080,7 @@ def _stop_helpers(helpers: list[dict], wait: float = 5.0) -> None:
         _end_helper(helper, wait)
 
 
-def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any,
+def _theta_points(prob: Problem, theta: np.ndarray, spread: Any, start: Any,
                   jobs: list[tuple[np.random.Generator, int]]) -> tuple[list, int]:
     """`_theta_point` on every (generator, n) job, in order; returns (the results, helper processes used).
 
@@ -2015,18 +2108,18 @@ def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any
     helpers: list[dict] = []
     try:
         t0 = time.time()
-        results = [_theta_point(prob, theta, chol, start, *jobs[0])]
+        results = [_theta_point(prob, theta, spread, start, *jobs[0])]
         rest = jobs[1:]
         share = max(1, min(keep, len(rest)))
         if keep <= 1 or share <= 1 or not sys.executable or (time.time() - t0) * len(rest) < THETA_PARALLEL_SECONDS:
             prob.workers = keep   # no helpers: the cell rule keeps its threads
-            return results + [_theta_point(prob, theta, chol, start, *job) for job in rest], 0
+            return results + [_theta_point(prob, theta, spread, start, *job) for job in rest], 0
         cuts = np.linspace(0, len(rest), share + 1).astype(int)
         parts = [rest[cuts[k]:cuts[k + 1]] for k in range(share)]
         here = os.path.abspath(__file__)
         root = os.path.dirname(os.path.dirname(os.path.dirname(here)))   # the folder holding `loopmath`
         for part in parts[1:]:
-            payload = pickle.dumps((prob, theta, chol, start, part), protocol=pickle.HIGHEST_PROTOCOL)
+            payload = pickle.dumps((prob, theta, spread, start, part), protocol=pickle.HIGHEST_PROTOCOL)
             helper = {"part": part, "proc": None, "talk": None, "box": []}
             helpers.append(helper)
             try:
@@ -2038,7 +2131,7 @@ def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any
             helper["talk"] = threading.Thread(target=_talk, args=(helper["proc"], payload, helper["box"]),
                                               name="theta-helper", daemon=True)
             helper["talk"].start()
-        results += [_theta_point(prob, theta, chol, start, *job) for job in parts[0]]
+        results += [_theta_point(prob, theta, spread, start, *job) for job in parts[0]]
         used = 0
         for helper in helpers:
             got, proc = None, helper["proc"]
@@ -2051,7 +2144,7 @@ def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any
                     except Exception:
                         got = None
             if got is None or len(got) != len(helper["part"]):
-                got = [_theta_point(prob, theta, chol, start, *job) for job in helper["part"]]
+                got = [_theta_point(prob, theta, spread, start, *job) for job in helper["part"]]
             else:
                 used += 1
             results += got
@@ -2065,13 +2158,15 @@ def _theta_points(prob: Problem, theta: np.ndarray, chol: np.ndarray, start: Any
 
 def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: int | None = None, chains: int = 4,
            cores: int | None = None, target_accept: float | None = None, theta_points: int = THETA_POINTS,
-           find_boundary: bool = True, inner: str | None = None) -> dict:
+           find_boundary: bool = True, inner: str | None = None, theta_draws: str = "split") -> dict:
     """Fit the model for the arrays of `model.Design.data` and draw from the Laplace approximation.
 
     `inner` picks how the unknowns below theta are integrated: "ep" (expectation propagation, one site
     per group of cut readings that share a predictor, each integrated exactly; the default when there
     are cut readings) or "laplace" (the Laplace approximation at the mode; exact when every reading is
-    Gaussian, and the default then).
+    Gaussian, and the default then). `theta_draws` picks the theta draws: "split" (the split normal of
+    `split_axes`, the default) or "gaussian" (N(theta-hat, Sigma), as before the split normal; kept to
+    compare with).
 
     Returns what `engine_pymc.sample` returns, `{"draws": {name: array[chains, draws, ...]},
     "divergences", "run_seconds", "version"}`, plus `approximate` (true), `checks` (the optimiser's
@@ -2080,17 +2175,25 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
     test), `theta` (labels, estimates and sds on the unconstrained scale) and `theta_point[chains, draws]`
     (the theta point of each draw; theta-hat stand-ins share the label `theta_points`). `divergences` is
     0: there is no sampler. `cores` (default `CELL_WORKERS`) is the number of threads for the cell rule
-    in the theta fit, and of processes for the theta points (`_theta_points`).
+    in the theta fit, and of processes for the theta points (`_theta_points`). The `theta_hessian` check
+    also names the theta draws (`theta_draws`) and, for the split normal, the counts of `split_axes`
+    (`split_evaluations`, `split_refused`, `split_unfinished`, `split_kept`, `split_held`) and the smallest
+    and largest side scale (`split_scale_min`, `split_scale_max`); none of them fails the check, because
+    a point that is not used never sets a scale.
 
     A result with a value that is not finite, or with a group the cell rule could not integrate, is never
-    used (`_usable`). A trial point of the optimizer, polish or the boundary scan that gives one is
-    rejected and another tried, and a theta draw is drawn again; that alone fails no check. Where a result
-    is needed it fails one: the final evaluation fails `optimizer` (`finite` false), the theta Hessian
-    `theta_hessian`, a theta point with no attempt left `inner_newton` (`lost_theta_points`; its draws are
-    NaN), and the doubled rule `cell_rule`. `inner_newton` reports `bad_cells`, the groups that could not
-    be integrated anywhere in the fit, rejected trials included. A check value that is not finite is None.
+    used (`_usable`). A trial point of the optimizer, polish, the boundary scan or the split scale scan
+    that gives one is rejected and another tried, and a theta draw is drawn again; that alone fails no
+    check. The split scale scan also rejects a point whose inner step did not finish, and a side with no
+    point used keeps the Gaussian's scale. Where a result is needed it fails one: the final
+    evaluation fails `optimizer` (`finite` false), the theta Hessian `theta_hessian`, a theta point with no
+    attempt left `inner_newton` (`lost_theta_points`; its draws are NaN), and the doubled rule `cell_rule`.
+    `inner_newton` reports `bad_cells`, the groups that could not be integrated anywhere in the fit,
+    rejected trials included. A check value that is not finite is None.
     `tune` and `target_accept` are accepted for the same call shape and not used."""
     del tune, target_accept
+    if theta_draws not in ("split", "gaussian"):
+        raise ValueError(f"theta_draws is 'split' or 'gaussian', not {theta_draws!r}")
     started = time.time()
     rng = np.random.default_rng(seed)
     prob = Problem(data)
@@ -2137,7 +2240,13 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
     chains, draws = int(chains), int(draws)
     total = draws * chains
     M = max(1, min(int(theta_points), total))
-    chol = np.linalg.cholesky(cov) if P.size else np.zeros((0, 0))
+    spread: Any = np.linalg.cholesky(cov) if P.size else np.zeros((0, 0))   # Gaussian draws
+    split = None
+    if theta_draws == "split" and P.size:
+        vals, vecs = np.linalg.eigh(cov)
+        axes = vecs * np.sqrt(np.maximum(vals, 0.0))
+        split = split_axes(prob, theta, axes, start, float(fitted["value"]))
+        spread = (axes, split["minus"], split["plus"])
     out = {name: None for name in OUTPUTS}
     # each chain its own theta points (point m in chain m mod chains), in random order, the draws of one
     # point next to each other: then the autocorrelation sees the repeats (a run of draws on one theta)
@@ -2148,11 +2257,11 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
     which = point.ravel()
     label = which.copy()
     inner_ok, redrawn, stand_ins, lost = True, 0, 0, 0
-    bad_cells = prob.bad_cells   # in the fit, the Hessian and the boundary scan; the theta points add theirs
+    bad_cells = prob.bad_cells   # in the fit, the Hessian and the two scans; the theta points add theirs
     jobs = [(m, np.flatnonzero(which == m)) for m in range(M)]
     jobs = [(m, picks) for m, picks in jobs if len(picks)]
     gens = rng.spawn(M)   # one generator per theta point: the draws do not depend on where a point runs
-    results, helpers = _theta_points(prob, theta, chol, start, [(gens[m], len(picks)) for m, picks in jobs])
+    results, helpers = _theta_points(prob, theta, spread, start, [(gens[m], len(picks)) for m, picks in jobs])
     for (m, picks), (values, ok, attempts, stood_in, gone, bad) in zip(jobs, results):
         redrawn += attempts
         lost += gone
@@ -2181,6 +2290,13 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
                                                   else None) if P.size else 0.0,
                "limit": 0.0, "ok": bool(hess_ok)}]
     checks[1]["inner"] = prob.inner
+    checks[2]["theta_draws"] = theta_draws if P.size else None
+    if split is not None:
+        sides = np.concatenate([split["minus"], split["plus"]])
+        checks[2].update({"split_evaluations": int(split["evaluations"]), "split_refused": int(split["refused"]),
+                          "split_unfinished": int(split["unfinished"]),
+                          "split_kept": int(split["kept"]), "split_held": int(split["held"]),
+                          "split_scale_min": float(sides.min()), "split_scale_max": float(sides.max())})
     rule = cell_rule_check(prob, theta, start)
     if rule is not None:
         checks.append(rule)

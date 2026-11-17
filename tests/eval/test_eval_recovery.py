@@ -109,7 +109,7 @@ def run_fit(folder: Path, seed: int, out: str = "fit.json", extra: tuple = ()) -
     seconds = 0.0
     if not (target.exists() and stamp.exists() and stamp.read_text(encoding="utf-8") == options):
         argv = ["eval", "fit", folder, "--rubric", folder / "rubric.json", "--judges", folder / "judges.json",
-                "--seed", seed, "--out", target, "--allow-simulated", "--chains", 2, *extra]
+                "--seed", seed, "--out", target, "--allow-simulated", "--chains", 2, "--engine", "pymc", *extra]
         if DRAWS is not None:
             argv += ["--draws", DRAWS]
         start = time.monotonic()
@@ -781,7 +781,8 @@ def test_check_14_size_20000_readings_fit_in_10_minutes(root):
         assert counts["runs"] == 500, counts
     start = time.monotonic()
     code, _, err = E.lm("eval", "fit", folder, "--rubric", folder / "rubric.json", "--judges", folder / "judges.json",
-                        "--seed", 0, "--allow-simulated", "--chains", 2, "--out", folder / "fit.json")
+                        "--seed", 0, "--allow-simulated", "--chains", 2, "--engine", "pymc",
+                        "--out", folder / "fit.json")
     seconds = time.monotonic() - start
     assert code == 0, err.strip()[-800:]
     meta = json.loads((folder / "fit.json").read_text(encoding="utf-8"))

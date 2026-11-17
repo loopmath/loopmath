@@ -123,7 +123,8 @@ def test_check_only_prints_the_report_and_writes_nothing(tmp_path, capsys):
 def test_without_the_engine_it_prints_the_install_line_and_writes_nothing(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(engine, "available", lambda: False)
     out = tmp_path / "fit.json"
-    assert cli.main(["eval", "fit", str(STUDY), "--rubric", RUBRIC, "--judges", JUDGES, "--out", str(out)]) == 1
+    assert cli.main(["eval", "fit", str(STUDY), "--rubric", RUBRIC, "--judges", JUDGES, "--out", str(out),
+                     "--engine", "pymc"]) == 1
     captured = capsys.readouterr()
     assert captured.err == engine.INSTALL + "\n" and captured.out == ""
     assert "pip install 'loopmath[bayes]'" in engine.INSTALL and list(tmp_path.iterdir()) == []
@@ -168,7 +169,8 @@ def test_a_simulated_study_needs_allow_simulated(tmp_path, capsys):
 def test_smoke_fit_of_the_small_study_writes_a_fit_every_later_stage_can_read(tmp_path, capsys):
     out = tmp_path / "fit.json"
     assert cli.main(["eval", "fit", str(STUDY), "--rubric", RUBRIC, "--judges", JUDGES, "--seed", "3", "--draws",
-                     "50", "--chains", "2", "--keep-draws", "400", "--out", str(out), "--json"]) == 0
+                     "50", "--chains", "2", "--keep-draws", "400", "--out", str(out), "--json",
+                     "--engine", "pymc"]) == 0
     obj = json.loads(capsys.readouterr().out)
     assert obj["schema"] == FT.OUTPUT_SCHEMA and obj["fit"] == str(out) and obj["checked_only"] is False
     fit = F.read_fit(out, allow_unconverged=True)
@@ -244,7 +246,7 @@ def study_record(name: str, seed: int, *, draws: int | None = None, chains: int 
     `eval judges` reads it: `false_pass` and `false_fail` of a binary dimension against the simulated rates."""
     study, sim = catalog_study(name, seed, inputs)
     design = M.build(study, sim.rubric, sim.judges, allow_simulated=True, **build)
-    meta, post = FT.fit_design(design, seed=seed, draws=draws, chains=chains, cores=2)
+    meta, post = FT.fit_design(design, seed=seed, draws=draws, chains=chains, cores=2, engine="pymc")
     truth = {key: np.array(value, dtype=float) for key, value in sim.truth.items()
              if key in F.DRAW_SHAPES or key in ("sd_input", "sd_run")}
     state = {(row["term"], row["judge"], row["dimension"]): row["state"] for row in meta["terms"]}
@@ -412,7 +414,7 @@ def test_pairs_added_to_readings_narrow_the_arm_difference():
             design = M.build(C.Study(Path("."), study.runs, study.scores, pairs), sim.rubric, sim.judges,
                              allow_simulated=True, components=["depth"])
             assert design.counts["pairs_used"] == (160 if pairs else 0) and design.relative == []
-            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2)
+            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2, engine="pymc")
             difference = post["mu"][:, 1, 0] - post["mu"][:, 0, 0]
             sds[label] = {"mean": float(difference.mean()), "sd": float(difference.std()),
                           "converged": meta["diagnostics"]["converged"]}
@@ -446,7 +448,7 @@ def test_levels_5_beside_a_fit_that_reads_the_levels_as_plain_numbers():
         row = {"seed": seed, "truth": (truth[1] - truth[0]).tolist()}
         for label, rubric, scores in (("levels", sim.rubric, study.scores), ("plain_numbers", plain, numbers)):
             design = M.build(C.Study(Path("."), study.runs, scores), rubric, sim.judges, allow_simulated=True)
-            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2)
+            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2, engine="pymc")
             difference = post["mu"][:, 1, :] - post["mu"][:, 0, :]
             lo, hi = np.percentile(difference, [5.0, 95.0], axis=0)
             row[label] = {"mean": difference.mean(axis=0).tolist(), "lo": lo.tolist(), "hi": hi.tolist(),
@@ -480,7 +482,7 @@ def test_link_to_the_flow_fit_on_one_linear_component():
     study = C.Study(Path("."), study.runs, scores)
     design = M.build(study, sim.rubric, sim.judges, allow_simulated=True, terms=["family=off", "judge_input=off"])
     assert int(design.data["s_n"].max()) == 1 and design.data["D"] == 1
-    meta, post = FT.fit_design(design, seed=4, chains=2, cores=2)
+    meta, post = FT.fit_design(design, seed=4, chains=2, cores=2, engine="pymc")
 
     dim = design.dims[0]
     values: dict[str, dict] = {}
@@ -548,7 +550,7 @@ def test_size_500_runs_5_components_4_judges_2_repeats_fits_in_10_minutes():
     assert len(runs) == 500 and len(scores) == 20000
     started = time.time()
     design = M.build(C.Study(Path("."), runs, scores, [], []), rubric, judges, allow_simulated=True)
-    meta, _ = FT.fit_design(design, seed=0, chains=2, cores=2)
+    meta, _ = FT.fit_design(design, seed=0, chains=2, cores=2, engine="pymc")
     seconds = time.time() - started
     folder = os.environ.get("LOOPMATH_EVAL_RECOVERY_REPORT")
     if folder:

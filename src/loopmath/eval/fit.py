@@ -281,7 +281,7 @@ def _engine(name: str):
 def fit_design(design: M.Design, *, seed: int = 0, draws: int | None = None, chains: int | None = None,
                tune: int | None = None, cores: int | None = None, keep_draws: int = 1000,
                inputs: dict | None = None, options: dict | None = None,
-               engine: str = "pymc") -> tuple[dict, dict[str, np.ndarray]]:
+               engine: str = "laplace") -> tuple[dict, dict[str, np.ndarray]]:
     """Fit a design with `engine` and assemble the fit: `(every member of fit.json but draws, the draws)`."""
     name = engine
     engine = _engine(name)
