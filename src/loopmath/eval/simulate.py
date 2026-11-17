@@ -60,9 +60,11 @@ kinds of dimension in the unit the fit file reports them in, the anchors' total 
 (`units.py`): `sqrt(sigma^2 + tau^2 + sd_judge_input^2)` on a `binary` dimension and
 `sqrt(sigma_pair^2 + 2 tau^2)` on a pairs-only one, mean log over the same judges. Every location and
 scale on the dimension is divided by that factor (`mu`, `q_run`, `v_input`, `sd_input`, `sd_run`,
-`bias`, `family`, `tau`, `sigma`, `sd_judge_input`, `sigma_pair`), and `reported`, `overall` and
-`value` are computed from the divided arrays. `position` and `tie_width` stay in the engine's unit, as
-in the fit file. `units` gives per such dimension the rule, the judges, `unit` and `factor`.
+`bias`, `family`, `tau`, `sigma`, `sd_judge_input`, `sigma_pair`), and `reported` is computed from the
+divided arrays. `overall` and `value` are computed in the engine's unit, as the readers decide
+(`units.py`): a weight on a relative dimension reads its clipped latent quality there. `position` and
+`tie_width` stay in the engine's unit, as in the fit file. `units` gives per such dimension the rule,
+the judges, `unit` and `factor`.
 
 `truth.json` (`loopmath.eval-truth/2`; `read_truth` gives the arrays as numpy and reads
 `loopmath.eval-truth/1`, whose arrays are in the engine's unit, too): `spec`, `seed`, `index`
@@ -845,6 +847,9 @@ def generate(spec: dict, seed: int = 0, file: str = "spec.json") -> Simulated:
     # unit the fit file reports them in (units.py). The spec and every reading above are in the engine's.
     units = _units(spec, dims, scored, paired)
     unit = _unit_factor(units, judge_ids, dim_ids, sigma, tau, sd_judge_input, sigma_pair)
+    # overall and value are decisions' figures: the readers compute them in the engine's unit
+    fitted = {"mu": mu, "q": q, "cov_input": Q.covariance(sd_input, corr_input),
+              "cov_run": Q.covariance(sd_run, corr_run)}
     mu, q, v, sd_input, sd_run = mu / unit, q / unit, v / unit, sd_input / unit, sd_run / unit
     bias, tau, sigma, sd_judge_input, sigma_pair = (x / unit for x in (bias, tau, sigma, sd_judge_input, sigma_pair))
     family = family / unit
@@ -874,9 +879,9 @@ def generate(spec: dict, seed: int = 0, file: str = "spec.json") -> Simulated:
                             "tie_rate": sum(verdict == "tie" for verdict, _ in log) / len(log),
                             "picks_higher": sum(verdict == ("a" if gap > 0 else "b") for verdict, gap in log) / len(log)}
                            for (j, d), log in sorted(pair_log.items())]
-    truth["overall"] = _overall_truth(rubric, dims, cov_input, cov_run, mu, value)
-    truth["value"] = None if value is None else _value_truth(value, dims, relative, mu, cov_input, cov_run, q,
-                                                             run_arm, arm_ids)
+    truth["overall"] = _overall_truth(rubric, dims, fitted["cov_input"], fitted["cov_run"], fitted["mu"], value)
+    truth["value"] = None if value is None else _value_truth(value, dims, relative, fitted["mu"], fitted["cov_input"],
+                                                             fitted["cov_run"], fitted["q"], run_arm, arm_ids)
     truth["human"] = human_truth
     truth["items"] = item_truth
     truth["counts"] = {"inputs": I, "arms": A, "runs": R, "dimensions": D, "judges": J, "readings": len(scores),

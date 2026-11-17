@@ -34,11 +34,20 @@ After the division the anchors' mean log total noise is 0 on each such dimension
 converted draws is 1 in every draw. The anchor's call noise was fixed at 1 in the engine's unit; in
 the reported unit it is `1 / s_d` and uncertain.
 
-Probabilities read per draw do not move: pass rates, the value report, the judges' false pass, false
-fail, flip and agreement, r2, reliability, tie rates and picks. A figure averaged over draws in latent
-units does move a little beyond the change of unit, because `s_d` differs from draw to draw. The
-active label scores (`labels.py`) are such moments and print no latent number, so they are computed
-on `in_fitted_unit` draws and choose as before.
+Probabilities read per draw do not move: pass rates, the judges' false pass, false fail, flip and
+agreement, r2, reliability, tie rates and picks. A figure averaged over draws in latent units does
+move beyond the change of unit, because `s_d` differs from draw to draw, and so would a choice made on
+it. A latent figure inside a nonlinear map moves too: a value weight on a relative criterion clips
+the latent quality itself, and the eigenvalue root of a singular covariance turns when one
+dimension's unit changes.
+
+So every decision a reader makes is made in the unit the engine fitted in (`in_fitted_unit`), and the
+reported unit is for the figures shown: a fit of schema 2 and the same draws in a fit of schema 1 give
+the same verdicts, choices, flags, ranks and picks. That covers the value report and the steps hint
+(`value.py`, `steps.py`), the judges' choices, the target error and the second judge (`judges.py`,
+whose table still shows bias, tau, sigma and mse in the reported unit), the rubric's health
+(`rubric.py`, whose latent figures are in the fitted unit), the active label scores (`labels.py`)
+and the simulator's `overall` and `value` truths (`simulate.py`).
 """
 
 from __future__ import annotations

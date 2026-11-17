@@ -5,7 +5,8 @@ invariance tests of `units.py` (synthetic data only).
 pairs-only dimension compared by the reviewer and the cheap judge, and the reviewer's tau on the binary
 dimension large and uncertain, so the unit factor differs from draw to draw. The second holds the same
 draws put in the reported unit by `units.convert`, with the factor the engine's rule gives (the reviewer
-carries the unit of both dimensions), and its `unit` records.
+carries the unit of both dimensions), and its `unit` records. `write_pair` does the same for any draws
+and any factor, for the counterexamples to a reader that would decide in the reported unit.
 """
 
 from __future__ import annotations
@@ -94,18 +95,48 @@ def pair_of_fits(folder: Path, *, posterior_sd: float = 0.3, n_draws: int = 400,
     ji_on[0] = True
     unit = U.factor(draws, sigma_w, pair_w, binary, pairs_only, ji_on)
     converted = U.convert(draws, unit)
-    meta = {name: engine.meta[name] for name in F.MEMBERS if name not in ("draws", "dimensions")}
     who = [["reviewer"] if d in (b, o) else None for d in range(D)]
-    rebuilt = F.assemble(rubric=rubric, judges=judges, runs=runs, draws=converted, terms=meta["terms"],
-                         anchor=meta["anchor"], diagnostics=meta["diagnostics"], engine=meta["engine"],
-                         seed=meta["seed"], options=meta["options"], counts=meta["counts"],
-                         judge_counts={(row["id"], d["dimension"]): {k: d[k] for k in ("n_targets", "n_calls",
-                                                                                         "n_pairs")}
-                                       for row in meta["judges"] for d in row["dims"]},
-                         readings={(t["run"], d["dimension"]): {"judges": d["judges"],
-                                                                 **({"unpooled": d["unpooled"]} if d["unpooled"]
-                                                                    else {})}
-                                   for t in meta["targets"] for d in t["dims"]},
-                         relative=relative, units=U.records(dims, relative, who, unit))
+    rebuilt = _assemble(engine.meta, rubric, judges, runs, converted, relative, U.records(dims, relative, who, unit))
     path = F.write_fit(folder / "reported" / "fit.json", rebuilt, converted)
     return engine, F.read_fit(path), unit
+
+
+def _assemble(meta: dict, rubric: dict, judges: dict, runs: list, draws: dict, relative, units) -> dict:
+    """Every member of `fit.json` but `draws`, for `draws`, with the records of the fit `meta`."""
+    return F.assemble(rubric=rubric, judges=judges, runs=runs, draws=draws, terms=meta["terms"],
+                      anchor=meta["anchor"], diagnostics=meta["diagnostics"], engine=meta["engine"],
+                      seed=meta["seed"], options=meta["options"], counts=meta["counts"],
+                      judge_counts={(row["id"], d["dimension"]): {k: d[k] for k in ("n_targets", "n_calls", "n_pairs")}
+                                    for row in meta["judges"] for d in row["dims"]},
+                      readings={(t["run"], d["dimension"]): {"judges": d["judges"],
+                                                              **({"unpooled": d["unpooled"]} if d["unpooled"] else {})}
+                                for t in meta["targets"] for d in t["dims"]},
+                      relative=list(relative), units=units)
+
+
+def write_pair(folder: Path, meta: dict, draws: dict, unit, *, rubric: dict | None = None, judges: dict | None = None,
+               runs: list | None = None, relative=("final/overall",)) -> tuple[F.Fit, F.Fit]:
+    """`(schema 1 fit, schema 2 fit)` of the same `draws`, given in the engine's unit, written under `folder`.
+
+    The second divides them by `unit[S, D]` (`units.convert`), which must be 1 on the dimensions the data
+    fix and may be any positive number per draw elsewhere: whatever the factor, a decision must not move.
+    `meta` is a fit's `fit.json` whose records (terms, anchor, counts) both files take."""
+    rubric, judges = rubric or testing.example_rubric(), judges or testing.example_judges()
+    runs = runs if runs is not None else testing.example_runs()
+    dims = C.dimensions(rubric)
+    draws = {name: np.array(x, dtype=float) for name, x in draws.items() if name != "unit"}
+    old = F.write_fit(folder / "engine" / "fit.json", _assemble(meta, rubric, judges, runs, draws, relative, None),
+                      draws)
+    obj = C.load_json(old)
+    obj["schema"] = "loopmath.eval-fit/1"
+    for dim in obj["dimensions"]:
+        dim.pop("unit")
+    C.write_text_atomic(old, C.dumps(obj))
+    converted = U.convert(draws, unit)
+    anchors = list(meta["anchor"].get("judges") or [])
+    who = [anchors if U.unit_of(dim["scale"]["kind"], dim["id"] in relative) in ("total_noise", "total_pair_noise")
+           else None for dim in dims]
+    new = F.write_fit(folder / "reported" / "fit.json",
+                      _assemble(meta, rubric, judges, runs, converted, relative, U.records(dims, relative, who, unit)),
+                      converted)
+    return F.read_fit(old), F.read_fit(new)

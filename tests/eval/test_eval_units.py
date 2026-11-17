@@ -9,12 +9,13 @@ All data is synthetic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 
 import numpy as np
 import pytest
-from scipy.special import ndtr
+from scipy.special import ndtr, ndtri
 
 from loopmath.eval import contracts as C
 from loopmath.eval import engine_pymc
@@ -27,9 +28,10 @@ from loopmath.eval import quality as Q
 from loopmath.eval import rubric as RB
 from loopmath.eval import simulate as S
 from loopmath.eval import specs, testing
+from loopmath.eval import steps as ST
 from loopmath.eval import units as U
 from loopmath.eval import value as V
-from units_fixture import pair_of_fits
+from units_fixture import pair_of_fits, write_pair
 
 
 def noise(sigma, tau, ji=None, pair=None):
@@ -237,6 +239,66 @@ def test_unit_records_are_checked(fits, tmp_path):
     assert refused(lambda o: o["dimensions"][0].pop("unit")) == 'fit.json: dimensions[0]: missing member "unit"; add it'
 
 
+def _archive(folder, meta: dict, draws: dict):
+    """Write `fit.json` and a draws file holding exactly `draws`, with a digest that matches that file."""
+    folder.mkdir(parents=True, exist_ok=True)
+    blob = F._npz_bytes(draws)
+    meta = json.loads(json.dumps(meta))
+    meta["draws"]["sha256"] = hashlib.sha256(blob).hexdigest()
+    (folder / meta["draws"]["file"]).write_bytes(blob)
+    (folder / "fit.json").write_text(json.dumps(meta), encoding="utf-8")
+    return folder / "fit.json"
+
+
+def test_unit_draws_are_checked_against_the_draws_file(fits, tmp_path):
+    """The draws file must hold the arrays fit.json declares; the unit draws must be finite and above 0;
+    a fit of schema 1 has none. Every file below matches
+    its digest, so only these checks stand between it and a reader."""
+    _, new, unit = fits
+    meta = json.loads(new.path.read_text(encoding="utf-8"))
+    draws = {name: np.array(x) for name, x in new.draws.items()}
+    file, (S, D) = meta["draws"]["file"], unit.shape
+    again = "fit again: fit.json and its draws come from different fits"
+
+    def schema_1(m):
+        m["schema"] = "loopmath.eval-fit/1"
+        for dim in m["dimensions"]:
+            dim.pop("unit")
+
+    def refused(name, change_meta=None, change_draws=None) -> str:
+        m, d = json.loads(json.dumps(meta)), {k: v.copy() for k, v in draws.items()}
+        if change_meta:
+            change_meta(m)
+        if change_draws:
+            change_draws(d)
+        with pytest.raises(C.ContractError) as caught:
+            F.read_fit(_archive(tmp_path / name, m, d)).draws
+        return str(caught.value)
+
+    assert refused("absent", change_draws=lambda d: d.pop("unit")) == (
+        f"fit.json: draws.arrays: the draws file {file} lacks unit, which fit.json declares; {again}")
+    for name, x in (("zero", 0.0), ("negative", -1.0), ("nan", np.nan), ("inf", np.inf)):
+        assert refused(name, change_draws=lambda d, x=x: d["unit"].__setitem__((slice(None), 0), x)) == (
+            f"{file}: unit: a unit draw is not a finite number above 0; write the size of one reported unit in "
+            "the engine's unit, per draw"), name
+    assert refused("shape", change_draws=lambda d: d.update(unit=d["unit"][:, :D - 1])) == (
+        f"fit.json: draws.arrays.unit: the draws file {file} holds shape ({S}, {D - 1}), fit.json declares "
+        f"({S}, {D}); {again}")
+    assert refused("schema-1", schema_1) == (
+        'fit.json: draws.arrays.unit: a fit of schema "loopmath.eval-fit/1" has no unit draws; remove them, or '
+        'write "loopmath.eval-fit/2" with a unit record per dimension')
+    assert refused("schema-1-undeclared", lambda m: (schema_1(m), m["draws"]["arrays"].pop("unit"))) == (
+        f"fit.json: draws.arrays: the draws file {file} holds unit, which fit.json does not declare; {again}")
+    # the file as written reads; with no factor anywhere the unit draws may be left out, and read as 1
+    assert np.array_equal(F.read_fit(_archive(tmp_path / "same", meta, draws)).draws["unit"], unit)
+    bare = json.loads(json.dumps(meta))
+    for dim in bare["dimensions"]:
+        dim["unit"]["factor"] = None
+    bare["draws"]["arrays"].pop("unit")
+    rest = {k: v for k, v in draws.items() if k != "unit"}
+    assert np.array_equal(F.read_fit(_archive(tmp_path / "bare", bare, rest)).draws["unit"], np.ones((S, D)))
+
+
 def test_truth_is_in_the_reported_unit_and_old_truths_are_labelled(tmp_path):
     spec = specs.get("binary-checks", inputs=12)
     sim = S.generate(spec, seed=2)
@@ -342,16 +404,9 @@ def test_pair_figures_put_position_and_tie_width_on_the_dimension_unit(fits):
     assert row["correct"] == J.stat(want["correct"])
 
 
-def test_rubric_pass_rates_and_shares_do_not_move(fits):
-    old, new, unit = fits
-    a, b = RB.health(old), RB.health(new)
-    for da, db in zip(a["spread"]["dims"], b["spread"]["dims"]):
-        if da["scale"] == "reported":
-            _close(da, db, da["dimension"])
-        else:   # a relative dimension's spread is on its fitting scale: the latent sd, in its unit
-            assert da["dimension"] == "final/overall" and db["spread"]["mean"] < da["spread"]["mean"]
-    _close(a["overall"], b["overall"], "overall")
-    _close(a["correlated"], b["correlated"], "correlated")
+def test_rubric_health_does_not_move(fits):
+    old, new, _ = fits
+    _close(RB.health(old), RB.health(new), "health")
 
 
 def test_label_scores_do_not_move(fits):
@@ -382,3 +437,174 @@ def test_label_scores_do_not_move(fits):
     # (a constant factor per dimension would keep their correlations).
     corr = lambda f: np.corrcoef(f.draws["mu"].reshape(len(unit), -1), rowvar=False)  # noqa: E731
     assert np.abs(corr(new) - corr(old)).max() > 0.05
+
+
+# ---------------------------------------------------------------------------------------------------
+# Decisions are made in the unit the engine fitted in: counterexamples to a reader that reads the
+# reported unit. Each writes one set of draws twice (`write_pair`) and asks for the same decision.
+
+def _engine_draws(fit) -> dict:
+    return {name: np.array(x) for name, x in U.in_fitted_unit(fit.draws).items() if name != "unit"}
+
+
+def _value(weights: dict, gates: list | None = None) -> dict:
+    return C.validate_value({"schema": C.SCHEMA_VALUE, "weights": weights, "gates": gates or [], "gated_value": 0.0,
+                             "objective": {"kind": "best_value"}})
+
+
+def test_a_weight_on_a_relative_criterion_is_read_in_the_fitted_unit_by_value_and_labels(fits, tmp_path):
+    """A pairs-only criterion weighted beside a binary one. 0.4 x pass rate + 0.6 x clipped quality is
+    0.32 against 0.38 in the fitted unit: adopt. Read in a reported unit twice as large it would be 0.32
+    against 0.23: reject. Both files give the fitted figures, and the label model values arms alike."""
+    old, _, _ = fits
+    draws = _engine_draws(old)
+    S, R = draws["q_run"].shape[:2]
+    rng = np.random.default_rng(91)
+    draws["mu"][:, :, 0] = ndtri([0.8, 0.2, 0.5])
+    draws["sd_input"][:, 0], draws["sd_run"][:, 0] = 1.0, 0.0
+    draws["q_run"][:, :, 0] = draws["mu"][:, old.run_arm, 0] + rng.standard_normal((S, R))
+    draws["mu"][:, :, 4] = [-0.5, 0.5, 0.0]
+    draws["sd_input"][:, 4] = draws["sd_run"][:, 4] = 0.0
+    draws["q_run"][:, :, 4] = draws["mu"][:, old.run_arm, 4]
+    unit = np.ones((S, 5))
+    unit[:, 0], unit[:, 4] = 1.5 + rng.random(S), 2.0
+    rubric = testing.example_rubric()
+    rubric["components"][4]["role"] = "criterion"
+    a, b = write_pair(tmp_path, old.meta, draws, unit, rubric=rubric)
+    spec = Q.compile_value(_value({"numbers_right": 0.4, "overall": 0.6}), b.dimensions)
+    ra, rb = V.report(a, spec, 0), V.report(b, spec, 0)
+    _close(ra, rb, "value")
+    assert [row["value"]["mean"] for row in rb["arms"]] == pytest.approx([0.32, 0.38, 0.2], abs=1e-12)
+    assert [(row["arm"], row["verdict"]) for row in rb["comparisons"]] == [("strong-draft", "adopt"),
+                                                                            ("strong-all", "reject")]
+    assert np.allclose(L.arm_values(b, spec), V.arm_draws(b, spec).value, rtol=1e-12, atol=1e-15)
+    assert np.allclose(L.arm_values(a, spec), L.arm_values(b, spec), rtol=1e-12, atol=1e-15)
+
+
+def _gate_and_spread(fit, tmp_path, unit_of_gate):
+    """Draws where one weighted component has no spread, so the covariance `eval value` integrates over is
+    singular, and the binary gate's unit is `unit_of_gate`."""
+    draws = _engine_draws(fit)
+    S = draws["mu"].shape[0]
+    draws["corr_input"][:] = np.eye(5)
+    draws["corr_run"][:] = np.eye(5)
+    draws["sd_input"][:] = 0.0
+    draws["sd_run"][:] = [1.0, 0.3, 0.0, 0.8, 0.5]
+    draws["mu"][:] = [[0.1, 0.45, 0.5, 0.2, 0.0], [0.11, 0.45, 0.5, 0.21, 0.0], [0.5, 0.5, 0.5, 0.3, 0.0]]
+    unit = np.ones((S, 5))
+    unit[:, 0] = unit_of_gate
+    return write_pair(tmp_path, fit.meta, draws, unit), unit
+
+
+def test_value_integrates_alike_when_a_covariance_is_singular(fits, tmp_path):
+    """A singular covariance takes the eigenvalue root, which turns when one dimension's unit changes,
+    even with no relative weight: in a reported unit 3 times the fitted one the points move and the
+    verdict could flip on a near tie. Both files integrate over the same points."""
+    old, _, _ = fits
+    (a, b), unit = _gate_and_spread(old, tmp_path, 3.0)
+    spec = Q.compile_value(_value({"depth": 1.0, "coverage": 1.0}, [{"component": "numbers_right"}]), b.dimensions)
+    _close(V.report(a, spec, 0), V.report(b, spec, 0), "value")
+    dims = V.needed_dims(spec)
+    cov = lambda draws: (V.sub_cov(draws, "input", dims, slice(0, 1))  # noqa: E731
+                         + V.sub_cov(draws, "run", dims, slice(0, 1)))
+    with pytest.raises(np.linalg.LinAlgError):
+        np.linalg.cholesky(cov(b.draws))
+    # the guard is not idle: the root of the reported covariance is not the fitted one rescaled
+    rescaled = V.roots(cov(a.draws))[0] / unit[0, dims][:, None]
+    assert not np.allclose(V.roots(cov(b.draws))[0], rescaled)
+
+
+def test_steps_hint_is_integrated_in_the_fitted_unit(tmp_path):
+    """A binary step component and a gate with no spread (a singular run covariance). The hint's share
+    and the ranking of the swaps not run are the same in both files; the slope is shown in the stated unit,
+    here the fitted slope times 2 on the binary step component."""
+    small = {"model": {"id": "model-small", "family": "beta"}, "effort": "low"}
+    large = {"model": {"id": "model-large", "family": "alpha"}, "effort": "high"}
+    rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "steps", "version": "1", "steps": ["draft", "final"],
+                                "components": [{"id": "draft_check", "scale": {"kind": "binary"},
+                                                "applies_to": ["draft"]},
+                                               {"id": "depth", "scale": {"kind": "linear", "range": [0, 10]}},
+                                               {"id": "numbers_right", "scale": {"kind": "binary"}}]})
+    runs = testing.example_runs(arms={"baseline": [{"step": "draft", **small}, {"step": "final", **small}],
+                                      "draft-large": [{"step": "draft", **large}, {"step": "final", **small}]},
+                                costs={"baseline": 0.1, "draft-large": 0.3})
+    corr = np.eye(3)
+    corr[0, 1] = corr[1, 0] = 0.6
+    built = testing.build_fit(tmp_path / "built" / "fit.json", rubric=rubric, runs=runs, posterior_sd=0.05, n_draws=60,
+                              truth={"corr_run": corr, "sd_run": np.array([0.8, 0.1, 0.0]),
+                                     "mu": np.array([[0.2, 0.5, 0.3], [0.6, 0.5, 0.3]])})
+    draws = _engine_draws(built.fit)
+    S = draws["mu"].shape[0]
+    unit = np.ones((S, 3))
+    unit[:, 0], unit[:, 2] = 2.0, 1.0 + np.random.default_rng(3).random(S)
+    a, b = write_pair(tmp_path, built.fit.meta, draws, unit, rubric=rubric, runs=runs, relative=())
+    spec = Q.compile_value(_value({"depth": 2.0}, [{"component": "numbers_right"}]), b.dimensions)
+    (ha, why_a), (hb, why_b) = ST.hint(a, spec, 0), ST.hint(b, spec, 0)
+    assert why_a is None and why_b is None and len(hb) == 1
+    _close(ha[0]["share_of_value_variance"], hb[0]["share_of_value_variance"], "share")
+    slope_a, slope_b = ha[0]["value_per_unit"][0]["slope"], hb[0]["value_per_unit"][0]["slope"]
+    _close({k: 2.0 * x for k, x in slope_a.items()}, slope_b, "slope")
+    _close(ST.report(a, spec, 0)["not_run"], ST.report(b, spec, 0)["not_run"], "not_run")
+
+
+def test_judge_choices_are_made_in_the_fitted_unit(fits, tmp_path):
+    """The unit is 1 in half the draws and 3 in the other half. The cheap judge is far off in the second
+    half, the strong judge in the first: in the fitted unit the strong judge has the lower error, in the
+    reported unit the cheap one would. The table, the budget and target picks, the second judge and its
+    weight are the same in both files, and `--target-error` is read in the fitted unit."""
+    old, _, _ = fits
+    draws = _engine_draws(old)
+    S, half = draws["mu"].shape[0], draws["mu"].shape[0] // 2
+    strong, cheap = old.judge("strong"), old.judge("cheap")
+    draws["family"][:, :, :, 0] = 0.0
+    for j in (strong, cheap):
+        draws["tau"][:, j, 0], draws["sigma"][:, j, 0] = 0.3, 0.5
+    draws["bias"][:, cheap, 0] = np.r_[np.zeros(half), np.full(S - half, 1.5)]
+    draws["bias"][:, strong, 0] = np.r_[np.full(half, 1.2), np.zeros(S - half)]
+    unit = np.ones((S, 5))
+    unit[:, 0] = np.r_[np.ones(half), np.full(S - half, 3.0)]
+    a, b = write_pair(tmp_path, old.meta, draws, unit)
+    for target, budget in ((None, 1.0), (1.0, None), (0.9, 0.03)):
+        _close(J.report(a, target, budget)["choices"], J.report(b, target, budget)["choices"], f"{target} {budget}")
+    block = next(row for row in J.report(b, 1.0, 1.0)["choices"] if row["dimension"] == "final/numbers_right")
+    assert block["unit"] == "call_noise"
+    assert (block["budget"]["choice"]["judge"], block["budget"]["choice"]["repeats"]) == ("strong", 5)
+    # strong x 2 is the cheapest to reach 1.0: sqrt(1.44 / 2 + 0.3^2 + 0.5^2 / 2) = 0.967
+    assert (block["target_error"]["choice"]["judge"], block["target_error"]["choice"]["repeats"]) == ("strong", 2)
+    assert block["target_error"]["choice"]["rmse"] == pytest.approx(math.sqrt(0.72 + 0.09 + 0.125), rel=1e-12)
+    text = J.render(J.report(b, 1.0, 1.0)).splitlines()
+    assert text[2] == ("On final/numbers_right: bias, tau, sigma and mse are in the anchors' total noise of one "
+                       "reading. The choices use the scale the engine fits, named on each choice line.")
+    assert text[3].startswith("On final/overall: ") and text[3].endswith("total noise of one comparison. The choices "
+                                                                          "use the scale the engine fits, named on "
+                                                                          "each choice line.")
+    assert any(line.startswith("final/numbers_right: cheapest choice for error 1: strong x 2, error 0.967 (in the "
+                               "anchors' call noise), 0.1 USD") for line in text)
+    # the guard is not idle: in the reported unit the cheap judge has the lower error
+    builder = J._Report(b)
+    for j, judge in enumerate(builder.declared):
+        builder.judge(j, judge)
+    reported = {jid: builder.raw[(jid, "final/numbers_right")]["mse5"].mean() for jid in ("strong", "cheap")}
+    assert reported["cheap"] < reported["strong"]
+
+
+def test_rubric_spread_flag_and_ranks_are_read_in_the_fitted_unit(fits, tmp_path):
+    """On the pairs-only dimension the unit is 1 in half the draws and 3 in the other half. The runs' spread
+    is 0.06 in the fitted unit (no flag) and would average 0.04 in the reported one (flagged). The arm means
+    are [1, 0, -1] in one half and [-2, 0, 2] in the other: ranked 3, 2, 1 in the fitted unit, 1, 2, 3 in
+    the reported one, though every draw keeps its order."""
+    old, _, _ = fits
+    draws = _engine_draws(old)
+    S, R = draws["q_run"].shape[:2]
+    half = S // 2
+    draws["q_run"][:, :, 4] = np.resize([-0.06, 0.06], R)
+    draws["mu"][:half, :, 4] = [1.0, 0.0, -1.0]
+    draws["mu"][half:, :, 4] = [-2.0, 0.0, 2.0]
+    unit = np.ones((S, 5))
+    unit[:, 4] = np.r_[np.ones(half), np.full(S - half, 3.0)]
+    a, b = write_pair(tmp_path, old.meta, draws, unit)
+    ha, hb = RB.health(a), RB.health(b)
+    _close(ha, hb, "health")
+    row = next(row for row in hb["spread"]["dims"] if row["dimension"] == "final/overall")
+    assert row["flag"] is False and row["spread"]["mean"] == pytest.approx(0.06, rel=1e-9)
+    assert [rank["rank_overall"] for rank in hb["overall"][0]["arms"]["ranks"]] == [3, 2, 1]

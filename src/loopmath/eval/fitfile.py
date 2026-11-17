@@ -78,7 +78,9 @@ The draws
 `DRAW_SHAPES` is the contract every later stage reads. S draws, A arms, D dimensions, R runs, J judges,
 F families, C = Lmax - 1 cut points. Every array is float64. `cuts` is optional. `unit` (S x D, the
 factor per draw) is required when a dimension's `unit.factor` is not null; `Fit.draws` gives 1 where
-the file has none.
+the file has none. Its draws are finite and above 0. A fit of schema 1 has no `unit` draws. The draws
+file holds exactly the arrays `draws.arrays` declares, in the declared shapes; `Fit.draws` refuses any
+other file, even one that matches its digest.
 """
 
 from __future__ import annotations
@@ -354,6 +356,11 @@ def check_draws(index: dict, draws: Mapping[str, np.ndarray], file: str = "fit.d
         if np.asarray(array).dtype != np.float64:
             raise ContractError(file, name, f"dtype {np.asarray(array).dtype} is not float64",
                                 "write float64 arrays", "draws_dtype")
+    if "unit" in draws:
+        unit = np.asarray(draws["unit"])
+        if not (np.isfinite(unit).all() and (unit > 0).all()):
+            raise ContractError(file, "unit", "a unit draw is not a finite number above 0",
+                                "write the size of one reported unit in the engine's unit, per draw", "bad_unit")
     return sizes
 
 
@@ -663,7 +670,7 @@ def _check_targets(c: C._Check, targets: list, index: dict) -> None:
                 c.integer(count, f"{v}.judges.{name}", low=0)
 
 
-def _check_draws(c: C._Check, draws: dict, index: dict, factored: bool = False) -> None:
+def _check_draws(c: C._Check, draws: dict, index: dict, factored: bool = False, version: int = 2) -> None:
     name = c.string(draws["file"], "draws.file")
     if name in (".", "..") or "/" in name or "\\" in name:
         raise c.fail("draws.file", f'"{name}" is not a file name', "name the draws file that sits beside fit.json",
@@ -679,6 +686,9 @@ def _check_draws(c: C._Check, draws: dict, index: dict, factored: bool = False) 
     for array in DRAW_SHAPES:
         if array not in arrays and array not in OPTIONAL_DRAWS:
             raise c.fail("draws.arrays", f'missing member "{array}"', "add it", "missing_member")
+    if version < 2 and "unit" in arrays:
+        raise c.fail("draws.arrays.unit", f'a fit of schema "{C.SCHEMA_FIT_READ[-1]}" has no unit draws',
+                     f'remove them, or write "{C.SCHEMA_FIT}" with a unit record per dimension', "draws_unknown")
     if factored and "unit" not in arrays:
         raise c.fail("draws.arrays", 'missing member "unit": a dimension\'s unit has a factor',
                      "write the unit draws, or a null factor", "missing_member")
@@ -843,7 +853,7 @@ def _validate(obj: Any, file: str) -> dict:
         for name in ("kind", "id", "reason"):
             c.string(row[name], f"notes[{n}].{name}")
     _check_draws(c, c.obj(obj["draws"], "draws", {"file", "sha256", "n", "arrays"},
-                          {"file", "sha256", "n", "arrays"}), index, factored)
+                          {"file", "sha256", "n", "arrays"}), index, factored, version)
     return obj
 
 
@@ -909,11 +919,28 @@ class Fit:
                                     "fit again: fit.json and its draws come from different fits", "draws_digest")
             with np.load(source, allow_pickle=False) as archive:
                 arrays = {name: archive[name] for name in archive.files}
+            self._same_arrays(arrays, file)
             check_draws(self.index, arrays, file)
             if "unit" not in arrays:
                 arrays["unit"] = np.ones((arrays["mu"].shape[0], len(self.index["dimensions"])))
             self._draws = arrays
         return self._draws
+
+    def _same_arrays(self, arrays: Mapping[str, np.ndarray], file: str) -> None:
+        """Refuse a draws file that does not hold exactly the arrays and shapes `draws.arrays` declares."""
+        declared = self.meta["draws"]["arrays"]
+        missing, extra = sorted(set(declared) - set(arrays)), sorted(set(arrays) - set(declared))
+        if missing or extra:
+            parts = ([f"lacks {', '.join(missing)}, which fit.json declares"] if missing else []) + (
+                [f"holds {', '.join(extra)}, which fit.json does not declare"] if extra else [])
+            raise ContractError(self.path.name, "draws.arrays", f"the draws file {file} " + " and ".join(parts),
+                                "fit again: fit.json and its draws come from different fits", "draws_mismatch")
+        for name in sorted(arrays):
+            if list(arrays[name].shape) != list(declared[name]):
+                raise ContractError(self.path.name, f"draws.arrays.{name}",
+                                    f"the draws file {file} holds shape {tuple(arrays[name].shape)}, fit.json "
+                                    f"declares {tuple(declared[name])}",
+                                    "fit again: fit.json and its draws come from different fits", "draws_mismatch")
 
     @property
     def arms(self) -> list[str]:

@@ -110,7 +110,8 @@ loopmath eval judges study/fit.json
 Per judge and component it prints the bias, the per-output disagreement, the call noise, the error of a mean of 1
 to 5 calls, and for a yes or no component the false pass and false fail rates. Add `--target-error X` to list the
 cheapest judge and repeats that reach an error, or `--budget-usd USD` for the best judge and repeats within a budget
-per output.
+per output. On a yes or no component X is read in the anchors' call noise, the scale the engine fits, not in the
+total noise the table shows (see What the numbers mean); the choice lines say which.
 
 A bias is against the person only on a `weak` or `anchored` dimension; on a `relative` one it is against the mean
 of the judges. The table does not say which: take it from the anchor lines of step 4, or under `--json` from each
@@ -174,15 +175,20 @@ with `--allow-simulated`. Never pass `--allow-simulated` for the user's own scor
   every dimension when no person is declared.
 - Per-output disagreement (`tau`) repeats when the same output is scored again: more calls do not remove it,
   another judge or a person does. Call noise (`sigma`) changes from call to call: repeats average it away.
-- A yes or no component has a hidden quality behind its pass rate, in units of the anchor's total noise of one
-  reading: how far one reading by the anchor (the person in the `anchor` list, or the judges when no such person
-  scored the component) strays from the output's hidden quality, counting the per-output disagreement, the call
-  noise and the judge-by-input part.
-  So an output whose hidden quality is 1 passes one unbiased reading about 84% of the time. A component with
-  comparisons only uses the anchor's total noise of one comparison: a gap of 1 is called right about 84% of the
-  time, before ties and the order shown. Read pass rates and reported quality; these units only matter for the
-  hidden numbers under `--json` (`fitting`, `tau`, `sigma`). Fits written before 0.4.5 used the call noise
-  alone; they are still read, and each dimension's `unit` in `fit.json` says which unit it holds.
+- A yes or no component has a hidden quality behind its pass rate, in units of the anchors' total noise of one
+  reading: how far one reading strays from the output's hidden quality, counting the per-output disagreement, the
+  call noise and the judge-by-input part. The anchors are the people in the `anchor` list who scored the
+  component, or every judge who scored it when none did; with several, the unit is the geometric mean of their
+  total noises. So one reading by a judge with no bias, no family or position effect and a total noise equal to
+  the unit (one anchor alone, say) passes an output whose hidden quality is 1 about 84% of the time; do not quote
+  84% for any other judge. A component with comparisons only uses the anchors' total noise of one comparison
+  (the people in the `anchor` list who compared on it, else every judge who did): for such a judge a gap of 1 is
+  called right about 84% of the time, before ties and the order shown. Read pass rates and reported quality;
+  they and every decision (verdicts, judge choices, flags, label picks) do not depend on the unit. It shows in
+  the hidden numbers: `fitting`, and the bias, `tau`, `sigma` and error of the judges table, in plain output as
+  under `--json`. Judge choices and `--target-error` use the scale the engine fits, the anchors' call noise (their
+  call noise of one comparison for comparisons only), and each choice line names it. Fits written before 0.4.5 used
+  the call noise alone; they are still read, and each dimension's `unit` in `fit.json` says which unit it holds.
 - `p_pass` is the chance that one output of an arm passes every gate, from the joint fit; the product of the single
   pass rates, printed beside it as `p_pass_if_independent`, is too low when gated components move together.
 - Every range is a 90% interval unless the line says otherwise.

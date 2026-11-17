@@ -65,7 +65,8 @@ $ loopmath eval labels next study/fit.json --value value.json --mode active --mi
 4. **Read the judges.** `eval judges` prints, per judge and component: the bias against the anchor (the people,
    when there are any), the per-output disagreement, the call noise, the error of a mean of 1 to 5 calls, and for
    a yes or no component the false pass and false fail rates. With `--target-error` or `--budget-usd` it lists
-   which judge and how many repeats reach an error or fit a budget.
+   which judge and how many repeats reach an error or fit a budget. On a yes or no component that error is on the
+   scale the engine fits, the anchors' call noise (see the hidden quality under What the numbers mean).
 5. **Ask a reviewer.** `eval labels next --mode pilot` draws a random, blind batch: the plan names outputs and
    components, never the arm, the model or a judge's score. `--form` writes a table to fill in. The filled table
    comes back with `eval scores import --csv FORM --labels PLAN --rubric rubric.json`. Then fit again.
@@ -101,15 +102,23 @@ with `--allow-simulated`, so that simulated runs never mix into real ones by acc
   again. More calls do not remove it; another judge or a person does.
 - **Call noise** (`sigma`) is the part that changes from call to call. Repeats average it away.
 - **Hidden quality of a yes or no component.** Behind each pass rate the fit keeps a hidden quality per output,
-  in units of the anchor's total noise of one reading: how far one reading by the anchor (the people in
-  `judges.json` who scored the component, or the judges when no person did) strays from the output's hidden
+  in units of the anchors' total noise of one reading: how far one reading strays from the output's hidden
   quality, counting the per-output disagreement, the call noise and the part that repeats across the outputs of
-  one input. So an output with hidden quality 1 passes one unbiased reading about 84% of the time. A component
-  with comparisons only uses the anchor's total noise of one comparison instead: a gap of 1 between two outputs
-  is called right about 84% of the time, before ties and the order they were shown in. Pass rates and reported
-  quality do not depend on this unit; it shows only in the hidden numbers (`fitting`, `tau`, `sigma` and the
-  other noise terms under `--json`). Fits written before 0.4.5 used the anchor's call noise alone as the unit;
-  they are still read, and each dimension's `unit` in `fit.json` says which unit it holds.
+  one input. The anchors are the people in the `anchor` list of `judges.json` who scored the component; when none
+  did, every judge who scored it. With several, the unit is the geometric mean of their total noises. So for one
+  reading by a judge with no bias, no family or position effect, and a total noise equal to the unit (one anchor
+  alone, for instance), an output with hidden quality 1 passes about 84% of the time; another judge's readings
+  pass at a rate set by its own bias and noise. A component with comparisons only uses the anchors' total noise
+  of one comparison instead (the people in the `anchor` list who compared on it, else every judge who did): for
+  such a judge, a gap of 1 between two outputs is called right about 84% of the time, before ties and the order
+  they were shown in. Pass rates, reported quality and every decision the reports make (verdicts, judge choices,
+  flags, label picks) do not depend on this unit. It shows in the hidden numbers: the `fitting` figures, and the
+  bias, per-output disagreement, call noise and error of the judges table, in plain output as under `--json`,
+  which on such a component are in the anchors' total noise. The judge choices of `--target-error` and
+  `--budget-usd` are made on the scale the engine fits, the anchors' call noise (their call noise of one
+  comparison for comparisons only); `--target-error X` is read on that scale and each choice line says so. Fits written
+  before 0.4.5 used the anchors' call noise alone as the unit; they are still read, and each dimension's `unit`
+  in `fit.json` says which unit it holds.
 - **Halo** is the part of a judge's error shared across components: by output (`halo_target`) or, for a `panel`
   judge, by call (`halo_call`).
 - **Family effect** is the extra a judge gives to outputs written by its own model family, or by the family that
