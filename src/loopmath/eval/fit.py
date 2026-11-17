@@ -3,8 +3,8 @@
     loopmath eval fit STUDY --rubric rubric.json --judges judges.json --seed 0 --out STUDY/fit.json
 
 1. `model.build` reads the study and prints the identification report. With `--check-only` it stops there.
-2. The engine samples (`engine_pymc.sample`). Without the [bayes] extra the command prints the install
-   line, returns 1 and writes nothing.
+2. The engine fits (`engine_laplace.sample` by default, `engine_pymc.sample` with `--engine pymc`). Without
+   the [bayes] extra, `--engine pymc` prints the install line, returns 1 and writes nothing.
 3. The draws are thinned to `--keep-draws` (every chain keeps the same evenly spaced draws), `binary` and
    pairs-only dimensions are put in the reported unit, the anchors' total noise of one reading (`units.py`;
    one step for every engine), a parameter that does not exist is set to NaN (each NaN has a term in
@@ -26,7 +26,7 @@ written either way.
 Defaults: 4 chains of 1000 draws after 1000 warm-up draws. `fit_design` is the same path as a function,
 for tests and other callers.
 
-Engines. `--engine pymc` (the default) samples with `engine_pymc`. `--engine laplace` fits with
+Engines. `--engine laplace` (the default) fits with
 `engine_laplace` (Laplace or, with cut readings, EP marginal likelihood, empirical Bayes hyperparameters;
 no [bayes] extra) and makes `--keep-draws` approximate draws unless `--draws` says otherwise. Its fit
 file names the engine and says the draws are approximate (`engine.version`, `options.approximate_draws`),
@@ -35,7 +35,7 @@ and `cell_rule` when cut readings are integrated by the cell rule; each counted 
 `boundary`, the sds the data cannot tell from 0 (not counted). Its draws repeat each of a few hundred
 random theta points, so its effective sample size counts theta points, not saved draws (`cluster_ess`):
 for the hyperparameters it is at most the number of theta points, and more saved draws per point do not
-raise it.
+raise it. `--engine pymc` samples the full posterior with `engine_pymc` and needs the [bayes] extra.
 """
 
 from __future__ import annotations
@@ -341,7 +341,7 @@ def _positive(value: Any, option: str, least: int = 1) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """`eval fit`."""
-    name = getattr(args, "engine", "pymc") or "pymc"
+    name = getattr(args, "engine", "laplace") or "laplace"
     engine = _engine(name)
     _positive(args.draws, "--draws", 20)
     _positive(args.chains, "--chains")
