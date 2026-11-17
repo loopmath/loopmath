@@ -473,15 +473,18 @@ def render_summary(name: str, s: dict) -> list[str]:
     for klass, c in s["classes"].items():
         ci = f"[{f(c['lo'], 2)}, {f(c['hi'], 2)}]"
         lines.append(f"  {klass:<26} {c['studies']:>7} {c['rows']:>6} {f(c['coverage']):>8}  {ci:<15} {c['place']:<9} "
-                     f"{f(c['bias'], 4, True):>9} {f(c['bias_se'], 4):>8} {f(c['bias_over_sd'], 2, True):>8}")
+                     f"{f(c['bias'], 4, True):>9} {f(c['bias_se'], 4):>8} {f(c['bias_over_sd'], 2, True):>8}"
+                     + ("  truth 0 in every row: false alarms, not the band" if c.get("always_zero") else ""))
     lines.append("  arm means and differences, one by one:")
     for p in s["arm_means"]:
         lines.append(f"    {p['name']:<44} {p['hits']}/{p['studies']} [{f(p['lo'], 2)}, {f(p['hi'], 2)}] bias "
                      f"{f(p['bias'], 4, True)} se {f(p['bias_se'], 4)}"
                      + ("" if p["unbiased"] is not False else "  <- biased"))
+    zero = s.get("zero_classes", {})
     for p in s["parameters_outside"]:
         lines.append(f"  outside the band by its own interval: {p['name']} {p['hits']}/{p['studies']} "
-                     f"(adjusted [{f(p['lo_adj'], 2)}, {f(p['hi_adj'], 2)}])")
+                     f"(adjusted [{f(p['lo_adj'], 2)}, {f(p['hi_adj'], 2)}])"
+                     + ("; truth 0 in every row, not gated by the band" if p["class"] in zero else ""))
     for d in s["degenerate"][:20]:
         lines.append(f"  degenerate: s{d['seed']} {d['name']} ({d['why']})")
     if len(s["degenerate"]) > 20:
@@ -494,6 +497,11 @@ def render_summary(name: str, s: dict) -> list[str]:
                  f"[{f(fam['lo'], 2)}, {f(fam['hi'], 2)}], limit {fam['limit']}); per contrast "
                  f"{f(fam['share_of_contrasts'], 2)}; simulated effects {fam['simulated_effects']}, found "
                  f"{f(fam['found'], 2)}")
+    for klass, z in s.get("zero_classes", {}).items():
+        lines.append(f"  truth 0 in every row, judged by false alarms and not the band: {klass}, "
+                     f"{z['studies_flagged']} of {z['studies']} studies with an interval that excludes 0 (share "
+                     f"{f(z['share_of_studies'], 2)}, 95% [{f(z['lo'], 2)}, {f(z['hi'], 2)}], limit {z['limit']}); "
+                     f"per row {f(z['share_of_rows'], 3)}")
     lines.append(f"  gate for this spec: {s['gate']['state']}")
     for key, item in s["gate"]["items"].items():
         lines.append(f"    {key}: {item['state']} ({item['why']})")
