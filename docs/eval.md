@@ -129,15 +129,20 @@ number for that arm should not be trusted yet.
 
 `loopmath eval` is new, and these are the things to know before relying on it.
 
-- **Checked on simulated studies only**, and on few of them. The acceptance checks ask for 200 simulated studies
-  per spec; the release ran them on a small fraction of that. No real study has been through the group yet.
+- **The recovery checks are not established.** The checks that a fit recovers what a study was simulated from
+  ask for 200 simulated studies per spec. They ran on far fewer, one study per spec in most cases and with fewer
+  draws, and their assertions pool over parameters, so a parameter that is recovered badly can hide among ones
+  that are recovered well. No real study has been through the group yet.
 - **Scores at the ends of a scale.** `eval simulate` clips `linear` and `fraction` readings at the ends of the
   scale, while the fit treats them as unclipped normal readings. What the checks say about recovery holds for
   studies whose readings sit inside the scale. With many readings at 0 or at the top, expect arm means pulled
   toward the middle and noise read too small. A censored likelihood is planned for 0.4.5.
 - **Fits with yes or no components, levels or comparisons are slow.** On 2 cores, with 2 chains of 500 draws,
   simulated studies of 80 to 120 outputs took 12 to 15 minutes with such components and 1 to 3 minutes with
-  linear scales only.
+  linear scales only. A linear study of 500 outputs, 5 components, 4 judges and 2 repeats (20,000 readings) took
+  about 17 minutes, against a target of 10.
+- **Priors for two noise terms.** The call noise of levels components and of comparisons has a Gamma prior, not
+  the half-normal prior the other noise terms have: with a half-normal prior the sampler diverged.
 - **Not built:** `eval fit --halo full` and `--cuts free` are refused by name. A reference answer's family has no
   parameter of its own: it is read as a family effect of the judge that saw the reference. `eval scores export`
   writes the whole study or one run (`--run`), with no filter by judge.

@@ -22,12 +22,14 @@ What each command does:
 Known limits:
 
 - **Scores at the ends of a scale.** The simulator clips continuous readings (`linear`, `fraction`) at the ends of the scale, while the likelihood is an uncensored Gaussian. So the recovery claims hold for studies whose readings sit inside the scale. A censored likelihood is planned for 0.4.5.
-- **Checked on simulated studies only, and on few.** The acceptance checks ask for 200 simulated studies per spec. They were run on far fewer, with fewer draws; the slow suites `tests/eval/test_eval_recovery.py` and `tests/eval/test_eval_end_to_end.py` (run with `LOOPMATH_EVAL_SLOW=1`) take the counts from the environment. No real study has been through the group yet.
+- **The recovery checks are not established for this release.** The checks that a fit recovers what a study was simulated from (interval coverage, scales, gates, comparisons, overall scores, family effects, batching and halo, steps, labels) ask for 200 simulated studies per spec. They ran on far fewer, one study per spec in most cases and with fewer draws, and their assertions pool over parameters, so a parameter that is recovered badly can hide among ones that are recovered well. The slow suites `tests/eval/test_eval_recovery.py` and `tests/eval/test_eval_end_to_end.py` (run with `LOOPMATH_EVAL_SLOW=1`) take the counts from the environment. No real study has been through the group yet.
+- **`eval fit --halo full` and `--cuts free` are not built** and are refused by name.
+- **Priors for two noise terms differ from the design.** The call noise of levels components and of comparisons has a Gamma prior, not the half-normal prior the other noise terms have: with a half-normal prior the sampler diverged.
+- **A large study is over the time target.** A study of 500 runs, 5 components, 4 judges and 2 repeats (20,000 readings) took about 17 minutes to fit, against a target of 10.
 - **Fits with yes or no components, levels or comparisons are slow.** On 2 cores, with 2 chains of 500 draws, simulated studies of 80 to 120 outputs took 12 to 15 minutes with such components and 1 to 3 minutes with linear scales only.
 
 Not built, or not yet checked:
 
-- `eval fit --halo full` and `--cuts free` are not built and are refused by name.
 - A reference answer's family has no parameter of its own; it is read as a family effect of the judge that was shown the reference.
 - `eval scores export` has no filter by judge. Importing preferences made by another tool keeps their ids, and an id that is already taken is refused.
 - `eval steps` estimates no interactions between steps.
