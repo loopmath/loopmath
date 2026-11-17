@@ -38,7 +38,7 @@ FRONTIER = ((",screen,builder,", ",screen,frontier,builder,"), (", screen, build
             ("'screen', 'builder'", "'screen', 'frontier', 'builder'"), (BUILDER_ENTRY, FRONTIER_ENTRY + BUILDER_ENTRY))
 # `loopmath eval` came after `flow`: it joins the lists after `flow`, and its help entry follows flow's.
 EVAL_ENTRY = ("    eval                experimental: read rubric scores from judges and\n"
-              "                        reviewers: judge noise, value, next labels\n")
+              "                        people: judge noise, value, next labels\n")
 EVAL = ((",harness,flow}", ",harness,flow,eval}"), (", harness, flow\n", ", harness, flow,\n  eval\n"),
         (', harness, flow",', ', harness, flow, eval",'), ("'harness', 'flow'", "'harness', 'flow', 'eval'"),
         (FLOW_ENTRY, FLOW_ENTRY + EVAL_ENTRY))

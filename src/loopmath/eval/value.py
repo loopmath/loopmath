@@ -375,7 +375,7 @@ def _print(payload: dict) -> None:
         print(f"  design-based check ({100 * check['level']:.0f}% intervals, scores on 0 to 1): "
               f"{check['flagged']} of {len(check['cells'])} cells flagged")
         for cell in check["cells"]:
-            if cell["design"] is None:
+            if cell["design"] is None or cell["design"]["interval"] == "withheld":
                 print(f"      {cell['arm']} {cell['dimension']}: {cell['n_labels']} labels, {cell['status']}")
                 continue
             flag = f"  FLAGGED: gap {cell['gap']:+.3f}, joint sd {cell['joint_sd']:.3f}" if cell["flagged"] else ""

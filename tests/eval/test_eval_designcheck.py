@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 
+import itertools
+
 import numpy as np
 import pytest
 from scipy.special import ndtr
 from scipy.stats import hypergeom
+from scipy.stats import t as student_t
 
 from loopmath import cli
 from loopmath.eval import contracts as C
@@ -72,13 +75,13 @@ def coverage(design: str, n: int, shift: float, reps: int = 1000, seed: int = 11
     return hits / reps, kinds.pop()
 
 
-@pytest.mark.parametrize("design, n, interval", [("bands", 80, "normal"), ("bands", 40, "bootstrap"),
-                                                 ("by_size", 80, "normal"), ("by_size", 40, "bootstrap")])
+@pytest.mark.parametrize("design, n, interval", [("bands", 80, "normal"), ("bands", 40, "t"),
+                                                 ("by_size", 80, "normal"), ("by_size", 40, "t")])
 def test_interval_covers_the_true_human_mean_at_its_stated_level(design, n, interval):
     """The design-based part of acceptance check 12, at the level of the estimator: coverage of the 90%
     interval between 85% and 95%, for a sample stratified by prediction band (pilot) and for one drawn
-    with unequal probabilities (active), with the normal interval (50 labels or more) and the bootstrap
-    interval (below 50). Measured: 0.899, 0.920, 0.869 and 0.899."""
+    with unequal probabilities (active), with the normal interval (50 labels or more) and the t
+    interval (below 50). Measured: 0.899, 0.931, 0.869 and 0.907."""
     rate, kind = coverage(design, n, shift=0.05)
     assert kind == interval and 0.85 <= rate <= 0.95, rate
 
@@ -86,11 +89,11 @@ def test_interval_covers_the_true_human_mean_at_its_stated_level(design, n, inte
 def test_interval_is_wide_when_the_prediction_error_differs_by_band():
     """A known limit, kept visible: the variance has one centre, so when a sample is stratified by
     prediction band and the prediction is off by much more in one band (here by 0.2, twice the noise),
-    the interval is wider than its level says. Measured: 0.960 and 0.976. It never covers less."""
+    the interval is wider than its level says. Measured: 0.960 and 0.979. It never covers less."""
     rate, kind = coverage("bands", 80, shift=0.2)
     assert kind == "normal" and 0.95 < rate <= 0.99, rate
     rate, kind = coverage("bands", 40, shift=0.2)
-    assert kind == "bootstrap" and 0.95 < rate <= 0.99, rate
+    assert kind == "t" and 0.95 < rate <= 0.99, rate
 
 
 def test_estimate_is_unbiased_where_the_plain_mean_of_the_labels_is_not():
@@ -136,7 +139,7 @@ def test_estimate_and_variance_in_closed_form():
     weights = np.where(np.arange(n) < 10, 0.2, 0.8)
     assert DC.estimate(zeros, y[:n], zeros[:n], weights) == pytest.approx(np.average(y[:n], weights=1 / weights))
     out = DC.interval(f, y[:n], f[:n], pi, np.random.default_rng(0))
-    assert out["interval"] == "bootstrap" and out["lo"] < out["mean"] < out["hi"] and out["sd"] > 0
+    assert out["interval"] == "t" and out["lo"] < out["mean"] < out["hi"] and out["sd"] > 0
     out = DC.interval(f, y, f, np.full(60, 0.5), np.random.default_rng(0))
     assert out["interval"] == "normal" and out["hi"] - out["mean"] == pytest.approx(1.6449 * out["sd"], rel=1e-4)
 
@@ -217,7 +220,7 @@ def test_a_census_is_exact():
     out = DC.interval(np.full(50, 0.5), f + e, f, pi, np.random.default_rng(0))
     # the textbook sd of a mean of 20 from 40, carried to all 50 targets
     textbook = 40 / 50 * np.sqrt((1 - 0.5) * e[10:].var(ddof=1) / 20)
-    assert out["interval"] == "bootstrap" and out["sd"] == pytest.approx(textbook, rel=0.1)
+    assert out["interval"] == "t" and out["sd"] == pytest.approx(textbook, rel=0.1)
 
 
 def test_one_rare_failure_is_not_reported_as_a_point():
@@ -271,7 +274,7 @@ def test_rare_binary_failures_are_covered(case):
     holds the true mean in at least 85% of samples under uniform sampling, strata with their own rates
     and unequal probabilities. With failures this rare it mostly holds it more often than 90%: a wide
     interval is the only honest one when the sample saw nothing. Measured over 500 samples each, in the
-    order above: 0.934, 0.862, 0.934, 1.000, 0.998, 1.000, 0.998, 0.990, 1.000, 0.996, 1.000, 0.854."""
+    order above: 1.000, 0.862, 0.934, 1.000, 0.998, 1.000, 0.998, 0.994, 1.000, 0.996, 1.000, 0.854."""
     y, sampler = RARE[case]
     rate, _ = binary_coverage(np.ones(len(y)), y, sampler)
     assert rate >= 0.85, rate
@@ -302,6 +305,124 @@ def test_groups_without_spread():
     assert [at.tolist() for at in DC.flat_groups(y, f, pi)] == [[5, 6], [0, 1]]
     assert [DC.unseen(p) for p in (0.4, 0.1, 0.95, 1.0)] == [5, 28, 0, 0]
     assert 0.6 ** 5 > 0.05 > 0.6 ** 6 and 0.9 ** 28 > 0.05 > 0.9 ** 29
+
+
+# ---------------------------------------------------------------------------------------------------
+# Few labels, and labels that are not a sample of the whole population
+
+def test_two_labels_of_twenty_cover_by_exact_enumeration():
+    """20 human scores evenly spaced from 0.4 to 0.6, a constant prediction of 0.5, a uniform sample of
+    two or three: every possible sample is counted, so the coverage is exact. Counted: 170 of 190 and
+    1016 of 1140. A percentile interval from resampling two labels covers 114 of 190."""
+    f, y = np.full(20, 0.5), np.linspace(0.4, 0.6, 20)
+    for n, least in ((2, 162), (3, 969)):                       # 85% of 190 and of 1140
+        hits = 0
+        for picked in itertools.combinations(range(20), n):
+            picked = list(picked)
+            out = DC.interval(f, y[picked], f[picked], np.full(n, n / 20))
+            assert out["interval"] == "t"
+            # never narrower than the textbook t interval of a simple random sample without replacement
+            textbook = student_t(n - 1).ppf(0.95) * np.sqrt((1 - n / 20) * y[picked].var(ddof=1) / n)
+            assert out["hi"] >= min(1.0, out["mean"] + textbook) - 1e-12
+            assert out["lo"] <= max(0.0, out["mean"] - textbook) + 1e-12
+            hits += out["lo"] <= 0.5 <= out["hi"]
+        assert hits >= least, (n, hits)
+    assert student_t(1).ppf(0.95) == pytest.approx(6.3138, abs=1e-4)
+
+
+@pytest.mark.parametrize("design, n", [("uniform", 3), ("uniform", 5), ("uniform", 10), ("uniform", 20),
+                                       ("by_size", 5), ("by_size", 10), ("by_size", 20)])
+def test_few_labels_cover_or_give_no_interval(design, n):
+    """Continuous scores with a prediction, 3 to 20 labels, equal and unequal probabilities: an interval
+    that is shown holds the true mean in at least 85% of samples. Measured over 1000 samples, in the
+    order above: 0.894, 0.903, 0.904, 0.909, 0.919, 0.895 and 0.878."""
+    rng = np.random.default_rng(21)
+    f, y = population(400, rng, 0.05)
+    hits = shown = 0
+    for _ in range(1000):
+        if design == "uniform":
+            picked, pi = rng.choice(400, n, replace=False), np.full(400, n / 400)
+        else:
+            picked, pi = by_size_sample(0.2 + np.abs(f - 0.5) ** 0.5, n, rng, floor=0.2 * n / 400)
+        out = DC.interval(f, y[picked], f[picked], pi[picked], rng)
+        if out["interval"] == "withheld":
+            assert out["lo"] is None and out["hi"] is None and out["sd"] is None and out["reason"]
+            continue
+        shown += 1
+        hits += out["lo"] <= y.mean() <= out["hi"]
+    assert shown >= 900 and hits / shown >= 0.85, (hits, shown)
+
+
+def test_an_interval_is_withheld_when_the_labels_cannot_support_one():
+    f = np.full(12, 0.5)
+    one = DC.interval(f, np.array([0.7]), np.array([0.5]), np.array([0.25]))
+    assert one["interval"] == "withheld" and one["reason"] == "not enough labels: 1 labelled, 2 needed for an interval"
+    assert (one["mean"], one["sd"], one["lo"], one["hi"]) == (pytest.approx(0.7), None, None, None)
+    # two labels, one of them standing for nearly every target: no degree of freedom is left
+    lopsided = DC.interval(f, np.array([0.7, 0.4]), np.array([0.5, 0.5]), np.array([0.01, 0.9]))
+    assert lopsided["interval"] == "withheld" and lopsided["reason"].startswith("not enough labels: one target")
+    assert DC.degrees(np.array([0.5, 0.5, 0.5, 1.0])) == pytest.approx(2.0)          # 3 sampled, equal chances
+    assert DC.degrees(np.array([0.01, 0.9])) < 1.0 and DC.degrees(np.ones(4)) == 0.0
+    none = DC.interval(f, np.array([]), np.array([]), np.array([]))
+    assert none["interval"] == "withheld" and none["mean"] is None
+
+
+def test_labelling_every_open_target_is_not_a_census_of_the_arm():
+    """12 targets, 5 of them labelled, each recorded as drawn with certainty, all scoring 1. The other
+    seven hold 0: the mean is 5 / 12, and [1, 1] must not be reported."""
+    out = DC.interval(np.ones(12), np.ones(5), np.ones(5), np.ones(5))
+    assert out["interval"] == "withheld" and (out["mean"], out["lo"], out["hi"]) == (None, None, None)
+    assert out["reason"].startswith("5 of 12 targets are labelled, each recorded as drawn with certainty")
+    # the same 5 labels with the population they are all of
+    assert DC.interval(np.ones(5), np.ones(5), np.ones(5), np.ones(5))["interval"] == "census"
+
+
+def known_study(folder, with_earlier: bool):
+    """One arm of 12 targets. Seven hold an earlier human score of 0 that no plan asked for; a plan then
+    labels the five still open, each with certainty, and they all score 10 of 10."""
+    runs = testing.example_runs(n_inputs=12)
+    built = testing.build_fit(folder / "fit.json", runs=runs, n_draws=20)
+    mine = [run["run"] for run in runs if run["arm"] == "baseline"]
+    rows = [score(f"j{k}", run, "strong", 10.0) for k, run in enumerate(mine)]
+    picks = [assignment(f"a{k}", run, 1.0, kind="uniform") for k, run in enumerate(mine[7:])]
+    rows += [score(f"h{k}", run, "reviewer", 10.0, assignment=f"a{k}") for k, run in enumerate(mine[7:])]
+    if with_earlier:
+        rows += [score(f"e{k}", run, "reviewer", 0.0) for k, run in enumerate(mine[:7])]
+    return DC.check(built.fit, rows, [plan(picks, mode="pilot")])
+
+
+def test_check_counts_earlier_human_scores_as_known(tmp_path):
+    out = known_study(tmp_path / "a", with_earlier=True)
+    (cell,) = out["cells"]
+    assert (cell["arm"], cell["n_targets"], cell["n_labels"]) == ("baseline", 12, 5)
+    design = cell["design"]
+    # every target has a human score: seven of 0 and five of 1
+    assert design["interval"] == "census" and design["known"] == 7
+    assert design["mean"] == design["lo"] == design["hi"] == pytest.approx(5 / 12) and design["sd"] == 0.0
+    assert [row["reason"] for row in out["not_used"]] == ["a person's reading that names no assignment"] * 7
+    assert any(note.startswith("known: a person's reading that the plans given did not") for note in out["notes"])
+    # without the earlier scores the five labels say nothing about the other seven targets
+    out = known_study(tmp_path / "b", with_earlier=False)
+    (cell,) = out["cells"]
+    assert cell["design"]["interval"] == "withheld" and cell["design"]["mean"] is None
+    assert cell["status"].startswith("not checked: 5 of 12 targets are labelled, each recorded as drawn with certainty")
+    assert cell["model"] is None and cell["flagged"] is False
+
+
+def test_known_scores_enter_as_they_are_and_the_sample_stands_for_the_rest():
+    """10 known scores and 15 labels drawn at 0.5 from the other 30 targets, no spread missing: the mean
+    is the known sum plus 30 times the sample mean, over 40, and only the sample carries an sd."""
+    rng = np.random.default_rng(4)
+    known, h = rng.random(10), 0.3 + 0.4 * rng.random(15)
+    f = np.full(15, 0.5)
+    rest = DC.interval(np.full(30, 0.5), h, f, np.full(15, 0.5))
+    out = DC.with_known(rest, 30, known)
+    assert out["mean"] == pytest.approx((known.sum() + 30 * h.mean()) / 40) and out["known"] == 10
+    assert out["sd"] == pytest.approx(30 / 40 * np.sqrt(0.5 * h.var(ddof=1) / 15))
+    assert out["hi"] - out["mean"] == pytest.approx(30 / 40 * (rest["hi"] - rest["mean"]))
+    assert DC.with_known(rest, 30, np.array([])) is rest
+    kept = DC.with_known(DC.withheld(None, "why"), 30, known)
+    assert (kept["mean"], kept["lo"], kept["hi"], kept["sd"]) == (None, None, None, None)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -405,13 +526,19 @@ def test_flag_rate_stays_near_its_level_when_the_labels_follow_the_model(tmp_pat
     assert np.std(ratios) == pytest.approx(1.0, abs=0.15) and abs(np.mean(ratios)) < 0.3
 
 
-def test_small_samples_use_the_bootstrap_and_say_so(tmp_path):
+def test_small_samples_use_the_t_interval_and_say_so(tmp_path):
     built, rows, labels = build_study(tmp_path, n_inputs=60, n_labels=20, seed=2)
     out = DC.check(built.fit, rows, [labels], seed=5)
-    assert {cell["design"]["interval"] for cell in out["cells"]} == {"bootstrap"} and out["flagged"] == 0
-    assert out["notes"][-1] == "below 50 labelled targets the interval is a bootstrap percentile interval"
+    assert {cell["design"]["interval"] for cell in out["cells"]} == {"t"} and out["flagged"] == 0
+    assert out["notes"][-1] == "below 50 labelled targets the interval uses Student's t"
     assert DC.check(built.fit, rows, [labels], seed=5) == out
-    assert DC.check(built.fit, rows, [labels], seed=6)["cells"][0]["design"]["lo"] != out["cells"][0]["design"]["lo"]
+    for cell in out["cells"]:
+        design = cell["design"]
+        # at least as wide as Student's t with 19 degrees of freedom allows on either side (1.7291 sd): the
+        # unequal probabilities of this sample leave fewer
+        assert cell["n_labels"] == 20 and student_t(19).ppf(0.95) == pytest.approx(1.7291, abs=1e-4)
+        assert design["hi"] - design["mean"] >= 1.7291 * design["sd"] > 0
+        assert design["mean"] - design["lo"] >= 1.7291 * design["sd"]
 
 
 def test_readings_outside_the_plans_are_listed_and_not_used(agreeing):
@@ -508,6 +635,11 @@ def test_every_scale_is_checked_without_judge_readings(tmp_path):
         lines += [score(f"i{r}-{k}", runs[r * 3]["run"], "reviewer", int(k < 3), component="coverage", item=f"p{k}",
                         assignment=f"a{r * 3:04d}", call=f"call-{r}") for k in range(4)]
     out = DC.check(fit, lines, [plan(picks, mode="pilot")])
+    assert out["cells"][0]["dimension"] == "final/coverage" and out["cells"][0]["n_labels"] == 3
+    # three labelled targets of 200, each recorded as certain, are not a census: no mean and no interval
+    assert out["cells"][0]["design"]["interval"] == "withheld" and out["cells"][0]["design"]["mean"] is None
+    half = [dict(row, inclusion_probability=0.5) for row in picks]
+    out = DC.check(fit, lines, [plan(half, mode="pilot")])
     assert out["cells"][0]["dimension"] == "final/coverage" and out["cells"][0]["n_labels"] == 3
     assert out["cells"][0]["design"]["mean"] == pytest.approx(0.75)
 
