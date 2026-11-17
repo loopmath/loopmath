@@ -26,6 +26,7 @@ Environment:
     LOOPMATH_EVAL_RECOVERY_STUDIES   studies per spec (default 200)
     LOOPMATH_EVAL_RECOVERY_DRAWS     draws per chain (default: the command's own)
     LOOPMATH_EVAL_RECOVERY_INPUTS    inputs per study (default: the catalog's own, 40)
+    LOOPMATH_EVAL_RECOVERY_PLANS     label plans drawn per study in check 12 (default 5)
     LOOPMATH_EVAL_RECOVERY_KEEP      a folder to keep the studies and fits in; a later run reuses them
     LOOPMATH_EVAL_RECOVERY_REPORT    a folder for the numbers of each check, one JSON file per check
 
@@ -671,6 +672,7 @@ def test_check_11_steps_measured_swaps_and_the_hint_stay_apart(root):
 # 12. Labels
 
 LABELS_N = 30
+PLANS = E.env_int("LOOPMATH_EVAL_RECOVERY_PLANS") or 5
 REVIEWER_NOISE = 0.04   # sd of the simulated reviewer's own error, on the 0 to 1 scale
 
 
@@ -680,38 +682,43 @@ def test_check_12_the_design_based_estimate_covers_the_true_human_mean(mode, roo
     `linear` study, a simulated reviewer fills the form, `eval scores import` takes it, and
     `eval value --check design --labels PLAN` prints a design-based mean per arm and component. Its 90%
     interval holds the true mean of what the reviewer would say over all of the arm's outputs in at
-    least 85% of cells."""
+    least 85% of cells. The claim is about the draw of the plan, so each study gets several plans, each
+    in its own copy of the study."""
     cells, fits = [], []
     for seed in seeds():
         fit = fitted(root, "linear", seed)
         fits.append(fit)
-        folder = root / f"{fit.folder.name}-labels-{mode}"
-        if not folder.exists():
-            shutil.copytree(fit.folder, folder, ignore=shutil.ignore_patterns("labels*", "fit-*"))
-        value = E.value_file(folder)
-        plan, form = folder / f"labels-{mode}.json", root / f"{folder.name}.csv"
-        if not plan.exists():
-            E.js("eval", "labels", "next", folder / "fit.json", "--value", value, "--mode", mode, "--n", LABELS_N,
-                 "--seed", seed, "--out", plan, "--form", form, *fit.flags)
-            E.fill_form(form, folder, seed, noise=REVIEWER_NOISE)
-            E.js("eval", "scores", "import", "--csv", form, "--labels", plan, "--rubric", folder / "rubric.json",
-                 "--out", folder)
-        report = E.js("eval", "value", folder / "fit.json", "--value", value, "--check", "design", "--labels", plan,
-                      *fit.flags)
-        truth = json.loads((folder / simulate.TRUTH_FILE).read_text(encoding="utf-8"))
-        arm_of = {run["run"]: run["arm"] for run in C.read_study(folder).runs}
+        truth = json.loads((fit.folder / simulate.TRUTH_FILE).read_text(encoding="utf-8"))
+        arm_of = {run["run"]: run["arm"] for run in C.read_study(fit.folder).runs}
         place = {dim["id"]: d for d, dim in enumerate(truth["index"]["dimensions"])}
         reported = np.asarray(truth["reported"]["runs"], dtype=float)
-        for cell in report["design_check"]["cells"]:
-            runs = [r for r, run in enumerate(truth["index"]["runs"]) if arm_of[run] == cell["arm"]]
-            true = float(reported[runs, place[cell["dimension"]]].mean())
-            cells.append({"seed": seed, "arm": cell["arm"], "dimension": cell["dimension"], "status": cell["status"],
-                          "n_labels": cell["n_labels"], "true": true, "design": cell["design"],
-                          "flagged": cell["flagged"], "hit": holds(cell["design"], true)})
-        assert report["design_check"]["level"] == 0.9
-    got = {"mode": mode, **base(fits), "labels_per_study": LABELS_N, "reviewer_noise": REVIEWER_NOISE,
-           "cells": len(cells), "coverage": share([cell["hit"] for cell in cells]),
-           "flagged": share([cell["flagged"] for cell in cells]), "rows": cells[:60]}
+        for draw in range(PLANS):
+            folder = root / f"{fit.folder.name}-labels-{mode}-p{draw}"
+            if not folder.exists():
+                shutil.copytree(fit.folder, folder, ignore=shutil.ignore_patterns("labels*", "fit-*"))
+            value = E.value_file(folder)
+            plan, form = folder / f"labels-{mode}.json", root / f"{folder.name}.csv"
+            if not plan.exists():
+                E.js("eval", "labels", "next", folder / "fit.json", "--value", value, "--mode", mode,
+                     "--n", LABELS_N, "--seed", draw, "--out", plan, "--form", form, *fit.flags)
+                E.fill_form(form, folder, draw, noise=REVIEWER_NOISE)
+                E.js("eval", "scores", "import", "--csv", form, "--labels", plan, "--rubric",
+                     folder / "rubric.json", "--out", folder)
+            report = E.js("eval", "value", folder / "fit.json", "--value", value, "--check", "design",
+                          "--labels", plan, *fit.flags)
+            assert report["design_check"]["level"] == 0.9
+            for cell in report["design_check"]["cells"]:
+                runs = [r for r, run in enumerate(truth["index"]["runs"]) if arm_of[run] == cell["arm"]]
+                true = float(reported[runs, place[cell["dimension"]]].mean())
+                cells.append({"seed": seed, "plan": draw, "arm": cell["arm"], "dimension": cell["dimension"],
+                              "status": cell["status"], "n_labels": cell["n_labels"], "true": true,
+                              "design": cell["design"], "flagged": cell["flagged"],
+                              "hit": holds(cell["design"], true)})
+    widths = [cell["design"]["hi"] - cell["design"]["lo"] for cell in cells if holds(cell["design"], 0.5) is not None]
+    got = {"mode": mode, **base(fits), "plans_per_study": PLANS, "labels_per_plan": LABELS_N,
+           "reviewer_noise": REVIEWER_NOISE, "cells": len(cells), "coverage": share([cell["hit"] for cell in cells]),
+           "flagged": share([cell["flagged"] for cell in cells]),
+           "median_interval_width": float(np.median(widths)) if widths else None, "rows": cells[:80]}
     E.write_report(f"check-12-design-{mode}", got)
     at_least([cell["hit"] for cell in cells], "design-based estimate", got)
 
