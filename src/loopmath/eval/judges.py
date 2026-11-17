@@ -36,7 +36,15 @@ four figures are per item under the k of n model: an item's hidden status passes
 
 For pairs: `position`, `tie_width`, `sigma_pair`, and over every two runs of one input from different
 arms, with both orders equally likely, the tie rate and the chance a call picks the output with the
-higher hidden quality.
+higher hidden quality. `position` and `tie_width` are one number per judge, in the engine's unit; the
+pair figures of a dimension divide them by its `unit` draws (`units.py`), so they are on the scale of
+the dimension's other draws.
+
+Units. On a `binary` dimension the latent figures (`bias`, `tau`, `sigma`, `mse` and the sds) are in the
+anchors' total noise of one reading, on a pairs-only dimension in the anchors' total noise of one pair
+verdict (`fitfile.py`, Units). The probabilities (`false_pass`, `false_fail`, `flip`, `agreement`, tie
+rate, picks), `r2`, `reliability` and `effective_repeats` do not depend on the unit. `--target-error`
+is on the fitting scale of the dimension, so on these two kinds it is in that unit.
 
 Family effects per model judge: `own_family` and `reference_family` contrasts (the effect on that family
 minus the mean effect on the other families), flagged when the 90% interval excludes 0.
@@ -600,7 +608,8 @@ class _Report:
         effect = self._family_effect(j, d) if family_use == "measured" else np.zeros(draws["q_run"].shape[:2])
         q = draws["q_run"][:, :, d]
         figures = pair_figures(q[:, a], q[:, b], effect[:, a] - effect[:, b], np.sqrt(2 * tau ** 2 + pair_sd ** 2),
-                               np.nan_to_num(draws["position"][:, j]), np.nan_to_num(draws["tie_width"][:, j]))
+                               np.nan_to_num(draws["position"][:, j]) / draws["unit"][:, d],
+                               np.nan_to_num(draws["tie_width"][:, j]) / draws["unit"][:, d])
         out["measured"] = True
         for name, x in figures.items():
             out[name] = stat(x)

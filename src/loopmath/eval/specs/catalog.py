@@ -8,9 +8,12 @@ Every spec shares a small cast, so the studies read alike:
 - model judges at two grades, `strong` (small bias and noise) and `cheap` (lenient and noisy).
 
 True values are on the fitting scale: `linear`, `fraction` and `levels` dimensions on [0, 1], `binary`
-and `items` dimensions in probit units. On a `binary` dimension the reviewer's call noise is the unit,
-so its `sigma` is 1. Arm means on `linear` and `fraction` dimensions stay near the middle of the scale, so
-that almost no reading falls outside it and has to be cut to the range (`truth.json` counts them).
+and `items` dimensions in probit units. On a `binary` dimension the reviewer's call noise is the unit the
+spec is written in, so its `sigma` is 1; `truth.json` and the fit report the dimension in the reviewer's
+total noise of one reading, `sqrt(sigma^2 + tau^2)` (1.118 at the reviewer's tau of 0.5), so every number
+there is the spec's divided by that. Arm means on `linear` and `fraction` dimensions stay near the middle
+of the scale, so that almost no reading falls outside it and has to be cut to the range (`truth.json`
+counts them).
 
 Every number here is made up.
 """

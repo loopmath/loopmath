@@ -57,9 +57,10 @@ $ loopmath eval labels next study/fit.json --value value.json --mode active --mi
    values off their scale, arms that mix settings. It also prints a table of what the design can identify, term by
    term, with what each term needs: for example, a judge's call noise needs 2 or more calls by that judge on the
    same output and component.
-3. **Fit.** `eval fit` needs the optional modelling extra: `pip install 'loopmath[bayes]'`. It first prints which
-   terms the design identifies (`--check-only` prints that and stops), then samples, checks convergence and writes
-   `fit.json`. A fit that did not converge is written and marked; later commands refuse it unless you pass
+3. **Fit.** `eval fit` uses the Laplace engine by default, an approximation that needs no extra. `--engine pymc`
+   samples with PyMC instead and needs the optional modelling extra: `pip install 'loopmath[bayes]'`. It first
+   prints which terms the design identifies (`--check-only` prints that and stops), then fits, checks convergence
+   and writes `fit.json`. A fit that did not converge is written and marked; later commands refuse it unless you pass
    `--allow-unconverged`.
 4. **Read the judges.** `eval judges` prints, per judge and component: the bias against the anchor (the people,
    when there are any), the per-output disagreement, the call noise, the error of a mean of 1 to 5 calls, and for
@@ -99,6 +100,16 @@ with `--allow-simulated`, so that simulated runs never mix into real ones by acc
 - **Per-output disagreement** (`tau`) is the part of a judge's error that repeats when the same output is scored
   again. More calls do not remove it; another judge or a person does.
 - **Call noise** (`sigma`) is the part that changes from call to call. Repeats average it away.
+- **Hidden quality of a yes or no component.** Behind each pass rate the fit keeps a hidden quality per output,
+  in units of the anchor's total noise of one reading: how far one reading by the anchor (the people in
+  `judges.json` who scored the component, or the judges when no person did) strays from the output's hidden
+  quality, counting the per-output disagreement, the call noise and the part that repeats across the outputs of
+  one input. So an output with hidden quality 1 passes one unbiased reading about 84% of the time. A component
+  with comparisons only uses the anchor's total noise of one comparison instead: a gap of 1 between two outputs
+  is called right about 84% of the time, before ties and the order they were shown in. Pass rates and reported
+  quality do not depend on this unit; it shows only in the hidden numbers (`fitting`, `tau`, `sigma` and the
+  other noise terms under `--json`). Fits written before 0.4.5 used the anchor's call noise alone as the unit;
+  they are still read, and each dimension's `unit` in `fit.json` says which unit it holds.
 - **Halo** is the part of a judge's error shared across components: by output (`halo_target`) or, for a `panel`
   judge, by call (`halo_call`).
 - **Family effect** is the extra a judge gives to outputs written by its own model family, or by the family that
@@ -137,7 +148,8 @@ number for that arm should not be trusted yet.
   scale, while the fit treats them as unclipped normal readings. What the checks say about recovery holds for
   studies whose readings sit inside the scale. With many readings at 0 or at the top, expect arm means pulled
   toward the middle and noise read too small. A censored likelihood is planned for 0.4.5.
-- **Fits with yes or no components, levels or comparisons are slow.** On 2 cores, with 2 chains of 500 draws,
+- **With `--engine pymc`, fits with yes or no components, levels or comparisons are slow.** On 2 cores, with 2
+  chains of 500 draws,
   simulated studies of 80 to 120 outputs took 12 to 15 minutes with such components and 1 to 3 minutes with
   linear scales only. A linear study of 500 outputs, 5 components, 4 judges and 2 repeats (20,000 readings) took
   about 17 minutes, against a target of 10.

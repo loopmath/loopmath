@@ -33,10 +33,12 @@ SCHEMA_RUNS = "loopmath.eval-runs/1"
 SCHEMA_SCORES = "loopmath.eval-scores/1"
 SCHEMA_PAIRS = "loopmath.eval-pairs/1"
 SCHEMA_VALUE = "loopmath.eval-value/1"
-SCHEMA_FIT = "loopmath.eval-fit/1"
+SCHEMA_FIT = "loopmath.eval-fit/2"
+SCHEMA_FIT_READ = (SCHEMA_FIT, "loopmath.eval-fit/1")   # /1: binary and pairs-only draws in the engine's unit
 SCHEMA_LABELS = "loopmath.eval-labels/1"
 SCHEMA_SIM = "loopmath.eval-sim/1"      # the simulate spec; its members belong to simulate.py
-SCHEMA_TRUTH = "loopmath.eval-truth/1"  # truth.json of a simulated study; its members belong to simulate.py
+SCHEMA_TRUTH = "loopmath.eval-truth/2"  # truth.json of a simulated study; its members belong to simulate.py
+SCHEMA_TRUTH_READ = (SCHEMA_TRUTH, "loopmath.eval-truth/1")
 
 # The files of a study folder.
 RUNS_FILE = "runs.jsonl"

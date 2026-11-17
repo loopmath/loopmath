@@ -112,8 +112,14 @@ def ensure_study(out: Path, spec: str, inputs: int | None, seed: int) -> Path:
     renamed into place, so two runs that need the same study at once do not mix files."""
     from loopmath.eval import simulate
 
+    from loopmath.eval import contracts as C
+
     folder = study_folder(out, spec, inputs, seed)
     if (folder / simulate.TRUTH_FILE).exists():
+        found = json.loads((folder / simulate.TRUTH_FILE).read_text(encoding="utf-8")).get("schema")
+        if found != C.SCHEMA_TRUTH:   # an older truth is in another unit than the fits of this checkout
+            raise SystemExit(f"{folder}: truth.json is {found}, but this checkout writes {C.SCHEMA_TRUTH}, whose "
+                             "binary and pairs-only units differ; use a new --out")
         return folder
     sim = simulate.generate(RS.spec_for(spec, inputs), seed=seed)
     scratch = folder.with_name(f".{folder.name}.{os.getpid()}.new")
