@@ -36,6 +36,12 @@ FRONTIER_ENTRY = ("    frontier            experimental: find a cost and pass-ra
                   "                        ask and tell\n")
 FRONTIER = ((",screen,builder,", ",screen,frontier,builder,"), (", screen, builder", ", screen, frontier, builder"),
             ("'screen', 'builder'", "'screen', 'frontier', 'builder'"), (BUILDER_ENTRY, FRONTIER_ENTRY + BUILDER_ENTRY))
+# `loopmath eval` came after `flow`: it joins the lists after `flow`, and its help entry follows flow's.
+EVAL_ENTRY = ("    eval                experimental: read rubric scores from judges and\n"
+              "                        people: judge noise, value, next labels\n")
+EVAL = ((",harness,flow}", ",harness,flow,eval}"), (", harness, flow\n", ", harness, flow,\n  eval\n"),
+        (', harness, flow",', ', harness, flow, eval",'), ("'harness', 'flow'", "'harness', 'flow', 'eval'"),
+        (FLOW_ENTRY, FLOW_ENTRY + EVAL_ENTRY))
 DROP = ("PYTHONPATH", "COLUMNS", "LINES", "FORCE_COLOR", "PYTHON_COLORS", "NO_COLOR")
 
 
@@ -139,7 +145,7 @@ def test_flow_is_listed(capsys):
     entries = [line for line in out.splitlines() if line.split()[:1] == ["flow"]]
     assert len(entries) == 1 and "run a flow experiment" in entries[0]
     listed = out.split("{", 1)[1].split("}", 1)[0].split(",")
-    assert "workflows" in listed and listed[-2:] == ["harness", "flow"]
+    assert "workflows" in listed and listed[-3:] == ["harness", "flow", "eval"]
 
 
 def _run_cli(argv: list[str], tmp_path) -> dict:
@@ -167,6 +173,15 @@ def _with_frontier(stored: dict) -> dict:
     out = dict(stored)
     for name in ("stdout", "stderr"):
         for old, new in FRONTIER:
+            out[name] = out[name].replace(old, new)
+    return out
+
+
+def _with_eval(expected: dict) -> dict:
+    """The expected output with `eval` added after `flow`, once per command list it should join."""
+    out = dict(expected)
+    for name in ("stdout", "stderr"):
+        for old, new in EVAL:
             out[name] = out[name].replace(old, new)
     return out
 
@@ -201,7 +216,7 @@ def test_cli_output_gains_only_flow(key, tmp_path):
             expected["stdout"] = stored["stdout"].replace(', harness",', ', harness, flow",')
         else:
             assert stored["stdout"] == ""
-    assert _run_cli(BASE[key]["argv"], tmp_path) == expected
+    assert _run_cli(BASE[key]["argv"], tmp_path) == _with_eval(expected)
 
 
 @pytest.mark.parametrize("key", UNKNOWN)
@@ -218,7 +233,7 @@ def test_unknown_command_error_gains_only_flow(key, tmp_path):
                               .replace(",harness}", ",harness,flow}"))
     else:
         assert stored["stdout"] == ""
-    assert _run_cli(BASE[key]["argv"], tmp_path) == expected
+    assert _run_cli(BASE[key]["argv"], tmp_path) == _with_eval(expected)
 
 
 def test_cli_runs_write_no_update_json(tmp_path, monkeypatch):
