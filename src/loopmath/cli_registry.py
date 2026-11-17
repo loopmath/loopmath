@@ -1248,6 +1248,7 @@ def register(sub) -> None:
     _add_tasks(sub)
     _add_harness(sub)
     _add_flow(sub)
+    importlib.import_module("loopmath.eval.commands").add(sub)  # `eval` (0.4.4, experimental)
 
 
 # Handler targets, for the registry test: every one must import and be callable.

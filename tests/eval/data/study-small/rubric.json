@@ -1,0 +1,84 @@
+{
+ "schema": "loopmath.eval-rubric/1",
+ "id": "brief",
+ "version": "1",
+ "steps": [
+  "draft",
+  "final"
+ ],
+ "components": [
+  {
+   "id": "numbers_right",
+   "title": "The numbers are right",
+   "role": "criterion",
+   "scale": {
+    "kind": "binary"
+   },
+   "better": "higher",
+   "applies_to": [
+    "final"
+   ],
+   "review_minutes": 1.0,
+   "compare_minutes": 0.5,
+   "human_only": false
+  },
+  {
+   "id": "clarity",
+   "title": "Clarity",
+   "role": "criterion",
+   "scale": {
+    "kind": "levels",
+    "levels": [
+     "poor",
+     "ok",
+     "good"
+    ]
+   },
+   "better": "higher",
+   "applies_to": [
+    "final"
+   ],
+   "review_minutes": 1.0,
+   "compare_minutes": 0.5,
+   "human_only": false
+  },
+  {
+   "id": "depth",
+   "title": "Depth of the case",
+   "role": "criterion",
+   "scale": {
+    "kind": "linear",
+    "range": [
+     0,
+     10
+    ]
+   },
+   "better": "higher",
+   "applies_to": [
+    "final"
+   ],
+   "review_minutes": 3,
+   "compare_minutes": 1.5,
+   "human_only": false
+  },
+  {
+   "id": "overall",
+   "title": "Overall",
+   "role": "overall",
+   "scale": {
+    "kind": "linear",
+    "range": [
+     0,
+     10
+    ]
+   },
+   "better": "higher",
+   "applies_to": [
+    "final"
+   ],
+   "review_minutes": 2,
+   "compare_minutes": 1.0,
+   "human_only": false
+  }
+ ]
+}
