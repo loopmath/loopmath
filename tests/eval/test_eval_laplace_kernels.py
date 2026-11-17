@@ -26,37 +26,42 @@ _PI = Decimal("3.14159265358979323846264338327950288419716939937510"
 
 
 def _logphi_ref(x: float, prec: int = 90) -> tuple[float, float, float, float]:
-    """log Phi(x) and its first three derivatives in 90-digit decimal arithmetic.
+    """log Phi(x) and its first three derivatives in 90-digit decimal arithmetic, as floats."""
+    with localcontext() as ctx:
+        ctx.prec = prec
+        return tuple(float(v) for v in _logphi_dec(Decimal(x), prec))
+
+
+def _logphi_dec(X: Decimal, prec: int = 90) -> tuple:
+    """log Phi(X) and its first three derivatives as decimals (the caller sets the context precision).
 
     |x| < 8: Phi = 1/2 + phi(x) sum x^(2n+1) / (2n+1)!!. x <= -8: the continued fraction of the Mills ratio,
     R(t) = 1 / (t + 1 / (t + 2 / (t + 3 / ...))). Neither is the asymptotic series the module uses."""
-    with localcontext() as ctx:
-        ctx.prec = prec
-        X = Decimal(x)
-        if x <= -8.0:
-            t = -X
-            f = t
-            for k in range(6000, 0, -1):
-                f = t + k / f
-            lam = f                                   # phi / Phi = 1 / R(t)
-            logphi = -(X * X) / 2 - (2 * _PI).sqrt().ln()
-            l0 = logphi - lam.ln()
-        else:
-            pdf = (-(X * X) / 2).exp() / (2 * _PI).sqrt()
-            term, s, n = X, X, 0
-            while True:
-                n += 1
-                term = term * X * X / (2 * n + 1)
-                s += term
-                if n > 10 and abs(term) <= Decimal(10) ** (-prec) * abs(s):
-                    break
-            cdf = Decimal("0.5") + pdf * s
-            lam = pdf / cdf
-            l0 = cdf.ln()
-        g = X + lam
-        l2 = -lam * g
-        l3 = lam * (g * (X + 2 * lam) - 1)
-        return float(l0), float(lam), float(l2), float(l3)
+    x = float(X)
+    if x <= -8.0:
+        t = -X
+        f = t
+        for k in range(6000, 0, -1):
+            f = t + k / f
+        lam = f                                   # phi / Phi = 1 / R(t)
+        logphi = -(X * X) / 2 - (2 * _PI).sqrt().ln()
+        l0 = logphi - lam.ln()
+    else:
+        pdf = (-(X * X) / 2).exp() / (2 * _PI).sqrt()
+        term, s, n = X, X, 0
+        while True:
+            n += 1
+            term = term * X * X / (2 * n + 1)
+            s += term
+            if n > 10 and abs(term) <= Decimal(10) ** (-prec) * abs(s):
+                break
+        cdf = Decimal("0.5") + pdf * s
+        lam = pdf / cdf
+        l0 = cdf.ln()
+    g = X + lam
+    l2 = -lam * g
+    l3 = lam * (g * (X + 2 * lam) - 1)
+    return l0, lam, l2, l3
 
 
 def _interval_ref(eta, lo, hi, sd):
@@ -157,8 +162,11 @@ def test_probit_kernels_match_scipy_in_the_body():
     _close(K.kernel("binary", eta, {"y": 0}, {"sd": 0.7})[0], stats.norm.logsf(eta / 0.7), 1e-13)
     lv = K.kernel("levels", eta, {"lo": 0.25, "hi": 0.75}, {"sd": 0.6})[0]
     _close(lv, np.log(stats.norm.cdf((0.75 - eta) / 0.6) - stats.norm.cdf((0.25 - eta) / 0.6)), 1e-12)
-    items = K.kernel("items", eta, {"k": 3, "n": 7}, {"sd": 0.5})[0]
-    _close(items, stats.binom.logpmf(3, 7, stats.norm.cdf(eta / np.sqrt(1.25))), 1e-12)
+    items = K.kernel("items", eta, {"k": 3, "n": 7}, {"sd": 0.0})[0]
+    _close(items, stats.binom.logpmf(3, 7, stats.norm.cdf(eta)), 1e-12)
+    # one item: the call noise sums out exactly, P(pass) = Phi(eta / sqrt(1 + sd^2))
+    _close(K.kernel("items", eta, {"k": 1, "n": 1}, {"sd": 0.5})[0], stats.norm.logcdf(eta / np.sqrt(1.25)), 1e-13)
+    _close(K.kernel("items", eta, {"k": 0, "n": 1}, {"sd": 0.5})[0], stats.norm.logsf(eta / np.sqrt(1.25)), 1e-13)
 
 
 def test_pairs_kernel_matches_the_model_definition():
@@ -236,8 +244,11 @@ CASES = [
     ("levels", {"lo": 0.75, "hi": np.inf}, {"sd": 0.01}, np.array([0.5, 0.6, 0.65, 0.7, 0.749, 0.76, 0.8])),
     ("levels", {"lo": -model.OPEN, "hi": 0.25}, {"sd": 0.1}, np.array([-0.5, 0.0, 0.3, 0.9, 1.2, 1.4])),
     ("levels", {"lo": 0.4, "hi": 0.6}, {"sd": 2.0}, np.array([-3.0, 0.0, 0.5, 4.0])),
-    ("items", {"k": 3, "n": 10}, {"sd": 0.6}, np.array([-6.0, -2.0, -0.4, 0.0, 1.0, 5.0])),
-    ("items", {"k": 0, "n": 4}, {"sd": 1.5}, np.array([-3.0, 0.0, 3.0, 12.0])),
+    ("items", {"k": 3, "n": 10}, {"sd": 0.0}, np.array([-6.0, -2.0, -0.4, 0.0, 1.0, 5.0])),
+    ("items", {"k": 0, "n": 4}, {"sd": 0.0}, np.array([-3.0, 0.0, 3.0, 12.0])),
+    ("items", {"k": 1, "n": 1}, {"sd": 0.6}, np.array([-6.0, -2.0, 0.0, 1.0, 5.0])),
+    ("items", {"k": 0, "n": 1}, {"sd": 1.5}, np.array([-3.0, 0.0, 3.0, 12.0])),
+    ("items", {"k": 600, "n": 1000}, {"sd": 0.0}, np.array([-0.5, 0.2, 0.25, 0.3, 1.0])),
     ("pairs", {"v": 0, "o": 1.0}, {"sd": 0.7, "width": 0.2, "position": 0.3}, np.array([-9.0, -1.0, 0.0, 2.0])),
     ("pairs", {"v": 1, "o": -1.0}, {"sd": 0.4, "width": 0.3, "position": 0.2}, np.array([-6.0, -0.5, 0.0, 0.4, 5.0])),
     ("pairs", {"v": 2, "o": 1.0}, {"sd": 1.1, "width": 0.05, "position": -0.4}, np.array([-2.0, 0.0, 3.0, 11.0])),
@@ -249,7 +260,9 @@ CASES = [
 @pytest.mark.parametrize("kind,obs,params,eta", CASES, ids=[f"{c[0]}-{i}" for i, c in enumerate(CASES)])
 def test_derivatives_in_eta_match_finite_differences(kind, obs, params, eta):
     r = K.kernel_full(kind, eta, obs, params)
-    h = 1e-3 * min(v for k, v in params.items() if k in ("sd", "width") and v > 0)
+    h = 1e-3 * min([v for k, v in params.items() if k in ("sd", "width") and v > 0] or [1.0])
+    if obs.get("n", 1) > 100:
+        h = 1e-6
 
     def part(name):
         return lambda e: getattr(K.kernel_full(kind, e, obs, params), name)
@@ -264,6 +277,9 @@ def test_derivatives_in_parameters_match_finite_differences(kind, obs, params, e
     r = K.kernel_full(kind, eta, obs, params)
     assert set(r.dparam) == set(K.PARAMS[kind])
     for p, value in params.items():
+        if kind == "items" and obs["n"] > 1:   # sd is pinned at 0 there; the shared-noise marginal is even in sd
+            assert all(np.all(v == 0.0) for v in r.dparam["sd"])
+            continue
         h = 1e-4 * max(abs(value), 1e-2)
 
         def at(v, name, p=p):
@@ -442,7 +458,10 @@ def test_cell_derivatives_are_exact_for_the_frozen_rule(method):
     obs = {"lo": [0.75, 0.25, 0.75, -np.inf, 0.25, 0.25], "hi": [np.inf, 0.75, np.inf, 0.25, 0.75, 0.75]}
     par = {"sd": [0.05, 0.05, 0.05, 0.02, 0.02, 0.1]}
     tau = [0.1, 0.2, 0.05]
-    r = K.cell_integral(kind, m, obs, par, cell, tau, method=method, nodes=7)
+    first = K.cell_integral(kind, m, obs, par, cell, tau, method=method, nodes=7)
+    r = K.cell_integral(kind, m, obs, par, cell, tau, rule=first.rule)   # the frozen sum and its derivatives
+    assert list(r.method) == ["frozen"] * 3 and not r.deriv_ok.any() and np.isnan(r.err).all()
+    _close(r.logl, first.logl, 1e-14, 1e-14)
     grad, hess, dtau, shift = _frozen_fd(kind, m, obs, par, cell, tau, r)
     _close(r.d1, grad, 1e-6, 1e-6)
     got = np.zeros((6, 6))
@@ -539,7 +558,8 @@ def test_pair_cells_match_the_numerical_integral_and_owens_t():
 @pytest.mark.parametrize("method", ["agh", "composite"])
 def test_pair_cell_derivatives_are_exact_for_the_frozen_rule(method):
     m, obs, par, cell, tau = _pair_args(PAIR_CELLS[:3])
-    r = K.cell_integral("pairs", m, obs, par, cell, tau, method=method, nodes=9)
+    first = K.cell_integral("pairs", m, obs, par, cell, tau, method=method, nodes=9)
+    r = K.cell_integral("pairs", m, obs, par, cell, tau, rule=first.rule)
     N = len(m)
     m = np.asarray(m, dtype=float)
     lg = lambda mm=m, pp=par, tt=tau: K.cell_integral("pairs", mm, obs, pp, cell, tt, rule=r.rule).logl
@@ -558,6 +578,336 @@ def test_pair_cell_derivatives_are_exact_for_the_frozen_rule(method):
         f = np.zeros(len(tau))
         f[c] = h
         _close(r.dtau[c], (lg(tt=t + f) - lg(tt=t - f))[c] / (2 * h), 1e-6, 1e-6)
+
+
+# ---- open ends, frozen rules, items counts -----------------------------------------------------------------
+
+def test_the_open_sentinel_is_an_open_end_at_any_predictor():
+    for eta, sd in ((1e6, 0.01), (2e6, 1.0), (5e5, 3.0), (1e6 - 0.5, 0.2)):
+        r = K.kernel_full("levels", eta, {"lo": 0.75, "hi": model.OPEN}, {"sd": sd})
+        ref = K.kernel_full("levels", eta, {"lo": 0.75, "hi": np.inf}, {"sd": sd})
+        assert r.logp == 0.0 and r.d1 == 0.0, (eta, sd, r.logp, r.d1)
+        for name in ("logp", "d1", "d2", "d3"):
+            assert getattr(r, name) == getattr(ref, name)
+        low = K.kernel_full("levels", -eta, {"lo": -model.OPEN, "hi": 0.25}, {"sd": sd})
+        assert low.logp == 0.0 and low.d1 == 0.0
+    # a large finite cut stays a cut: below OPEN_FROM it is a wall
+    r = K.kernel("levels", 6e4, {"lo": 0.75, "hi": 5e4}, {"sd": 1e3})[0]
+    _close(r, stats.norm.logcdf(-10.0), 1e-13)
+    # the cell integrator and the kernel agree that an OPEN end has no wall
+    args = ([1e6 - 0.5], {"lo": [0.75], "hi": [model.OPEN]}, {"sd": [0.01]}, [0], [1.0])
+    r = K.cell_integral("levels", *args)
+    assert abs(r.logl[0]) <= r.err[0] + 1e-300 and r.err[0] < 1e-12
+
+
+def test_a_frozen_rule_carries_no_error_estimate():
+    first = K.cell_integral("linear", [0.0], {"y": [0.0]}, {"sd": 1.0}, [0], [1.0])
+    exact0 = stats.norm.logpdf(0.0, 0.0, math.sqrt(2.0))
+    assert abs(first.logl[0] - exact0) <= first.err[0] < 1e-9 and first.deriv_ok[0]
+    moved = K.cell_integral("linear", [8.0], {"y": [0.0]}, {"sd": 1.0}, [0], [1.0], rule=first.rule)
+    exact = stats.norm.logpdf(0.0, 8.0, math.sqrt(2.0))
+    assert abs(moved.logl[0] - exact) > 1e-2            # the nodes were placed for m = 0, not 8
+    assert np.isnan(moved.err[0]) and moved.err_kind[0] == "none" and moved.method[0] == "frozen"
+    assert not moved.deriv_ok[0]
+    errs = moved.deriv_err
+    assert all(np.isnan(errs[k]).all() for k in ("d1", "hess", "shift_d1", "shift_d2", "shift_d3", "dtau"))
+    assert np.isnan(errs["dparam"]["sd"]).all()
+    assert moved.mode[0] == first.mode[0] and moved.scale[0] == first.scale[0]   # placement, not the new mode
+    fresh = K.cell_integral("linear", [8.0], {"y": [0.0]}, {"sd": 1.0}, [0], [1.0])
+    assert abs(fresh.logl[0] - exact) <= fresh.err[0] < 1e-9
+
+
+def test_the_items_of_one_call_share_its_noise():
+    with pytest.raises(ValueError):
+        K.kernel("items", 0.0, {"k": 2, "n": 2}, {"sd": 1.0})
+    with pytest.raises(ValueError):
+        K.cell_integral("items", [0.0], {"k": [2], "n": [2]}, {"sd": [0.5]}, [0], [1.0])
+    with pytest.raises(ValueError):
+        K.kernel("items", 0.0, {"k": 3, "n": 2}, {"sd": 0.0})
+    # eta = 0 and one shared N(0, 1) call error: Phi(e) is uniform on (0, 1), so the count is uniform on 0..n
+    for k, n in ((2, 2), (0, 2), (1, 2), (20, 20), (7, 20), (0, 1), (1, 1)):
+        r = K.cell_integral("items", [0.0], {"k": [k], "n": [n]}, {"sd": [0.0]}, [0], [1.0])
+        assert abs(math.expm1(r.logl[0] + math.log(n + 1))) <= r.err[0] < 1e-9, (k, n, r.logl[0], r.err[0])
+
+
+@pytest.mark.parametrize("n,k", [(1e8, 1), (1e8, 5e7), (1e8, 1e8 - 1), (1e8, 3e7), (1e5, 5e4), (1e5, 1),
+                                 (1e12, 3e11), (1e14, 1e14), (1e14, 0)])
+def test_the_uniform_count_is_exact_for_large_counts(n, k):
+    r = K.cell_integral("items", [0.0], {"k": [k], "n": [n]}, {"sd": [0.0]}, [0], [1.0])
+    err = abs(math.expm1(r.logl[0] + math.log1p(n)))
+    assert err <= r.err[0] < 1e-8, (n, k, err, r.err[0], r.method[0])
+
+
+def _log_factorial_dec(n: int) -> Decimal:
+    """log n! as a decimal: the sum of logs up to 2000, the Stirling series above (error below 1e-40 there)."""
+    if n <= 2000:
+        return sum((Decimal(j).ln() for j in range(2, n + 1)), Decimal(0))
+    N = Decimal(n)
+    s = N * N.ln() - N + (2 * _PI * N).ln() / 2
+    for num, den, p in ((1, 12, 1), (-1, 360, 3), (1, 1260, 5), (-1, 1680, 7), (1, 1188, 9)):
+        s += Decimal(num) / (Decimal(den) * N ** p)
+    return s
+
+
+@pytest.mark.parametrize("n,k,eta", [(1000, 1, -3.0), (1000, 500, 0.01), (1000, 999, 3.1), (1000, 0, -0.5),
+                                     (100000000, 1, -5.6), (100000000, 50000000, 1e-4),
+                                     (100000000, 99999999, 5.6), (100000000, 30000000, -0.52),
+                                     (100000000, 30000000, -0.5244)])
+def test_items_kernel_against_a_decimal_reference(n, k, eta):
+    with localcontext() as ctx:
+        ctx.prec = 60
+        X = Decimal(eta)
+        ref = (_log_factorial_dec(n) - _log_factorial_dec(k) - _log_factorial_dec(n - k)
+               + k * _logphi_dec(X, 60)[0] + (n - k) * _logphi_dec(-X, 60)[0])
+    r = K.kernel_full("items", eta, {"k": k, "n": n}, {"sd": 0.0})
+    err = abs(float(Decimal(float(r.logp)) - ref))
+    assert err <= float(r.logp_err) < 1e-6, (n, k, eta, err, float(r.logp_err))
+
+
+def _complement_ref(n, m, tau):
+    """log P(k = n of n) for one items call with its noise as the cell term: log(1 - v), where the small
+    complement v = integral phi(z) (1 - Phi(m + tau z)^n) dz is integrated on fixed panels by quad."""
+    def f(z):
+        return math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi) * -math.expm1(n * float(special.log_ndtr(m + tau * z)))
+
+    pts = np.arange(-16.0, 16.01, 0.5)
+    v = math.fsum(integrate.quad(f, a, b, epsabs=1e-22, epsrel=1e-11)[0] for a, b in zip(pts[:-1], pts[1:]))
+    return math.log1p(-v)
+
+
+def test_all_items_pass_cells_are_routed_where_the_powered_term_turns():
+    """k = n: Phi(eta)^n turns from 0 to 1 at eta = -Phi^-1(1/n), not at 0. A large count there sent the cell to
+    adaptive Gauss-Hermite, whose estimate understated its error (n = 1e5, m = 14.5, tau = 2)."""
+    r = K.cell_integral("items", [14.5], {"k": [100000], "n": [100000]}, {"sd": 0.0}, [0], [2.0])
+    ref = -2.8668848210239774e-7       # the complement on panels of width 1 and 0.25 agrees to 16 digits
+    assert abs(math.expm1(r.logl[0] - ref)) <= r.err[0] < 1e-9 and r.method[0] == "composite"
+    rows = [(n, t, float(-special.ndtri(1.0 / n) + h * t)) for n in (1e3, 1e5, 1e8, 1e14) for t in (0.1, 0.5, 2.0)
+            for h in (3.0, 4.0, 5.0, 6.0)]
+    n, t, m = (np.array(x) for x in zip(*rows))
+    r = K.cell_integral("items", m, {"k": n, "n": n}, {"sd": 0.0}, np.arange(len(rows)), t)
+    for c, (nn, tt, mm) in enumerate(rows):
+        err = abs(math.expm1(r.logl[c] - _complement_ref(nn, mm, tt)))
+        assert err <= r.err[c] + 1e-13, (rows[c], err, r.err[c], r.method[c])   # quad keeps about 13 digits here
+
+
+def test_error_kinds_name_what_the_estimate_is():
+    args = _cells("levels", [(0.5, 0.1, 0.01, [TOP, TOP]), (0.5, 0.1, 0.3, [MID])])
+    assert list(K.cell_integral("levels", *args, method="agh").err_kind) == ["heuristic", "heuristic"]
+    assert list(K.cell_integral("levels", *args, method="composite").err_kind) == ["kronrod", "kronrod"]
+    r = K.cell_integral("levels", *args)
+    assert list(r.method) == ["composite", "agh"] and list(r.err_kind) == ["kronrod", "heuristic"]
+
+
+# ---- narrow intervals --------------------------------------------------------------------------------------
+
+def test_narrow_tie_mixed_derivatives_are_exact():
+    """A tie of width 1e-8 or 1e-9 at noise sd 0.01: by symmetry d1 and d(d1)/d width are 0; the second mixed
+    derivative is from a 70-digit series of the integral of exp(-y^2 / (2 sd^2)) over (-width, width)."""
+    for w, want in ((1e-8, 0.6666666666664889), (1e-9, 0.06666666666666649)):
+        r = K.kernel_full("pairs", 0.0, {"v": 1, "o": 1}, {"sd": 0.01, "width": w, "position": 0.0})
+        assert r.d1 == 0.0 and r.dparam["width"][1] == 0.0 and r.d3 == 0.0
+        assert abs(r.dparam["width"][2] - want) < 1e-12 * want, (w, r.dparam["width"][2])
+        _close(r.dparam["width"][0], 1.0 / w, 1e-12)
+        r2 = K.kernel_full("pairs", np.array([-0.003, 0.003]), {"v": 1, "o": 1},
+                           {"sd": 0.01, "width": w, "position": 0.0})
+        assert r2.d1[0] == -r2.d1[1] and r2.dparam["width"][2][0] == r2.dparam["width"][2][1]
+
+
+def _phi_cdf_dec(X: Decimal) -> Decimal:
+    if X < -8:
+        l0 = _logphi_dec(X, 80)[0]
+        return l0.exp()
+    if X > 8:
+        return 1 - _phi_cdf_dec(-X)
+    return _logphi_dec(X, 80)[0].exp()
+
+
+def _tie_logp_dec(x: Decimal, w: Decimal, s: Decimal) -> Decimal:
+    return (_phi_cdf_dec((x + w) / s) - _phi_cdf_dec((x - w) / s)).ln()
+
+
+@pytest.mark.parametrize("x,w,s", [(0.003, 1e-7, 0.01), (0.0, 2e-6, 0.01), (0.05, 1e-4, 0.02), (-0.3, 0.008, 0.1),
+                                   (-0.3, 0.01, 0.1), (0.4, 0.3, 0.5)])
+def test_tie_kernel_matches_decimal_derivatives_near_and_across_the_narrow_switch(x, w, s):
+    """Every derivative of a tie (in eta, width and sd) against central differences in 80-digit arithmetic."""
+    with localcontext() as ctx:
+        ctx.prec = 80
+        X, W, S = Decimal(x), Decimal(w), Decimal(s)
+        d = Decimal("1e-14") * S
+
+        def f(a=X, b=W, c=S):
+            return _tie_logp_dec(a, b, c)
+
+        def dx(g, k):   # k-th central difference in x of g(a)
+            if k == 0:
+                return g(X)
+            if k == 1:
+                return (g(X + d) - g(X - d)) / (2 * d)
+            if k == 2:
+                return (g(X + d) - 2 * g(X) + g(X - d)) / (d * d)
+            return (g(X + 2 * d) - 2 * g(X + d) + 2 * g(X - d) - g(X - 2 * d)) / (2 * d ** 3)
+
+        want = {"d1": dx(lambda a: f(a=a), 1), "d2": dx(lambda a: f(a=a), 2), "d3": dx(lambda a: f(a=a), 3)}
+        for name, var in (("width", "b"), ("sd", "c")):
+            base = {"b": W, "c": S}[var]
+            for k in range(3):
+                up = dx(lambda a: f(a=a, **{var: base + d}), k)
+                dn = dx(lambda a: f(a=a, **{var: base - d}), k)
+                want[f"{name}{k}"] = (up - dn) / (2 * d)
+    r = K.kernel_full("pairs", x, {"v": 1, "o": 1}, {"sd": s, "width": w, "position": 0.0})
+    got = {"d1": r.d1, "d2": r.d2, "d3": r.d3}
+    for name in ("width", "sd"):
+        for k in range(3):
+            got[f"{name}{k}"] = r.dparam[name][k]
+    scale = {"d1": 1 / s, "d2": 1 / s ** 2, "d3": 1 / s ** 3}
+    for key, g in got.items():
+        wv = float(want[key])
+        k = int(key[-1]) if key[-1].isdigit() else int(key[1])
+        floor = 1e-10 * (1 / s) ** (k + 1) if key[:1] in ("w", "s") else 1e-10 * scale[key]
+        assert abs(float(g) - wv) <= 1e-9 * abs(wv) + floor, (key, float(g), wv)
+
+
+# ---- cell derivatives against exact convolutions -------------------------------------------------------------
+
+@functools.lru_cache(maxsize=None)
+def _conv_ref(m, lo, hi, S):
+    """One reading with lo < m + N(0, S^2) < hi, as decimals: log P and its derivatives in m (1..3), in S, in lo
+    and in hi, from phi and Phi in 80-digit arithmetic (exact convolution of the cell term and the noise)."""
+    with localcontext() as ctx:
+        ctx.prec = 80
+        M, Sd = Decimal(m), Decimal(S)
+        two_pi = (2 * _PI).sqrt()
+
+        def end(c, sign):
+            """Phi and 1 - Phi at the standardised end, the density there, the end, and its side (+-inf open)."""
+            if math.isinf(c):
+                one, zero = Decimal(1), Decimal(0)
+                return (one, zero, zero, zero, math.inf) if sign > 0 else (zero, one, zero, zero, -math.inf)
+            a = (M - Decimal(c)) / Sd
+            return _phi_cdf_dec(a), _phi_cdf_dec(-a), (-(a * a) / 2).exp() / two_pi, a, float(a)
+
+        Pa, Qa, fa, a, xa = end(lo, 1)
+        Pb, Qb, fb, b, xb = end(hi, -1)
+        P = Pa - Pb if xa + xb <= 0 else Qb - Qa       # the side of 0 where the difference keeps its digits
+        P1 = (fa - fb) / Sd
+        P2 = -(a * fa - b * fb) / Sd ** 2
+        P3 = ((a * a - 1) * fa - (b * b - 1) * fb) / Sd ** 3
+        L1 = P1 / P
+        L2 = P2 / P - L1 * L1
+        L3 = P3 / P - 3 * L1 * P2 / P + 2 * L1 ** 3
+        LS = -(a * fa - b * fb) / Sd / P
+        return tuple(float(v) for v in (P.ln(), L1, L2, L3, LS, -fa / Sd / P, fb / Sd / P))
+
+
+SINGLE = ([("binary", m, t, sd, 1) for m in (-10.0, -3.0, -1.0, 0.0, 2.0) for t in (0.03, 1.0, 3.0)
+           for sd in (1e-8, 1e-4, 0.01, 0.3, 3.0)]
+          + [("binary", m, t, sd, 0) for m, t, sd in ((-1.0, 1.0, 1e-4), (0.5, 1e-7, 1.0), (0.0, 1e-7, 1e-7))]
+          + [("levels", m, t, sd, r) for m in (0.1, 0.5, 0.9) for t in (0.03, 0.3) for sd in (1e-6, 0.003, 0.1)
+             for r in (TOP, MID)]
+          + [("pairs", m, t, sd, (v, o, w)) for m in (-0.3, 0.2) for t in (0.1, 2.0) for sd in (1e-5, 0.02, 0.5)
+             for v in (0, 1, 2) for o in (-1.0, 1.0) for w in (0.01,)])
+
+
+def _single_args(rows):
+    m = [r[1] for r in rows]
+    tau = [r[2] for r in rows]
+    kind = rows[0][0]
+    if kind == "binary":
+        return m, {"y": [r[4] for r in rows]}, {"sd": [r[3] for r in rows]}, list(range(len(rows))), tau
+    if kind == "levels":
+        return (m, {"lo": [r[4][0] for r in rows], "hi": [r[4][1] for r in rows]}, {"sd": [r[3] for r in rows]},
+                list(range(len(rows))), tau)
+    return (m, {"v": [r[4][0] for r in rows], "o": [r[4][1] for r in rows]},
+            {"sd": [r[3] for r in rows], "width": [r[4][2] for r in rows], "position": [0.1] * len(rows)},
+            list(range(len(rows))), tau)
+
+
+def _single_ref(row):
+    kind, m, t, sd, ob = row
+    S = math.sqrt(t * t + sd * sd)
+    if kind == "binary":
+        lo, hi, x = (0.0, math.inf, m) if ob == 1 else (-math.inf, 0.0, m)
+    elif kind == "levels":
+        lo, hi, x = ob[0], ob[1], m
+    else:
+        v, o, w = ob
+        lo, hi = {0: (w, math.inf), 1: (-w, w), 2: (-math.inf, -w)}[v]
+        x = m + 0.1 * o
+    L0, L1, L2, L3, LS, Llo, Lhi = _conv_ref(x, lo, hi, S)
+    ref = {"logl": L0, "d1": L1, "hess": L2, "shift_d1": L1, "shift_d2": L2, "shift_d3": L3,
+           "dtau": LS * t / S, "sd": LS * sd / S}
+    if kind == "pairs":
+        ref["position"] = o * L1
+        ref["width"] = {0: Llo, 1: Lhi - Llo, 2: -Lhi}[v]
+    return ref
+
+
+@pytest.mark.parametrize("kind", ["binary", "levels", "pairs"])
+def test_single_reading_cell_derivatives_match_the_exact_convolution(kind):
+    """One reading per cell: the integral is the reading at noise sqrt(tau^2 + sd^2). Every derivative, with the
+    nodes placed afresh, is within its own error estimate of the exact one; deriv_ok holds where it says so."""
+    rows = [r for r in SINGLE if r[0] == kind]
+    res = K.cell_integral(kind, *_single_args(rows))
+    for c, row in enumerate(rows):
+        ref = _single_ref(row)
+        assert abs(math.expm1(res.logl[c] - ref["logl"])) <= res.err[c], (row, "logl")
+        got = {"d1": res.d1[c], "hess": res.hess_v[c], "shift_d1": res.shift_d1[c], "shift_d2": res.shift_d2[c],
+               "shift_d3": res.shift_d3[c], "dtau": res.dtau[c]}
+        est = {k: res.deriv_err[k][c] for k in got}
+        for name in res.dparam:
+            got[name] = res.dparam[name][c]
+            est[name] = res.deriv_err["dparam"][name][c]
+        for key, g in got.items():
+            assert abs(g - ref[key]) <= est[key], (row, key, g, ref[key], est[key], res.method[c])
+    assert res.deriv_ok.mean() > 0.9
+
+
+def test_sharp_single_reading_derivatives_where_moment_forms_cancel():
+    """Exact convolution values (log Phi(m / sqrt(tau^2 + sd^2))) where the moment forms lost every digit."""
+    for m, t, sd, key, want in ((-1.0, 1.0, 1e-4, "shift_d3", 0.11693119404795756),
+                                (-1.0, 1.0, 1e-5, "shift_d3", 0.11693119539246769),
+                                (-10.0, 3.0, 1e-8, "shift_d2", -0.104328660798724)):
+        r = K.cell_integral("binary", [m], {"y": [1]}, {"sd": sd}, [0], [t])
+        got = getattr(r, key)[0]
+        assert abs(got - want) <= r.deriv_err[key][0] < 1e-7 * abs(want), (m, t, sd, got, want)
+        assert r.deriv_ok[0]
+
+
+def _orthant_derivs(h, rho, S):
+    """P(X1 < h, X2 < h), correlation rho, and its derivatives in the two means (each a shift of h by 1/S)."""
+    P = _two_reading_exact(h, rho)
+    q = math.sqrt(1.0 - rho * rho)
+    u = h * math.sqrt((1.0 - rho) / (1.0 + rho))
+    ph = stats.norm.pdf(h)
+    P1 = ph * stats.norm.cdf(u) / S
+    P11 = (-h * ph * stats.norm.cdf(u) - ph * stats.norm.pdf(u) * rho / q) / S ** 2
+    P12 = math.exp(-h * h / (1.0 + rho)) / (2.0 * math.pi * q) / S ** 2
+    d1 = P1 / P
+    return d1, P11 / P - d1 * d1, P12 / P - d1 * d1
+
+
+def test_two_reading_hessian_matches_the_bivariate_orthant():
+    """Two readings on one side of a wall with the same m: d1, H_11 and H_12 from the orthant P = Phi(h) - 2 T(h, a)
+    and its textbook derivatives. Each is within its error estimate (plus the double-precision reference's 1e-11)."""
+    rows = [(m, t, sd) for m in (-0.5, 0.0, 0.3) for t in (0.1, 1.0) for sd in (0.01, 0.1, 0.5)]
+    for kind, obs in (("binary", {"y": [1, 1] * len(rows)}),
+                      ("levels", {"lo": [0.0, 0.0] * len(rows), "hi": [np.inf, np.inf] * len(rows)})):
+        m = np.repeat([r[0] for r in rows], 2)
+        sd = np.repeat([r[2] for r in rows], 2)
+        r = K.cell_integral(kind, m, obs, {"sd": sd}, np.repeat(np.arange(len(rows)), 2), [x[1] for x in rows])
+        H = np.zeros((2 * len(rows), 2 * len(rows)))
+        E = np.zeros_like(H)
+        H[r.hess_i, r.hess_j] = r.hess_v
+        E[r.hess_i, r.hess_j] = r.deriv_err["hess"]
+        for c, (mm, t, s) in enumerate(rows):
+            S = math.sqrt(t * t + s * s)
+            d1, h11, h12 = _orthant_derivs(mm / S, t * t / (S * S), S)
+            i = 2 * c
+            for got, want, est in ((r.d1[i], d1, r.deriv_err["d1"][i]), (r.d1[i + 1], d1, r.deriv_err["d1"][i + 1]),
+                                   (H[i, i], h11, E[i, i]), (H[i, i + 1], h12, E[i, i + 1]),
+                                   (H[i + 1, i], h12, E[i + 1, i])):
+                assert abs(got - want) <= est + 1e-11 * (abs(want) + 1.0 / S ** 2), (kind, rows[c], got, want, est)
+            assert abs(r.shift_d2[c] - (2 * h11 + 2 * h12)) <= r.deriv_err["shift_d2"][c] + 1e-11 / S ** 2
 
 
 @pytest.mark.slow
