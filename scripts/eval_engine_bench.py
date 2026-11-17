@@ -214,7 +214,8 @@ def fit_study(out: Path, engine: str, spec: str, seed: int, args: argparse.Names
     options = options_of(args)
     record = {"schema": RS.RECORD_SCHEMA, "spec": spec, "seed": seed, "engine": engine, "options": options,
               "cores": args.cores, "started": now(), "converged": False, "rows": [], "aggregates": {}, "family": None,
-              "expected": {}, "degenerate": [], "no_truth": [], "excluded": {}, "seconds": None, "cpu_seconds": None}
+              "expected": [], "expected_aggregates": {}, "degenerate": [], "no_truth": [], "excluded": {},
+              "seconds": None, "cpu_seconds": None}
     folder = ensure_study(out, spec, args.inputs, seed)
     truth = simulate.read_truth(folder / simulate.TRUTH_FILE)
     start, cpu = time.monotonic(), cpu_seconds()
@@ -226,12 +227,16 @@ def fit_study(out: Path, engine: str, spec: str, seed: int, args: argparse.Names
         meta, draws = FIT.fit_design(design, seed=seed, draws=args.draws, chains=args.chains, tune=args.tune,
                                      cores=args.cores, keep_draws=args.keep_draws, **fit_engine_kwargs(engine))
         record["seconds"], record["cpu_seconds"] = time.monotonic() - start, cpu_seconds() - cpu
-        record.update(converged=bool(meta["diagnostics"]["converged"]), diagnostics=meta["diagnostics"],
-                      engine_meta=meta.get("engine"), counts=meta.get("counts"))
+        record.update(converged=bool(meta["diagnostics"]["converged"]), diagnostics=RS.finite_json(meta["diagnostics"]),
+                      engine_meta=RS.finite_json(meta.get("engine")), counts=meta.get("counts"))
         record.update(RS.study_record(design, meta, draws, truth, family=not args.no_family))
     except Exception as exc:   # a failed fit is a result: it is recorded and counted
         record["seconds"], record["cpu_seconds"] = time.monotonic() - start, cpu_seconds() - cpu
         record["error"] = f"{type(exc).__name__}: {exc}"[:2000]
+    bad = RS.nonfinite_paths(record)
+    if bad:   # a number the statistics would read is not finite: the study is a failed fit, never a row
+        record = RS.finite_json(record)
+        record["error"] = (record.get("error") or "") + f" numbers that are not finite at {bad[:5]}"
     record["finished"] = now()
     RS.write_json_atomic(record_path(out, engine, spec, args.inputs, seed), record)
     return record
@@ -246,7 +251,10 @@ def plan(args: argparse.Namespace) -> list[tuple[str, int]]:
 def estimate(out: Path, engine: str, spec: str, inputs: int | None) -> float | None:
     """Median CPU seconds per fit from records already made for this engine and spec."""
     folder = out / "records" / engine / label(spec, inputs)
-    cpus = [r["cpu_seconds"] for r in RS.load_records(folder) if r.get("cpu_seconds")] if folder.exists() else []
+    try:
+        cpus = [r["cpu_seconds"] for r in RS.load_records(folder) if r.get("cpu_seconds")] if folder.exists() else []
+    except RS.RecordError as exc:
+        raise SystemExit(f"records under {folder} cannot be counted: {exc}")
     return float(np.median(cpus)) if cpus else None
 
 
@@ -507,13 +515,21 @@ def stats(args: argparse.Namespace) -> int:
         old = RS.old_records(out / "records" / engine)
         if old:
             print(f"{engine}: {old} records of an older schema are not read (no parameter inventory)")
-        groups = grouped(RS.load_records(out / "records" / engine))
-        summaries = {name: RS.summarise(records, studies_needed=scope["studies"])
-                     for name, records in sorted(groups.items())}
+        notes: dict = {}
+        try:
+            groups = grouped(RS.load_records(out / "records" / engine, notes))
+            summaries = {name: RS.summarise(records, studies_needed=scope["studies"])
+                         for name, records in sorted(groups.items())}
+        except RS.RecordError as exc:
+            raise SystemExit(f"{engine}: the records cannot be counted, no statistic is made: {exc}")
+        if notes.get("copies_dropped"):
+            print(f"{engine}: {notes['copies_dropped']} identical copies of studies already read are counted once, "
+                  f"for example {notes['copies'][:3]}")
         full = {name.rsplit("-i", 1)[0]: s for name, s in summaries.items() if name.endswith("-iall")}
         timings = load_timings(out, engine)
         gate = RS.engine_gate(full, timings, scope)
         result[engine] = {"summaries": summaries, "gate": gate, "old_records": old,
+                          "copies_dropped": notes.get("copies_dropped", 0),
                           "timings": [{k: t.get(k) for k in ("spec", "inputs", "wall_seconds", "engine_seconds",
                                                               "cpu_seconds", "cores_measured", "threads", "converged",
                                                               "exit_code", "started")}
@@ -526,18 +542,23 @@ def stats(args: argparse.Namespace) -> int:
                   f"{f(t['engine_seconds'], 1)} s, CPU {f(t['cpu_seconds'], 1)} s, cores {f(t['cores_measured'], 2)}, "
                   f"converged {t['converged']}, exit {t['exit_code']}")
         print(f"engine gate for {engine}: {gate['state']} (catalog-size records only; reported here, decided by people)")
+        if gate["nonfinite"]:
+            print(f"  numbers that are not finite, a fail: {gate['nonfinite'][:5]}")
         if scope["narrowed"]:
             print(f"  narrowed scope: {scope['note']}; specs left out: {', '.join(scope['omitted']) or 'none'}")
         for key, item in gate["items"].items():
             print(f"  {key}: {item['state']}  " + json.dumps({k: v for k, v in item.items() if k != "state"}))
-        RS.write_json_atomic(out / f"stats-{engine}.json", result[engine])
+        RS.write_json_atomic(out / f"stats-{engine}.json", RS.finite_json(result[engine]))   # decided above; NaN shown as null
     return 0
 
 
 def compare(args: argparse.Namespace) -> int:
     out = Path(args.out)
     a, b = args.engines[:2]
-    ga, gb = grouped(RS.load_records(out / "records" / a)), grouped(RS.load_records(out / "records" / b))
+    try:
+        ga, gb = grouped(RS.load_records(out / "records" / a)), grouped(RS.load_records(out / "records" / b))
+    except RS.RecordError as exc:
+        raise SystemExit(f"the records cannot be counted, nothing is compared: {exc}")
     result = {}
     for name in sorted(set(ga) & set(gb)):
         got = RS.compare(ga[name], gb[name])

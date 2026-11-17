@@ -9,10 +9,21 @@ and only `pass` counts.
 Records
 -------
 One JSON object per study: `schema`, `spec`, `seed`, `engine`, `options`, `converged`, `diagnostics`,
-`seconds` (the fit, wall clock), `cpu_seconds`, `rows`, `aggregates`, `family`, `expected`, `degenerate`,
-`excluded`, and `error` when the fit raised. A row is one parameter of the fit: `class`, `name`, `truth`,
-`mean`, `sd`, `lo`, `hi` (the 5% and 95% points of the draws, as `fitfile.stat` reports them), `hit`
-(the interval holds the truth) and, for a bad parameter, `degenerate`.
+`seconds` (the fit, wall clock), `cpu_seconds`, `rows`, `aggregates`, `family`, `expected`,
+`expected_aggregates`, `degenerate`, `no_truth`, `excluded`, and `error` when the fit raised. A row is one
+parameter of the fit: `class`, `name`, `truth`, `mean`, `sd`, `lo`, `hi` (the 5% and 95% points of the
+draws, as `fitfile.stat` reports them), `hit` (the interval holds the truth) and, for a bad parameter,
+`degenerate`. `expected` names every parameter the design says the study must report (class and name)
+and `expected_aggregates` the number of run qualities.
+
+Evidence is checked before any statistic (`validate_records`), and bad evidence is refused
+(`RecordError`), never counted:
+
+- a study is (engine, spec, inputs, seed). Copies of a record that are identical are kept once and
+  counted (`copies_dropped`); copies that differ are refused. Every count of studies is of unique studies;
+- a record's rows must be exactly its `expected` parameters (none missing, none extra, none twice, the
+  same class), its aggregates exactly its `expected_aggregates`, each `hit` must agree with its interval
+  and truth, and every number must be finite (files are written and read without NaN or infinity).
 
 Which parameters a study must have (the inventory)
 --------------------------------------------------
@@ -27,9 +38,13 @@ The list comes from the design (`model.Design`), never from the draws. A paramet
   carries a dimension's location (`bias_w` of 1), the `sigma` of the only judge that carries a binary
   dimension's unit, the `sigma_pair` of the only unit judge on a pairs-only dimension, the arm mean of
   a pairs-only dimension with one arm, and correlations under the `diag` structure;
-- otherwise expected, and then always a row. Draws that are missing, not finite, or constant make a
-  row marked `degenerate` (a constant interval holds the truth only if it equals it; the others never
-  do), and a degenerate gated parameter fails the spec. Nothing expected disappears.
+- otherwise expected, named in `expected`, and then always a row. Draws that are missing, not finite, or
+  constant make a row marked `degenerate` (a constant interval holds the truth only if it equals it; the
+  others never do), and a degenerate gated parameter fails the spec. Nothing expected disappears.
+
+A spec is complete only when every parameter gated in any of its studies is gated in at least the
+required number of unique studies: a parameter that is identified in only a few studies leaves the spec
+incomplete, however well its class is filled by other parameters.
 
 A truth that is not a number (the simulation has no such parameter) or exactly 0 on an sd (a percentile
 interval of a positive quantity cannot hold 0) is left out and counted (`excluded`); a gated parameter
@@ -102,7 +117,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 from scipy import stats as sps
 
-RECORD_SCHEMA = "loopmath.eval-engine-bench-record/2"
+RECORD_SCHEMA = "loopmath.eval-engine-bench-record/3"
 TIMING_SCHEMA = "loopmath.eval-engine-bench-timing/2"
 BAND = (0.85, 0.95)        # accepted coverage of a 90% interval (PRD 10.3)
 CI = 0.95                  # level of the intervals on a coverage or a rate
@@ -303,6 +318,7 @@ def parameter_rows(design: Any, meta: Mapping, draws: Mapping[str, np.ndarray], 
     panel_calls = {int(j) for j in data["pc_j"]}
     diag = str(data.get("structure")) == "diag"
     rows: list[dict] = []
+    expected: list[dict] = []
     excluded: dict[str, dict[str, int]] = {}
     degenerate: list[dict] = []
     no_truth: list[dict] = []
@@ -322,6 +338,7 @@ def parameter_rows(design: Any, meta: Mapping, draws: Mapping[str, np.ndarray], 
             return skip(klass, "no_truth")
         if base in NONNEG and value == 0.0:
             return skip(klass, "truth_at_0")
+        expected.append({"class": klass, "name": name})       # from the design and truth, before any draw
         try:
             x = np.asarray(get(), dtype=float)
         except (KeyError, IndexError):
@@ -399,11 +416,9 @@ def parameter_rows(design: Any, meta: Mapping, draws: Mapping[str, np.ndarray], 
         if aggregates["q_run"]["degenerate"]:
             degenerate.append({"class": "q_run", "name": "q_run", "why": f"{aggregates['q_run']['degenerate']} "
                                                                          "run qualities missing, not finite or constant"})
-    expected = dict(Counter(row["class"] for row in rows))
-    if "q_run" in aggregates:
-        expected["q_run"] = aggregates["q_run"]["n"]
-    return {"rows": rows, "aggregates": aggregates, "expected": expected, "degenerate": degenerate,
-            "no_truth": no_truth, "excluded": excluded}
+    expected_aggregates = {"q_run": int(np.isfinite(t["q_run"]).sum())} if "q_run" in t else {}
+    return {"rows": rows, "aggregates": aggregates, "expected": expected, "expected_aggregates": expected_aggregates,
+            "degenerate": degenerate, "no_truth": no_truth, "excluded": excluded}
 
 
 def run_aggregate(q_run: Any, value: np.ndarray) -> dict:
@@ -476,30 +491,198 @@ def study_record(design: Any, meta: Mapping, draws: Mapping[str, np.ndarray], tr
 
 
 def write_json_atomic(path: Path, obj: Any) -> Path:
-    """Write JSON through a temporary file in the same folder and a rename."""
+    """Write JSON through a temporary file in the same folder and a rename. NaN and infinity are refused
+    (`ValueError`), so no file of the harness holds a number JSON does not have."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(obj, indent=1, allow_nan=False) + "\n"
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(obj, indent=1, allow_nan=True) + "\n", encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
     return path
 
 
-def load_records(folder: Path) -> list[dict]:
-    """Every record of this harness's schema under a folder (any depth), in a stable order. A record of
-    an older schema is not read: it has no inventory (`old_records` counts them)."""
+def nonfinite_paths(obj: Any, path: str = "") -> list[str]:
+    """Where a nested object holds a float that is NaN or infinite."""
+    if isinstance(obj, float):
+        return [] if math.isfinite(obj) else [path or "."]
+    if isinstance(obj, Mapping):
+        return [p for k, v in obj.items() for p in nonfinite_paths(v, f"{path}.{k}")]
+    if isinstance(obj, (list, tuple)):
+        return [p for n, v in enumerate(obj) for p in nonfinite_paths(v, f"{path}[{n}]")]
+    return []
+
+
+def finite_json(obj: Any) -> Any:
+    """A copy with every NaN or infinite float replaced by None, for informational fields only (an
+    engine's diagnostics); numbers the gate reads are checked, never replaced."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, Mapping):
+        return {k: finite_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [finite_json(v) for v in obj]
+    if isinstance(obj, np.generic):
+        return finite_json(obj.item())
+    return obj
+
+
+class RecordError(ValueError):
+    """Evidence that cannot be counted: conflicting copies of a study, a record that breaks its own
+    inventory, or a number that is not finite. The statistics refuse to run on it."""
+
+    def __init__(self, problems: Sequence[str]):
+        self.problems = list(problems)
+        more = f"; and {len(self.problems) - 20} more" if len(self.problems) > 20 else ""
+        super().__init__("; ".join(self.problems[:20]) + more)
+
+
+def _no_constant(word: str) -> float:
+    raise ValueError(f"{word} is not a finite number")
+
+
+def read_json_finite(path: Path) -> Any:
+    """JSON from a file, refusing NaN and infinity."""
+    return json.loads(Path(path).read_text(encoding="utf-8"), parse_constant=_no_constant)
+
+
+def identity(record: Mapping) -> tuple:
+    """What makes a study: engine, spec, inputs setting and seed."""
+    return (record.get("engine"), record.get("spec"), (record.get("options") or {}).get("inputs"), record.get("seed"))
+
+
+def _finite_number(x: Any, low: float | None = None) -> bool:
+    ok = isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+    return ok and (low is None or x >= low)
+
+
+def record_problems(record: Mapping) -> list[str]:
+    """Why a record cannot be counted (empty when it can): see the module text."""
+    where = f"{record.get('spec')} s{record.get('seed')}"
+    if record.get("schema") != RECORD_SCHEMA:
+        return [f"{where}: schema {record.get('schema')}, not {RECORD_SCHEMA}"]
     out = []
+    if not isinstance(record.get("seed"), int) or isinstance(record.get("seed"), bool):
+        out.append(f"{where}: seed is not a whole number")
+    if not _finite_number(record.get("seconds"), 0.0):
+        out.append(f"{where}: seconds {record.get('seconds')!r} is not a finite number of at least 0")
+    if record.get("cpu_seconds") is not None and not _finite_number(record.get("cpu_seconds"), 0.0):
+        out.append(f"{where}: cpu_seconds {record.get('cpu_seconds')!r} is not a finite number of at least 0")
+    bad = nonfinite_paths({k: v for k, v in record.items() if k not in ("diagnostics", "engine_meta")})
+    if bad:
+        out.append(f"{where}: numbers that are not finite at {bad[:5]}")
+    if record.get("error"):
+        return out
+    expected = record.get("expected")
+    if not isinstance(expected, list) or not all(isinstance(e, Mapping) and {"class", "name"} <= set(e) for e in expected):
+        return out + [f"{where}: `expected` is not a list of named parameters"]
+    want = {}
+    for entry in expected:
+        if entry["name"] in want:
+            out.append(f"{where}: {entry['name']} is expected twice")
+        want[entry["name"]] = entry["class"]
+    got = {}
+    for row in record.get("rows") or []:
+        name = row.get("name")
+        if name in got:
+            out.append(f"{where}: two rows for {name}")
+            continue
+        got[name] = row
+        if name not in want:
+            out.append(f"{where}: row {name} is not in `expected`")
+        elif row.get("class") != want[name]:
+            out.append(f"{where}: row {name} has class {row.get('class')}, expected {want[name]}")
+        if not _finite_number(row.get("truth")):
+            out.append(f"{where}: row {name} has no finite truth")
+            continue
+        if row.get("degenerate") in ("missing", "nonfinite"):
+            if row.get("hit") is not False or any(row.get(k) is not None for k in ("mean", "sd", "lo", "hi")):
+                out.append(f"{where}: degenerate row {name} carries numbers or a hit")
+            continue
+        if not all(_finite_number(row.get(k)) for k in ("mean", "sd", "lo", "hi")) or row["lo"] > row["hi"]:
+            out.append(f"{where}: row {name} has no finite interval")
+        elif row.get("hit") is not (row["lo"] <= row["truth"] <= row["hi"]):
+            out.append(f"{where}: row {name} says hit {row.get('hit')}, its interval and truth say otherwise")
+    missing = [name for name in want if name not in got]
+    if missing:
+        out.append(f"{where}: {len(missing)} expected parameters have no row, for example {missing[:3]}")
+    want_agg = record.get("expected_aggregates")
+    aggregates = record.get("aggregates") or {}
+    if not isinstance(want_agg, Mapping):
+        out.append(f"{where}: `expected_aggregates` is missing")
+    else:
+        if set(aggregates) != set(want_agg):
+            out.append(f"{where}: aggregates {sorted(aggregates)}, expected {sorted(want_agg)}")
+        for klass, n in want_agg.items():
+            agg = aggregates.get(klass)
+            if agg is None:
+                continue
+            counts = [agg.get(k) for k in ("n", "hits", "err_n", "degenerate")]
+            if agg.get("n") != n or not all(isinstance(c, int) and 0 <= c <= n for c in counts):
+                out.append(f"{where}: aggregate {klass} counts {counts} do not fit its {n} expected values")
+    for row in record.get("family") or []:
+        if not all(_finite_number(row.get(k)) for k in ("truth", "mean", "lo", "hi")):
+            out.append(f"{where}: family contrast {row.get('judge')} {row.get('family')} has a number that is not finite")
+    return out
+
+
+def unique_studies(records: Sequence[Mapping], sources: Sequence[str] | None = None) -> tuple[list[dict], dict]:
+    """One record per study (`identity`). Identical copies are kept once and counted; copies that differ
+    raise `RecordError`."""
+    sources = list(sources) if sources is not None else [f"record {n}" for n in range(len(records))]
+    first: dict[tuple, tuple[str, str]] = {}
+    out, dropped, problems = [], [], []
+    for record, source in zip(records, sources):
+        key = identity(record)
+        text = json.dumps(record, sort_keys=True, allow_nan=True)
+        if key not in first:
+            first[key] = (text, source)
+            out.append(dict(record))
+        elif first[key][0] == text:
+            dropped.append(source)
+        else:
+            problems.append(f"{source} and {first[key][1]} are two different records of one study {key}")
+    if problems:
+        raise RecordError(problems)
+    return out, {"copies_dropped": len(dropped), "copies": dropped[:20]}
+
+
+def validate_records(records: Sequence[Mapping], sources: Sequence[str] | None = None) -> tuple[list[dict], dict]:
+    """Unique studies, each checked by `record_problems`; `RecordError` lists every problem found."""
+    unique, notes = unique_studies(records, sources)
+    problems = [p for record in unique for p in record_problems(record)]
+    if problems:
+        raise RecordError(problems)
+    return unique, notes
+
+
+def load_records(folder: Path, notes: dict | None = None) -> list[dict]:
+    """The unique, checked records of this harness's schema under a folder (any depth), in a stable order.
+    A record of an older schema is not read (`old_records` counts them). A file with NaN or infinity,
+    copies of a study that differ, or a record that breaks its inventory raise `RecordError`; identical
+    copies are kept once and counted in `notes`."""
+    records, sources, problems = [], [], []
     for path in sorted(Path(folder).rglob("s*.json")):
-        obj = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            obj = read_json_finite(path)
+        except ValueError as exc:
+            problems.append(f"{path}: {exc}")
+            continue
         if obj.get("schema") == RECORD_SCHEMA:
-            out.append(obj)
-    return sorted(out, key=lambda r: (r["engine"], r["spec"], int(r["seed"])))
+            records.append(obj)
+            sources.append(str(path))
+    if problems:
+        raise RecordError(problems)
+    unique, found = validate_records(records, sources)
+    if notes is not None:
+        notes.update(found)
+    return sorted(unique, key=lambda r: (r["engine"], r["spec"], int(r["seed"])))
 
 
 def old_records(folder: Path) -> int:
     n = 0
     for path in sorted(Path(folder).rglob("s*.json")):
-        schema = json.loads(path.read_text(encoding="utf-8")).get("schema", "")
+        schema = json.loads(path.read_text(encoding="utf-8")).get("schema", "")      # NaN read, schema only
         n += schema.startswith("loopmath.eval-engine-bench-record/") and schema != RECORD_SCHEMA
     return n
 
@@ -602,7 +785,8 @@ def combine(states: Iterable[str]) -> str:
 
 
 def _usable(records: Iterable[Mapping]) -> list[Mapping]:
-    return [r for r in records if not r.get("error")]
+    """The records without an error, one per study: a table never counts a study twice."""
+    return [r for r in unique_studies(list(records))[0] if not r.get("error")]
 
 
 def class_table(records: Iterable[Mapping], band: tuple[float, float] = BAND) -> dict:
@@ -712,7 +896,12 @@ def family_table(records: Iterable[Mapping], limit: float = FAMILY_LIMIT) -> dic
 
 
 def summarise(records: Sequence[Mapping], band: tuple[float, float] = BAND, studies_needed: int = GATE_STUDIES) -> dict:
-    """Everything the report says about one spec and engine, with the spec's part of the gate."""
+    """Everything the report says about one spec and engine, with the spec's part of the gate. The records
+    are checked first (`validate_records`); bad evidence raises `RecordError`."""
+    records, notes = validate_records(records)
+    groups = sorted({repr(identity(r)[:3]) for r in records})
+    if len(groups) > 1:
+        raise RecordError([f"records of more than one engine, spec or inputs setting: {groups[:5]}"])
     usable = _usable(records)
     failed = [{"seed": r["seed"], "error": r["error"]} for r in records if r.get("error")]
     unconverged = [r["seed"] for r in usable if not r.get("converged")]
@@ -724,8 +913,17 @@ def summarise(records: Sequence[Mapping], band: tuple[float, float] = BAND, stud
     first = records[0] if records else {}
     degenerate = [{"seed": r["seed"], **item} for r in usable for item in r.get("degenerate") or []]
     no_truth = [{"seed": r["seed"], **item} for r in usable for item in r.get("no_truth") or []]
+    gated_in: Counter = Counter()          # unique studies in which each parameter is gated
+    aggregate_in: Counter = Counter()
+    for r in usable:
+        gated_in.update({e["name"] for e in r["expected"] if ":" not in e["class"]})
+        aggregate_in.update(set(r["expected_aggregates"]))
     out = {"spec": first.get("spec"), "engine": first.get("engine"), "options": first.get("options"),
-           "studies": len(records), "usable": len(usable), "failed": failed, "unconverged": unconverged,
+           "studies": len(records), "usable": len(usable), "copies_dropped": notes["copies_dropped"],
+           "failed": failed, "unconverged": unconverged,
+           "parameters_short": sorted(n for n, k in gated_in.items() if k < studies_needed),
+           "gated_parameters": len(gated_in), "gated_studies_min": min(gated_in.values()) if gated_in else 0,
+           "aggregates_short": sorted(n for n, k in aggregate_in.items() if k < studies_needed),
            "old_schema": sum(r.get("schema") != RECORD_SCHEMA for r in records),
            "seconds": _spread(seconds), "cpu_seconds": _spread(cpu),
            "classes": classes, "arm_means": [p for p in params if p["class"] in ARM_CLASSES],
@@ -772,8 +970,11 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
         "enough_studies": (PASS if enough else INCOMPLETE, f"{summary['studies']} of {studies_needed}"),
         "records_current": (INCOMPLETE if summary.get("old_schema") else PASS,
                             f"{summary.get('old_schema', 0)} records of an older schema (no inventory)"),
-        "inventory_complete": (INCOMPLETE if sparse or summary["no_truth_gated"] or not gated else PASS,
-                               f"gated classes seen in fewer than {studies_needed} studies: {sparse}; gated "
+        "inventory_complete": (INCOMPLETE if (sparse or summary["parameters_short"] or summary["aggregates_short"]
+                                              or summary["no_truth_gated"] or not gated) else PASS,
+                               f"gated parameters in fewer than {studies_needed} unique studies: "
+                               f"{len(summary['parameters_short'])} {summary['parameters_short'][:10]}; aggregates "
+                               f"short: {summary['aggregates_short']}; gated classes short: {sparse}; gated "
                                f"parameters with no truth: {len(summary['no_truth_gated'])}"
                                + ("; no gated class" if not gated else "")),
         "no_degenerate_parameters": (FAIL if summary["degenerate_gated"] else PASS,
@@ -788,6 +989,8 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
         "every_fit_clean": (FAIL if summary["failed"] or summary["unconverged"] else until,
                             f"{len(summary['failed'])} failed, {len(summary['unconverged'])} not converged"),
     }
+    bad = nonfinite_paths({k: v for k, v in summary.items() if k != "gate"})
+    items["numbers_finite"] = (FAIL if bad else PASS, f"numbers that are not finite: {bad[:5]}")
     state = combine(state for state, _ in items.values())
     return {"items": {k: {"state": s, "why": why} for k, (s, why) in items.items()}, "state": state,
             "pass": state == PASS, "classes_out_of_band": low, "classes_sparse": sparse, "arm_means_biased": biased}
@@ -847,14 +1050,21 @@ def timing_item(timings: Sequence[Mapping], seconds: float = GATE_SECONDS, cores
             problems.append(f"counts {wrong}, want {SIZE_COUNTS}")
         if counts and counts.get("readings_used") != counts.get("readings"):
             problems.append(f"readings used {counts.get('readings_used')} of {counts.get('readings')}")
-        used = t.get("cores_measured")
-        if used is None or used > cores * (1.0 + CORES_SLACK):
-            problems.append(f"cores measured {used}, limit {cores}")
+        wall, cpu, used = t.get("wall_seconds"), t.get("cpu_seconds"), t.get("cores_measured")
+        if not (_finite_number(wall) and wall > 0):
+            problems.append(f"wall {wall!r} s is not a finite number above 0")
+        elif wall >= seconds:
+            problems.append(f"wall {wall} s, limit {seconds}")
+        if not _finite_number(cpu, 0.0):
+            problems.append(f"cpu {cpu!r} s is not a finite number of at least 0")
+        if not _finite_number(used, 0.0):
+            problems.append(f"cores measured {used!r} is not a finite number of at least 0")
+        else:
+            measured = max(used, cpu / wall) if _finite_number(cpu, 0.0) and _finite_number(wall) and wall > 0 else used
+            if measured > cores * (1.0 + CORES_SLACK):
+                problems.append(f"cores measured {measured:.2f}, limit {cores}")
         if str(t.get("threads")) != "1":
             problems.append(f"threads per process {t.get('threads')}")
-        wall = t.get("wall_seconds")
-        if wall is None or wall >= seconds:
-            problems.append(f"wall {wall} s, limit {seconds}")
         attempts.append({"started": t.get("started"), "wall_seconds": wall, "cores_measured": used,
                          "problems": problems})
     bad = [a for a in attempts if a["problems"]]
@@ -905,8 +1115,9 @@ def engine_gate(summaries: Mapping[str, Mapping], timings: Sequence[Mapping], sc
             "specs": list(repeated), "unclean": rep_unclean, "missing_or_short": rep_missing,
             "kinds_missing": kinds_missing},
     }
-    state = combine(item["state"] for item in items.values())
-    return {"scope": scope, "items": items, "state": state, "all_ok": state == PASS}
+    bad = nonfinite_paths(items) + [f"{name}{p}" for name, s in summaries.items() for p in nonfinite_paths(s)]
+    state = FAIL if bad else combine(item["state"] for item in items.values())
+    return {"scope": scope, "items": items, "nonfinite": bad[:20], "state": state, "all_ok": state == PASS}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -917,6 +1128,7 @@ def compare(records_a: Sequence[Mapping], records_b: Sequence[Mapping]) -> dict:
     """Estimates side by side on the studies both engines fitted: per class, the gap between the posterior
     means in units of engine A's posterior sd, the ratio of interval widths (B over A), and coverage of
     each on the shared studies; and the fit times. Degenerate rows are counted, not compared."""
+    records_a, records_b = validate_records(records_a)[0], validate_records(records_b)[0]
     a = {(r["spec"], int(r["seed"])): r for r in _usable(records_a)}
     b = {(r["spec"], int(r["seed"])): r for r in _usable(records_b)}
     shared = sorted(set(a) & set(b))
@@ -944,11 +1156,12 @@ def compare(records_a: Sequence[Mapping], records_b: Sequence[Mapping]) -> dict:
     classes = {}
     for klass, acc in sorted(per.items()):
         z, w = np.asarray(acc["z"], dtype=float), np.asarray(acc["width"], dtype=float)
+        z, w = z[np.isfinite(z)], w[np.isfinite(w)]
         classes[klass] = {"rows": len(acc["hit_a"]), "degenerate": acc["degenerate"],
-                          "median_abs_gap_sd": float(np.nanmedian(np.abs(z))) if z.size else None,
-                          "max_abs_gap_sd": float(np.nanmax(np.abs(z))) if z.size else None,
+                          "median_abs_gap_sd": float(np.median(np.abs(z))) if z.size else None,
+                          "max_abs_gap_sd": float(np.max(np.abs(z))) if z.size else None,
                           "worst": worst.get(klass, (None, None))[1],
-                          "median_width_ratio": float(np.nanmedian(w)) if w.size else None,
+                          "median_width_ratio": float(np.median(w)) if w.size else None,
                           "coverage_a": float(np.mean(acc["hit_a"])), "coverage_b": float(np.mean(acc["hit_b"]))}
     secs_a = [float(a[k]["seconds"]) for k in shared]
     secs_b = [float(b[k]["seconds"]) for k in shared]

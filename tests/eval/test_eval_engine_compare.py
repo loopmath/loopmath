@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import math
 import os
 import subprocess
 import sys
@@ -156,12 +157,15 @@ def synthetic(studies: int, rows_of) -> list[dict]:
         rows, family = rows_of(seed)
         out.append({"schema": RS.RECORD_SCHEMA, "spec": "synthetic", "seed": seed, "engine": "none", "options": {},
                     "converged": True, "seconds": 1.0, "cpu_seconds": 1.0, "rows": rows, "aggregates": {},
-                    "family": family, "expected": {}, "degenerate": [], "no_truth": [], "excluded": {}})
+                    "family": family, "expected": [{"class": r["class"], "name": r["name"]} for r in rows],
+                    "expected_aggregates": {}, "degenerate": [], "no_truth": [], "excluded": {}})
     return out
 
 
 def row(klass: str, name: str, hit: bool, error: float = 0.0) -> dict:
-    return {"class": klass, "name": name, "truth": 0.5, "mean": 0.5 + error, "sd": 0.1, "lo": 0.3, "hi": 0.7,
+    """One parameter row with truth 0.5 whose interval holds the truth or not, as `hit` says."""
+    lo, hi = (0.3, 0.7) if hit else (0.6, 0.8)
+    return {"class": klass, "name": name, "truth": 0.5, "mean": 0.5 + error, "sd": 0.1, "lo": lo, "hi": hi,
             "hit": hit}
 
 
@@ -266,7 +270,7 @@ def passing(studies: int = 200) -> dict:
 def timing(**change) -> dict:
     """A size-target timing that meets every condition; `change` breaks one."""
     out = {"schema": RS.TIMING_SCHEMA, "spec": "size-target", "full_size": True, "started": "t", "exit_code": 0,
-           "converged": True, "wall_seconds": 90.0, "cores_measured": 1.9, "threads": "1",
+           "converged": True, "wall_seconds": 90.0, "cpu_seconds": 171.0, "cores_measured": 1.9, "threads": "1",
            "counts": {"runs": 500, "readings": 20000, "readings_used": 20000, "dimensions": 5, "judges": 4}}
     out.update(change)
     return out
@@ -359,6 +363,214 @@ def test_size_target_timing_counts_every_attempt(attempts, state):
         assert got["failed_attempts"] >= 1 and any(a["problems"] for a in got["attempts"])
     every = {name: passing() for name in ALL_SPECS}
     assert RS.engine_gate(every, attempts)["all_ok"] is (state == "pass")
+
+
+# ---------------------------------------------------------------------------------------------------
+# Evidence checked before any statistic: named inventory, one record per study, finite numbers
+
+
+def probe_records(name: str = "linear", studies: int = 200, extra=None) -> list[dict]:
+    """Studies with one arm mean that holds its truth in 9 of 10 seeds (seed % 10 != 0), the family measured
+    with no contrast; `extra(seed)` adds rows to a study."""
+    def rows_of(seed):
+        rows = [row("mu", "mu[a,d]", seed % 10 != 0)] + (extra(seed) if extra else [])
+        return rows, []
+    out = synthetic(studies, rows_of)
+    for record in out:
+        record.update(spec=name, engine="probe", options={"inputs": None})
+    return out
+
+
+def binomial_interval(k: int, n: int, tail: float = 0.025) -> tuple[float, float]:
+    """The exact interval by bisection on binomial tail sums, written apart from the code under test."""
+    def tail_at_least(p):
+        return sum(math.comb(n, j) * p ** j * (1 - p) ** (n - j) for j in range(k, n + 1))
+
+    def tail_at_most(p):
+        return sum(math.comb(n, j) * p ** j * (1 - p) ** (n - j) for j in range(k + 1))
+
+    def solve(f, rising):
+        lo, hi = 0.0, 1.0
+        for _ in range(200):
+            mid = (lo + hi) / 2
+            if (f(mid) < tail) == rising:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+    return solve(tail_at_least, True), solve(tail_at_most, False)
+
+
+def test_a_parameter_gated_in_2_of_200_studies_leaves_the_spec_incomplete():
+    """A tau gated in every study fills its class; a second tau is identified in only 2 of 200 studies and
+    misses both times. The class covers 180 of 202 (in the band), but the rare parameter has 2 studies, so
+    the inventory is incomplete and the spec does not pass. Without it, the same spec passes."""
+    common = lambda seed: [row("tau", "tau[common,d]", seed % 10 != 0)]
+    rare = lambda seed: common(seed) + ([row("tau", "tau[rare,d]", False)] if seed < 2 else [])
+    control = RS.summarise(probe_records(extra=common))
+    assert control["gate"]["state"] == "pass", control["gate"]
+    got = RS.summarise(probe_records(extra=rare))
+    assert got["classes"]["tau"]["rows"] == 202 and abs(got["classes"]["tau"]["coverage"] - 180 / 202) < 1e-12
+    assert got["classes"]["tau"]["in_band"] is True
+    assert got["parameters_short"] == ["tau[rare,d]"]
+    item = got["gate"]["items"]["inventory_complete"]
+    assert item["state"] == "incomplete" and "tau[rare,d]" in item["why"]
+    assert got["gate"]["state"] == "incomplete" and not got["gate"]["pass"]
+
+
+def test_a_record_that_breaks_its_declared_inventory_is_refused():
+    """A record declaring four arm means, six taus and 320 run qualities, with one arm mean row and no
+    aggregates, is refused before any statistic; so are the old count-only inventory, an extra row, a row
+    of another class, a hit its own interval contradicts, and two rows of one parameter in one study."""
+    def broken(change):
+        records = probe_records(studies=1)
+        change(records[0])
+        with pytest.raises(RS.RecordError) as err:
+            RS.summarise(records)
+        return str(err.value)
+
+    def declared(record):
+        record["expected"] = ([{"class": "mu", "name": f"mu[{a},d]"} for a in "abcd"]
+                              + [{"class": "tau", "name": f"tau[{j},d]"} for j in range(6)])
+        record["expected_aggregates"] = {"q_run": 320}
+    why = broken(declared)
+    assert "9 expected parameters have no row" in why and "aggregates [], expected ['q_run']" in why
+    assert "not a list of named parameters" in broken(lambda r: r.update(expected={"mu": 4, "tau": 6, "q_run": 320}))
+    assert "not in `expected`" in broken(lambda r: r["rows"].append(row("mu", "mu[b,d]", True)))
+    assert "has class tau" in broken(lambda r: r["rows"][0].update({"class": "tau"}))
+    assert "its interval and truth say otherwise" in broken(lambda r: r["rows"][0].update(hit=not r["rows"][0]["hit"]))
+    assert "two rows for mu[a,d]" in broken(lambda r: r["rows"].append(dict(r["rows"][0])))
+    assert "aggregate q_run counts" in broken(lambda r: r.update(
+        expected_aggregates={"q_run": 320}, aggregates={"q_run": {"n": 320, "hits": 400, "error_sum": 0.0, "err_n": 320,
+                                                                  "error_sq_sum": 0.0, "sd_sum": 1.0, "degenerate": 0}}))
+
+
+def test_identical_copies_count_once_and_differing_copies_are_refused():
+    """Twenty seeds read ten times each are 20 studies, not 200: 18 of 20 hits, with the exact interval of
+    n = 20, found here by bisection on binomial tails (0.6830172860 to 0.9876514728), and the spec is
+    incomplete. A copy that differs from the first record of its study is refused. The same seed at
+    another inputs setting is another study."""
+    copies = [json.loads(json.dumps(r)) for r in probe_records(studies=20) for _ in range(10)]
+    got = RS.summarise(copies)
+    assert got["studies"] == 20 and got["copies_dropped"] == 180
+    arm = got["arm_means"][0]
+    assert (arm["hits"], arm["studies"]) == (18, 20)
+    lo, hi = binomial_interval(18, 20)
+    assert abs(lo - 0.6830172860) < 1e-9 and abs(hi - 0.9876514728) < 1e-9
+    assert abs(arm["lo"] - lo) < 1e-8 and abs(arm["hi"] - hi) < 1e-8
+    assert RS.parameter_table(copies)[0]["studies"] == 20 and RS.class_table(copies)["mu"]["studies"] == 20
+    assert got["gate"]["items"]["enough_studies"]["state"] == "incomplete" and got["gate"]["state"] != "pass"
+    differing = json.loads(json.dumps(copies))
+    differing[57]["seconds"] = 2.0
+    with pytest.raises(RS.RecordError, match="two different records of one study"):
+        RS.summarise(differing)
+    with pytest.raises(RS.RecordError, match="two different records of one study"):
+        RS.parameter_table(differing)
+    other = probe_records(studies=1)[0]
+    unique, notes = RS.unique_studies([other, {**other, "options": {"inputs": 12}}])
+    assert len(unique) == 2 and notes["copies_dropped"] == 0
+    with pytest.raises(RS.RecordError, match="more than one engine, spec or inputs"):
+        RS.summarise(unique)
+
+
+def full_matrix(out: Path, copies: int, seeds: int) -> None:
+    for name in RS.CATALOG_SPECS:
+        for c in range(copies):
+            for record in probe_records(name, seeds):
+                RS.write_json_atomic(out / "records" / "probe" / f"{name}-iall" / f"copy{c}" / f"s{record['seed']}.json",
+                                     record)
+    RS.write_json_atomic(out / "timing" / "probe" / "size-target-iall-s0" / "timing-synthetic.json",
+                         {**timing(), "inputs": None, "started": "synthetic"})
+
+
+def test_stats_on_a_full_matrix_of_copies_counts_unique_studies(tmp_path):
+    """The real CLI on all 17 catalog specs, each 20 seeds written in ten folders: 20 studies per spec, the
+    3060 copies said, and the engine gate incomplete. A copy changed on disk stops `stats`, and so does a
+    record with NaN."""
+    out = tmp_path / "bench"
+    full_matrix(out, copies=10, seeds=20)
+    shown = bench("stats", "--out", out, "--engine", "probe")
+    assert "3060 identical copies" in shown.stdout
+    assert "probe linear-iall: 20 studies" in shown.stdout and "engine gate for probe: incomplete" in shown.stdout
+    saved = json.loads((out / "stats-probe.json").read_text(encoding="utf-8"))
+    assert {s["studies"] for s in saved["summaries"].values()} == {20} and saved["gate"]["all_ok"] is False
+    assert saved["copies_dropped"] == 3060
+    path = out / "records" / "probe" / "linear-iall" / "copy7" / "s3.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["rows"][0].update(hit=False, lo=0.6, hi=0.8)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    refused = bench("stats", "--out", out, "--engine", "probe", check=False)
+    assert refused.returncode != 0 and "two different records of one study" in refused.stderr
+    assert "engine gate" not in refused.stdout
+    record["rows"][0].update(hit=True, lo=0.3, hi=0.7, mean=float("nan"))
+    path.write_text(json.dumps(record, allow_nan=True), encoding="utf-8")
+    refused = bench("stats", "--out", out, "--engine", "probe", check=False)
+    assert refused.returncode != 0 and "NaN is not a finite number" in refused.stderr
+
+
+NAN, INF = float("nan"), float("inf")
+
+
+@pytest.mark.parametrize("change", [
+    {"wall_seconds": NAN}, {"wall_seconds": INF}, {"wall_seconds": -INF}, {"wall_seconds": 0.0},
+    {"wall_seconds": None}, {"cores_measured": NAN}, {"cores_measured": INF}, {"cores_measured": None},
+    {"cores_measured": -1.0}, {"cpu_seconds": NAN}, {"cpu_seconds": None}, {"wall_seconds": NAN, "cores_measured": NAN},
+])
+def test_a_timing_number_that_is_not_finite_fails(change):
+    """NaN or infinity compares false with every limit, so a NaN wall time once passed. Every number of an
+    attempt must be finite (wall above 0, CPU and cores at least 0), or the item and the engine gate fail."""
+    every = {name: passing() for name in ALL_SPECS}
+    assert RS.engine_gate(every, [timing()])["all_ok"] is True                 # the control
+    got = RS.timing_item([timing(**change)])
+    assert got["state"] == "fail" and got["attempts"][0]["problems"], got
+    gate = RS.engine_gate(every, [timing(**change)])
+    assert gate["state"] == "fail" and gate["all_ok"] is False
+
+
+def test_nan_read_back_from_a_timing_file_fails_the_gate(tmp_path):
+    """A timing file with NaN wall and cores (written by a JSON writer that allows NaN)
+    is read, shown, and fails the item and the engine gate. A NaN anywhere in a spec summary fails it too."""
+    folder = tmp_path / "timing" / "probe" / "size-target-iall-s0"
+    folder.mkdir(parents=True)
+    (folder / "timing-nan.json").write_text(json.dumps(timing(wall_seconds=NAN, cores_measured=NAN), allow_nan=True),
+                                            encoding="utf-8")
+    readback = bench_module().load_timings(tmp_path, "probe")
+    assert len(readback) == 1 and math.isnan(readback[0]["wall_seconds"])
+    assert RS.timing_item(readback)["state"] == "fail"
+    every = {name: passing() for name in ALL_SPECS}
+    gate = RS.engine_gate(every, readback)
+    assert gate["state"] == "fail" and gate["all_ok"] is False
+    every["linear"] = {**passing(), "seconds": {"median": NAN}}
+    gate = RS.engine_gate(every, [timing()])
+    assert gate["state"] == "fail" and "linear.seconds.median" in gate["nonfinite"]
+
+
+def test_files_are_written_and_read_without_nan(tmp_path):
+    """`write_json_atomic` refuses NaN and infinity and leaves no file; `finite_json` turns them into null
+    for informational fields; reading refuses them; a record folder with a NaN record cannot be counted;
+    a record with a NaN number is refused by the statistics."""
+    path = tmp_path / "out" / "x.json"
+    for bad in (NAN, INF, -INF):
+        with pytest.raises(ValueError):
+            RS.write_json_atomic(path, {"a": [1.0, bad]})
+        assert list(path.parent.iterdir()) == []
+    RS.write_json_atomic(path, RS.finite_json({"a": NAN, "b": [1.0, INF], "c": np.float64("nan"), "d": 2}))
+    assert json.loads(path.read_text(encoding="utf-8")) == {"a": None, "b": [1.0, None], "c": None, "d": 2}
+    path.write_text('{"a": NaN}', encoding="utf-8")
+    with pytest.raises(ValueError, match="not a finite number"):
+        RS.read_json_finite(path)
+    record = probe_records(studies=1)[0]
+    folder = tmp_path / "records" / "probe" / "linear-iall"
+    folder.mkdir(parents=True)
+    (folder / "s0.json").write_text(json.dumps({**record, "seconds": NAN}, allow_nan=True), encoding="utf-8")
+    with pytest.raises(RS.RecordError, match="NaN is not a finite number"):
+        RS.load_records(tmp_path / "records")
+    for change in ({"cpu_seconds": NAN}, {"seconds": INF}):
+        with pytest.raises(RS.RecordError, match="not a finite number"):
+            RS.summarise([{**record, **change}])
+    nan_row = {**record, "rows": [{**record["rows"][0], "mean": NAN}]}
+    with pytest.raises(RS.RecordError, match="not finite"):
+        RS.summarise([nan_row])
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -741,7 +953,9 @@ def test_harness_with_pymc_on_two_small_studies(tmp_path):
         assert not record.get("error") and record["rows"] and record["seconds"] > 0
         assert {"truth", "mean", "lo", "hi", "hit"} <= set(record["rows"][0])
         assert record["family"] is not None and "q_run" in record["aggregates"]
-        assert record["schema"] == RS.RECORD_SCHEMA and record["expected"].get("mu") == 2
+        assert record["schema"] == RS.RECORD_SCHEMA and sum(e["class"] == "mu" for e in record["expected"]) == 2
+        assert {(r["class"], r["name"]) for r in record["rows"]} == {(e["class"], e["name"]) for e in record["expected"]}
+        assert RS.record_problems(record) == []
     before = [p.stat().st_mtime_ns for p in paths]
     again = bench("recover", "--engine", "pymc", "--studies", 2, "--out", out, *SMALL)
     assert [p.stat().st_mtime_ns for p in paths] == before, again.stdout
