@@ -1,7 +1,7 @@
 """`eval judges`: which judge, and how many repeats, from a fit.
 
-Reads the fit file, and from the study folder only the number of items per input (items.jsonl) and, for
-the stale-input warning, the digests of the study files. Every figure is computed per posterior draw and
+Reads the fit file, and from the study folder only the number of items each call read on an `items`
+component (the readings in scores.jsonl) and, for the stale-input warning, the digests of the study files. Every figure is computed per posterior draw and
 reported as a stat: `{"mean", "sd", "lo", "hi"}` with the 90% interval.
 
 Per judge and dimension, on the fitting scale and on the component's own scale where one exists:
@@ -14,7 +14,10 @@ Per judge and dimension, on the fitting scale and on the component's own scale w
 - `r2`: the squared correlation, over the targets of the study and the judge's noise, between reported
   quality `m(q)` and the mean of k calls as they are recorded: `eta + e` for `linear` and `fraction`,
   the position of the level read for `levels`, 0 or 1 for `binary`, the share of items passed for
-  `items` (which needs the number of items per input).
+  `items`. That share needs the number of items each call of the judge read: `of` on a count line, or the
+  number of item lines in the call. The list of items written for an input is not used: it does not say
+  that a call read every item. Without the judge's readings, or when its calls on one target read
+  different numbers of items, `r2` of the dimension is not measured.
 - `reliability`: the same for hidden quality on the fitting scale against the judge's view before it
   is cut into a verdict, `var_q / (var_q + tau^2 + sigma^2 / k)`, with `var_q` the variance between arm
   means (weighted by runs) plus the input and run variances. It is not what a recorded reading explains.
@@ -286,19 +289,49 @@ def reading_r2(m: np.ndarray, expected: np.ndarray, shared: np.ndarray, per_call
         return np.where((var_m > 0) & (var_y > 0), cov ** 2 / (var_m * var_y), np.nan), var_m
 
 
-def item_counts(fit: F.Fit, items: list[dict]) -> dict[str, np.ndarray]:
-    """Per `items` dimension, the number of items on each run's input (NaN where there is none)."""
-    tally: dict[tuple[str, str], int] = {}
-    for item in items:
-        tally[(item["input"], item["component"])] = tally.get((item["input"], item["component"]), 0) + 1
-    inputs = [fit.index["inputs"][i] for i in fit.run_input]
-    out = {}
-    for dim in fit.dimensions:
-        if dim["scale"]["kind"] != "items":
+NO_READINGS = "needs the number of items each call read: the judge's readings in scores.jsonl in the study folder"
+
+
+def item_counts(fit: F.Fit, scores: list[dict]) -> dict[tuple[str, str], tuple]:
+    """Per (judge, `items` dimension) with readings: `(n, reason)`, the number of items a call of the
+    judge reads on each target, `n[R]`, or None with the reason it cannot be told.
+
+    `scores` are the rows of scores.jsonl. A replaced reading is not read. The number of items of a call
+    is `of` on its count line, or the number of its item lines. When every call of the judge read the
+    same number, that number holds for every target. Otherwise each target of the fit needs calls by the
+    judge that all read one number."""
+    kinds = {dim["id"]: dim["scale"]["kind"] for dim in fit.dimensions}
+    position = {name: r for r, name in enumerate(fit.index["runs"])}
+    calls: dict[tuple, dict] = {}
+    for row in C.live(scores)[0] if scores else []:
+        did = C.dimension_id(row.get("step") or C.FINAL, row["component"])
+        if kinds.get(did) != "items" or row["run"] not in position or ("item" not in row and "of" not in row):
             continue
-        counts = np.array([tally.get((name, dim["component"]), 0) for name in inputs], dtype=float)
-        if counts.size and counts.max() > 0:
-            out[dim["id"]] = np.where(counts > 0, counts, np.nan)
+        entry = calls.setdefault((row["judge"], did, row["run"], row["call"]), {"lines": 0, "of": []})
+        if "item" in row:
+            entry["lines"] += 1
+        else:
+            entry["of"].append(int(row["of"]))
+    seen: dict[tuple[str, str], dict[str, set]] = {}
+    for (judge, did, run, _), entry in calls.items():
+        mixed = bool(entry["lines"] and entry["of"]) or len(entry["of"]) > 1
+        size = None if mixed else (entry["of"][0] if entry["of"] else entry["lines"])
+        seen.setdefault((judge, did), {}).setdefault(run, set()).add(size)
+    out: dict[tuple[str, str], tuple] = {}
+    for key, by_run in seen.items():
+        sizes = set().union(*by_run.values())
+        if None in sizes:
+            out[key] = (None, "a call of the judge has both item lines and a count line, or two count lines")
+        elif len(sizes) == 1:
+            out[key] = (np.full(len(position), float(next(iter(sizes)))), None)
+        elif len(by_run) == len(position) and all(len(found) == 1 for found in by_run.values()):
+            n = np.empty(len(position))
+            for run, found in by_run.items():
+                n[position[run]] = float(next(iter(found)))
+            out[key] = (n, None)
+        else:
+            out[key] = (None, f"the calls of the judge read different numbers of items ({min(sizes)} to "
+                              f"{max(sizes)}) and not one number per target")
     return out
 
 
@@ -349,7 +382,7 @@ class _Report:
     """Builds the report of one fit. `raw[(judge, dimension)]` keeps the per-draw arrays that the
     comparisons across judges read; only measured quantities are kept there."""
 
-    def __init__(self, fit: F.Fit, items: dict[str, np.ndarray] | None = None) -> None:
+    def __init__(self, fit: F.Fit, items: dict[tuple[str, str], tuple] | None = None) -> None:
         self.fit = fit
         self.items = items or {}
         self.draws = fit.draws
@@ -510,9 +543,9 @@ class _Report:
         r2_reason = total_reason if not total_ok else None
         if total_ok and kind == "binary" and not status_ok:
             r2_reason = "the hidden status of the binary dimension is not identified"
-        n_items = self.items.get(did)
+        n_items, why = self.items.get((jid, did), (None, NO_READINGS))
         if total_ok and kind == "items" and n_items is None:
-            r2_reason = "needs the number of items per target: items.jsonl in the study folder"
+            r2_reason = why
         if total_ok and not q.shape[1]:
             r2_reason = "the fit holds no target"
         if total_ok and r2_reason is None:
@@ -809,13 +842,15 @@ def stale_inputs(fit: F.Fit, study: str | None, strict: bool) -> dict:
 
 
 def report(fit: F.Fit, target_error: float | None = None, budget_usd: float | None = None,
-           items: list[dict] | None = None) -> dict:
-    """The whole report of `eval judges` as one JSON-ready mapping. `items` are the rows of items.jsonl."""
+           scores: list[dict] | None = None, items: list[dict] | None = None) -> dict:
+    """The whole report of `eval judges` as one JSON-ready mapping. `scores` are the rows of scores.jsonl:
+    only the number of items each call read on an `items` component is taken from them. `items`, the
+    rows of items.jsonl, are accepted and not used: a list of items does not say what a call read."""
     for name, value in (("--target-error", target_error), ("--budget-usd", budget_usd)):
         if value is not None and not (np.isfinite(value) and value > 0):
             raise ContractError(fit.path.name, name, f"{value:g} is not above 0", "give a number above 0",
                                 "out_of_range")
-    builder = _Report(fit, item_counts(fit, items or []))
+    builder = _Report(fit, item_counts(fit, scores or []))
     judges = [builder.judge(j, judge) for j, judge in enumerate(builder.declared)]
     batching, reference = builder.comparisons()
     anchor = fit["anchor"]
@@ -935,12 +970,13 @@ def run(args: argparse.Namespace) -> int:
     fit = F.read_fit(args.fit, allow_unconverged=getattr(args, "allow_unconverged", False))
     stale = stale_inputs(fit, getattr(args, "study", None), getattr(args, "strict", False))
     folder = Path(args.study) if getattr(args, "study", None) else fit.path.parent
-    items = C.read_lines(folder / C.ITEMS_FILE, C.SCHEMA_ITEMS, missing_ok=True)
-    payload = report(fit, getattr(args, "target_error", None), getattr(args, "budget_usd", None), items)
-    payload["stale"] = stale
     files = {"fit": fit.path, "draws": F.draws_path(fit.path)}
-    if (folder / C.ITEMS_FILE).is_file():
-        files["items"] = folder / C.ITEMS_FILE
+    scores: list[dict] = []
+    if any(dim["scale"]["kind"] == "items" for dim in fit.dimensions) and (folder / C.SCORES_FILE).is_file():
+        scores = C.read_lines(folder / C.SCORES_FILE, C.SCHEMA_SCORES)
+        files["scores"] = folder / C.SCORES_FILE
+    payload = report(fit, getattr(args, "target_error", None), getattr(args, "budget_usd", None), scores)
+    payload["stale"] = stale
     payload["inputs"] = C.input_digests(files)
     payload["options"] = {"target_error": getattr(args, "target_error", None),
                           "budget_usd": getattr(args, "budget_usd", None),
