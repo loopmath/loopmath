@@ -52,7 +52,7 @@ NEEDS = {
     "binary_status": "repeats by the anchor, or 2 or more judges on the same targets",
     "family": "judges from 2 or more families, each scoring outputs from 2 or more families",
     "reference_family": "a reference whose author's family differs from the judge's own",
-    "halo": "panel and per_component calls by the same model, effort and prompt, or repeats of panel calls",
+    "halo": "repeated panel calls on the same targets",
     "position": "pairs judged in both orders, or shown_first balanced across pairs",
     "sigma_pair": "repeats of pairs by the judge",
     "tie_width": "repeats of pairs by the judge, and ties",

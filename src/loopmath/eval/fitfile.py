@@ -88,7 +88,7 @@ TERM_NEEDS = {
     "anchor_bias": "enough targets per dimension scored by an anchor judge",
     "family": "judges from 2 or more families, each scoring outputs from 2 or more families",
     "reference_family": "a judge with a reference whose author's family differs from the judge's own",
-    "halo_split": "panel and per_component calls by the same model, effort and prompt, or repeats of panel calls",
+    "halo_split": "repeated panel calls on the same targets",
     "judge_input": "2 or more runs per input scored by the same judge, on 10 or more inputs",
     "binary_status": "repeats by the anchor, or 2 or more judges on the same targets",
     "position": "pairs judged in both orders, or shown_first balanced across pairs",

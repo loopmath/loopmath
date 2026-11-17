@@ -26,6 +26,8 @@ Known limits:
 - **`eval fit --halo full` and `--cuts free` are not built** and are refused by name.
 - **Priors for two noise terms differ from the design.** The call noise of levels components and of comparisons has a Gamma prior, not the half-normal prior the other noise terms have: with a half-normal prior the sampler diverged.
 - **A large study is over the time target.** A study of 500 runs, 5 components, 4 judges and 2 repeats (20,000 readings) took about 17 minutes to fit, against a target of 10.
+- **Repeated yes or no and levels readings often end unconverged.** When a judge scores the same output on such a component more than once, `eval fit` now keeps the judge's view of each output as an explicit unknown instead of summing it out on a fixed grid, which the review found could be badly wrong. The exact form is harder to sample: in the fits measured, at the default 4 chains of 1000 draws, divergences were 3 to 4% against the 1% limit, so the fit is written as not converged and later commands refuse it without `--allow-unconverged`. Nothing wrong is printed. Fitting one call per output on these components avoids it. A better sampler form is planned for 0.4.5.
+- **Halo split.** A panel judge's split between a shared view and shared call noise is measured only from repeated panel calls on the same outputs; a judge with the same model that reads one component per call does not count.
 - **Fits with yes or no components, levels or comparisons are slow.** On 2 cores, with 2 chains of 500 draws, simulated studies of 80 to 120 outputs took 12 to 15 minutes with such components and 1 to 3 minutes with linear scales only.
 
 Not built, or not yet checked:
