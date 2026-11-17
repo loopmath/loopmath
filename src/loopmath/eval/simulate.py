@@ -994,6 +994,62 @@ def _value_truth(value: dict, dims: list[dict], relative: list[str], mu: np.ndar
     return {"gates": list(spec.gate_labels), "draws": VALUE_DRAWS, "population": population, "study": study}
 
 
+def example_spec() -> dict:
+    """A small spec that uses every member: two steps, every scale kind, pairs, items, a value file."""
+    small = {"model": {"id": "model-small", "family": "beta"}, "effort": "low"}
+    large = {"model": {"id": "model-large", "family": "alpha"}, "effort": "high", "variant": "prompt-2"}
+    scored = ["numbers_right", "clarity", "depth", "coverage"]
+    return {
+        "schema": C.SCHEMA_SIM, "name": "example", "title": "a small study with every kind of reading",
+        "inputs": 6, "runs_per_input": 1,
+        "arms": [
+            {"id": "baseline", "steps": [{"step": "draft", **small}, {"step": "final", **small}], "cost_usd": 0.1,
+             "mean": {"numbers_right": 0.8, "clarity": 0.4, "final/clarity": 0.45, "depth": 0.45, "coverage": 0.2,
+                      "overall": -0.4}},
+            {"id": "strong", "steps": [{"step": "draft", **large}, {"step": "final", **large}], "cost_usd": 0.8,
+             "mean": {"numbers_right": 2.0, "clarity": 0.6, "depth": 0.55, "coverage": 0.8, "overall": 0.4}}],
+        "rubric": {"id": "brief", "version": "1", "steps": ["draft", "final"], "components": [
+            {"id": "numbers_right", "title": "The numbers are right", "scale": {"kind": "binary"}},
+            {"id": "clarity", "scale": {"kind": "levels", "levels": ["poor", "ok", "good"]},
+             "applies_to": ["draft", "final"]},
+            {"id": "depth", "scale": {"kind": "linear", "range": [0, 10]}},
+            {"id": "coverage", "scale": {"kind": "items"}},
+            {"id": "overall", "role": "overall", "scale": {"kind": "linear", "range": [0, 10]}}]},
+        "quality": {
+            "sd_input": {"numbers_right": 1.2, "clarity": 0.18, "depth": 0.07, "coverage": 0.4, "overall": 0.6},
+            "sd_run": {"numbers_right": 1.0, "clarity": 0.15, "depth": 0.05, "coverage": 0.3, "overall": 0.8},
+            "corr_input": 0.3, "corr_run": {"default": 0.2, "pairs": [["depth", "overall", 0.5]]},
+            "cuts": {"draft/clarity": [0.3, 0.7]}},
+        "judges": {"anchor": ["reviewer"], "min_anchor_targets": 6, "judges": [
+            {"id": "reviewer", "kind": "person", "blinded": True,
+             "truth": {"tau": {"numbers_right": 0.5, "clarity": 0.06, "depth": 0.03, "coverage": 0.15, "overall": 0.4},
+                       "sigma": {"numbers_right": 1.0, "clarity": 0.08, "depth": 0.04, "coverage": 0.2},
+                       "sigma_pair": {"overall": 1.0}, "position": 0.2, "tie_width": 0.5}},
+            {"id": "strong", "kind": "model", "model": {"id": "model-large", "family": "alpha"}, "effort": "high",
+             "mode": "panel", "cost_usd_per_call": 0.04, "components": scored,
+             "truth": {"bias": {"numbers_right": 0.2, "clarity": 0.04, "depth": 0.03, "coverage": 0.1},
+                       "tau": {"numbers_right": 0.8, "clarity": 0.08, "depth": 0.05, "coverage": 0.2},
+                       "sigma": {"numbers_right": 0.8, "clarity": 0.08, "depth": 0.04, "coverage": 0.2},
+                       "halo_target": 0.2, "halo_call": 0.4, "family": {"alpha": {"depth": 0.05}}}},
+            {"id": "cheap", "kind": "model", "model": {"id": "model-small", "family": "beta"}, "effort": "low",
+             "cost_usd_per_call": 0.004,
+             "truth": {"bias": {"depth": 0.08}, "tau": {"depth": 0.08, "overall": 0.7}, "sigma": {"depth": 0.07},
+                       "sd_judge_input": {"depth": 0.03}, "sigma_pair": {"overall": 1.3}, "position": 0.5,
+                       "tie_width": 0.3}}]},
+        "design": {
+            "scores": [{"judge": "strong", "repeats": 2},
+                       {"judge": "cheap", "repeats": 2, "share": 0.5, "components": ["depth"], "steps": ["final"]}],
+            "human": [{"judge": "reviewer", "rate": 0.5, "selection": "judge_scores", "strength": 1.0,
+                       "repeat_share": 0.5, "components": scored}],
+            "pairs": [{"judge": "reviewer", "orders": "both"},
+                      {"judge": "cheap", "component": "overall", "step": "final", "arms": [["baseline", "strong"]],
+                       "share": 0.5, "orders": "random", "repeats": 2}],
+            "items": [{"component": "coverage", "per_input": [2, 4], "missing_share": 0.1, "as": "items"}]},
+        "value": {"weights": {"clarity": 1, "depth": 2}, "gates": [{"component": "numbers_right"}],
+                  "gated_value": 0, "objective": {"kind": "best_value"}},
+    }
+
+
 # ---------------------------------------------------------------------------------------------------
 # Files
 
