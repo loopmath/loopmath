@@ -26,19 +26,32 @@ off by much more in one band than another, the interval is wider than its level 
 
 The interval, and the cell says which one it is:
 
-- `census`: every labelled target was drawn with probability 1. The estimate is the mean itself and
-  the interval has no width.
+- `census`: every target of the arm has a human score, each labelled target drawn with probability 1.
+  The estimate is the mean itself and the interval has no width. Labelling every target that was still
+  open is not a census of the arm unless the scores of the others are given too.
 - `bound`: the labelled readings show no spread (every human score equal, or every residual equal), so
   the sample says nothing about how often a target differs. The interval then holds every mean the
   targets nobody labelled could give without the sample being unlikely: at most `K` unseen targets sit
   at the far end of the scale, `K` the largest number that a sample with that inclusion probability
   misses altogether with a chance above 5%.
 - `normal`: 50 or more labelled targets, the estimate plus and minus 1.645 sd.
-- `bootstrap`: below 50, a percentile interval from resampling the labelled targets' parts of the
-  Hajek variance, each scaled by `sqrt(1 - pi)`, so a target drawn with certainty adds no width.
+- `t`: below 50, the estimate plus and minus the Student's t quantile times the sd. The degrees of
+  freedom are the effective number of sampled targets, `(sum w)^2 / sum w^2` over the targets with
+  `pi < 1`, less one, and less one more when the probabilities are unequal. Where a percentile
+  interval from resampling the labelled targets' parts of the Hajek variance reaches further on one
+  side, as it does for a skewed sample, the interval reaches that far.
+- `withheld`: no interval, with a `reason`; `sd`, `lo` and `hi` are null and the cell is not checked.
+  This is the result with fewer than 2 labelled targets, with less than one degree of freedom, and
+  when labelled targets recorded as certain do not make up the population (then the mean is null too:
+  the recorded probabilities do not describe a sample of it).
+
+A person's reading that the plans given did not ask for is the known score of its target. Such targets
+are set apart: the labels are read as a sample of the other targets, which is what a plan drawn after
+those readings is, and the known scores enter the mean as they are. The design side counts them in
+`known`.
 
 The same allowance is made group by group. Labelled targets are grouped by inclusion probability,
-which is how a stratum shows in a plan. A group without spread widens a `normal` or `bootstrap` interval
+which is how a stratum shows in a plan. A group without spread widens a `normal` or `t` interval
 by its own `K` unseen targets, and `unseen` in the output is their total. Every score lies in 0 to 1,
 so the interval is cut there.
 
@@ -70,6 +83,7 @@ from typing import Any, Sequence
 
 import numpy as np
 from scipy.special import ndtr, ndtri
+from scipy.stats import t as student
 
 from . import contracts as C
 from . import fitfile as F
@@ -78,6 +92,7 @@ from . import quality as Q
 LEVEL = 0.90
 BOOTSTRAP_BELOW = 50
 BOOTSTRAP_DRAWS = 2000
+MIN_LABELS = 2
 FIRST_KINDS = ("pilot", "active", "uniform")  # assignment kinds drawn with their own probability
 SIDE = (1.0 - LEVEL) / 2                      # the chance left on each side of an interval
 NOISE_TERMS = ("tau", "sigma", "judge_input")  # the terms behind the noise of one reading
@@ -176,30 +191,54 @@ def _room(f_all: np.ndarray, shift: float) -> tuple[np.ndarray, np.ndarray]:
     return np.sort(implied)[::-1], np.sort(1.0 - implied)[::-1]
 
 
-def interval(f_all: np.ndarray, y: np.ndarray, f: np.ndarray, pi: np.ndarray, rng: np.random.Generator) -> dict:
+def withheld(mean: float | None, reason: str) -> dict:
+    """An estimate without an interval: `sd`, `lo` and `hi` are None, and `reason` says why."""
+    return {"mean": mean, "sd": None, "lo": None, "hi": None, "interval": "withheld", "unseen": 0, "reason": reason}
+
+
+def interval(f_all: np.ndarray, y: np.ndarray, f: np.ndarray, pi: np.ndarray,
+             rng: np.random.Generator | None = None) -> dict:
     """The design-based estimate with its sd and 90% interval, which interval it is (`census`, `bound`,
-    `normal` at 50 labels or more, or `bootstrap`), and `unseen`: the number of unlabelled targets the
-    interval allows at the far end of the scale. See the module docstring."""
+    `normal` at 50 labels or more, `t` below, or `withheld` with a `reason` and no `lo` and `hi`), and
+    `unseen`: the number of unlabelled targets the interval allows at the far end of the scale.
+
+    `f_all` holds every target of the population the labels were drawn from: a census is only claimed
+    when each of them is labelled. `rng` draws the resamples of the `t` interval; without one a fixed
+    seed is used. See the module docstring."""
+    n, total = len(y), len(f_all)
+    if n == 0:
+        return withheld(None, "no labelled target")
     mean = estimate(f_all, y, f, pi)
-    n = len(y)
     w = 1.0 / pi
     e = y - f
-    if not (pi < 1.0).any():
-        return {"mean": mean, "sd": 0.0, "lo": mean, "hi": mean, "interval": "census", "unseen": 0}
+    sampled = pi < 1.0
+    if not sampled.any():
+        if n >= total:
+            return {"mean": mean, "sd": 0.0, "lo": mean, "hi": mean, "interval": "census", "unseen": 0}
+        return withheld(None, f"{n} of {total} targets are labelled, each recorded as drawn with certainty: these "
+                              "probabilities do not describe a sample of all the targets")
+    if n < MIN_LABELS:
+        return withheld(mean, f"not enough labels: {n} labelled, {MIN_LABELS} needed for an interval")
     sd = variance(y, f, pi) ** 0.5
-    z = float(ndtri(1.0 - SIDE))
     if n >= BOOTSTRAP_BELOW:
+        z = float(ndtri(1.0 - SIDE))
         out = {"mean": mean, "sd": sd, "lo": mean - z * sd, "hi": mean + z * sd, "interval": "normal"}
-    elif n < 2:
-        out = {"mean": mean, "sd": 0.0, "lo": mean, "hi": mean, "interval": "bootstrap"}
     else:
-        # each target's part of the Hajek variance: resampling them gives that variance back
+        # few labels: Student's t, with the degrees of freedom the unequal weights leave
+        freedom = degrees(pi)
+        if freedom < 1.0:
+            return withheld(mean, "not enough labels: one target carries nearly all the weight of the sample")
+        t = float(student.ppf(1.0 - SIDE, freedom))
+        # a skewed sample (a few scores far from the rest) pulls the interval to one side: resampling
+        # each target's part of the Hajek variance shows by how much, and the interval reaches that far
         c = 1.0 - pi
         u = (e - (w * e).sum() / w.sum()) * w
         part = np.sqrt(n / (n - 1) * c) * (u - (c * u).sum() / c.sum()) / w.sum()
+        rng = np.random.default_rng(0) if rng is None else rng
         boot = mean + part[rng.integers(0, n, size=(BOOTSTRAP_DRAWS, n))].sum(axis=1) - part.sum()
         lo, hi = np.percentile(boot, [100 * SIDE, 100 * (1 - SIDE)])
-        out = {"mean": mean, "sd": float(boot.std()), "lo": float(lo), "hi": float(hi), "interval": "bootstrap"}
+        out = {"mean": mean, "sd": sd, "lo": min(mean - t * sd, float(lo)), "hi": max(mean + t * sd, float(hi)),
+               "interval": "t"}
     # groups without spread: allow for the targets like them that nobody labelled
     k, covered = 0, 0
     for at in flat_groups(y, f, pi):
@@ -207,15 +246,41 @@ def interval(f_all: np.ndarray, y: np.ndarray, f: np.ndarray, pi: np.ndarray, rn
         if low < 1.0:
             k += min(unseen(low), int(np.ceil((w[at] - 1.0).sum() - 1e-9)))
             covered += len(at)
-    k = min(k, len(f_all) - n)
+    k = min(k, total - n)
     down, up = _room(f_all, float((w * e).sum() / w.sum()))
-    out["lo"] -= float(down[:k].sum()) / len(f_all)
-    out["hi"] += float(up[:k].sum()) / len(f_all)
+    out["lo"] -= float(down[:k].sum()) / total
+    out["hi"] += float(up[:k].sum()) / total
     out["unseen"] = k
-    if k and covered == int((pi < 1.0).sum()):
+    if k and covered == int(sampled.sum()):
         out["interval"] = "bound"
     # every score lies in 0 to 1, and so does their mean
     out["lo"], out["hi"] = min(mean, max(out["lo"], 0.0)), max(mean, min(out["hi"], 1.0))
+    return out
+
+
+def degrees(pi: np.ndarray) -> float:
+    """Degrees of freedom for the t interval: the effective number of sampled targets less one, and less
+    one more when they were drawn with unequal probabilities. Targets drawn with certainty add no
+    variance and none."""
+    w = 1.0 / pi[pi < 1.0]
+    if not len(w):
+        return 0.0
+    effective = float(w.sum() ** 2 / (w * w).sum())
+    return effective - 1.0 - (1.0 if np.ptp(w) > 1e-9 * w.max() else 0.0)
+
+
+def with_known(design: dict, n_rest: int, scores: np.ndarray) -> dict:
+    """`design`, an `interval` over `n_rest` targets, carried to those and the targets whose human scores
+    `scores` are known apart from the sample: a known score is counted as it is, with no sampling error."""
+    if not len(scores):
+        return design
+    total = n_rest + len(scores)
+    out = dict(design, known=len(scores))
+    for key in ("mean", "lo", "hi"):
+        if out[key] is not None:
+            out[key] = float((scores.sum() + n_rest * out[key]) / total)
+    if out["sd"] is not None:
+        out["sd"] = float(out["sd"] * n_rest / total)
     return out
 
 
@@ -296,6 +361,7 @@ def check(fit: F.Fit, scores: Sequence[dict], plans: Sequence[dict], *, seed: in
         calls[key] = {"value": value, "ids": [row["id"]], "assignment": row.get("assignment")}
 
     predictions: dict[tuple[int, int], list[float]] = {}
+    apart: dict[tuple[int, int], list[float]] = {}      # a person's readings that are not labels of the plans
     labels: dict[tuple[int, int], list[dict]] = {}
     for (r, d, judge, _), one in calls.items():
         if "value" not in one:
@@ -314,6 +380,7 @@ def check(fit: F.Fit, scores: Sequence[dict], plans: Sequence[dict], *, seed: in
             reason = f'it does not match its assignment "{one["assignment"]}"'
         if reason is not None:
             not_used += [{"id": rid, "reason": reason} for rid in one["ids"]]
+            apart.setdefault((r, d), []).append(one["value"])
             continue
         labels.setdefault((r, d), []).append({"value": one["value"], "judge": judge, "kind": plan_row["kind"],
                                               "pi": float(plan_row["inclusion_probability"])})
@@ -332,7 +399,10 @@ def check(fit: F.Fit, scores: Sequence[dict], plans: Sequence[dict], *, seed: in
             kind = dim["scale"]["kind"]
             known = {int(r): float(np.mean(predictions[(int(r), d)])) for r in runs if (int(r), d) in predictions}
             fallback = float(np.mean(list(known.values()))) if known else 0.0
-            f_all = np.array([known.get(int(r), fallback) for r in runs])
+            # targets with a human score from outside the plans: known as they are, not part of the sample
+            outside = [int(r) for r in runs if (int(r), d) in apart and (int(r), d) not in labels]
+            scored = np.array([float(np.mean(apart[(r, d)])) for r in outside])
+            f_all = np.array([known.get(int(r), fallback) for r in runs if int(r) not in outside])
             y, f, pi, reviewers, inputs = [], [], [], {}, []
             for r in labelled:
                 rows = labels[(int(r), d)]
@@ -363,8 +433,11 @@ def check(fit: F.Fit, scores: Sequence[dict], plans: Sequence[dict], *, seed: in
                 if dim.get("cuts") == "free" and "cuts" in draws:
                     free = np.asarray(draws["cuts"])[:, d, :len(fixed)]
                     cuts = free if not np.isnan(free).any() else cuts
-            design = interval(f_all, y, f, pi, rng)
+            design = with_known(interval(f_all, y, f, pi, rng), len(f_all), scored)
             cell["design"] = design
+            if design["interval"] == "withheld":
+                cell["status"] = f"not checked: {design['reason']}"
+                continue
             prior = sorted({f"{name} of {judge}" for judge in reviewers for name in NOISE_TERMS
                             if term_state(fit, name, judge, dim["id"]) in NOT_MEASURED})
             if prior and kind not in ("linear", "fraction"):
@@ -380,7 +453,12 @@ def check(fit: F.Fit, scores: Sequence[dict], plans: Sequence[dict], *, seed: in
                                     for name in ("tau", "sigma", "sd_judge_input")))
                 model += count / sum(reviewers.values()) * expected_reading(q, kind, bias, noise, cuts).mean(axis=1)
             # against the model: no finite population correction, and one input's readings share an effect
-            joint = float(np.hypot(against_model(f_all, y, f, pi, inputs), model.std()))
+            beside = against_model(f_all, y, f, pi, inputs) * len(f_all) / len(runs)
+            if len(scored):
+                # known scores are readings too: to the model's expectation they are as random as the rest
+                spread = float(scored.var(ddof=1)) if len(scored) > 1 else 0.25
+                beside = float(np.hypot(beside, np.sqrt(spread * len(scored)) / len(runs)))
+            joint = float(np.hypot(beside, model.std()))
             gap = design["mean"] - float(model.mean())
             cell.update(model=F.stat(model), gap=gap, joint_sd=joint, flagged=bool(abs(gap) > z * joint))
             own = Q.own_scale(np.array([design["mean"], model.mean()]), dim)
@@ -394,13 +472,18 @@ def check(fit: F.Fit, scores: Sequence[dict], plans: Sequence[dict], *, seed: in
     if n_pairs:
         notes.append(f"{n_pairs} pair assignments are not checked: the design-based check reads scores")
     kinds = {cell["design"]["interval"] for cell in cells if cell["design"]}
-    if "bootstrap" in kinds:
-        notes.append(f"below {BOOTSTRAP_BELOW} labelled targets the interval is a bootstrap percentile interval")
+    if "t" in kinds:
+        notes.append(f"below {BOOTSTRAP_BELOW} labelled targets the interval uses Student's t")
+    if "withheld" in kinds:
+        notes.append("withheld: the labels do not support an interval, so none is shown and the cell is not checked")
+    if any(cell["design"].get("known") for cell in cells if cell["design"]):
+        notes.append("known: a person's reading that the plans given did not ask for counts as the known score of "
+                     "its target, and the plans' labels are read as a sample of the other targets")
     if "bound" in kinds:
         notes.append("bound: the labelled readings show no spread, so the interval is what the targets nobody "
                      "labelled could still hold, not a spread seen in the sample")
     if "census" in kinds:
-        notes.append("census: every target was drawn with certainty, so the design-based estimate is exact")
+        notes.append("census: every target has a human score, so the design-based estimate is exact")
     return {"method": METHOD, "level": LEVEL, "bootstrap_below": BOOTSTRAP_BELOW, "plans": names, "cells": cells,
             "flagged": sum(cell["flagged"] for cell in cells), "not_used": not_used, "notes": notes}
 
