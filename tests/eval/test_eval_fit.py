@@ -249,7 +249,7 @@ def study_record(name: str, seed: int, *, draws: int | None = None, chains: int 
         for j, judge in enumerate(judges):
             check("bias", f"{judge} {dim}", post["bias"][:, j, d], truth["bias"][j, d] + shift[j, d])
             for key, term in PER_JUDGE_DIM.items():
-                where = (term, judge, dim) if term in ("tau", "sigma") else (term, judge, None)
+                where = (term, judge, dim) if term in ("tau", "sigma", "judge_input") else (term, judge, None)
                 if state.get(where) == "identified":
                     check(key, f"{judge} {dim}", post[key][:, j, d], truth[key][j, d])
     for j, judge in enumerate(judges):
@@ -266,6 +266,8 @@ def study_record(name: str, seed: int, *, draws: int | None = None, chains: int 
         own = families.index(declared[judge]["model"]["family"])
         rest = [f for f in range(len(families)) if f != own]
         for d, dim in enumerate(dims):
+            if state.get(("family", judge, dim)) != "identified":
+                continue
             contrast = post["family"][:, j, own, d] - post["family"][:, j, rest, d].mean(axis=1)
             value = truth["family"][j, own, d] - truth["family"][j, rest, d].mean()
             if not np.isfinite(value) or not np.isfinite(contrast).all():

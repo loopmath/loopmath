@@ -218,7 +218,8 @@ def test_every_term_has_one_row_a_known_state_and_absent_rows_say_why(design):
 
 
 def test_optional_terms_follow_the_design_and_the_switches(loaded, design):
-    assert list(design.data["family_on"]) == [False, True, True] and not design.data["ji_on"].any()
+    assert design.data["family_on"].tolist() == [[False] * 4, [True] * 4, [True] * 4]     # judge by dimension
+    assert not design.data["ji_on"].any()
     assert state(design, "family", "reviewer") == "absent" and state(design, "family", "judge-strong") == "identified"
     assert state(design, "judge_input", "judge-strong") == "off"     # 8 inputs: under the 10 the term needs
     off = M.build(*loaded, terms=["family=off"])
@@ -226,6 +227,137 @@ def test_optional_terms_follow_the_design_and_the_switches(loaded, design):
     on = M.build(*loaded, terms=["judge_input=on"])
     assert on.data["ji_on"].all() and on.data["n_ji"] > 0 and state(on, "judge_input", "judge-strong") == "weak"
     assert np.all(on.data["ji_j"] < 3) and np.all(on.data["ji_d"] < 4)
+
+
+def scope_study(*, own_family_only_on_second: bool = True, panel_repeats: int = 0, n_inputs: int = 12):
+    """Two `linear` components, a person and model judges. `strong-a` and `strong-b` come from two
+    families; on the second component each reads only the outputs of its own family when asked to.
+    `panelist` reads both components in one call, `twin` is the same model reading one at a time."""
+    comps = [{"id": f"c{n}", "title": f"Component {n}", "scale": {"kind": "linear", "range": [0, 10]}}
+             for n in range(2)]
+    rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "scope", "version": "1", "components": comps})
+    judges = C.validate_judges({"schema": C.SCHEMA_JUDGES, "anchor": ["reviewer"], "min_anchor_targets": 6, "judges": [
+        {"id": "reviewer", "kind": "person"},
+        {"id": "strong-a", "kind": "model", "model": {"id": "model-a", "family": "alpha"}},
+        {"id": "strong-b", "kind": "model", "model": {"id": "model-b", "family": "beta"}},
+        {"id": "panelist", "kind": "model", "mode": "panel", "model": {"id": "model-c", "family": "alpha"}},
+        {"id": "twin", "kind": "model", "model": {"id": "model-c", "family": "alpha"}}]})
+    runs, scores = [], []
+
+    def read(run, comp, judge, call):
+        scores.append(C.validate_score({
+            "schema": C.SCHEMA_SCORES, "id": f"s{len(scores):04d}", "run": run, "component": comp, "judge": judge,
+            "call": call, "rubric": "scope@1", "observed_at": "2026-01-15T09:00:00-08:00",
+            "value": float(3 + (len(scores) * 7) % 5)}))
+
+    for i in range(n_inputs):
+        for arm, family in (("old", "beta"), ("new", "alpha")):
+            run = f"{arm}-{i}"
+            runs.append(C.validate_run({"schema": C.SCHEMA_RUNS, "run": run, "input": f"case-{i}", "arm": arm,
+                                        "steps": [{"step": "final", "model": {"id": family, "family": family}}]}))
+            for comp in ("c0", "c1"):
+                read(run, comp, "reviewer", f"r-{run}-{comp}")
+                read(run, comp, "twin", f"t-{run}-{comp}")
+                for judge, own in (("strong-a", "alpha"), ("strong-b", "beta")):
+                    if comp == "c0" or family == own or not own_family_only_on_second:
+                        read(run, comp, judge, f"{judge}-{run}-{comp}")
+                for k in range(1 + (i < panel_repeats)):
+                    read(run, comp, "panelist", f"p-{run}-{k}")       # one call reads both components
+    return C.Study(Path("."), runs, scores, [], []), rubric, judges
+
+
+def test_family_and_judge_by_input_are_counted_at_their_own_dimension():
+    """On the first component both judges read both families, twice per input.
+    On the second each reads only its own family, once per input: nothing there tells a family effect
+    from the judge's bias, and nothing tells a judge-by-input term from noise. Counted by hand."""
+    design = M.build(*scope_study())
+    first, second = [dim["id"] for dim in design.dims]
+    judges = design.index["judges"]
+    for name in ("strong-a", "strong-b"):
+        j = judges.index(name)
+        assert design.data["family_on"][j].tolist() == [True, False]
+        assert design.data["ji_on"][j].tolist() == [True, False]
+        assert state(design, "family", name, first) == "identified" and state(design, "family", name, second) == "off"
+        assert state(design, "judge_input", name, first) == "identified"
+        assert state(design, "judge_input", name, second) == "off"
+        rows = {(row["term"], row["dimension"]): row["count"] for row in design.terms if row["judge"] == name}
+        assert rows[("family", first)] == 2 and rows[("family", second)] == 1          # families of outputs read
+        assert rows[("judge_input", first)] == 12 and rows[("judge_input", second)] == 0
+    assert not np.any(design.data["ji_d"][np.isin(design.data["ji_j"], [1, 2])] == 1)   # no such unknowns either
+    # switched on by hand, the second dimension is fitted from its prior and says so: never `identified`
+    forced = M.build(*scope_study(), terms=["family=on", "judge_input=on"])
+    for name in ("strong-a", "strong-b"):
+        assert state(forced, "family", name, first) == "identified"
+        assert state(forced, "family", name, second) == "prior_only"
+        assert state(forced, "judge_input", name, second) == "prior_only"
+        assert state(forced, "judge_input", name, first) == "identified"
+    # and where the second dimension is crossed like the first, it is identified like the first
+    crossed = M.build(*scope_study(own_family_only_on_second=False))
+    assert state(crossed, "family", "strong-a", second) == "identified"
+    assert state(crossed, "judge_input", "strong-a", second) == "identified"
+
+
+def test_a_panel_judges_halo_split_needs_repeated_panel_calls():
+    """A `per_component` twin of the same model does not identify the split: the
+    two judges have separate parameters. One panel call per target cannot tell a shared call from a
+    shared target, so the split is `prior_only` and no reader may call it measured."""
+    once = M.build(*scope_study())
+    assert once.data["panel"].tolist() == [False, False, False, True, False]
+    assert M._same_setting(once.judges["judges"][3], once.judges["judges"][4])       # the twin is there
+    assert state(once, "halo_split", "panelist") == "prior_only"
+    assert state(once, "halo_split", "panelist") not in F.MEASURED_STATES
+    row = next(row for row in once.terms if row["term"] == "halo_split" and row["judge"] == "panelist")
+    assert row["count"] == 0
+    # repeats on 2 inputs are 4 targets with a second panel call (under 5: weak); on 3 inputs, 6 targets
+    assert state(M.build(*scope_study(panel_repeats=2)), "halo_split", "panelist") == "weak"
+    assert state(M.build(*scope_study(panel_repeats=3)), "halo_split", "panelist") == "identified"
+
+
+def test_repeated_cut_readings_keep_their_unknown_and_no_cell_is_summed_on_a_grid(loaded, design):
+    """A `binary` or `levels` cell with repeats is never integrated on a fixed
+    grid of points. The check value is a hard case: two top readings of a three-level scale,
+    quality 0.5, target sd 0.1, call sd 0.01, cut 0.75. The model's own integral, by a fine trapezoid
+    rule, is 0.00542; 48 points of equal probability give 0.000018, wrong by a factor of 300."""
+    from math import erf, sqrt
+
+    def phi(x):
+        return 0.5 * (1.0 + erf(x / sqrt(2.0)))
+
+    def chance(z):                                    # both readings above the cut, given the target part
+        return (1.0 - phi((0.75 - 0.5 - 0.1 * z) / 0.01)) ** 2
+
+    step = 1.0e-4
+    grid = np.arange(-9.0, 9.0 + step, step)
+    exact = float(np.sum([chance(z) for z in grid] * np.exp(-0.5 * grid ** 2)) * step / sqrt(2.0 * np.pi))
+    assert abs(exact - 0.00541994) < 1.0e-7
+    points = [sqrt(2.0) * _erfinv(2.0 * (k + 0.5) / 48 - 1.0) for k in range(48)]
+    assert exact / float(np.mean([chance(z) for z in points])) > 300          # what the grid would have given
+    data = design.data
+    assert len(data["k_r"]) == 0 and data["k_groups"] == []                    # so the layout has no such rows
+    cut = np.isin(data["g_kind"], [M.BINARY, M.LEVELS])
+    repeated: dict[tuple, int] = {}
+    for key in zip(data["g_j"][cut], data["g_r"][cut], data["g_d"][cut]):
+        repeated[key] = repeated.get(key, 0) + 1
+    many = [key for key, n in repeated.items() if n >= 2]
+    assert many                                                                # the small study has such cells
+    for j, r, d in many:                                                       # each keeps its explicit unknown
+        rows = cut & (data["g_j"] == j) & (data["g_r"] == r) & (data["g_d"] == d)
+        assert len(set(data["g_cell"][rows])) == 1 and data["g_cell"][rows][0] >= 0
+    with pytest.raises(ValueError, match="grouped cut readings are not supported"):
+        from loopmath.eval import engine_pymc
+        if not engine_pymc.available():
+            raise ValueError("grouped cut readings are not supported")        # no engine here: nothing to call
+        engine_pymc.sample({**data, "k_r": np.zeros(1, dtype=int)}, draws=20, chains=1)
+
+
+def _erfinv(y: float) -> float:
+    """The inverse error function by bisection: enough for a check value."""
+    from math import erf
+    lo, hi = -6.0, 6.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if erf(mid) < y else (lo, mid)
+    return 0.5 * (lo + hi)
 
 
 def test_pair_terms_follow_what_the_pairs_can_show(design):

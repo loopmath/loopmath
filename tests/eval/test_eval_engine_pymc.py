@@ -106,7 +106,10 @@ def test_one_small_run_of_a_panel_judge_items_and_a_pairs_only_dimension(monkeyp
     design = M.build(study, rubric, judges, structure="factor:2")
     data = design.data
     assert data["n_pc"] == 24 and data["n_e"] == 48 and data["n_cell"] > 0 and design.relative == ["final/part4"]
-    assert set(data["g_kind"]) == {M.LINEAR, M.BINARY, M.LEVELS, M.ITEMS} and len(data["k_r"]) > 0
+    assert set(data["g_kind"]) == {M.LINEAR, M.BINARY, M.LEVELS, M.ITEMS}
+    assert len(data["k_r"]) == 0 and data["k_groups"] == [] and not hasattr(engine, "NODES")   # no fixed grid
+    cut = np.isin(data["g_kind"], [M.BINARY, M.LEVELS]) & (data["g_j"] == 1)    # the panel judge reads twice
+    assert cut.any() and np.all(data["g_cell"][cut] >= 0)        # so each such cell keeps its own unknown
     got = engine.sample(data, seed=5, draws=20, tune=30, chains=2)
     assert got["version"] == engine.version() and got["divergences"] >= 0 and got["run_seconds"] > 0
     sizes = {"A": 2, "D": 5, "J": 3, "F": 2, "I": 6, "R": 12}

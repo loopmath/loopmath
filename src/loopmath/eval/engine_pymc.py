@@ -23,9 +23,10 @@ Readings, given `eta` and the call noise `e ~ N(0, sigma_j[d]^2)`:
   and the sum of squares around it, which is exact.
 - `binary`: 1 with chance `Phi(eta / sigma)`.
 - `levels`: the level whose interval holds `eta + e`, with fixed cut points and open outer intervals.
-- A `binary` or `levels` cell with repeats: the part of one dimension is summed out over `NODES` points
-  of equal probability. An explicit unknown would sit in a box with near-hard walls when `sigma` is
-  small, which the sampler cannot follow.
+- A `binary` or `levels` cell with repeats keeps its judge-by-output term as an explicit unknown, so
+  the likelihood is the model's own, with no numerical integration. When `sigma` is small that unknown
+  sits between near-hard walls and the sampler can diverge there; the fit's convergence checks count
+  the divergences and mark such a fit as not converged.
 - `items`: `k ~ Binomial(n, Phi(eta + e))`. For n above 1 the call noise is an explicit unknown.
 - A call of a `panel` judge shares the part `sqrt(halo_call_j) sigma z_call` of its noise.
 - A pair: `z = eta_a - eta_b + position_j o + e_pair`, verdict a when `z > tie_width_j`, b when
@@ -77,7 +78,6 @@ INSTALL = ("loopmath eval fit needs the optional modelling extra (PyMC). "
            "Install it with: pip install 'loopmath[bayes]'")
 NAME = "pymc"
 PERSON_SIGMA = 0.04   # the half-normal scale of a person's call noise on a linear or fraction dimension
-NODES = 48            # quadrature points of equal probability for a binary or levels cell with repeats
 MAX_CORES = 4         # chains run side by side on at most this many cores unless the caller says otherwise
 TINY = 1.0e-300
 LINEAR, BINARY, LEVELS, ITEMS = 0, 1, 2, 3   # as model.KIND_CODE
@@ -222,7 +222,7 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 1000, tune: i
         if family_on.any():
             family_sd = pm.HalfNormal("family_sd", sigma=0.4 * scale, shape=D)
             family_raw = pm.Normal("family_raw", 0.0, 1.0, shape=(J, N, D))
-            family = (family_raw - family_raw.mean(axis=1, keepdims=True)) * family_sd * family_on[:, None, None]
+            family = (family_raw - family_raw.mean(axis=1, keepdims=True)) * family_sd * family_on[:, None, :]
             family = pm.Deterministic("family", family)
         else:
             family = None
@@ -267,22 +267,9 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 1000, tune: i
                 at = np.maximum(d["cell_suff"], 0)
                 part = pt.switch(linked, given_mean[at] + given_sd[at] * z_cell, part)
 
-        if len(d["k_r"]):
-            from scipy.special import ndtri
-
-            nodes = ndtri((np.arange(NODES) + 0.5) / NODES)
-            j, dd = d["k_j"], d["k_d"]
-            m = view(d["k_r"], dd, j, d["k_f"], d["k_jt"], d["k_ji"])
-            s = sigma[j, dd]
-            if z_pc is not None:
-                m = m + s * root_call[j] * take(z_pc, d["k_pc"])
-                s = s * pt.sqrt(1.0 - halo_call[j] * (d["k_pc"] >= 0).astype(float))
-            eta = m[:, None] + pt.sqrt(own_var(j, dd))[:, None] * nodes[None, :]
-            each = interval((d["k_lo"][:, None] - eta) / s[:, None], (d["k_hi"][:, None] - eta) / s[:, None])
-            total = 0.0
-            for rows in d["k_groups"]:
-                total = total + pt.sum(pt.logsumexp(each[rows].sum(axis=1), axis=1) - np.log(NODES))
-            pm.Potential("lik_repeats", total)
+        if len(d["k_r"]):   # no layout builds these rows; a fixed grid of points is not accurate enough
+            raise ValueError("engine_pymc: grouped cut readings are not supported; "
+                             "build the design with loopmath.eval.model.build")
 
         if len(d["g_r"]):
             j, dd = d["g_j"], d["g_d"]
