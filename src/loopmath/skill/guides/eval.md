@@ -234,7 +234,8 @@ prints an `error:` line on stderr that names what to fix, and under `--json` the
 - `loopmath eval simulate SPEC --out DIR --seed S --json`, or `loopmath eval simulate --list`.
 - `loopmath eval fit STUDY --rubric FILE --judges FILE --check-only --allow-simulated --out FILE --json`; also
   `--seed S`, `--draws N`, `--chains N`, `--keep-draws N`, `--components ID ...`, `--structure FORM`,
-  `--terms NAME=on`, `--halo factor` and `--cuts fixed`.
+  `--terms NAME=on`, `--halo factor`, `--cuts fixed` and `--engine pymc` (the default; `laplace` is an
+  experimental, approximate engine).
 - `loopmath eval judges FIT --target-error X --budget-usd USD --json`.
 - `loopmath eval value FIT --value FILE --reference ARM --check design --labels PLAN ... --seed S --json`.
 - `loopmath eval steps FIT --value FILE --reference ARM --pool --runs FILE --seed S --json`.
