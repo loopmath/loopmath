@@ -8,10 +8,12 @@ import json
 import numpy as np
 import pytest
 from scipy.special import ndtr
+from scipy.stats import hypergeom
 
 from loopmath import cli
 from loopmath.eval import contracts as C
 from loopmath.eval import designcheck as DC
+from loopmath.eval import fitfile as F
 from loopmath.eval import quality as Q
 from loopmath.eval import testing
 
@@ -76,7 +78,7 @@ def test_interval_covers_the_true_human_mean_at_its_stated_level(design, n, inte
     """The design-based part of acceptance check 12, at the level of the estimator: coverage of the 90%
     interval between 85% and 95%, for a sample stratified by prediction band (pilot) and for one drawn
     with unequal probabilities (active), with the normal interval (50 labels or more) and the bootstrap
-    interval (below 50). Measured: 0.899, 0.931, 0.869 and 0.916."""
+    interval (below 50). Measured: 0.899, 0.920, 0.869 and 0.899."""
     rate, kind = coverage(design, n, shift=0.05)
     assert kind == interval and 0.85 <= rate <= 0.95, rate
 
@@ -84,7 +86,7 @@ def test_interval_covers_the_true_human_mean_at_its_stated_level(design, n, inte
 def test_interval_is_wide_when_the_prediction_error_differs_by_band():
     """A known limit, kept visible: the variance has one centre, so when a sample is stratified by
     prediction band and the prediction is off by much more in one band (here by 0.2, twice the noise),
-    the interval is wider than its level says. Measured: 0.960 and 0.979. It never covers less."""
+    the interval is wider than its level says. Measured: 0.960 and 0.976. It never covers less."""
     rate, kind = coverage("bands", 80, shift=0.2)
     assert kind == "normal" and 0.95 < rate <= 0.99, rate
     rate, kind = coverage("bands", 40, shift=0.2)
@@ -165,6 +167,141 @@ def test_observed_puts_every_scale_on_0_to_1():
     assert DC.observed(dims["numbers_right"], 1) == 1.0 and DC.observed(dims["coverage"], 3, 4) == 0.75
     with pytest.raises(ValueError):
         DC.observed(dims["clarity"], "nothing")
+
+
+# ---------------------------------------------------------------------------------------------------
+# Bounded scores: a census, and samples that show no spread
+
+def uniform_sample(n_targets: int, n: int):
+    return lambda rng: (rng.choice(n_targets, n, replace=False), np.full(n_targets, n / n_targets))
+
+
+def two_strata(n_targets: int, n_first: int, take_first: int, take_rest: int):
+    """A fixed number from the first `n_first` targets and from the rest."""
+    def draw(rng):
+        pi = np.where(np.arange(n_targets) < n_first, take_first / n_first, take_rest / (n_targets - n_first))
+        rest = n_first + rng.choice(n_targets - n_first, take_rest, replace=False)
+        return np.concatenate([rng.choice(n_first, take_first, replace=False), rest]), pi
+    return draw
+
+
+def failures(n_targets: int, at) -> np.ndarray:
+    y = np.ones(n_targets)
+    y[np.asarray(at)] = 0.0
+    return y
+
+
+def binary_coverage(f: np.ndarray, y: np.ndarray, sampler, reps: int = 500, seed: int = 0):
+    """`(coverage, share of intervals by kind)` of the true mean `y.mean()` over repeated samples."""
+    rng = np.random.default_rng(seed)
+    hits, kinds = 0, {}
+    for _ in range(reps):
+        picked, pi = sampler(rng)
+        out = DC.interval(f, y[picked], f[picked], pi[picked], rng)
+        hits += out["lo"] - 1e-12 <= y.mean() <= out["hi"] + 1e-12
+        kinds[out["interval"]] = kinds.get(out["interval"], 0) + 1 / reps
+    return hits / reps, kinds
+
+
+def test_a_census_is_exact():
+    """Twenty targets, all labelled with certainty, half of them failing: the mean is 0.5 and there is
+    no sampling error to show."""
+    y = np.array([0.0, 1.0] * 10)
+    out = DC.interval(np.ones(20), y, np.ones(20), np.ones(20), np.random.default_rng(0))
+    assert out == {"mean": 0.5, "sd": 0.0, "lo": 0.5, "hi": 0.5, "interval": "census", "unseen": 0}
+    # targets drawn with certainty add no width to a sample either: only the 20 drawn at 0.5 do
+    rng = np.random.default_rng(1)
+    e = np.concatenate([rng.standard_normal(10), 0.05 * rng.standard_normal(20)])
+    f = np.full(30, 0.5)
+    pi = np.concatenate([np.ones(10), np.full(20, 0.5)])
+    out = DC.interval(np.full(50, 0.5), f + e, f, pi, np.random.default_rng(0))
+    # the textbook sd of a mean of 20 from 40, carried to all 50 targets
+    textbook = 40 / 50 * np.sqrt((1 - 0.5) * e[10:].var(ddof=1) / 20)
+    assert out["interval"] == "bootstrap" and out["sd"] == pytest.approx(textbook, rel=0.1)
+
+
+def test_one_rare_failure_is_not_reported_as_a_point():
+    """100 binary targets, one true failure, a judge that predicts a pass everywhere, and a uniform
+    sample of 40. A sample without the failure (6 in 10 samples) must not report [1, 1]."""
+    n_targets, n = 100, 40
+    f, y = np.ones(n_targets), failures(n_targets, [0])
+    seen_none = np.arange(1, n + 1)
+    out = DC.interval(f, y[seen_none], f[seen_none], np.full(n, 0.4), np.random.default_rng(0))
+    # independent of the code: the largest number of failures such a sample still misses with a chance
+    # above 5%, from the hypergeometric distribution
+    most = max(k for k in range(60) if hypergeom(n_targets, k, n).pmf(0) > 0.05)
+    assert most == 5 and hypergeom(n_targets, 1, n).pmf(0) == pytest.approx(0.6)
+    assert out["interval"] == "bound" and out["unseen"] == 5 and out["sd"] == 0.0
+    assert out["hi"] == 1.0 and out["lo"] == pytest.approx(1 - most / n_targets) and out["lo"] <= 0.99
+    rate, kinds = binary_coverage(f, y, uniform_sample(n_targets, n))
+    assert rate >= 0.90 and kinds["bound"] == pytest.approx(0.6, abs=0.06), (rate, kinds)
+    # a larger sample, with the normal interval when the failure is seen
+    rate, kinds = binary_coverage(f, y, uniform_sample(n_targets, 60))
+    assert rate >= 0.90 and set(kinds) == {"bound", "normal"}, (rate, kinds)
+
+
+def by_size(size: np.ndarray, n: int):
+    return lambda rng: by_size_sample(size.copy(), n, rng)
+
+
+_SIZE = 0.2 + np.random.default_rng(2).random(400)
+RARE = {
+    "uniform, 3 of 100 fail, 40 labels": (failures(100, range(3)), uniform_sample(100, 40)),
+    "uniform, 10 of 100 fail, 40 labels": (failures(100, range(10)), uniform_sample(100, 40)),
+    "uniform, 10 of 100 fail, 60 labels": (failures(100, range(10)), uniform_sample(100, 60)),
+    "uniform, 10 of 1000 fail, 100 labels": (failures(1000, range(10)), uniform_sample(1000, 100)),
+    "strata 10 of 100 and 50 of 100, failures in the first": (failures(200, range(4)), two_strata(200, 100, 10, 50)),
+    "strata 10 of 100 and 50 of 100, failures in the second": (failures(200, range(100, 104)),
+                                                               two_strata(200, 100, 10, 50)),
+    "strata 10 of 100 and 50 of 100, failures in both": (failures(200, [0, 1, 2, 3, 100, 101, 102, 103]),
+                                                         two_strata(200, 100, 10, 50)),
+    "strata 10 of 100 and 20 of 100, failures in both": (failures(200, [0, 1, 2, 3, 100, 101, 102, 103]),
+                                                         two_strata(200, 100, 10, 20)),
+    "strata 20 of 20 and 30 of 100, failures in both": (failures(120, [0, 1, 2, 3, 4, 20, 21, 22]),
+                                                        two_strata(120, 20, 20, 30)),
+    "by size, 80 labels, 8 fail at the lowest chance": (failures(400, np.argsort(_SIZE)[:8]), by_size(_SIZE, 80)),
+    "by size, 40 labels, 8 fail at the lowest chance": (failures(400, np.argsort(_SIZE)[:8]), by_size(_SIZE, 40)),
+    "by size, 80 labels, 8 fail anywhere": (failures(400, np.arange(8) * 50), by_size(_SIZE, 80)),
+}
+
+
+@pytest.mark.parametrize("case", list(RARE))
+def test_rare_binary_failures_are_covered(case):
+    """Rare failures on a binary criterion, a judge that predicts a pass everywhere: the 90% interval
+    holds the true mean in at least 85% of samples under uniform sampling, strata with their own rates
+    and unequal probabilities. With failures this rare it mostly holds it more often than 90%: a wide
+    interval is the only honest one when the sample saw nothing. Measured over 500 samples each, in the
+    order above: 0.934, 0.862, 0.934, 1.000, 0.998, 1.000, 0.998, 0.990, 1.000, 0.996, 1.000, 0.854."""
+    y, sampler = RARE[case]
+    rate, _ = binary_coverage(np.ones(len(y)), y, sampler)
+    assert rate >= 0.85, rate
+
+
+def test_a_stratum_that_saw_nothing_widens_the_interval():
+    """Failures in both strata, but the stratum sampled at 1 in 10 shows none: its unseen targets are
+    allowed for, though the other stratum gives the sample a spread."""
+    n_targets = 200
+    y = failures(n_targets, [0, 1, 2, 3, 100, 101, 102, 103])
+    picked = np.concatenate([np.arange(10, 20), np.arange(103, 153)])     # none of the first four, one of the rest
+    pi = np.concatenate([np.full(10, 0.1), np.full(50, 0.5)])
+    out = DC.interval(np.ones(n_targets), y[picked], np.ones(60), pi, np.random.default_rng(0))
+    # independent: failures among the 100 targets of the first stratum that 10 labels miss with a
+    # chance above 5%
+    most = max(k for k in range(90) if hypergeom(100, k, 10).pmf(0) > 0.05)
+    assert out["interval"] == "normal" and out["unseen"] >= most
+    assert out["lo"] <= y.mean() <= out["hi"] and out["lo"] <= out["mean"] - most / n_targets
+    # the same labels without that stratum's allowance would miss the truth
+    assert out["mean"] - 1.645 * out["sd"] > y.mean()
+
+
+def test_groups_without_spread():
+    y = np.array([1.0, 1.0, 1.0, 0.0, 1.0, 0.3, 0.3])
+    f = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.2])
+    pi = np.array([0.2, 0.2, 0.5, 0.5, 0.5, 0.3, 0.7])
+    # 0.2: equal scores; 0.5: a spread; 0.3 and 0.7 are held by one target each and form one group
+    assert [at.tolist() for at in DC.flat_groups(y, f, pi)] == [[5, 6], [0, 1]]
+    assert [DC.unseen(p) for p in (0.4, 0.1, 0.95, 1.0)] == [5, 28, 0, 0]
+    assert 0.6 ** 5 > 0.05 > 0.6 ** 6 and 0.9 ** 28 > 0.05 > 0.9 ** 29
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -373,6 +510,113 @@ def test_every_scale_is_checked_without_judge_readings(tmp_path):
     out = DC.check(fit, lines, [plan(picks, mode="pilot")])
     assert out["cells"][0]["dimension"] == "final/coverage" and out["cells"][0]["n_labels"] == 3
     assert out["cells"][0]["design"]["mean"] == pytest.approx(0.75)
+
+
+# ---------------------------------------------------------------------------------------------------
+# The reviewer's judge-by-input noise
+
+BINARY = 0         # final/numbers_right in the example rubric
+
+
+def by_input_study(folder, state: str = "identified", n_inputs: int = 400, seed: int = 0):
+    """Binary quality 0.5 on every run, a reviewer without bias or judge-by-output noise, call noise 1
+    and judge-by-input sd 2. Every run is read once by the reviewer."""
+    runs = testing.example_runs(n_inputs=n_inputs)
+    judges = testing.example_judges()
+    j = [row["id"] for row in judges["judges"]].index("reviewer")
+    base = testing.default_truth(F.build_index(testing.example_rubric(), judges, runs),
+                                 C.dimensions(testing.example_rubric()), judges)
+    tau, sigma, by_input = base["tau"].copy(), base["sigma"].copy(), base["sd_judge_input"].copy()
+    tau[j, BINARY], sigma[j, BINARY], by_input[j, BINARY] = 0.0, 1.0, 2.0
+    q = np.full((len(runs), 5), 0.5)
+    built = testing.build_fit(folder / "fit.json", runs=runs, n_draws=20, posterior_sd=0.0, seed=seed,
+                              truth={"q_run": q, "tau": tau, "sigma": sigma, "sd_judge_input": by_input},
+                              terms=[F.term("judge_input", state, judge="reviewer", count=n_inputs)])
+    rng = np.random.default_rng(seed + 50)
+    effect = 2.0 * rng.standard_normal(n_inputs)            # one effect per input, shared by its runs
+    rows, picks = [], []
+    for r, run in enumerate(runs):
+        reading = 0.5 + effect[built.fit.run_input[r]] + rng.standard_normal() >= 0
+        picks.append(assignment(f"a{r:04d}", run["run"], 1.0, components=("numbers_right", "depth"), kind="uniform"))
+        rows += [score(f"n{r}", run["run"], "reviewer", int(reading), component="numbers_right",
+                       assignment=f"a{r:04d}"),
+                 score(f"d{r}", run["run"], "reviewer", 5.0 + (r % 2), assignment=f"a{r:04d}")]
+    return built, rows, plan(picks, mode="pilot")
+
+
+def test_expected_human_reading_includes_judge_by_input_noise(tmp_path):
+    """Quality 0.5, call noise 1, judge-by-input sd 2: a pass has chance `Phi(0.5 / sqrt(1 + 4))`, which
+    is 0.588468, not the 0.691462 that leaves the judge-by-input term out."""
+    rng = np.random.default_rng(9)
+    simulated = (0.5 + 2.0 * rng.standard_normal(2_000_000) + rng.standard_normal(2_000_000) >= 0).mean()
+    assert simulated == pytest.approx(0.588468, abs=0.002)
+    cells = []
+    for seed in range(6):
+        built, rows, labels = by_input_study(tmp_path / str(seed), seed=seed)
+        cells += [c for c in DC.check(built.fit, rows, [labels])["cells"] if c["dimension"] == "final/numbers_right"]
+    assert len(cells) == 18
+    for cell in cells:
+        assert cell["model"]["mean"] == pytest.approx(0.588468, abs=1e-6)
+        assert cell["design"]["interval"] == "census" and cell["status"] == "ok"
+    # the human readings were drawn with the judge-by-input effect: they agree with the model, and
+    # would be flagged nearly everywhere against the figure that leaves the term out
+    assert np.mean([cell["design"]["mean"] for cell in cells]) == pytest.approx(0.588468, abs=0.03)
+    assert sum(cell["flagged"] for cell in cells) <= 5
+    assert sum(abs(cell["design"]["mean"] - 0.691462) > 1.645 * cell["joint_sd"] for cell in cells) >= 15
+
+
+def test_a_noise_term_the_design_does_not_measure_is_not_checked(tmp_path):
+    built, rows, labels = by_input_study(tmp_path, state="prior_only", n_inputs=30)
+    cells = {(c["arm"], c["dimension"]): c for c in DC.check(built.fit, rows, [labels])["cells"]}
+    binary, linear = cells[("baseline", "final/numbers_right")], cells[("baseline", "final/depth")]
+    assert binary["status"] == ("not checked: the expected reading on this scale depends on a noise term the "
+                                "design does not measure (judge_input of reviewer)")
+    assert binary["model"] is None and binary["gap"] is None and binary["flagged"] is False
+    assert binary["design"]["interval"] == "census" and 0.0 <= binary["design"]["mean"] <= 1.0
+    # the expected reading on a linear scale is `q + bias` whatever the noise: still checked
+    assert linear["status"] == "ok" and linear["model"]["mean"] == pytest.approx(0.5, abs=1e-9)
+    assert linear["design"]["mean"] == pytest.approx(0.55)
+    assert DC.term_state(built.fit, "judge_input", "reviewer", "final/depth") == "prior_only"
+    assert DC.term_state(built.fit, "tau", "reviewer", "final/depth") is None
+
+
+def test_readings_that_share_an_input_are_not_counted_as_independent(tmp_path):
+    """A reviewer reads 4 runs of every input and carries a judge-by-input effect of sd 0.1 on a linear
+    score; a judge reads every run. When the readings follow the model, about 1 cell in 10 is flagged
+    (9 of 90 expected); counting every reading as independent would flag far more."""
+    flagged, ratios, plain = 0, [], []
+    for seed in range(30):
+        runs = testing.example_runs(n_inputs=40, runs_per_input=4)
+        judges = testing.example_judges()
+        j = [row["id"] for row in judges["judges"]].index("reviewer")
+        base = testing.default_truth(F.build_index(testing.example_rubric(), judges, runs),
+                                     C.dimensions(testing.example_rubric()), judges)
+        by_input = base["sd_judge_input"].copy()
+        by_input[j, DEPTH] = 0.1
+        built = testing.build_fit(tmp_path / str(seed) / "fit.json", runs=runs, n_draws=40, posterior_sd=0.002,
+                                  seed=seed, truth={"sd_judge_input": by_input},
+                                  terms=[F.term("judge_input", "identified", judge="reviewer", count=40)])
+        rng = np.random.default_rng(seed + 500)
+        q = built.truth["q_run"][:, DEPTH]
+        bias = built.truth["bias"][built.fit.judge("strong"), DEPTH]
+        effect = 0.1 * rng.standard_normal(40)
+        rows, picks, residual = [], [], []
+        for r, run in enumerate(runs):
+            judge = np.clip(q[r] + bias + 0.05 * rng.standard_normal(), 0, 1)
+            human = np.clip(q[r] + effect[built.fit.run_input[r]] + 0.05 * rng.standard_normal(), 0, 1)
+            residual.append(human - judge)
+            picks.append(assignment(f"a{r:04d}", run["run"], 1.0, kind="uniform"))
+            rows += [score(f"j{r}", run["run"], "strong", round(float(10 * judge), 3)),
+                     score(f"h{r}", run["run"], "reviewer", round(float(10 * human), 3), assignment=f"a{r:04d}")]
+        for cell in DC.check(built.fit, rows, [plan(picks, mode="pilot")])["cells"]:
+            flagged += cell["flagged"]
+            ratios.append(cell["gap"] / cell["joint_sd"])
+            # what the ratio would be with every reading counted as independent
+            mine = np.array(residual)[[r for r, run in enumerate(runs) if run["arm"] == cell["arm"]]]
+            plain.append(cell["gap"] / (mine.std(ddof=1) / np.sqrt(len(mine))))
+    assert 3 <= flagged <= 16, flagged
+    assert np.std(ratios) == pytest.approx(1.0, abs=0.2), np.std(ratios)
+    assert np.mean(np.abs(plain) > 1.645) > 0.25 and np.std(plain) > 1.4
 
 
 # ---------------------------------------------------------------------------------------------------

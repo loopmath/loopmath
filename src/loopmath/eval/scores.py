@@ -117,6 +117,67 @@ def _finish(args: argparse.Namespace, schema: str, report: dict, lines: list[str
     return EXIT_OK if report.get("ok", True) else EXIT_USER
 
 
+def read_rows(rows: list[dict], file: str) -> list[dict]:
+    """The rows that are read once corrections are applied, without refusing: a `replaces` that names
+    nothing is ignored, and when the corrections form a loop every row is returned. `eval scores check`
+    names both problems; here they must not hide a second one."""
+    ids = {row["id"] for row in rows}
+    rows = [{**row, "replaces": None} if row.get("replaces") is not None and row["replaces"] not in ids else row
+            for row in rows]
+    try:
+        return C.live(rows, file)[0]
+    except C.ContractError:
+        return list(rows)
+
+
+def call_problems(table: str, rows: list[dict], rubric: dict | None = None) -> list[dict]:
+    """The calls that hold more than a call can, among `rows` of `scores` or `pairs` (the rows that are read).
+
+    A call is one judge looking once. It gives one reading per component (or one line per item, or one
+    count), and one verdict per component compared. A second row is a repeat and needs its own call, or
+    is a correction and names the row it corrects. Each problem is `{"call", "component", "ids", "problem",
+    "fix", "code"}`, with `ids` the rows that clash, in file order. A pair with no component is on the
+    overall component of its step when `rubric` is given."""
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    out: list[dict] = []
+
+    def problem(call: str, comp: Any, clash: list[dict], text: str, fix: str, code: str) -> None:
+        out.append({"call": call, "component": comp, "ids": [row["id"] for row in clash], "problem": text,
+                    "fix": fix, "code": code})
+
+    if table == "pairs":
+        for row in rows:
+            comp = row["component"]
+            if comp is None and rubric is not None:
+                comp = C.overall_component(rubric, row["step"])
+            groups[(row["call"], comp)].append(row)
+        for (call, comp), group in groups.items():
+            if len(group) > 1:
+                on = "" if comp is None else f' for the component "{comp}"'
+                problem(call, comp, group, f'two pairs of one call{on} ("{group[0]["id"]}" and "{group[1]["id"]}")',
+                        "give a repeat its own call, or name the pair it corrects in replaces", "call_twice")
+        return out
+    for row in rows:
+        groups[(row["call"], row["component"])].append(row)
+    for (call, comp), group in groups.items():
+        item_rows = [row for row in group if "item" in row]
+        others = [row for row in group if "item" not in row]
+        twice = [item for item, n in Counter(row["item"] for row in item_rows).items() if n > 1]
+        if item_rows and others:
+            problem(call, comp, group, f'the call has item lines and a count line for the component "{comp}" '
+                    f'("{item_rows[0]["id"]}" and "{others[0]["id"]}")',
+                    "write item lines or one count line, never both", "items_and_count")
+        elif len(others) > 1:
+            problem(call, comp, others, f'two readings of one call for the component "{comp}" '
+                    f'("{others[0]["id"]}" and "{others[1]["id"]}")',
+                    "give a repeat its own call, or name the reading it corrects in replaces", "call_twice")
+        elif twice:
+            problem(call, comp, [row for row in item_rows if row["item"] == twice[0]],
+                    f'two readings of one call for the item "{twice[0]}"',
+                    "give a repeat its own call, or name the reading it corrects in replaces", "call_twice")
+    return out
+
+
 # ---------------------------------------------------------------------------------------------------
 # eval scores import
 
@@ -234,9 +295,9 @@ def _table_csv(path: str, table: str, rubric: dict | None, plan: dict | None) ->
 
     Returns `{"rows", "refused", "not_used", "ignored", "file_time"}`. `rows` holds `(raw row, source)` and
     `file_time` the ids of the rows whose time is the file's. A row with an empty value or verdict is a blank
-    line of a form: it is listed in `not_used`. Without an `id` column a row's id is made from its content, so the same file gives
-    the same ids. Without a `call`, a reading is its own call; item lines of one target, component and judge
-    share one. Without `observed_at`, the file's modification time is used."""
+    line of a form: it is listed in `not_used`. Without an `id` column a row's id is made from its content,
+    so the same file gives the same ids. Without a `call`, a reading is its own call; item lines of one
+    target, component and judge share one. Without `observed_at`, the file's modification time is used."""
     name, header, records, modified = _csv(path)
     pairs = table == "pairs"
     columns = PAIR_COLUMNS if pairs else SCORE_COLUMNS
@@ -345,8 +406,9 @@ def import_(args: argparse.Namespace) -> int:
     if args.items:
         incoming["items"] += [(row, Path(args.items).name) for row in C.read_lines(args.items, C.SCHEMA_ITEMS)]
 
-    counts: dict[str, dict[str, int]] = {}
-    merged: dict[str, list[dict] | None] = {}
+    tallies: dict[str, Counter] = {}
+    merged: dict[str, list[dict]] = {}
+    added: dict[str, dict[str, str]] = {name: {} for name in TABLES}  # per table, new id to its source
     simulated_study = any(row["simulated"] for row in tables["runs"])
     for name, (file, schema) in TABLES.items():
         key, validate = C.LINE_KEY[schema], C.LINES[schema]
@@ -382,14 +444,36 @@ def import_(args: argparse.Namespace) -> int:
                 continue
             have[row[key]] = row
             rows.append(row)
+            added[name][row[key]] = source
             tally["new"] += 1
-        counts[COUNTED[name]] = {word: tally[word] for word in ("new", "unchanged", "refused")}
-        merged[name] = rows if tally["new"] else None
+        tallies[name], merged[name] = tally, rows
+
+    # one call gives one reading per component and one verdict per component compared: a new row that
+    # shares a call with another row that is read, in the study or in this import, is refused by id
+    for name in ("scores", "pairs"):
+        if not added[name]:
+            continue
+        clashing: dict[str, str] = {}
+        for found in call_problems(name, read_rows(merged[name], TABLES[name][0]), rubric):
+            new = [ident for ident in found["ids"] if ident in added[name]]
+            old = [ident for ident in found["ids"] if ident not in added[name]]
+            first = old[0] if old else new[0]
+            on = "" if found["component"] is None else f' for the component "{found["component"]}"'
+            for ident in new if old else new[1:]:
+                clashing.setdefault(ident, f'the {NOUN[name]} "{ident}" shares the call "{found["call"]}" with the '
+                                           f'{NOUN[name]} "{first}"{on}; give a repeat its own call, or name the '
+                                           f"{NOUN[name]} it corrects in replaces")
+        for ident, reason in clashing.items():
+            tallies[name]["new"] -= 1
+            tallies[name]["refused"] += 1
+            refused.append({"table": COUNTED[name], "id": ident, "source": added[name][ident], "reason": reason})
+    counts = {COUNTED[name]: {word: tallies[name][word] for word in ("new", "unchanged", "refused")}
+              for name in TABLES}
 
     written = []
     if not refused:
         for name, (file, schema) in TABLES.items():
-            if merged[name] is not None:
+            if tallies[name]["new"]:
                 C.write_lines(folder / file, schema, merged[name])
                 written.append(file)
     report = {"ok": not refused, "study": str(folder), **counts, "refused": refused, "not_used": not_used,
@@ -644,26 +728,12 @@ def check_study(study: C.Study, rubric: dict, judges: dict | None = None, *,
             read[name], dropped = list(rows), []
         not_read += [{"table": COUNTED[name], **entry} for entry in dropped]
 
-    by_call: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for name, file in (("scores", C.SCORES_FILE), ("pairs", C.PAIRS_FILE)):
+        for entry in call_problems(name, read[name], rubric):
+            bad(file, f'call "{entry["call"]}"', entry["problem"], entry["fix"], entry["code"])
     spans: dict[str, set] = defaultdict(set)
     for row in read["scores"]:
-        by_call[(row["call"], row["component"])].append(row)
         spans[row["call"]].add((row["judge"], row["run"], row["step"]))
-    for (call, comp_id), rows in by_call.items():
-        item_rows = [row for row in rows if "item" in row]
-        others = [row for row in rows if "item" not in row]
-        twice = [item for item, n in Counter(row["item"] for row in item_rows).items() if n > 1]
-        if item_rows and others:
-            bad(C.SCORES_FILE, f'call "{call}"', f'the call has item lines and a count line for the component '
-                f'"{comp_id}" ("{item_rows[0]["id"]}" and "{others[0]["id"]}")',
-                "write item lines or one count line, never both", "items_and_count")
-        elif len(others) > 1:
-            bad(C.SCORES_FILE, f'call "{call}"', f'two readings of one call for the component "{comp_id}" '
-                f'("{others[0]["id"]}" and "{others[1]["id"]}")',
-                "give a repeat its own call, or name the reading it corrects in replaces", "call_twice")
-        elif twice:
-            bad(C.SCORES_FILE, f'call "{call}"', f'two readings of one call for the item "{twice[0]}"',
-                "give a repeat its own call, or name the reading it corrects in replaces", "call_twice")
     warnings = [f'{C.SCORES_FILE}: call "{call}": shared by {len(who)} pairs of judge and target; a call is one '
                 "judge scoring one target" for call, who in spans.items() if len(who) > 1]
 
@@ -790,14 +860,12 @@ def add(args: argparse.Namespace) -> int:
                 raise _usage("scores add", "--item", f'no item "{args.item}" of the component "{comp_id}" for the '
                              f'input "{runs[args.run]["input"]}" in {C.ITEMS_FILE}',
                              "name an item of the run's input, or import the items first", "unknown_item")
-        gone = {args.replaces}
-        same = [other for other in C.live([*rows, row], file)[0] if other["call"] == row["call"]
-                and other["component"] == comp_id and other["id"] not in (ident, *gone)]
-        clash = [other for other in same if "item" not in row or "item" not in other or other["item"] == row["item"]]
-        if clash:
-            raise _usage("scores add", "--call", f'the call "{row["call"]}" already has the reading '
-                         f'"{clash[0]["id"]}" for the component "{comp_id}"',
-                         "give a repeat its own call, or name the reading it corrects in --replaces", "call_twice")
+    for found in call_problems(table, read_rows([*rows, row], file), rubric):
+        if ident in found["ids"]:
+            other = next(name for name in found["ids"] if name != ident)
+            raise _usage("scores add", "--call", f'the call "{row["call"]}" already has the {NOUN[table]} "{other}" '
+                         f'for the component "{comp_id}"', f"give a repeat its own call, or name the {NOUN[table]} "
+                         "it corrects in --replaces", "call_twice")
     C.write_lines(study.folder / file, schema, [*rows, row])
     report = {"ok": True, "study": str(study.folder), "added": NOUN[table], "file": file,
               "row": {key: value for key, value in row.items() if value is not None}}
