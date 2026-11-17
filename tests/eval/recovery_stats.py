@@ -96,11 +96,21 @@ Statistics
   measured with a true value of 0 has an interval that excludes 0, over the studies that measured one.
   A record made without the measurement (`family` null) leaves the spec incomplete; a measured study
   with no such contrast (`family` an empty list) is a design with nothing to measure.
+- Classes whose truth is 0 in every row (`zero_class_table`): a gated class with a true value of 0 in
+  every row of every study of the spec (for example `family` where no family effect is simulated) is
+  judged by a false-alarm rule, not by the 85 to 95% band. A study counts once if any row of the class
+  misses, that is if its interval excludes 0 (a degenerate row is a miss); the share of studies must
+  stay within `ZERO_CLASS_LIMIT`, as for family contrasts. The class and its parameters stay in the
+  tables with their coverage; only the two band items of the gate leave them out, and the rule is its
+  own gate item. Every other class keeps the two-sided band. When every gated class is judged this way,
+  the band item is `not applicable`; when no class is, the false-alarm item is. A spec with no gated
+  class at all has nothing measured, and its band item stays incomplete.
 
 The gate (`spec_gate`, `engine_gate`, `gate_scope`) is reported here, not decided: people decide it. Its
 required specs are named here (`CATALOG_SPECS`, `REPEATED_SCALE_SPECS`), not taken from the records
-found; a spec that is missing leaves its items incomplete. A narrower scope needs a note saying who
-approved it, and must still read both `binary` and `levels` repeatedly.
+found; a spec that is missing leaves its items incomplete. An item with nothing to judge in a spec is
+`not applicable` and never blocks it; the study count and inventory items still apply. A narrower
+scope needs a note saying who approved it, and must still read both `binary` and `levels` repeatedly.
 
 All data is synthetic.
 """
@@ -122,6 +132,7 @@ TIMING_SCHEMA = "loopmath.eval-engine-bench-timing/2"
 BAND = (0.85, 0.95)        # accepted coverage of a 90% interval (PRD 10.3)
 CI = 0.95                  # level of the intervals on a coverage or a rate
 FAMILY_LIMIT = 0.10        # share of studies with a false family finding (PRD 10.9)
+ZERO_CLASS_LIMIT = FAMILY_LIMIT   # the same share for a gated class whose truth is 0 in every row
 GATE_STUDIES = 200         # studies per spec the gate asks for
 GATE_SPECS = 4             # catalog specs whose coverage must pass
 GATE_SECONDS = 120.0       # the size-target study ...
@@ -136,6 +147,7 @@ ARM_CLASSES = ("mu", "arm_difference")
 SIZE_TARGET = "size-target"
 SIZE_COUNTS = {"runs": 500, "readings": 20000, "dimensions": 5, "judges": 4}
 PASS, FAIL, INCOMPLETE = "pass", "fail", "incomplete"
+NOT_APPLICABLE = "not applicable"   # an item with nothing to judge in this spec; it never blocks the spec
 
 # The required matrix of the gate, named here so that records found cannot define it. A test checks it
 # against the catalog.
@@ -775,8 +787,11 @@ def place(lo: float | None, hi: float | None, band: tuple[float, float] = BAND) 
 
 
 def combine(states: Iterable[str]) -> str:
-    """`fail` if any item fails, else `incomplete` if any is incomplete, else `pass`."""
-    states = list(states)
+    """`fail` if any item fails, else `incomplete` if any is incomplete, else `pass`. Items that are
+    `not applicable` are left out; if nothing else is left, nothing was judged, which is incomplete."""
+    states = [state for state in states if state != NOT_APPLICABLE]
+    if not states:
+        return INCOMPLETE
     return FAIL if FAIL in states else (INCOMPLETE if INCOMPLETE in states else PASS)
 
 
@@ -895,6 +910,41 @@ def family_table(records: Iterable[Mapping], limit: float = FAMILY_LIMIT) -> dic
             "held": real_held / real if real else None}
 
 
+def zero_class_table(records: Iterable[Mapping], limit: float = ZERO_CLASS_LIMIT) -> dict:
+    """The gated classes whose truth is 0 in every row of every study, each with its false alarms counted
+    once per study: a study is flagged if any row of the class misses (with truth 0, a miss is an interval
+    that excludes 0; a degenerate row is a miss). A class with an aggregate, or with any other truth, is
+    not one of them."""
+    per: dict[str, dict] = {}
+    aggregated: set = set()
+    for record in _usable(records):
+        aggregated.update((record.get("aggregates") or {}).keys())
+        study: dict[str, list] = {}
+        for row in record["rows"]:
+            study.setdefault(row["class"], []).append(row)
+        for klass, rows in study.items():
+            acc = per.setdefault(klass, {"zero": True, "studies": 0, "flagged": 0, "rows": 0, "row_flags": 0})
+            misses = sum(not row["hit"] for row in rows)
+            acc["zero"] = acc["zero"] and all(row["truth"] == 0.0 for row in rows)
+            acc["studies"] += 1
+            acc["flagged"] += misses > 0
+            acc["rows"] += len(rows)
+            acc["row_flags"] += misses
+    out = {}
+    for klass, acc in sorted(per.items()):
+        if not acc["zero"] or ":" in klass or klass in aggregated:
+            continue
+        k, n = acc["flagged"], acc["studies"]
+        lo, hi = clopper_pearson(k, n)
+        share = k / n
+        out[klass] = {"studies": n, "studies_flagged": k, "share_of_studies": share, "lo": lo, "hi": hi,
+                      "limit": limit, "within_limit": bool(share <= limit),
+                      "place": "above" if lo > limit else "below" if hi <= limit else "undecided",
+                      "rows": acc["rows"], "rows_flagged": acc["row_flags"],
+                      "share_of_rows": acc["row_flags"] / acc["rows"]}
+    return out
+
+
 def summarise(records: Sequence[Mapping], band: tuple[float, float] = BAND, studies_needed: int = GATE_STUDIES) -> dict:
     """Everything the report says about one spec and engine, with the spec's part of the gate. The records
     are checked first (`validate_records`); bad evidence raises `RecordError`."""
@@ -910,6 +960,9 @@ def summarise(records: Sequence[Mapping], band: tuple[float, float] = BAND, stud
     classes = class_table(usable, band)
     params = parameter_table(usable, band)
     family = family_table(usable)
+    zero = zero_class_table(usable)
+    for klass, c in classes.items():
+        c["always_zero"] = klass in zero
     first = records[0] if records else {}
     degenerate = [{"seed": r["seed"], **item} for r in usable for item in r.get("degenerate") or []]
     no_truth = [{"seed": r["seed"], **item} for r in usable for item in r.get("no_truth") or []]
@@ -929,7 +982,7 @@ def summarise(records: Sequence[Mapping], band: tuple[float, float] = BAND, stud
            "classes": classes, "arm_means": [p for p in params if p["class"] in ARM_CLASSES],
            "parameters_outside": [p for p in params if p["outside"]],
            "parameters_biased": [p for p in params if p["gated"] and p["unbiased"] is False],
-           "parameters": len(params), "family": family,
+           "parameters": len(params), "family": family, "zero_classes": zero,
            "degenerate": degenerate, "degenerate_gated": [x for x in degenerate if ":" not in x["class"]],
            "no_truth_gated": [x for x in no_truth if ":" not in x["class"]]}
     out["gate"] = spec_gate(out, band, studies_needed)
@@ -945,12 +998,28 @@ def _spread(values: Sequence[float]) -> dict:
 
 
 def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed: int = GATE_STUDIES) -> dict:
-    """The spec's part of the gate, item by item: `pass`, `fail` or `incomplete`, with the reasons."""
+    """The spec's part of the gate, item by item: `pass`, `fail`, `incomplete` or `not applicable` (nothing
+    to judge here, which never blocks the spec), with the reasons."""
     enough = summary["studies"] >= studies_needed
     until = PASS if enough else INCOMPLETE              # what a clean item is worth before enough studies
     gated = {k: v for k, v in summary["classes"].items() if v["gated"] and v["coverage"] is not None}
     sparse = sorted(k for k, v in gated.items() if v["studies"] < studies_needed)
-    low = sorted(k for k, v in gated.items() if not v["in_band"])
+    zero = summary.get("zero_classes") or {}            # judged by false alarms, not by the band
+    banded = sorted(k for k in gated if k not in zero)
+    low = sorted(k for k in banded if not gated[k]["in_band"])
+    outside = [p for p in summary["parameters_outside"] if p["class"] not in zero]
+    outside_zero = len(summary["parameters_outside"]) - len(outside)
+    over = {k: z for k, z in zero.items() if z["within_limit"] is False}
+    if not zero:
+        zero_state, zero_why = NOT_APPLICABLE, "no gated class has truth 0 in every row"
+    elif over:
+        zero_state = FAIL if enough or any(z["place"] == "above" for z in over.values()) else INCOMPLETE
+        zero_why = "; ".join(f"{k}: share of studies {z['share_of_studies']:.3f} above {z['limit']}"
+                             for k, z in over.items())
+    else:
+        zero_state = until
+        zero_why = "within the limit: " + "; ".join(f"{k} {z['share_of_studies']:.3f} of {z['studies']} studies"
+                                                    for k, z in zero.items())
     arms = [p for p in summary["arm_means"] if p["class"] == "mu"]
     biased = sorted(p["name"] for p in arms if p["unbiased"] is False)
     undecided = sorted(p["name"] for p in arms if p["unbiased"] is None)
@@ -979,13 +1048,19 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
                                + ("; no gated class" if not gated else "")),
         "no_degenerate_parameters": (FAIL if summary["degenerate_gated"] else PASS,
                                      f"{len(summary['degenerate_gated'])} degenerate gated parameters"),
-        "coverage_per_class_in_band": ((FAIL if enough else INCOMPLETE) if low else (until if gated else INCOMPLETE),
-                                       f"classes out of band: {low}"),
-        "no_parameter_outside_band": (FAIL if summary["parameters_outside"] else until,
-                                      f"{len(summary['parameters_outside'])} parameters outside"),
+        "coverage_per_class_in_band": ((FAIL if enough else INCOMPLETE) if low
+                                       else until if banded else NOT_APPLICABLE if gated else INCOMPLETE,
+                                       (f"classes out of band: {low}" if banded or not gated
+                                        else "every gated class has truth 0 in every row")
+                                       + (f"; judged by false alarms instead: {sorted(zero)}" if zero else "")),
+        "no_parameter_outside_band": (FAIL if outside else until,
+                                      f"{len(outside)} parameters outside"
+                                      + (f"; {outside_zero} more in classes judged by false alarms" if outside_zero
+                                         else "")),
         "arm_means_unbiased": (FAIL if biased else (INCOMPLETE if undecided or not arms else until),
                                f"biased: {biased}; undecided: {len(undecided)}"),
         "family_false_alarms_within_limit": (family_state, family_why),
+        "zero_classes_false_alarms_within_limit": (zero_state, zero_why),
         "every_fit_clean": (FAIL if summary["failed"] or summary["unconverged"] else until,
                             f"{len(summary['failed'])} failed, {len(summary['unconverged'])} not converged"),
     }
@@ -993,7 +1068,8 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
     items["numbers_finite"] = (FAIL if bad else PASS, f"numbers that are not finite: {bad[:5]}")
     state = combine(state for state, _ in items.values())
     return {"items": {k: {"state": s, "why": why} for k, (s, why) in items.items()}, "state": state,
-            "pass": state == PASS, "classes_out_of_band": low, "classes_sparse": sparse, "arm_means_biased": biased}
+            "pass": state == PASS, "classes_out_of_band": low, "classes_sparse": sparse, "arm_means_biased": biased,
+            "classes_judged_by_false_alarms": sorted(zero)}
 
 
 # ---------------------------------------------------------------------------------------------------
