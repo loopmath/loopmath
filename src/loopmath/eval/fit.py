@@ -30,7 +30,10 @@ no [bayes] extra) and makes `--keep-draws` approximate draws unless `--draws` sa
 file names the engine and says the draws are approximate (`engine.version`, `options.approximate_draws`),
 and its `diagnostics.checks` add the engine's own checks (`optimizer`, `inner_newton`, `theta_hessian`,
 and `cell_rule` when cut readings are integrated by the cell rule; each counted in `converged`) and
-`boundary`, the sds the data cannot tell from 0 (not counted).
+`boundary`, the sds the data cannot tell from 0 (not counted). Its draws repeat each of a few hundred
+random theta points, so its effective sample size counts theta points, not saved draws (`cluster_ess`):
+for the hyperparameters it is at most the number of theta points, and more saved draws per point do not
+raise it.
 """
 
 from __future__ import annotations
@@ -88,8 +91,38 @@ def split_rhat_ess(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return rhat, chains * draws / spent
 
 
+def cluster_ess(x: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """Effective sample size of the mean of each column of `x[chains, draws, P]` when draws with one label
+    share one random draw of the hyperparameters and are independent given it (`engine_laplace` draws
+    many conditional draws per theta point). With N draws in K groups of n_k, between-group variance
+    s_b^2 and within-group s_w^2 (the unbalanced one-way analysis of variance estimates), the variance of
+    the mean is s_b^2 sum(n_k^2) / N^2 + s_w^2 / N, and the effective size is (s_b^2 + s_w^2) over that.
+    A function of theta alone has s_w^2 = 0 and gets N^2 / sum(n_k^2), at most K however many draws
+    repeat each point; one group gives 1."""
+    flat = x.reshape(-1, x.shape[2])
+    _, group = np.unique(np.asarray(labels).reshape(-1), return_inverse=True)
+    group = group.ravel()
+    N, K = len(group), int(group.max()) + 1 if len(group) else 0
+    if K <= 1:
+        return np.ones(flat.shape[1])
+    n_k = np.bincount(group, minlength=K).astype(float)
+    sums = np.zeros((K, flat.shape[1]))
+    np.add.at(sums, group, flat)
+    means = sums / n_k[:, None]
+    grand = flat.mean(axis=0)
+    ssw = ((flat - means[group]) ** 2).sum(axis=0)
+    ssb = (n_k[:, None] * (means - grand) ** 2).sum(axis=0)
+    msw = ssw / (N - K) if N > K else np.zeros(flat.shape[1])
+    n0 = (N - (n_k ** 2).sum() / N) / (K - 1)
+    s_b = np.maximum(0.0, (ssb / (K - 1) - msw) / n0)
+    var_mean = s_b * (n_k ** 2).sum() / N ** 2 + msw / N
+    total = s_b + msw
+    return np.where(var_mean > 0, total / np.where(var_mean > 0, var_mean, 1.0), float(N))
+
+
 def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], divergences: int,
-             run_seconds: float, *, sampled: int | None = None, least: int | None = None) -> dict:
+             run_seconds: float, *, sampled: int | None = None, least: int | None = None,
+             clusters: np.ndarray | None = None) -> dict:
     """The `diagnostics` member, from draws with their chain axis. `exists[name]` masks the parameters
     that exist; a column that is constant (a fixed unit, a term that is off, the diagonal of a
     correlation) is not checked. The R-hat and effective sample size checks name the parameter they come
@@ -97,7 +130,12 @@ def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], di
 
     `raw` holds the draws the checks describe: `fit_design` passes the saved draws. `sampled` is the number
     of draws the sampler made, which the share of divergent transitions is of (default: the draws in
-    `raw`). With `least`, a fourth check `saved_draws` fails when `raw` holds fewer draws than that."""
+    `raw`). With `least`, a fourth check `saved_draws` fails when `raw` holds fewer draws than that.
+
+    `clusters[chains, draws]` labels draws that share a draw of the hyperparameters (the theta points of
+    `engine_laplace`). Then each column's effective sample size is the smaller of the autocorrelation
+    figure and `cluster_ess`, so repeating a theta point cannot raise it, and the `ess` check names the
+    number of distinct labels as `theta_points`."""
     rhats, esses, labels = [], [], []
     for name in CHECKED:
         if name in LATER and name not in raw:
@@ -109,7 +147,10 @@ def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], di
         keep = keep & np.isfinite(flat).all(axis=(0, 1)) & (flat.std(axis=(0, 1)) > 1e-12)
         columns = np.flatnonzero(keep)
         for start in range(0, len(columns), BLOCK):
-            rhat, ess = split_rhat_ess(flat[:, :, columns[start:start + BLOCK]])
+            block = flat[:, :, columns[start:start + BLOCK]]
+            rhat, ess = split_rhat_ess(block)
+            if clusters is not None:
+                ess = np.minimum(ess, cluster_ess(block, clusters))
             rhats.append(rhat)
             esses.append(ess)
         if keep.any():
@@ -127,6 +168,8 @@ def diagnose(raw: Mapping[str, np.ndarray], exists: Mapping[str, np.ndarray], di
               {"name": "ess", "value": ess_min, "limit": ESS_MIN, "ok": bool(ess_min >= ESS_MIN),
                "worst": worst_ess},
               {"name": "divergences", "value": int(divergences), "limit": limit, "ok": bool(divergences <= limit)}]
+    if clusters is not None:
+        checks[1]["theta_points"] = int(len(np.unique(np.asarray(clusters))))
     if least is not None:
         checks.append({"name": "saved_draws", "value": saved, "limit": int(least), "ok": bool(saved >= least)})
     return {"converged": all(check["ok"] for check in checks), "rhat_max": rhat_max, "ess_min": ess_min,
@@ -238,8 +281,11 @@ def fit_design(design: M.Design, *, seed: int = 0, draws: int | None = None, cha
     first = np.asarray(raw["mu"])
     kept = thin(raw, keep_draws)   # the diagnostics describe these draws, the ones the file holds
     checked = {**existing(design), "halo_call": design.masks["panel"]}   # elsewhere it is 0 by definition
+    clusters = None
+    if result.get("theta_point") is not None:   # draws that share a theta point: thinned with the draws
+        clusters = thin({"mu": first, "theta_point": np.asarray(result["theta_point"])}, keep_draws)["theta_point"]
     diagnostics = diagnose(kept, checked, result["divergences"], result["run_seconds"],
-                           sampled=first.shape[0] * first.shape[1], least=MIN_KEEP_DRAWS)
+                           sampled=first.shape[0] * first.shape[1], least=MIN_KEEP_DRAWS, clusters=clusters)
     extra: dict = {}
     if name == "laplace":
         own = [dict(check) for check in result["checks"]]

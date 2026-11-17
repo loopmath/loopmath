@@ -473,6 +473,70 @@ def test_ep_beats_laplace_where_several_sites_share_unknowns(kind, opts, bound):
     assert checked >= 1
 
 
+def _reversed(rows: list, flip) -> list:
+    """Pair records with the ones `flip` picks written the other way round: the same observations."""
+    out = []
+    for n, row in enumerate(rows):
+        row = dict(row)
+        if flip(n, row):
+            other = {"a": "b", "b": "a"}
+            row["a"], row["b"] = row["b"], row["a"]
+            row["verdict"] = other.get(row["verdict"], row["verdict"])
+            row["shown_first"] = other.get(row["shown_first"], row["shown_first"])
+        out.append(row)
+    return out
+
+
+@pytest.mark.parametrize("subset", ["all", "wins", "losses", "ties", "shown_b", "random", "repeated"])
+def test_ep_is_invariant_to_the_orientation_of_pair_records(subset):
+    """Recording a pair as (b, a) with the verdict and the order shown seen from b is the same observation.
+    Reversing any subset of the records (wins, losses, ties, either order shown; `repeated` reverses one
+    of each set of repeated identical comparisons) must leave the EP value, its gradient and the
+    conditional moments unchanged: the arm means, biases and position effect at the conditional mean,
+    and each pair's predictor (mean up to its sign, variance). The reference is the build from the
+    records as simulated; the reversal happens in the records, before `model.build`."""
+    sim = S.generate(specs.get("pairs", inputs=4), 0)
+    rng = np.random.default_rng(5)
+    pick = rng.random(len(sim.pairs)) < 0.5
+    seen: set = set()
+
+    def first_repeat(n, row):
+        key = (row["judge"], row["a"], row["b"], row["shown_first"], row["verdict"])
+        if key in seen:
+            return False
+        seen.add(key)
+        return sum(1 for r in sim.pairs if (r["judge"], r["a"], r["b"], r["shown_first"], r["verdict"]) == key) > 1
+
+    flip = {"all": lambda n, r: True, "wins": lambda n, r: r["verdict"] == "a",
+            "losses": lambda n, r: r["verdict"] == "b", "ties": lambda n, r: r["verdict"] == "tie",
+            "shown_b": lambda n, r: r["shown_first"] == "b", "random": lambda n, r: bool(pick[n]),
+            "repeated": first_repeat}[subset]
+    rows = _reversed(sim.pairs, flip)
+    assert rows != sim.pairs
+    results = []
+    for records in (sim.pairs, rows):
+        study = C.Study(Path("."), sim.runs, sim.scores, records, sim.items)
+        prob = EL.Problem(M.build(study, sim.rubric, sim.judges, allow_simulated=True).data)
+        theta = np.clip(prob.params.init + 0.3 * np.random.default_rng(2).standard_normal(prob.params.size),
+                        prob.params.lo, prob.params.hi)
+        res = prob.evaluate(theta)
+        assert res["mode"]["ok"] and prob.inner == "ep"
+        c = prob.coefficients(prob.params.unpack(theta))
+        zg, zb = res["mode"]["zg"], res["mode"]["zb"]
+        mean = EL.outputs(prob, res["nu"], zg[None], zb[None])
+        pair_rows = prob.r_mode == 3
+        eta = prob.eta(c, zg, zb)[pair_rows]
+        var = prob.marginals(c, res["mode"]["factor"])[0][pair_rows]
+        results.append((res["value"], res["grad"], mean, eta, var))
+    (v0, g0, m0, e0, s0), (v1, g1, m1, e1, s1) = results
+    assert v1 == pytest.approx(v0, abs=1e-8)
+    assert np.abs(g1 - g0).max() < 1e-6
+    for name in ("mu", "bias", "position"):
+        assert np.allclose(m1[name], m0[name], atol=1e-7, equal_nan=True), name
+    assert np.abs(np.abs(e1) - np.abs(e0)).max() < 1e-7
+    assert np.abs(s1 - s0).max() < 1e-7
+
+
 # ---------------------------------------------------------------------------------------------------
 # The gradient of the outer objective
 
@@ -580,6 +644,51 @@ def test_fit_design_with_the_laplace_engine_writes_a_fit_marked_approximate(tmp_
     assert fit.meta["engine"]["name"] == "laplace"
     with pytest.raises(C.ContractError):
         FT.fit_design(design, engine="stan")
+    # the effective sample size counts theta points, not saved draws: a function of theta alone (the sds)
+    # has at most as many independent values as there are theta points
+    ess = next(check for check in meta["diagnostics"]["checks"] if check["name"] == "ess")
+    assert ess["theta_points"] == meta["options"]["theta_points"] == EL.THETA_POINTS
+    assert ESS_MIN_FOR_TEST <= meta["diagnostics"]["ess_min"] <= ess["theta_points"]
+
+
+ESS_MIN_FOR_TEST = 100.0   # the gate of `fit.py`, written here so a change there shows in this file
+
+
+def test_cluster_ess_against_the_spread_of_the_mean_over_repeated_studies():
+    """K random theta points, n draws each, x = b_k + w (between sd 1, within sd 2). The effective size
+    of the mean is its total variance over the variance of the mean, measured here over 3000 repeated
+    simulations. `cluster_ess` from one simulation must sit near it (median within 10%), and a
+    function of theta alone (w = 0) must get exactly K, for 10 draws per point and for 1000."""
+    rng = np.random.default_rng(3)
+    K, n, reps = 20, 10, 3000
+    b = rng.standard_normal((reps, K, 1))
+    w = 2.0 * rng.standard_normal((reps, K, n))
+    x = (b + w).reshape(reps, K * n)
+    measured = 5.0 / x.mean(axis=1).var()
+    labels = np.repeat(np.arange(K), n)[None, :]
+    got = [FT.cluster_ess(x[r][None, :, None], labels)[0] for r in range(200)]
+    assert abs(np.median(got) / measured - 1) < 0.10, (np.median(got), measured)
+    for repeats in (10, 1000):
+        theta_only = np.repeat(rng.standard_normal(K), repeats)
+        lab = np.repeat(np.arange(K), repeats)
+        assert FT.cluster_ess(theta_only[None, :, None], lab[None])[0] == pytest.approx(K)
+
+
+@pytest.mark.parametrize("draws", [250, 1000])
+def test_four_theta_points_fail_the_effective_sample_size_however_many_draws(draws):
+    """The review's case: 4 theta points must fail the gate, and more saved draws per point must not
+    raise the effective sample size above the number of points."""
+    sim = S.generate(specs.get("linear", inputs=8), 11)
+    design = M.build(C.Study(Path("."), sim.runs, sim.scores, sim.pairs, sim.items), sim.rubric, sim.judges,
+                     allow_simulated=True)
+    res = EL.sample(design.data, seed=9, draws=draws, chains=4, theta_points=4, find_boundary=False)
+    labels = res["theta_point"]
+    assert labels.shape == (4, draws) and len(np.unique(labels)) <= 4
+    checked = {**FT.existing(design), "halo_call": design.masks["panel"]}
+    told = FT.diagnose(res["draws"], checked, 0, 0.0, clusters=labels)
+    assert not told["converged"] and told["ess_min"] <= 4
+    sd = np.asarray(res["draws"]["sd_run"]).reshape(4, draws, -1)
+    assert FT.cluster_ess(sd, labels).max() <= 4 + 1e-9
 
 
 def test_eval_fit_engine_laplace_on_the_command_line(tmp_path, capsys):

@@ -47,9 +47,12 @@ keeps a variance near 0 harmless: its unknowns stay at their prior and the coeff
 3. Draws. theta is drawn from N(theta-hat, Sigma), Sigma the inverse of minus the Hessian of step 2 at
    theta-hat on the unconstrained scale (forward differences of the exact gradient). For each of
    `theta_points` theta draws the inner step is solved again and z is drawn from N(z-hat, H^-1); the
-   parameters of the fit file follow from (theta, z). The draws are spread over the theta points at
-   random, about equally, so the hyperparameters of a fit take `theta_points` distinct values (250 by
-   default) and every chain holds a random share of them.
+   parameters of the fit file follow from (theta, z). Every theta point is a random draw (theta-hat
+   stands in only where five draws in a row fail, and those stand-ins share one label). Each chain has
+   its own theta points in random order, about equal shares, the draws of one point in one run, so the
+   hyperparameters of a fit take at most `theta_points` distinct values (`THETA_POINTS`). `theta_point`
+   labels each draw with its point: `fit.diagnose` counts effective draws by theta point, so more draws
+   per point add no information about the hyperparameters.
 
 What is approximate
 -------------------
@@ -65,6 +68,10 @@ points, an `items` count k of n two weighted intervals, a pair verdict the inter
 below minus it, or between. All of them go through `interval_kernel`, written for the standardised
 predictor (eta, bounds and coefficients divided by the noise sd), with derivatives to third order.
 
+The objective is a likelihood kernel: an `items` count leaves out log C(n, k), which depends on the
+data alone, so theta-hat, the gradient and the draws are unchanged but the value is not a normalised
+log marginal likelihood (add the sum of log C(n, k) over items readings to compare with one).
+
 Limits of this spike
 --------------------
 `--structure factor:K` is not built here (`NotImplementedError`). An input with very many runs gives a
@@ -73,6 +80,8 @@ large dense block. The share at the boundary is reported by `boundary` (see `sam
 
 from __future__ import annotations
 
+import functools
+import os
 import time
 from typing import Any, Mapping
 
@@ -95,6 +104,8 @@ CHUNK = 4096          # rows per pass when gathering entries of H^-1: bounds the
 EP_TOL = 1e-10        # site change at which EP stops, in the fit (the gradient needs it tight)
 VALUE_TOL = 1e-6      # where only the value is used (the boundary scan): its error is about 1e-12
 DRAW_TOL = 1e-3       # at the theta points: the draws' mean and covariance move by about 1e-3 of an sd
+THETA_POINTS = 500    # default: R-hat between chains of their own theta points stays under 1.05
+                      # (at 250, 2 of 57 catalog fits failed it, at 1.050 and 1.054)
 ANDERSON = 4          # memory of the Anderson acceleration of EP sweeps
 DECREMENT_MAX = 1e-4  # the optimiser has converged when a Newton step would gain less log likelihood than this
 OUTPUTS = ("mu", "sd_input", "sd_run", "corr_input", "corr_run", "q_run", "bias", "tau", "sigma", "halo_target",
@@ -229,9 +240,20 @@ def interval_kernel(eta: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> dict:
 # ---- one-dimensional integrals of a cell ------------------------------------------------------------
 
 GL_X, GL_W = np.polynomial.legendre.leggauss(6)
-PANELS = 4         # Gauss-Legendre panels per half gap (measured: log Z within 1.5e-7 of quad on hard cells)
-WINDOW = 36.0      # the integral runs where log h is within this of its maximum
-STEP_RES = 0.4     # panel width next to a cut, in units of the call noise
+PANELS = 4          # at most this many Gauss-Legendre panels per half gap
+GROWTH = 0.5        # a half gap gets ceil(log(length / resolution) / GROWTH) panels, 1 to PANELS
+WINDOW = 36.0       # the integral runs where log h is within this of its maximum
+STEP_RES = 0.4      # panel width next to a cut, in units of the call noise
+GH_ORDER = 12       # Gauss-Hermite nodes on a smooth cell
+SMOOTH_WALLS = 3.0  # smooth: every wall in range is at least this many curvature scales wide (lane S2's rule)
+WALL_REACH = 6.0    # a cut farther than this many noise units outside the window is no wall in range
+
+
+@functools.lru_cache(maxsize=8)
+def _hermite(order: int) -> tuple[np.ndarray, np.ndarray]:
+    """Gauss-Hermite nodes and log weights, the weight function e^(-x^2) taken out: log w + x^2."""
+    x, wt = np.polynomial.hermite.hermgauss(order)
+    return x, np.log(wt) + x * x
 
 
 def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray, w: np.ndarray, *,
@@ -239,39 +261,48 @@ def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray,
     """Per cell g: `log Z = log integral N(u; m, s2) prod_r (Phi(hi_r - u) - Phi(lo_r - u))^w_r du`, with the
     mean and variance of u under the normalised integrand.
 
-    `lo`, `hi`, `w` are (cells, rows), padded with w = 0. The integrand h is log-concave. The integral
-    runs over [A, B], where log h is within WINDOW of its maximum at the mode u*. Breakpoints are A, the
-    finite bounds inside (A, B), u* and B. Every gap between breakpoints is split in two halves, and
-    each half carries `panels` Gauss-Legendre panels, graded geometrically from its outer end (width
-    about STEP_RES next to a cut, half the Laplace scale next to u*). A cut is a unit-width step, so
-    near it the panels are fine; far from cuts the integrand is a smooth Gaussian piece and the panels
-    grow. `tail` bounds the mass outside [A, B] relative to Z by log-concavity:
-    integral beyond B <= h(B) / |(log h)'(B)|. With `bounds`, also d log Z / d lo_r and d hi_r.
-    `guess` (`mode`, `A`, `B` of an earlier call on nearby arguments) only starts the searches: the
-    mode and the window ends are found to the same tolerances either way."""
+    `lo`, `hi`, `w` are (cells, rows), padded with w = 0. The integrand h is log-concave; its mode u* and
+    curvature scale s* = (-(log h)''(u*))^-1/2 are found first. Every bound of a reading is a wall of
+    unit width (the call noise).
+
+    A smooth cell, one where every wall in range is at least SMOOTH_WALLS curvature scales wide (lane
+    S2's measured rule: adaptive Gauss-Hermite is then accurate to about 1e-9 at 9 nodes), is integrated
+    by Gauss-Hermite with GH_ORDER nodes centred at u* and scaled by s*. A wall is in range when it lies
+    within sqrt(2 WINDOW) s* + WALL_REACH of u*. Its `tail` is 0: the cell rule check compares it with
+    twice the nodes.
+
+    Every other cell is integrated over [A, B], where log h is within WINDOW of its maximum. Breakpoints
+    are A, the finite bounds inside (A, B), u* and B. Every gap between breakpoints is split in two
+    halves; each half carries Gauss-Legendre panels graded geometrically from its outer end (width
+    about STEP_RES next to a cut, s*/2 next to u*, s* at A and B), as many as its length needs:
+    ceil(log(length / resolution) / GROWTH), from 1 to PANELS. `tail` bounds the mass outside [A, B] relative to Z by
+    log-concavity: integral beyond B <= h(B) / |(log h)'(B)|.
+
+    `panels` scales both rules (twice PANELS doubles every panel count and the Gauss-Hermite order).
+    With `bounds`, also d log Z / d lo_r and d hi_r. `guess` (`mode`, `A`, `B` of an earlier call on
+    nearby arguments) only starts the searches: the mode and the window ends are found to the same
+    tolerances either way."""
     m, s2 = np.asarray(m, float), np.asarray(s2, float)
     G, R = lo.shape
     live = w > 0
     lo_m, hi_m = np.where(live, lo, -OPEN), np.where(live, hi, OPEN)
 
-    def logh(u):   # u: (G, K)
-        a, b = lo_m[:, None, :] - u[:, :, None], hi_m[:, None, :] - u[:, :, None]
-        lp = np.where(live[:, None, :], log_interval(a, b), 0.0)
-        return (w[:, None, :] * lp).sum(axis=2) - 0.5 * (u - m[:, None]) ** 2 / s2[:, None]
-
-    def derivs(u):  # u: (G,)
-        k = interval_kernel(np.repeat(u, R), lo_m.ravel(), hi_m.ravel())
-        d1 = (w * k["d1"].reshape(G, R)).sum(axis=1) - (u - m) / s2
-        d2 = (w * k["d2"].reshape(G, R)).sum(axis=1) - 1.0 / s2
-        f = (w * np.where(live, k["logp"].reshape(G, R), 0.0)).sum(axis=1) - 0.5 * (u - m) ** 2 / s2
+    def derivs(u, ix):  # u: (len(ix),)
+        n = len(ix)
+        k = interval_kernel(np.repeat(u, R), lo_m[ix].ravel(), hi_m[ix].ravel())
+        ww, mm, ss = w[ix], m[ix], s2[ix]
+        d1 = (ww * k["d1"].reshape(n, R)).sum(axis=1) - (u - mm) / ss
+        d2 = (ww * k["d2"].reshape(n, R)).sum(axis=1) - 1.0 / ss
+        f = (ww * np.where(live[ix], k["logp"].reshape(n, R), 0.0)).sum(axis=1) - 0.5 * (u - mm) ** 2 / ss
         return f, d1, d2
 
+    every = np.arange(G)
     # the mode: Newton with a bracket (d1 falls in u)
     s = np.sqrt(s2)
     u = m.copy() if guess is None else np.asarray(guess["mode"], float).copy()
     left, right = np.full(G, -np.inf), np.full(G, np.inf)
     for _ in range(80):
-        f, d1, d2 = derivs(u)
+        f, d1, d2 = derivs(u, every)
         left = np.where(d1 > 0, np.maximum(left, u), left)
         right = np.where(d1 <= 0, np.minimum(right, u), right)
         if np.all(np.abs(d1) * np.sqrt(-1.0 / d2) < 1e-9):
@@ -281,79 +312,137 @@ def cell_integral(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray,
         inside = (new > left) & (new < right)
         both = np.isfinite(left) & np.isfinite(right)
         u = np.where(inside | ~both, new, 0.5 * (left + right))
-    f0, _, d2 = derivs(u)
+    f0, _, d2 = derivs(u, every)
     mode, scale = u, np.sqrt(-1.0 / d2)
-    # the window ends: Newton on the convex F(v) = f0 - f(v) - WINDOW, from the quadratic guess
-    reach = np.sqrt(2.0 * (WINDOW + 50.0)) * s + np.abs(mode - m) + 10.0
-    ends = []
-    for side in (-1.0, 1.0):
-        v = mode + side * np.sqrt(2.0 * WINDOW) * scale
-        if guess is not None:   # an earlier end, if it is still on its side of the mode
-            old_end = np.asarray(guess["A" if side < 0 else "B"], float)
-            v = np.where(side * (old_end - mode) > 0, old_end, v)
-        for _ in range(60):
-            f, d1, _ = derivs(v)
-            F = f0 - f - WINDOW
-            if np.all(np.abs(F) < 0.5):
-                break
-            slope = -d1
-            step = np.where(np.abs(slope) > 1e-300, -F / np.where(slope == 0, 1.0, slope), side * reach)
-            step = side * np.clip(side * step, -0.9 * np.abs(v - mode), reach)
-            v = v + step
-        ends.append(v)
-    A, B = ends
-    # breakpoints: A, cuts inside, the mode, B
-    cuts = np.concatenate([np.where(live & (np.abs(lo) < OPEN), lo, A[:, None]),
-                           np.where(live & (np.abs(hi) < OPEN), hi, A[:, None])], axis=1)
-    cuts = np.sort(np.clip(cuts, A[:, None], B[:, None]), axis=1)
-    cuts[:, 1:] = np.where(cuts[:, 1:] - cuts[:, :-1] > 1e-12, cuts[:, 1:], A[:, None])   # one copy of each cut
-    cuts = cuts[:, np.any(cuts - A[:, None] > 1e-12, axis=0)]
-    pts = np.sort(np.concatenate([A[:, None], cuts, mode[:, None], B[:, None]], axis=1), axis=1)
-    is_cut = np.zeros(pts.shape, bool)
-    for col in range(cuts.shape[1]):
-        is_cut |= np.isclose(pts, cuts[:, col:col + 1], rtol=0, atol=1e-12) & \
-            (np.abs(cuts[:, col:col + 1] - A[:, None]) > 1e-12)
-    res = np.where(is_cut, STEP_RES, np.where(np.isclose(pts, mode[:, None], rtol=0, atol=1e-12),
-                                              0.5 * scale[:, None], np.inf))
-    a, b = pts[:, :-1], pts[:, 1:]
-    mid = 0.5 * (a + b)
-    half = 0.5 * (b - a)
-    t = np.arange(panels + 1) / panels
-    edges = []
-    for end, sign, r in ((a, 1.0, res[:, :-1]), (b, -1.0, res[:, 1:])):
-        beta = np.log(np.maximum(half / np.where(np.isfinite(r), r, np.maximum(half, 1e-300)), 1.0))
-        safe = np.maximum(beta, 1e-12)
-        frac = np.where(beta[..., None] > 1e-9, np.expm1(safe[..., None] * t) / np.expm1(safe)[..., None], t)
-        x = end[..., None] + sign * half[..., None] * frac      # from the outer end to the midpoint
-        lo_e, hi_e = (x[..., :-1], x[..., 1:]) if sign > 0 else (x[..., 1:], x[..., :-1])
-        edges.append((lo_e, hi_e))
-    lo_e = np.concatenate([edges[0][0], edges[1][0]], axis=-1).reshape(G, -1)
-    hi_e = np.concatenate([edges[0][1], edges[1][1]], axis=-1).reshape(G, -1)
-    width = hi_e - lo_e
-    nodes = (0.5 * (lo_e + hi_e))[..., None] + 0.5 * width[..., None] * GL_X
-    weights = 0.5 * width[..., None] * GL_W
-    nodes, weights = nodes.reshape(G, -1), weights.reshape(G, -1)
-    lh = logh(nodes)
-    top = lh.max(axis=1, keepdims=True)
-    q = weights * np.exp(lh - top)
-    Z = q.sum(axis=1)
-    pw = q / Z[:, None]
-    mean = (pw * nodes).sum(axis=1)
-    var = (pw * (nodes - mean[:, None]) ** 2).sum(axis=1)
-    logZ = np.log(Z) + top[:, 0] - 0.5 * np.log(2.0 * np.pi * s2)
-    # tails beyond [A, B], relative to Z, by log-concavity
+    A = mode - np.sqrt(2.0 * WINDOW) * scale
+    B = mode + np.sqrt(2.0 * WINDOW) * scale
+    # smooth cells: no wall narrower than SMOOTH_WALLS curvature scales in range
+    reach = (np.sqrt(2.0 * WINDOW) * scale + WALL_REACH)[:, None]
+    wall = live & (((np.abs(lo) < OPEN) & (np.abs(lo - mode[:, None]) <= reach)) |
+                   ((np.abs(hi) < OPEN) & (np.abs(hi - mode[:, None]) <= reach)))
+    smooth = (SMOOTH_WALLS * scale <= 1.0) | ~wall.any(axis=1)
+    sm, rough = np.flatnonzero(smooth), np.flatnonzero(~smooth)
+    cells, nodes, logw = [], [], []
+    if len(sm):
+        x, lwx = _hermite(max(2, int(round(GH_ORDER * panels / PANELS))))
+        cells.append(np.repeat(sm, len(x)))
+        nodes.append((mode[sm, None] + SQRT2 * scale[sm, None] * x).ravel())
+        logw.append((np.log(SQRT2 * scale[sm])[:, None] + lwx).ravel())
+    if len(rough):
+        mr, sr, f0r = mode[rough], scale[rough], f0[rough]
+        # the window ends: Newton on the convex F(v) = f0 - f(v) - WINDOW, from the quadratic guess
+        far = np.sqrt(2.0 * (WINDOW + 50.0)) * s[rough] + np.abs(mr - m[rough]) + 10.0
+        ends = []
+        for side in (-1.0, 1.0):
+            v = mr + side * np.sqrt(2.0 * WINDOW) * sr
+            if guess is not None:   # an earlier end, if it is still on its side of the mode
+                old_end = np.asarray(guess["A" if side < 0 else "B"], float)[rough]
+                v = np.where(side * (old_end - mr) > 0, old_end, v)
+            for _ in range(60):
+                f, d1, _ = derivs(v, rough)
+                F = f0r - f - WINDOW
+                if np.all(np.abs(F) < 0.5):
+                    break
+                slope = -d1
+                step = np.where(np.abs(slope) > 1e-300, -F / np.where(slope == 0, 1.0, slope), side * far)
+                step = side * np.clip(side * step, -0.9 * np.abs(v - mr), far)
+                v = v + step
+            ends.append(v)
+        Ar, Br = ends
+        A[rough], B[rough] = Ar, Br
+        lr, hr, liver = lo[rough], hi[rough], live[rough]
+        # breakpoints: A, cuts inside, the mode, B
+        cuts = np.concatenate([np.where(liver & (np.abs(lr) < OPEN), lr, Ar[:, None]),
+                               np.where(liver & (np.abs(hr) < OPEN), hr, Ar[:, None])], axis=1)
+        cuts = np.sort(np.clip(cuts, Ar[:, None], Br[:, None]), axis=1)
+        cuts[:, 1:] = np.where(cuts[:, 1:] - cuts[:, :-1] > 1e-12, cuts[:, 1:], Ar[:, None])   # one copy each
+        cuts = cuts[:, np.any(cuts - Ar[:, None] > 1e-12, axis=0)]
+        pts = np.sort(np.concatenate([Ar[:, None], cuts, mr[:, None], Br[:, None]], axis=1), axis=1)
+        is_cut = np.zeros(pts.shape, bool)
+        for col in range(cuts.shape[1]):
+            is_cut |= np.isclose(pts, cuts[:, col:col + 1], rtol=0, atol=1e-12) & \
+                (np.abs(cuts[:, col:col + 1] - Ar[:, None]) > 1e-12)
+        res = np.where(is_cut, STEP_RES, np.where(np.isclose(pts, mr[:, None], rtol=0, atol=1e-12),
+                                                  0.5 * sr[:, None], sr[:, None]))   # at A and B: s*
+        a, b = pts[:, :-1], pts[:, 1:]
+        half = 0.5 * (b - a)
+        owner = np.broadcast_to(rough[:, None], half.shape)
+        for end, sign, r in ((a, 1.0, res[:, :-1]), (b, -1.0, res[:, 1:])):
+            beta = np.log(np.maximum(half / np.where(np.isfinite(r), r, np.maximum(half, 1e-300)), 1.0))
+            count = np.clip(np.ceil(beta / GROWTH), 1, PANELS)
+            count = np.where(half > 1e-12 * np.maximum(sr[:, None], 1.0),
+                             np.maximum(1, np.round(count * panels / PANELS)), 0).astype(int).ravel()
+            k = np.arange(count.sum()) - np.repeat(np.cumsum(count) - count, count)   # panel index in its half
+            n_h = np.repeat(count, count)
+            bt, hf, en = np.repeat(beta.ravel(), count), np.repeat(half.ravel(), count), np.repeat(end.ravel(), count)
+
+            def frac(t):
+                safe = np.maximum(bt, 1e-12)
+                return np.where(bt > 1e-9, np.expm1(safe * t) / np.expm1(safe), t)
+
+            x0 = en + sign * hf * frac(k / n_h)
+            x1 = en + sign * hf * frac((k + 1) / n_h)
+            width = np.abs(x1 - x0)
+            centre = 0.5 * (x0 + x1)
+            cells.append(np.repeat(np.repeat(owner.ravel(), count), len(GL_X)))
+            nodes.append((centre[:, None] + 0.5 * width[:, None] * GL_X).ravel())
+            with np.errstate(divide="ignore"):
+                logw.append((np.log(0.5 * width)[:, None] + np.log(GL_W)).ravel())
+    cell, node, lw = np.concatenate(cells), np.concatenate(nodes), np.concatenate(logw)
+    a, b = lo_m[cell] - node[:, None], hi_m[cell] - node[:, None]
+    lp = np.where(live[cell], log_interval(a, b), 0.0)
+    lh = (w[cell] * lp).sum(axis=1) - 0.5 * (node - m[cell]) ** 2 / s2[cell]
+    q = np.exp(lh - f0[cell] + lw)   # f0 = log h(u*) is the maximum of log h: nothing overflows
+
+    def per_cell(x):
+        return np.bincount(cell, x, minlength=G)
+
+    Z = per_cell(q)
+    pw = q / Z[cell]
+    mean = per_cell(pw * node)
+    var = per_cell(pw * (node - mean[cell]) ** 2)
+    logZ = np.log(Z) + f0 - 0.5 * np.log(2.0 * np.pi * s2)
+    # tails beyond [A, B] of the panel rule, relative to Z, by log-concavity
     tail = np.zeros(G)
-    for v in (A, B):
-        f, d1, _ = derivs(v)
-        tail += np.exp(f - top[:, 0]) / np.maximum(np.abs(d1), 1e-300) / Z
-    out = {"logZ": logZ, "mean": mean, "var": var, "tail": tail, "mode": mode, "scale": scale, "A": A, "B": B}
+    if len(rough):
+        for v in (A[rough], B[rough]):
+            f, d1, _ = derivs(v, rough)
+            tail[rough] += np.exp(f - logZ[rough] - 0.5 * np.log(2.0 * np.pi * s2[rough])) / \
+                np.maximum(np.abs(d1), 1e-300)
+    out = {"logZ": logZ, "mean": mean, "var": var, "tail": tail, "mode": mode, "scale": scale, "A": A, "B": B,
+           "smooth": smooth}
     if bounds:
-        kk = interval_kernel(np.repeat(nodes.ravel(), R), np.tile(lo_m, (1, nodes.shape[1])).ravel(),
-                             np.tile(hi_m, (1, nodes.shape[1])).ravel())
-        shape = (G, nodes.shape[1], R)
-        out["dlo"] = (pw[:, :, None] * kk["dlo"].reshape(shape)).sum(axis=1) * w
-        out["dhi"] = (pw[:, :, None] * kk["dhi"].reshape(shape)).sum(axis=1) * w
+        kk = interval_kernel(np.repeat(node, R), lo_m[cell].ravel(), hi_m[cell].ravel())
+        for name in ("dlo", "dhi"):
+            d = pw[:, None] * kk[name].reshape(-1, R)
+            out[name] = np.stack([per_cell(d[:, r]) for r in range(R)], axis=1) * w
     return out
+
+
+CELL_WORKERS = 2       # threads for the cell rule (numpy releases the GIL in its array loops)
+PARALLEL_MIN = 2000    # cells below which one thread is faster
+_POOLS: dict[int, Any] = {}
+
+
+def cell_integrals(m: np.ndarray, s2: np.ndarray, lo: np.ndarray, hi: np.ndarray, w: np.ndarray, *,
+                   panels: int = PANELS, bounds: bool = False, guess: Mapping[str, np.ndarray] | None = None,
+                   workers: int = 1) -> dict:
+    """`cell_integral` over contiguous shares of the cells in `workers` threads; the same result."""
+    G = len(m)
+    if workers <= 1 or G < PARALLEL_MIN:
+        return cell_integral(m, s2, lo, hi, w, panels=panels, bounds=bounds, guess=guess)
+    if workers not in _POOLS:
+        from concurrent.futures import ThreadPoolExecutor
+        _POOLS[workers] = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="cell-rule")
+    cuts = np.linspace(0, G, workers + 1).astype(int)
+
+    def part(k):
+        sl = slice(cuts[k], cuts[k + 1])
+        return cell_integral(m[sl], s2[sl], lo[sl], hi[sl], w[sl], panels=panels, bounds=bounds,
+                             guess=None if guess is None else {name: np.asarray(x)[sl] for name, x in guess.items()})
+
+    parts = list(_POOLS[workers].map(part, range(workers)))
+    return {name: np.concatenate([p[name] for p in parts]) for name in parts[0]}
 
 
 def cpc_count(D: int) -> int:
@@ -408,23 +497,23 @@ class Factor:
         self.bg = bg
         lbb = np.linalg.cholesky(bb)
         self.linv = np.linalg.inv(lbb)
-        self.bb_inv = np.einsum("ikb,ikc->ibc", self.linv, self.linv)
+        self.bb_inv = np.swapaxes(self.linv, 1, 2) @ self.linv      # batched products (BLAS), not einsum
         self.K = self.bb_inv @ bg                                   # I x B x G
-        schur = gg - np.einsum("ibg,ibh->gh", bg, self.K)
+        schur = gg - bg.reshape(-1, self.G).T @ self.K.reshape(-1, self.G)
         self.lgg = np.linalg.cholesky(0.5 * (schur + schur.T))
         self.logdet = 2.0 * float(np.log(np.diagonal(lbb, axis1=1, axis2=2)).sum()
                                   + np.log(np.diagonal(self.lgg)).sum())
 
     def solve(self, rg: np.ndarray, rb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        t = np.einsum("ibc,ic->ib", self.bb_inv, rb)
-        xg = sla.cho_solve((self.lgg, True), rg - np.einsum("ibg,ib->g", self.bg, t))
-        return xg, t - np.einsum("ibg,g->ib", self.K, xg)
+        t = (self.bb_inv @ rb[:, :, None])[:, :, 0]
+        xg = sla.cho_solve((self.lgg, True), rg - self.bg.reshape(-1, self.G).T @ t.ravel())
+        return xg, t - self.K @ xg
 
     def selected(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """The blocks of H^-1: global (G x G), between (I x B x G), per input (I x B x B)."""
         sgg = sla.cho_solve((self.lgg, True), np.eye(self.G))
         sbg = -self.K @ sgg
-        sbb = self.bb_inv + np.einsum("ibg,icg->ibc", self.K @ sgg, self.K)
+        sbb = self.bb_inv + (self.K @ sgg) @ np.swapaxes(self.K, 1, 2)
         return sgg, sbg, sbb
 
     def draw(self, rng: np.random.Generator, n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -432,7 +521,7 @@ class Factor:
         eg = rng.standard_normal((n, self.G))
         eb = rng.standard_normal((n, self.I, self.B))
         xg = sla.solve_triangular(self.lgg, eg.T, lower=True, trans="T").T
-        xb = np.einsum("ikb,nik->nib", self.linv, eb) - np.einsum("ibg,ng->nib", self.K, xg)
+        xb = np.transpose(np.swapaxes(self.linv, 1, 2) @ np.transpose(eb, (1, 2, 0)) - self.K @ xg.T, (2, 0, 1))
         return xg, xb
 
 
@@ -484,11 +573,38 @@ def _owner(n: int, pairs: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
     return owner
 
 
+def _canonical_pairs(data: Mapping[str, Any]) -> Mapping[str, Any]:
+    """`data` with every pair written one way round. A pair (a, b, position o, verdict v) is the same
+    observation as (b, a, -o, the verdict seen from b), so where b's (run, family, judge-time, cell) sorts
+    before a's the two ends swap, o changes sign and a win of a becomes a win of b (a tie stays). Then
+    readings of one comparison share a predictor, and so one EP site, whichever way they were recorded."""
+    ra = np.asarray(data["p_ra"], dtype=np.int64)
+    if not len(ra):
+        return data
+    ends = [("p_ra", "p_rb"), ("p_fa", "p_fb"), ("p_jta", "p_jtb"), ("p_ca", "p_cb")]
+    swap = np.zeros(len(ra), dtype=bool)
+    undecided = np.ones(len(ra), dtype=bool)
+    for a_name, b_name in ends:
+        a, b = np.asarray(data[a_name], dtype=np.int64), np.asarray(data[b_name], dtype=np.int64)
+        swap |= undecided & (b < a)
+        undecided &= a == b
+    if not swap.any():
+        return data
+    out = dict(data)
+    for a_name, b_name in ends:
+        a, b = np.asarray(data[a_name]), np.asarray(data[b_name])
+        out[a_name], out[b_name] = np.where(swap, b, a), np.where(swap, a, b)
+    out["p_o"] = np.where(swap, -np.asarray(data["p_o"], dtype=float), np.asarray(data["p_o"], dtype=float))
+    v = np.asarray(data["p_v"], dtype=np.int64)
+    out["p_v"] = np.where(swap, 2 - v, v)          # verdicts: 0 a, 1 tie, 2 b
+    return out
+
+
 class Problem:
     """The arrays of `model.Design.data` laid out for the Laplace engine."""
 
     def __init__(self, data: Mapping[str, Any]):
-        d = data
+        d = _canonical_pairs(data)
         A, D, J, N, I, R = (int(d[name]) for name in ("A", "D", "J", "F", "I", "R"))
         self.A, self.D, self.J, self.N, self.I, self.R = A, D, J, N, I, R
         self.data = d
@@ -706,6 +822,7 @@ class Problem:
         self._groups()
         self.params = Params(self)
         self.inner = "laplace" if self.all_gauss else "ep"
+        self.workers = CELL_WORKERS
 
     def _pack_entries(self) -> None:
         """Entries to padded arrays per row: global entries (n x Kg) and local ones (n x Kl)."""
@@ -939,8 +1056,8 @@ class Problem:
             s_gg = sgg[ig[:, :, None], ig[:, None, :]]
             s_lg = sbg[i[:, None, None], il[:, :, None], ig[:, None, :]]
             s_ll = sbb[i[:, None, None], il[:, :, None], il[:, None, :]]
-            xs_g[sl] = np.einsum("ne,nef->nf", cg, s_gg) + np.einsum("ne,nef->nf", cl, s_lg)
-            xs_l[sl] = np.einsum("ne,nfe->nf", cg, s_lg) + np.einsum("ne,nef->nf", cl, s_ll)
+            xs_g[sl] = (cg[:, None, :] @ s_gg)[:, 0] + (cl[:, None, :] @ s_lg)[:, 0]
+            xs_l[sl] = (s_lg @ cg[:, :, None])[:, :, 0] + (cl[:, None, :] @ s_ll)[:, 0]
         v = (c["cg"] * xs_g).sum(axis=1) + (c["cl"] * xs_l).sum(axis=1)
         return v, xs_g, xs_l
 
@@ -967,8 +1084,9 @@ class Problem:
             rows = self.g_rows[many]
             use = rows >= 0
             rr = np.where(use, rows, 0)
-            q = cell_integral(muc[many], sc2[many], np.where(use, c["lo"][rr], -OPEN), np.where(use, c["hi"][rr], OPEN),
-                              np.where(use, self.r_w[rr], 0.0), panels=panels, bounds=bounds, guess=guess)
+            q = cell_integrals(muc[many], sc2[many], np.where(use, c["lo"][rr], -OPEN),
+                               np.where(use, c["hi"][rr], OPEN), np.where(use, self.r_w[rr], 0.0), panels=panels,
+                               bounds=bounds, guess=guess, workers=self.workers)
             for name in ("logZ", "mean", "var", "tail"):
                 out[name][many] = q[name]
             out["guess"] = {"mode": q["mode"], "A": q["A"], "B": q["B"]}
@@ -1392,8 +1510,12 @@ class Params:
 # ---------------------------------------------------------------------------------------------------
 # Fitting and drawing
 
-def fit_theta(prob: Problem, *, max_iter: int = 600, gtol: float = 1e-5, max_step: float = 1.0) -> dict:
-    """The outer step: theta-hat by a projected BFGS on minus the penalised Laplace objective.
+def fit_theta(prob: Problem, *, max_iter: int = 600, gtol: float = 1e-5, max_step: float = 1.0,
+              x0: np.ndarray | None = None, hinv0: np.ndarray | None = None) -> dict:
+    """The outer step: theta-hat by a projected BFGS on minus the penalised Laplace (or EP) objective.
+
+    `x0` and `hinv0` (a start and an inverse Hessian of minus the objective, from an earlier fit with
+    the Laplace inner step) start the search; the result returns its own as `hinv`.
 
     Each step is capped at `max_step` on the unconstrained scale (a factor e on an sd), and the line
     search halves it on any trial point the inner step cannot take (a factorisation that fails or a
@@ -1420,7 +1542,7 @@ def fit_theta(prob: Problem, *, max_iter: int = 600, gtol: float = 1e-5, max_ste
         return {"theta": np.zeros(0), "value": res["value"], "ok": True, "message": "no hyperparameters",
                 "iterations": 0, "calls": 1, "failed_points": 0, "grad_max": 0.0, "at_bound": [],
                 "start": res["mode"]}
-    x = np.clip(P.init, lo, hi)
+    x = np.clip(P.init if x0 is None else x0, lo, hi)
     res = fun(x)
     if res is None:
         raise RuntimeError("engine_laplace: the model cannot be evaluated at its starting point")
@@ -1430,6 +1552,8 @@ def fit_theta(prob: Problem, *, max_iter: int = 600, gtol: float = 1e-5, max_ste
     eye = np.eye(n)
     Hinv = eye / max(1.0, float(np.abs(g).max()))
     updates, stalled, message, it = 0, 0, "iteration limit", 0
+    if hinv0 is not None:
+        Hinv, updates = 0.5 * (hinv0 + hinv0.T), 1
     for it in range(1, max_iter + 1):
         held = ((x <= lo + 1e-12) & (g > 0)) | ((x >= hi - 1e-12) & (g < 0))
         idx = np.flatnonzero(~held)
@@ -1481,7 +1605,7 @@ def fit_theta(prob: Problem, *, max_iter: int = 600, gtol: float = 1e-5, max_ste
     return {"theta": x, "value": float(res["value"]), "ok": bool(grad_max < 1e-3 and res["mode"]["ok"]),
             "message": message, "iterations": it, "calls": state["calls"], "failed_points": state["failed"],
             "grad_max": grad_max, "at_bound": [P.labels[k] for k in np.flatnonzero(edge)],
-            "start": res["mode"]}
+            "start": res["mode"], "hinv": Hinv}
 
 
 def theta_hessian(prob: Problem, theta: np.ndarray, start=None, step: float = 1e-4) -> np.ndarray:
@@ -1649,7 +1773,7 @@ def cell_rule_check(prob: "Problem", theta: np.ndarray, start: Any) -> dict | No
 
 
 def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: int | None = None, chains: int = 4,
-           cores: int | None = None, target_accept: float | None = None, theta_points: int = 250,
+           cores: int | None = None, target_accept: float | None = None, theta_points: int = THETA_POINTS,
            find_boundary: bool = True, inner: str | None = None) -> dict:
     """Fit the model for the arrays of `model.Design.data` and draw from the Laplace approximation.
 
@@ -1662,19 +1786,29 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
     "divergences", "run_seconds", "version"}`, plus `approximate` (true), `checks` (the optimiser's
     convergence, the inner steps and the Hessian of theta, each `{"name", "value", "limit", "ok"}`),
     `boundary` (labels of sds the data cannot tell from 0; `boundary_unchecked` those the scan could not
-    test) and `theta` (labels, estimates and sds on the
-    unconstrained scale). `divergences` is 0: there is no sampler. `tune`, `cores` and `target_accept`
-    are accepted for the same call shape and not used."""
-    del tune, cores, target_accept
+    test), `theta` (labels, estimates and sds on the unconstrained scale) and `theta_point[chains, draws]`
+    (the theta point of each draw; theta-hat stand-ins share the label `theta_points`). `divergences` is
+    0: there is no sampler. `cores` is the number of threads for the cell rule (default `CELL_WORKERS`).
+    `tune` and `target_accept` are accepted for the same call shape and not used."""
+    del tune, target_accept
     started = time.time()
     rng = np.random.default_rng(seed)
     prob = Problem(data)
+    prob.workers = CELL_WORKERS if cores is None else max(1, min(int(cores), os.cpu_count() or 1))
     if inner is not None:
         if inner not in ("ep", "laplace"):
             raise ValueError(f"inner is 'ep' or 'laplace', not {inner!r}")
         prob.inner = inner if not prob.all_gauss else "laplace"
     P = prob.params
-    fitted = fit_theta(prob)
+    if prob.inner == "ep" and P.size:
+        # the Laplace inner step first (cheap), then EP from its theta and curvature; every check is on EP
+        prob.inner = "laplace"
+        first = fit_theta(prob)
+        prob.inner = "ep"
+        fitted = fit_theta(prob, x0=first["theta"], hinv0=first["hinv"])
+        fitted["laplace_iterations"] = first["iterations"]
+    else:
+        fitted = fit_theta(prob)
     theta = fitted["theta"]
     start = fitted.get("start")
     decrement, grad_max = 0.0, fitted["grad_max"]
@@ -1694,20 +1828,27 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
         inner_fit = True
     cov, hess_ok = _cov_from(hess)
     edge, unchecked = boundary(prob, theta, start) if find_boundary and P.size else ([], [])
-    total = int(draws) * int(chains)
+    chains, draws = int(chains), int(draws)
+    total = draws * chains
     M = max(1, min(int(theta_points), total))
     chol = np.linalg.cholesky(cov) if P.size else np.zeros((0, 0))
     out = {name: None for name in OUTPUTS}
-    which = rng.permutation(np.arange(total) % M)   # theta points spread over chains and positions at random
-    inner_ok, redrawn = True, 0
+    # each chain its own theta points (point m in chain m mod chains), in random order, the draws of one
+    # point next to each other: then the autocorrelation sees the repeats (a run of draws on one theta)
+    point = np.zeros((chains, draws), dtype=np.int64)
+    for j in range(chains):
+        mine = np.arange(j, M, chains) if M >= chains else np.array([j % M])
+        point[j] = rng.permutation(mine)[np.arange(draws) * len(mine) // draws]
+    which = point.ravel()
+    label = which.copy()
+    inner_ok, redrawn, stand_ins = True, 0, 0
     for m in range(M):
         picks = np.flatnonzero(which == m)
         if not len(picks):
             continue
         res = None
         for attempt in range(6):   # a theta draw the inner step cannot take is drawn again; theta-hat last
-            t = theta if m == 0 or attempt == 5 else np.clip(theta + chol @ rng.standard_normal(len(theta)), P.lo,
-                                                              P.hi)
+            t = theta if attempt == 5 else np.clip(theta + chol @ rng.standard_normal(len(theta)), P.lo, P.hi)
             try:
                 res = prob.evaluate(t, start, grad=False, tol=DRAW_TOL)
             except np.linalg.LinAlgError:
@@ -1715,6 +1856,9 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
             if res is not None and np.isfinite(res["value"]):
                 break
             redrawn += 1
+        if attempt == 5:   # theta-hat stood in: one shared label, not an independent theta draw
+            label[picks] = M
+            stand_ins += 1
         inner_ok &= bool(res["mode"]["ok"])
         dg, db = res["mode"]["factor"].draw(rng, len(picks))
         values = outputs(prob, res["nu"], res["mode"]["zg"] + dg, res["mode"]["zb"] + db)
@@ -1722,15 +1866,16 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
             if out[name] is None:
                 out[name] = np.zeros((total,) + x.shape[1:])
             out[name][picks] = x
-    result = {name: np.asarray(x).reshape((int(chains), int(draws)) + np.shape(x)[1:]) for name, x in out.items()}
+    result = {name: np.asarray(x).reshape((chains, draws) + np.shape(x)[1:]) for name, x in out.items()}
     if not prob.has_pairs:
         for name in ("sigma_pair", "position", "tie_width"):
             result[name] = np.full(result[name].shape, np.nan)
     checks = [{"name": "optimizer", "value": decrement, "limit": DECREMENT_MAX,
                "ok": bool(decrement <= DECREMENT_MAX and inner_fit), "grad_max": grad_max,
-               "message": fitted["message"], "iterations": fitted["iterations"]},
+               "message": fitted["message"], "iterations": fitted["iterations"],
+               "laplace_iterations": fitted.get("laplace_iterations", 0)},
               {"name": "inner_newton", "value": int(not inner_ok), "limit": 0, "ok": bool(inner_ok),
-               "redrawn_theta": int(redrawn)},
+               "redrawn_theta": int(redrawn), "theta_hat_stand_ins": int(stand_ins)},
               {"name": "theta_hessian", "value": float(np.linalg.eigvalsh(hess).min()) if P.size else 0.0,
                "limit": 0.0, "ok": bool(hess_ok)}]
     checks[1]["inner"] = prob.inner
@@ -1741,4 +1886,4 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
     return {"draws": result, "divergences": 0, "run_seconds": float(time.time() - started), "version": version(),
             "approximate": True, "checks": checks, "boundary": edge, "boundary_unchecked": unchecked,
             "theta": {"labels": list(P.labels), "estimate": theta.tolist(), "sd": sd.tolist()},
-            "objective": float(fitted["value"]), "theta_points": M}
+            "objective": float(fitted["value"]), "theta_points": M, "theta_point": label.reshape(chains, draws)}
