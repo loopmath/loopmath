@@ -1,0 +1,53 @@
+{
+ "schema": "loopmath.eval-judges/1",
+ "judges": [
+  {
+   "id": "reviewer",
+   "kind": "person",
+   "mode": "per_component",
+   "reference": {
+    "shown": false
+   },
+   "blinded": true,
+   "components": null
+  },
+  {
+   "id": "judge-strong",
+   "kind": "model",
+   "model": {
+    "id": "model-large",
+    "family": "alpha"
+   },
+   "effort": "high",
+   "prompt": "v1",
+   "mode": "per_component",
+   "reference": {
+    "shown": false
+   },
+   "blinded": true,
+   "cost_usd_per_call": 0.04,
+   "components": null
+  },
+  {
+   "id": "judge-cheap",
+   "kind": "model",
+   "model": {
+    "id": "model-small",
+    "family": "beta"
+   },
+   "effort": "low",
+   "prompt": "v1",
+   "mode": "per_component",
+   "reference": {
+    "shown": false
+   },
+   "blinded": true,
+   "cost_usd_per_call": 0.004,
+   "components": null
+  }
+ ],
+ "anchor": [
+  "reviewer"
+ ],
+ "min_anchor_targets": 6
+}
