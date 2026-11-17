@@ -68,9 +68,13 @@ inner Newton step and the outer optimisation need, each with its own error estim
 Three methods:
 
 - `agh`: adaptive Gauss-Hermite, centred at the mode of the integrand with the curvature scale, `nodes`
-  points. The error estimate is the difference to the same rule with about half the points (`low_nodes`).
+  points. The error estimate is the difference to the same rule with fewer points, `low_nodes` (default
+  about half), which must satisfy 1 <= low_nodes < nodes: a rule compared with itself would estimate 0.
   That difference is a heuristic, not a bound (`err_kind` "heuristic"): both rules can miss a feature
-  together. It fails when the call noise is small against the term: the integrand is then a normal density
+  together, so `deriv_ok` is True only where the value meets `tol` and no wall is narrower than
+  `AGH_SMOOTH` curvature scales. With `nodes` = 1 there is no lower rule: `agh` returns the one-node values
+  without any error claim (`err` NaN, `err_kind` "none", `deriv_ok` False), and `auto` sends every cell to
+  `composite`. AGH fails when the call noise is small against the term: the integrand is then a normal density
   cut by near-hard walls, and a Gaussian-weight rule converges slowly (two top readings of a three-level
   scale with call noise a tenth of the term are off by 1.9 percent at 15 points).
 - `composite`: Gauss-Kronrod (7, 15) panels over the interval where the log integrand is within `DROP` of its
@@ -125,6 +129,7 @@ is not a one-dimensional integral and is not handled here.
 from __future__ import annotations
 
 import math
+import operator
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -568,9 +573,9 @@ class CellResult:
 
     logl[C]           log integral phi(z) prod_i p(obs_i | m_i + tau_c z) dz
     err[C]            estimated absolute error of logl (relative error of the integral), rounding included;
-                      NaN for a frozen rule
+                      NaN where no estimate exists (a frozen rule, a one-node agh rule)
     err_kind[C]       "kronrod" (composite), "heuristic" (agh: a difference of two rules, not a bound) or
-                      "none" (frozen rule)
+                      "none" (no estimate: a frozen rule, a one-node agh rule)
     method[C]         "agh", "composite" or "frozen", per cell
     evals[C]          integrand evaluations used (nodes of the returned rule)
     mode[C], scale[C] where the rule was placed: the mode of the integrand in z and its curvature scale
@@ -586,14 +591,17 @@ class CellResult:
     dparam[name][N]   d logl / d params[name]_i (sum over the cell's readings for a shared parameter)
     deriv_err         estimated absolute errors, rounding included, of the derivatives above, in arrays of
                       the same shapes: "d1", "hess" (aligned with hess_v), "shift_d1", "shift_d2", "shift_d3",
-                      "dtau", and "dparam" (a dict by name); NaN for a frozen rule
+                      "dtau", and "dparam" (a dict by name), of the kind err_kind names (a heuristic for
+                      agh); NaN where err is NaN
     deriv_ok[C]       every derivative estimate of the cell is within dtol of its scale: D = |shift_d1| +
                       |shift_d2|^(1/2) + D0 for the cell (shift_dk to dtol D^k, dtau to dtol D (1 + |E z|)) and
                       D_i = |d1_i| + |H_ii|^(1/2) + D0 for reading i (d1_i to dtol D_i, H_ij to dtol D_i D_j, a
                       parameter derivative v to dtol (|v| + D_i + 3 |theta| D_i^2)), with the floor
                       D0 = 1 / max(tau, w), w the narrowest feature width of the cell's readings, so that a
                       derivative near 0 is judged on the cell's curvature scale, not on itself; False when that
-                      could not be established, and for every frozen rule
+                      could not be established, and wherever err is NaN; for agh also False where err
+                      misses tol or a wall is narrower than `AGH_SMOOTH` curvature scales, since both rules can
+                      then miss the same feature and agree on wrong derivatives
     rule              the nodes (z, log weight, cell) behind every number here, with placement metadata; pass
                       it back as `rule=`
     """
@@ -1269,6 +1277,19 @@ class _Out:
             deriv_ok=self.deriv_ok, rule=rule)
 
 
+def _rule_order(name: str, value: Any) -> int:
+    """A quadrature rule order: a positive integer (not a bool, not a float)."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"laplace_kernels: {name} must be a positive integer, got {value!r}")
+    try:
+        n = operator.index(value)
+    except TypeError:
+        raise ValueError(f"laplace_kernels: {name} must be a positive integer, got {value!r}") from None
+    if n < 1:
+        raise ValueError(f"laplace_kernels: {name} must be a positive integer, got {value!r}")
+    return n
+
+
 def cell_integral(kind: Any, m: Any, obs: Mapping[str, Any], params: Mapping[str, Any], cell: Any, tau: Any, *,
                   method: str = "auto", nodes: int = 9, low_nodes: int | None = None, tol: float = 1.0e-7,
                   dtol: float = 1.0e-6, refine: int = 2, n_cells: int | None = None,
@@ -1277,6 +1298,14 @@ def cell_integral(kind: Any, m: Any, obs: Mapping[str, Any], params: Mapping[str
     kind = _kind_name(kind)
     if method not in ("auto", "agh", "composite"):
         raise ValueError(f"laplace_kernels: unknown method {method!r}; use auto, agh or composite")
+    nodes = _rule_order("nodes", nodes)
+    if low_nodes is None:
+        low = _default_low(nodes) if nodes > 1 else None     # one node: no lower rule to compare with
+    else:
+        low = _rule_order("low_nodes", low_nodes)
+        if low >= nodes:
+            raise ValueError(f"laplace_kernels: low_nodes must be below nodes for an error estimate "
+                             f"(1 <= low_nodes < nodes), got low_nodes={low}, nodes={nodes}")
     cells = _Cells(kind, m, obs, params, cell, tau, n_cells)
     C = cells.C
     inv = np.empty(cells.N, dtype=np.int64)
@@ -1298,16 +1327,23 @@ def cell_integral(kind: Any, m: Any, obs: Mapping[str, Any], params: Mapping[str
     ends = _ends(cells, z0, h0, scale)
     if method in ("auto", "agh"):
         za, lwa, nca = _agh_rule(z0, scale, nodes)
-        low = _default_low(nodes) if low_nodes is None else int(low_nodes)
         hi = _evaluate(cells, za, lwa, nca, ends)
-        lo = _evaluate(cells, *_agh_rule(z0, scale, low), ends)
-        fin = _finish(cells, _agh_quad(hi, lo), dtol, tol)
-        out.put(cells, every, rows_all, fin, "agh", "heuristic", (za, lwa, nca))
+        if low is None:   # values only, no error claim (as for a frozen rule)
+            fin = _finish(cells, hi, dtol, tol, frozen=True)
+            err_kind = "none"
+        else:
+            lo = _evaluate(cells, *_agh_rule(z0, scale, low), ends)
+            fin = _finish(cells, _agh_quad(hi, lo), dtol, tol)
+            err_kind = "heuristic"
+        # AGH and its estimate miss a wall narrower than the curvature scale, even one out in the tail. There,
+        # and wherever the value itself misses tol, both rules can miss the same feature and agree on wrong
+        # derivatives, so their difference certifies nothing.
+        sharp = _sharpness(cells, scale, ends[0], ends[3]) < AGH_SMOOTH
+        fin["deriv_ok"] = fin["deriv_ok"] & (fin["err"] <= tol) & ~sharp
+        out.put(cells, every, rows_all, fin, "agh", err_kind, (za, lwa, nca))
         if method == "agh":
             return out.result(inv, z0, scale)
-        # AGH and its estimate miss a wall narrower than the curvature scale, even one out in the tail
-        todo = ((fin["err"] > tol) | ~np.isfinite(fin["err"]) | ~fin["deriv_ok"]
-                | (_sharpness(cells, scale, ends[0], ends[3]) < AGH_SMOOTH))
+        todo = (fin["err"] > tol) | ~np.isfinite(fin["err"]) | ~fin["deriv_ok"] | sharp
     split = 1
     for _ in range(refine + 1):
         if not todo.any():

@@ -910,6 +910,81 @@ def test_two_reading_hessian_matches_the_bivariate_orthant():
             assert abs(r.shift_d2[c] - (2 * h11 + 2 * h12)) <= r.deriv_err["shift_d2"][c] + 1e-11 / S ** 2
 
 
+
+ONE_NODE_CELL = ("binary", [1.0, 1.0], {"y": [1, 1]}, {"sd": 3.0}, [0, 0], [1.0])
+
+
+@pytest.mark.parametrize("method", ["auto", "agh", "composite"])
+def test_a_rule_is_never_compared_with_itself(method):
+    """An agh estimate is the difference to a lower rule, so that rule must exist and differ: rule orders are
+    positive integers and 1 <= low_nodes < nodes. Three nodes against three would estimate 0 on a cell they get
+    wrong in the sixth digit of the gradient; that and every other malformed order is refused."""
+    for kw in ({"nodes": 3, "low_nodes": 3}, {"nodes": 3, "low_nodes": 5}, {"nodes": 5, "low_nodes": 0},
+               {"nodes": 0}, {"nodes": -2}, {"nodes": 2.5}, {"nodes": 9.0}, {"nodes": True},
+               {"nodes": 9, "low_nodes": 4.0}, {"nodes": 9, "low_nodes": False}, {"nodes": "9"}):
+        with pytest.raises(ValueError):
+            K.cell_integral(*ONE_NODE_CELL, method=method, **kw)
+    r = K.cell_integral(*ONE_NODE_CELL, method="agh", nodes=np.int64(3), low_nodes=np.int64(1))
+    assert r.err_kind[0] == "heuristic" and np.isfinite(r.err[0]) and r.err[0] > 0.0
+
+
+def test_one_node_claims_nothing_and_auto_integrates_the_cell():
+    """With one node there is no lower rule: agh returns the one-node values with no error claim, and auto
+    sends the cell to composite. Two positive binary readings with call noise 3 and term 1 are two calls,
+    bivariate normal with variance 10 and correlation 0.1: the reference is the orthant (Owen's T)."""
+    S = math.sqrt(10.0)
+    P = _two_reading_exact(1.0 / S, 0.1)
+    assert abs(P - 0.4039752749432193) < 1e-15
+    d1, h11, h12 = _orthant_derivs(1.0 / S, 0.1, S)
+    raw = K.cell_integral(*ONE_NODE_CELL, method="agh", nodes=1)
+    assert raw.method[0] == "agh" and raw.err_kind[0] == "none" and raw.evals[0] == 1
+    assert np.isnan(raw.err[0]) and not raw.deriv_ok[0]
+    for k in ("d1", "hess", "shift_d1", "shift_d2", "shift_d3", "dtau"):
+        assert np.all(np.isnan(raw.deriv_err[k])), k
+    assert all(np.all(np.isnan(v)) for v in raw.deriv_err["dparam"].values())
+    assert abs(raw.d1[0] - d1) > 1e-3 and abs(raw.logl[0] - math.log(P)) > 1e-4   # far off, so it claims nothing
+    for kw in ({}, {"method": "auto"}):
+        r = K.cell_integral(*ONE_NODE_CELL, nodes=1, **kw)
+        assert r.method[0] == "composite" and r.err_kind[0] == "kronrod"
+        assert abs(math.expm1(r.logl[0] - math.log(P))) <= r.err[0] < 1e-7
+        H = np.zeros((2, 2))
+        E = np.zeros((2, 2))
+        H[r.hess_i, r.hess_j] = r.hess_v
+        E[r.hess_i, r.hess_j] = r.deriv_err["hess"]
+        for got, want, est in ((r.d1[0], d1, r.deriv_err["d1"][0]), (r.d1[1], d1, r.deriv_err["d1"][1]),
+                               (H[0, 0], h11, E[0, 0]), (H[1, 1], h11, E[1, 1]),
+                               (H[0, 1], h12, E[0, 1]), (H[1, 0], h12, E[1, 0])):
+            assert abs(got - want) <= est + 1e-12, (got, want, est)
+        assert r.deriv_ok[0]
+
+
+@pytest.mark.parametrize("kw", [{"nodes": 2}, {"nodes": 3}, {"nodes": 9}, {"nodes": 9, "low_nodes": 2}])
+def test_agh_never_certifies_derivatives_it_gets_wrong(kw):
+    """Two agh rules can miss the same wall and agree on wrong derivatives (the gradient near 0 where it is
+    0.26), so agh certifies derivatives only where its value meets tol and no wall is sharp. Two positive binary
+    readings, against the orthant; cells with probability below 1e-6 are left out (the double-precision
+    orthant loses digits there)."""
+    rows = [(m, t, sd) for m in (-0.5, 0.0, 0.5, 1.0, 2.5) for t in (0.1, 0.5, 1.0, 2.0, 4.0)
+            for sd in (0.05, 0.3, 1.0, 3.0, 10.0)]
+    m = np.repeat([r[0] for r in rows], 2)
+    r = K.cell_integral("binary", m, {"y": [1] * len(m)}, {"sd": np.repeat([x[2] for x in rows], 2)},
+                        np.repeat(np.arange(len(rows)), 2), [x[1] for x in rows], method="agh", **kw)
+    H = np.zeros((len(m), len(m)))
+    H[r.hess_i, r.hess_j] = r.hess_v
+    wrong = 0
+    for c, (mm, t, s) in enumerate(rows):
+        S = math.sqrt(t * t + s * s)
+        if _two_reading_exact(mm / S, t * t / (S * S)) < 1e-6:
+            continue
+        d1, h11, h12 = _orthant_derivs(mm / S, t * t / (S * S), S)
+        Di = abs(d1) + math.sqrt(abs(h11)) + 1.0 / max(t, s)
+        i = 2 * c
+        bad = (abs(r.d1[i] - d1) > 1e-6 * Di or abs(H[i, i] - h11) > 1e-6 * Di * Di
+               or abs(H[i, i + 1] - h12) > 1e-6 * Di * Di)
+        wrong += bad
+        assert not (bad and r.deriv_ok[c]), (rows[c], r.d1[i], d1)
+    assert wrong > 0   # the grid does reach cells that agh gets wrong
+
 @pytest.mark.slow
 def test_grid_table_for_the_report(capsys):
     """Worst relative error of each method on the grid (printed, for the record)."""
