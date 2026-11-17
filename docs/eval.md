@@ -135,6 +135,9 @@ number for that arm should not be trusted yet.
   scale, while the fit treats them as unclipped normal readings. What the checks say about recovery holds for
   studies whose readings sit inside the scale. With many readings at 0 or at the top, expect arm means pulled
   toward the middle and noise read too small. A censored likelihood is planned for 0.4.5.
+- **Fits with yes or no components, levels or comparisons are slow.** On 2 cores, with 2 chains of 500 draws,
+  simulated studies of 80 to 120 outputs took 12 to 15 minutes with such components and 1 to 3 minutes with
+  linear scales only.
 - **Not built:** `eval fit --halo full` and `--cuts free` are refused by name. A reference answer's family has no
   parameter of its own: it is read as a family effect of the judge that saw the reference. `eval scores export`
   writes the whole study or one run (`--run`), with no filter by judge.
@@ -147,10 +150,13 @@ number for that arm should not be trusted yet.
   as a test.
 - **`eval labels next --mode active`** is opt-in; `pilot` is the default. In the simulated comparison, active mode
   had a lower decision loss than pilot and uniform sampling by a small margin. Its scores read yes or no and
-  levels components as plain numbers, do not count what a label teaches about a judge, and keep `--minutes` on
-  average, not exactly.
-- **Blind plans depend on your run ids.** A plan never names an arm, but a run id such as `strong-017` does. The
-  command warns when ids or refs spell out an arm, a model or a family.
+  levels components as plain numbers and do not count what a label teaches about a judge. A plan never goes over
+  its budget and can come in somewhat under it. Under a value file whose objective is `cheapest_within_margin`
+  or `cost_per_pass`, active mode is refused; it runs without `--value`.
+- **Blind plans depend on your run ids.** A plan never names an arm, but a run id such as `strong-017` does.
+  `eval labels next` refuses to plan when run ids or refs spell out an arm, a model or a model family: give the
+  runs neutral ids (`r001`), import the scores under those ids and fit again. A study from `eval simulate`, whose
+  run ids do name the arm, is let through with a note that its plan is not blind.
 
 ## JSON
 
