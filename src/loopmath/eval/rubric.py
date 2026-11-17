@@ -22,9 +22,10 @@ With `--fit` it adds a rubric health report, computed per posterior draw (stats 
 - `overall`: when an `overall` component was fitted, the share of its variance that the weighted
   criteria explain, at the run level (from the run covariance) and across arms (from the arms' reported
   quality), the weights that would predict it best beside the weights in use, and the arms whose rank
-  differs between the two. The weights are the value file's, or equal weights without one. At the run
-  level a weight on a `binary` or `items` criterion is carried to the fitting scale by the slope of its
-  reported quality, a first-order approximation.
+  differs between the two. The weights are the value file's, or equal weights without one. Both levels
+  are on reported quality `m(q)`. The run level is the covariance of reported quality between the runs of
+  one input and arm, integrated on a fixed grid (two `binary` dimensions exactly); the output states the
+  method and its error under `run.method`.
 
 Figures whose term the design does not identify are null and listed as not measured. The command never
 proposes rubric text and never changes a file.
@@ -46,6 +47,8 @@ HIGH_CORRELATION = 0.9   # two criteria above this at the run level measure one 
 LOW_SPREAD = 0.05        # sd of reported quality below this: everything scores the same
 RARE_VERDICT = 0.05      # a binary dimension whose rarer verdict is below this share
 LOW_SHARE = 0.5          # the criteria explain less than this share of the overall quality
+GRID_POINTS = 1201       # points of the fixed grid behind the run-level covariance of reported quality
+GRID_DRAWS = 400         # at most this many draws, evenly spaced, enter that covariance
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -257,11 +260,63 @@ def health(fit: Any, value: dict | None = None) -> dict:
             anchors["reason"] = "tau and sigma of the anchor judges are not measured by this design"
 
     # 4. Criteria against overall.
+    from .judges import bvn_cdf
+
+    S = draws["mu"].shape[0]
     total_sd = np.sqrt(draws["sd_input"] ** 2 + draws["sd_run"] ** 2)                       # S, D
     counts = np.bincount(fit.run_arm, minlength=A).astype(float)
     arm_weights = counts / counts.sum() if counts.sum() else np.full(A, 1.0 / max(1, A))
-    centre = (draws["mu"] * arm_weights[None, :, None]).sum(axis=1)                         # S, D
     cov_run = Q.covariance(draws["sd_run"], draws["corr_run"])                              # S, D, D
+    cov_input = Q.covariance(draws["sd_input"], draws["corr_input"])                        # S, D, D
+    relative = [bool(dim.get("relative")) for dim in dims]
+    used = np.unique(np.linspace(0, S - 1, min(S, GRID_DRAWS)).round().astype(int)) if S else np.arange(0)
+    grid = np.linspace(-9.0, 9.0, GRID_POINTS)
+    grid_weight = np.exp(-0.5 * grid * grid)
+    grid_weight /= grid_weight.sum()
+
+    def run_quality(d: int, q: Any) -> Any:
+        return q if relative[d] else Q.reported(q, kinds[d])
+
+    def mean_quality(d: int, mean: Any, sd: Any) -> Any:
+        return mean + 0.0 * sd if relative[d] else Q.arm_reported(mean, sd, kinds[d])
+
+    def product(a: int, b: int, cov: Any, mu: Any) -> Any:
+        """`E[m_a(X) m_b(Y)]` per draw for normal X, Y with means `mu[:, a]`, `mu[:, b]`, the total sds
+        and the covariance `cov`. Exact for two binary dimensions; otherwise one variable is integrated
+        on the grid and the other in closed form."""
+        step_a, step_b = (kinds[x] == "binary" and not relative[x] for x in (a, b))
+        if step_a and step_b:
+            ta, tb = total_sd[used, a], total_sd[used, b]
+            both = (ta > 0) & (tb > 0)
+            h = np.where(ta > 0, mu[:, a] / np.where(ta > 0, ta, 1.0), np.where(mu[:, a] >= 0, 40.0, -40.0))
+            k = np.where(tb > 0, mu[:, b] / np.where(tb > 0, tb, 1.0), np.where(mu[:, b] >= 0, 40.0, -40.0))
+            return bvn_cdf(h, k, np.where(both, cov / np.where(both, ta * tb, 1.0), 0.0))
+        if step_a:
+            a, b = b, a
+        ta, tb = total_sd[used, a], total_sd[used, b]
+        slope = np.where(ta > 0, cov / np.where(ta > 0, ta, 1.0), 0.0)
+        x = mu[:, a, None] + ta[:, None] * grid[None, :]
+        rest = np.sqrt(np.clip(tb ** 2 - slope ** 2, 0.0, None))[:, None]
+        inner = mean_quality(b, mu[:, b, None] + slope[:, None] * grid[None, :], rest)
+        return (run_quality(a, x) * inner * grid_weight[None, :]).sum(axis=1)
+
+    def reported_run_covariance(members: list[int]) -> Any:
+        """Covariance of reported quality between the runs of one input and arm, `[draws used, K, K]`:
+        `E[m_a m_b]` over the runs minus the same over two runs that share only the input."""
+        out = np.zeros((len(used), len(members), len(members)))
+        for i, a in enumerate(members):
+            for j in range(i, len(members)):
+                b = members[j]
+                shared = cov_input[used, a, b]
+                whole = shared + cov_run[used, a, b]
+                acc = np.zeros(len(used))
+                for arm in range(A):
+                    if arm_weights[arm] > 0:
+                        mu = draws["mu"][used, arm, :]
+                        acc = acc + arm_weights[arm] * (product(a, b, whole, mu) - product(a, b, shared, mu))
+                out[:, i, j] = out[:, j, i] = acc
+        return out
+
     given = dict((value or {}).get("weights") or {})
     overall: list[dict] = []
     for o, dim in enumerate(dims):
@@ -278,38 +333,33 @@ def health(fit: Any, value: dict | None = None) -> dict:
         block: dict = {"dimension": dim["id"], "step": dim["step"], "weights_source": source,
                        "criteria": [ids[d] for d in criteria]}
 
-        # The slope of reported quality on the fitting scale, per draw and criterion.
-        slope = np.ones((draws["mu"].shape[0], len(criteria)))
-        for n, d in enumerate(criteria):
-            sd = total_sd[:, d]
-            if kinds[d] == "items":
-                scale = np.sqrt(1.0 + sd ** 2)
-            elif kinds[d] == "binary":
-                scale = np.where(sd > 0, sd, 1.0)
-            else:
-                continue
-            z = centre[:, d] / scale
-            slope[:, n] = np.exp(-0.5 * z * z) / np.sqrt(2 * np.pi) / scale
-        effective = own[None, :] * slope                                                   # S, C
-        cc = cov_run[:, criteria][:, :, criteria]                                          # S, C, C
-        co = cov_run[:, criteria, o]                                                       # S, C
-        oo = cov_run[:, o, o]
-        fitted = bool(np.isfinite(cc).all() and np.isfinite(co).all() and np.isfinite(oo).all())
+        members = criteria + [o]
+        fitted = bool(len(used) and all(np.isfinite(x[:, members]).all() for x in (draws["sd_input"], draws["sd_run"]))
+                      and np.isfinite(draws["mu"][:, :, members]).all()
+                      and all(np.isfinite(x[:, members][:, :, members]).all() for x in (cov_run, cov_input)))
         block["run"] = {"measured": split and fitted, "share": None, "best_share": None, "weights": []}
         if split and fitted:
+            cov = reported_run_covariance(members)
+            cc, co, oo = cov[:, :-1, :-1], cov[:, :-1, -1], np.clip(cov[:, -1, -1], 0.0, None)
             with np.errstate(invalid="ignore", divide="ignore"):
-                top = np.einsum("sc,sc->s", effective, co) ** 2
-                bottom = np.einsum("sc,scd,sd->s", effective, cc, effective) * oo
-                share = np.where(bottom > 0, top / bottom, np.nan)
+                top = np.einsum("c,sc->s", own, co) ** 2
+                bottom = np.einsum("c,scd,d->s", own, cc, own) * oo
+                share = np.where(bottom > 1e-18, top / bottom, np.nan)
                 beta = np.einsum("scd,sd->sc", np.linalg.pinv(cc, hermitian=True), co)
-                best_share = np.where(oo > 0, np.einsum("sc,sc->s", co, beta) / oo, np.nan)
-                best = beta / slope
-                norm = np.abs(best).sum(axis=1, keepdims=True)
-                best = np.where(norm > 0, best / norm, np.nan)
+                best_share = np.where(oo > 1e-12, np.einsum("sc,sc->s", co, beta) / oo, np.nan)
+                norm = np.abs(beta).sum(axis=1, keepdims=True)
+                best = np.where(norm > 0, beta / norm, np.nan)
             block["run"]["share"] = stat(np.clip(share, 0.0, 1.0))
             block["run"]["best_share"] = stat(np.clip(best_share, 0.0, 1.0))
             block["run"]["weights"] = [{"component": dims[d]["component"], "given": float(own[n] / own.sum()),
                                         "best": stat(best[:, n])} for n, d in enumerate(criteria)]
+            block["run"]["method"] = {
+                "scale": "reported quality of each run, between the runs of one input and arm",
+                "integration": f"a fixed grid of {GRID_POINTS} points over one normal variable, the other in "
+                               "closed form; two binary dimensions exactly",
+                "error": "below 0.0001 on a covariance entry; up to 0.005 when a binary dimension is perfectly "
+                         "correlated with another dimension",
+                "draws_used": int(len(used)), "draws": int(S)}
         elif not split:
             block["run"]["not_measured"] = split_missing
         else:
@@ -362,12 +412,14 @@ def check(rubric_path: str, judges_path: str | None = None, value_path: str | No
     dims = C.dimensions(rubric)
     warnings: list[str] = []
     checked: dict = {}
+    files: dict = {"rubric": rubric_path}
     out: dict = {"ok": True, "rubric": {
         "file": rubric_file, "id": rubric["id"], "version": rubric["version"], "steps": rubric["steps"],
         "components": len(rubric["components"]),
         "dimensions": [{"id": dim["id"], "kind": dim["scale"]["kind"], "role": dim["role"]} for dim in dims]}}
     if judges_path is not None:
         judges = C.read_document(judges_path, C.SCHEMA_JUDGES)
+        files["judges"] = judges_path
         file = Path(judges_path).name
         warnings += check_judges(rubric, judges, file)
         checked["judges"] = {"file": file, "judges": len(judges["judges"]), "anchor": judges["anchor"]}
@@ -375,6 +427,7 @@ def check(rubric_path: str, judges_path: str | None = None, value_path: str | No
     if value_path is not None:
         from . import quality as Q
         value = C.read_document(value_path, C.SCHEMA_VALUE)
+        files["value"] = value_path
         file = Path(value_path).name
         spec = Q.compile_value(value, dims, file)
         checked["value"] = {"file": file, "weights": dict(value["weights"]),
@@ -382,6 +435,7 @@ def check(rubric_path: str, judges_path: str | None = None, value_path: str | No
                                       for label, (_, threshold) in zip(spec.gate_labels, spec.gates)]}
     if items_path is not None:
         items = C.read_lines(items_path, C.SCHEMA_ITEMS)
+        files["items"] = items_path
         file = Path(items_path).name
         counts, more = check_items(rubric, items, file)
         warnings += more
@@ -390,6 +444,7 @@ def check(rubric_path: str, judges_path: str | None = None, value_path: str | No
     if fit_path is not None:
         from . import fitfile as F
         fit = F.read_fit(fit_path, allow_unconverged=allow_unconverged)
+        files["fit"], files["draws"] = fit_path, F.draws_path(fit_path)
         not_fitted = check_fit_dimensions(rubric, fit, rubric_file)
         if value is not None:
             check_relative_gates(value, fit, Path(value_path).name)
@@ -402,6 +457,10 @@ def check(rubric_path: str, judges_path: str | None = None, value_path: str | No
         out["health"] = health(fit, value)
     out["checked"] = checked
     out["warnings"] = warnings
+    out["inputs"] = C.input_digests(files)
+    out["options"] = {"allow_unconverged": bool(allow_unconverged), "high_correlation": HIGH_CORRELATION,
+                      "low_spread": LOW_SPREAD, "rare_verdict": RARE_VERDICT, "low_share": LOW_SHARE,
+                      "grid_points": GRID_POINTS, "grid_draws": GRID_DRAWS}
     return out
 
 

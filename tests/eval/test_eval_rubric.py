@@ -82,7 +82,15 @@ def test_every_file_checked_and_listed(tmp_path, capsys):
         "items.jsonl: ok (6 items on 3 inputs)\n")
     assert cli.main(argv + ["--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert list(payload) == ["schema", "ok", "rubric", "health", "checked", "warnings"]
+    assert list(payload) == ["schema", "ok", "rubric", "health", "checked", "warnings", "inputs", "options"]
+    import hashlib
+    from pathlib import Path
+    assert payload["inputs"] == {
+        role: {"file": Path(path).name, "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}
+        for role, path in (("items", items), ("judges", files["judges"]), ("rubric", files["rubric"]),
+                           ("value", value))}
+    assert payload["options"] == {"allow_unconverged": False, "high_correlation": 0.9, "low_spread": 0.05,
+                                  "rare_verdict": 0.05, "low_share": 0.5, "grid_points": 1201, "grid_draws": 400}
     assert payload["schema"] == "loopmath.eval-rubric-check/1" == R.SCHEMA
     assert payload["ok"] is True and payload["health"] is None and payload["warnings"] == []
     assert payload["rubric"] == {
@@ -428,12 +436,14 @@ def _simple_rubric():
 
 
 def _simple_truth():
-    """Per run, overall = (a + b) / 2 plus a part of sd 0.02 that no criterion sees. Across arms it is the mean."""
+    """Per run, overall = (a + b) / 2 plus a part of sd 0.01 that no criterion sees. Across arms it is the mean.
+
+    Every arm sits 6 or more sds inside [0, 1], so reported quality is the hidden quality and 8 / 9 is exact."""
     a, b = np.array([0.5, 0.6, 0.7]), np.array([0.74, 0.4, 0.5])
-    sd = np.array([0.08, 0.08, 0.06])                             # 0.06^2 = 0.5 x 0.08^2 + 0.02^2
-    corr = _corr({(0, 2): 2 / 3, (1, 2): 2 / 3}, 3)               # 0.5 x 0.08^2 / (0.08 x 0.06)
+    sd = np.array([0.04, 0.04, 0.03])                             # 0.03^2 = 0.5 x 0.04^2 + 0.01^2
+    corr = _corr({(0, 2): 2 / 3, (1, 2): 2 / 3}, 3)               # 0.5 x 0.04^2 / (0.04 x 0.03)
     return {"mu": np.stack([a, b, (a + b) / 2], axis=1), "sd_run": sd, "corr_run": corr,
-            "sd_input": np.full(3, 0.02)}
+            "sd_input": np.full(3, 0.01)}
 
 
 def test_equal_weights_recover_an_overall_built_from_the_criteria(tmp_path):
@@ -497,28 +507,86 @@ def test_overall_through_the_command_with_a_value_file(tmp_path, capsys):
     assert "criteria against final/overall (equal weights):" in capsys.readouterr().out.splitlines()
 
 
-def test_probit_criteria_enter_through_the_slope_of_reported_quality(tmp_path):
-    corr = _corr({(3, 4): 0.6, (2, 4): 0.5})                      # overall goes with coverage (items) and depth
+def _simulate_run_covariance(truth, kinds, n=400000, seed=9):
+    """Covariance of reported quality between the runs of one input and arm, by simulation: draw two runs
+    that share the input part and take half the mean outer product of their difference, over the arms."""
+    rng = np.random.default_rng(seed)
+    size = len(kinds)
+    cov_input = np.outer(truth["sd_input"], truth["sd_input"]) * truth["corr_input"]
+    cov_run = np.outer(truth["sd_run"], truth["sd_run"]) * truth["corr_run"]
+    total = np.zeros((size, size))
+    for mu in truth["mu"]:                                        # every arm has the same number of runs
+        shared = rng.multivariate_normal(np.zeros(size), cov_input, n)
+        pair = []
+        for _ in range(2):
+            q = mu + shared + rng.multivariate_normal(np.zeros(size), cov_run, n)
+            pair.append(np.stack([(q[:, d] >= 0).astype(float) if kind == "binary" else
+                                  ndtr(q[:, d]) if kind == "items" else np.clip(q[:, d], 0, 1)
+                                  for d, kind in enumerate(kinds)], axis=1))
+        diff = pair[0] - pair[1]
+        total += diff.T @ diff / (2 * n)
+    return total / len(truth["mu"])
+
+
+FIT_KINDS = ["binary", "levels", "linear", "items", "linear"]
+
+
+@pytest.mark.parametrize("weights", [None, np.array([0.0, 1.0, 2.0, 1.0])])
+def test_the_run_level_share_is_of_reported_quality_against_a_simulation(tmp_path, weights):
+    # Overall goes with the binary criterion, the items criterion and depth. Equal weights put the binary
+    # criterion in the score; the example value file gives clarity 1, depth 2, coverage 1.
+    corr = _corr({(0, 4): 0.5, (3, 4): 0.4, (2, 4): 0.4})
     built = exact(tmp_path, truth={"corr_run": corr})
-    value = testing.example_value(gated=False)                    # clarity 1, depth 2, coverage 1
-    block = R.health(built.fit, value)["overall"][0]
-    truth = built.truth
-    criteria = [0, 1, 2, 3]
-    weights = np.array([0.0, 1.0, 2.0, 1.0])
-    total = np.sqrt(truth["sd_input"] ** 2 + truth["sd_run"] ** 2)
-    centre = truth["mu"].mean(axis=0)                             # every arm has the same number of runs
-    scale = np.sqrt(1 + total[3] ** 2)
-    slope = np.ones(4)
-    slope[3] = np.exp(-0.5 * (centre[3] / scale) ** 2) / np.sqrt(2 * np.pi) / scale
-    cov = np.outer(truth["sd_run"], truth["sd_run"]) * corr
-    a = weights * slope
-    want = (a @ cov[criteria, 4]) ** 2 / (a @ cov[np.ix_(criteria, criteria)] @ a * cov[4, 4])
-    assert block["run"]["share"]["mean"] == pytest.approx(want)
-    assert block["run"]["best_share"]["mean"] == pytest.approx(0.6 ** 2 + 0.5 ** 2)
-    assert [row["given"] for row in block["run"]["weights"]] == [0.0, 0.25, 0.5, 0.25]
+    block = R.health(built.fit, None if weights is None else testing.example_value(gated=False))["overall"][0]
+    cov = _simulate_run_covariance(built.truth, FIT_KINDS)
+    cc, co, oo = cov[:4, :4], cov[:4, 4], cov[4, 4]
+    w = np.ones(4) if weights is None else weights
+    assert block["run"]["share"]["mean"] == pytest.approx((w @ co) ** 2 / (w @ cc @ w * oo), abs=0.006)
+    beta = np.linalg.solve(cc, co)
+    assert block["run"]["best_share"]["mean"] == pytest.approx(co @ beta / oo, abs=0.006)
+    assert [row["given"] for row in block["run"]["weights"]] == pytest.approx(list(w / w.sum()))
     best = [row["best"]["mean"] for row in block["run"]["weights"]]
-    assert best[0] == pytest.approx(0.0, abs=1e-12) and best[1] == pytest.approx(0.0, abs=1e-12)
-    assert best[2] > 0 and best[3] > 0 and sum(abs(x) for x in best) == pytest.approx(1.0)
+    assert best == pytest.approx(list(beta / np.abs(beta).sum()), abs=0.02)
+    assert sum(abs(x) for x in best) == pytest.approx(1.0)
+    # On the fitting scale the best weights would explain 0.5^2 + 0.4^2 + 0.4^2 = 0.57. Reported quality
+    # cuts the binary criterion to a verdict, so less is explained.
+    assert block["run"]["best_share"]["mean"] < 0.57 - 0.03
+    assert block["run"]["method"]["scale"] == "reported quality of each run, between the runs of one input and arm"
+    assert block["run"]["method"]["draws_used"] == 3
+
+
+def test_a_binary_criterion_explains_two_over_pi_of_its_latent_share(tmp_path):
+    # A binary criterion with latent correlation 0.8 to a linear overall component centred at 0.5 with sd
+    # 0.05 (no clipping). For a standard normal x and y with correlation r, corr(1[x >= 0], y) is
+    # r x sqrt(2 / pi), so the criterion explains 0.8^2 x 2 / pi = 0.407437 of the overall quality, not 0.64.
+    rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "r2", "version": "1", "components": [
+        {"id": "criterion", "scale": {"kind": "binary"}},
+        {"id": "overall", "role": "overall", "scale": {"kind": "linear", "range": [0, 1]}}]})
+    built = exact(tmp_path, rubric=rubric, n_draws=8, truth={
+        "mu": [[0, 0.5]] * 3, "sd_input": [0, 0], "sd_run": [1, 0.05], "corr_run": [[1, 0.8], [0.8, 1]]})
+    block = R.health(built.fit)["overall"][0]
+    assert block["run"]["share"]["mean"] == pytest.approx(0.8 ** 2 * 2 / np.pi, abs=1e-5)
+    assert block["run"]["best_share"]["mean"] == pytest.approx(0.8 ** 2 * 2 / np.pi, abs=1e-5)
+    assert block["low"] is True
+
+
+def test_runs_that_share_an_input_do_not_count_as_run_level_agreement(tmp_path):
+    # All of the link between the criterion and overall sits at the input level: between the runs of one
+    # input the criterion explains nothing, whatever the input-level correlation.
+    rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "r3", "version": "1", "components": [
+        {"id": "criterion", "scale": {"kind": "items"}},
+        {"id": "overall", "role": "overall", "scale": {"kind": "fraction"}}]})
+    built = exact(tmp_path, rubric=rubric, truth={
+        "mu": [[0.2, 0.5]] * 3, "sd_input": [0.8, 0.05], "sd_run": [0.6, 0.05],
+        "corr_input": [[1, 0.9], [0.9, 1]], "corr_run": [[1, 0], [0, 1]]})
+    assert R.health(built.fit)["overall"][0]["run"]["share"]["mean"] == pytest.approx(0.0, abs=1e-6)
+    kinds = ["items", "fraction"]
+    linked = exact(tmp_path, "linked.json", rubric=rubric, truth={
+        "mu": [[0.2, 0.5]] * 3, "sd_input": [0.8, 0.05], "sd_run": [0.6, 0.05],
+        "corr_input": [[1, 0.9], [0.9, 1]], "corr_run": [[1, 0.7], [0.7, 1]]})
+    cov = _simulate_run_covariance(linked.truth, kinds)
+    share = R.health(linked.fit)["overall"][0]["run"]["share"]["mean"]
+    assert share == pytest.approx(cov[0, 1] ** 2 / (cov[0, 0] * cov[1, 1]), abs=0.006)
 
 
 def test_no_run_level_variance_is_said_plainly(tmp_path, capsys):
@@ -526,6 +594,11 @@ def test_no_run_level_variance_is_said_plainly(tmp_path, capsys):
     built = exact(tmp_path, truth={"sd_run": np.zeros(5)})
     assert cli.main(["eval", "rubric", "check", files["rubric"], "--fit", str(built.path), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out, parse_constant=lambda name: pytest.fail(f"{name} in the output"))
+    import hashlib
+    assert payload["inputs"]["fit"] == {"file": "fit.json",
+                                        "sha256": hashlib.sha256(built.path.read_bytes()).hexdigest()}
+    assert payload["inputs"]["draws"] == {
+        "file": "fit.draws.npz", "sha256": hashlib.sha256((tmp_path / "fit.draws.npz").read_bytes()).hexdigest()}
     run = payload["health"]["overall"][0]["run"]
     assert run["measured"] is True and run["share"] is None and run["best_share"] is None
     assert cli.main(["eval", "rubric", "check", files["rubric"], "--fit", str(built.path)]) == 0
