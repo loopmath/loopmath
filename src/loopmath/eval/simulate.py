@@ -6,8 +6,10 @@
 SPEC is a spec file (`loopmath.eval-sim/1`) or a catalog name (the catalog lives in `specs/`). The command
 writes a study folder: `runs.jsonl`, `scores.jsonl`, `pairs.jsonl` and `items.jsonl` as needed, the matching
 `rubric.json` and `judges.json`, `value.json` when the spec carries a value file, and `truth.json`. Every
-run is marked `simulated`. The same spec and `--seed` give the same files. A folder that already holds one
-of these files is refused, and a refusal writes nothing.
+run is marked `simulated`. Run ids and output refs do not name the arm (`r0007`, `outputs/r0007`): the
+numbers go to the runs in an order drawn from the seed, so a reviewer cannot read the arm from an id. The
+arm is in each run's `arm` member and in `truth.json`. The same spec and `--seed` give the same files. A
+folder that already holds one of these files is refused, and a refusal writes nothing.
 
 The spec (`validate_spec` returns it normalised, every per-dimension map filled by dimension id):
 
@@ -569,14 +571,18 @@ def generate(spec: dict, seed: int = 0, file: str = "spec.json") -> Simulated:
     scored, paired = _coverage(plan, dims)
     relative = _relative(plan, dims)
 
-    # Runs: every arm runs on every input.
+    # Runs: every arm runs on every input. Run ids are neutral: the numbers r0001, r0002, ... go to the
+    # runs in an order drawn from the seed, so an id's number tells neither the arm nor the input. The rows
+    # keep the order input, arm, repeat, so every other draw below is as it was.
     width = max(3, len(str(I)))
     inputs = [f"i{n + 1:0{width}d}" for n in range(I)]
+    order = np.random.default_rng([seed, 7]).permutation(I * A * K)
+    names = [f"r{n + 1:0{max(4, len(str(I * A * K)))}d}" for n in order]
     runs, run_arm, run_input, run_at = [], [], [], {}
     for i, name in enumerate(inputs):
         for a, arm in enumerate(arms):
             for k in range(K):
-                run = f"{arm['id']}-{name}" + (f"-r{k + 1}" if K > 1 else "")
+                run = names[len(runs)]
                 row = {"run": run, "input": name, "arm": arm["id"], "steps": [dict(step) for step in arm["steps"]],
                        "simulated": True, "refs": {"input": f"inputs/{name}", "output": f"outputs/{run}"}}
                 if "cost_usd" in arm:

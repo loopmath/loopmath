@@ -136,7 +136,7 @@ def test_a_simulated_study_needs_allow_simulated(tmp_path, capsys):
     argv = ["eval", "fit", str(folder), "--rubric", str(folder / "rubric.json"), "--judges",
             str(folder / "judges.json"), "--check-only"]
     assert cli.main(argv) == 1
-    assert capsys.readouterr().err == ('error: runs.jsonl: run "baseline-i001": the run is simulated; '
+    assert capsys.readouterr().err == ('error: runs.jsonl: run "r0005": the run is simulated; '
                                        "pass --allow-simulated to fit a simulated study\n")
     assert cli.main(argv + ["--allow-simulated"]) == 0
     assert "readings: 28 of 28 used" in capsys.readouterr().out
