@@ -149,21 +149,23 @@ def test_a_simulated_study_needs_allow_simulated(tmp_path, capsys):
 def test_smoke_fit_of_the_small_study_writes_a_fit_every_later_stage_can_read(tmp_path, capsys):
     out = tmp_path / "fit.json"
     assert cli.main(["eval", "fit", str(STUDY), "--rubric", RUBRIC, "--judges", JUDGES, "--seed", "3", "--draws",
-                     "50", "--chains", "2", "--keep-draws", "80", "--out", str(out), "--json"]) == 0
+                     "50", "--chains", "2", "--keep-draws", "400", "--out", str(out), "--json"]) == 0
     obj = json.loads(capsys.readouterr().out)
     assert obj["schema"] == FT.OUTPUT_SCHEMA and obj["fit"] == str(out) and obj["checked_only"] is False
     fit = F.read_fit(out, allow_unconverged=True)
-    assert fit.sizes == {"S": 80, "A": 2, "D": 4, "J": 3, "F": 2, "I": 8, "R": 16}
+    assert fit.sizes == {"S": 100, "A": 2, "D": 4, "J": 3, "F": 2, "I": 8, "R": 16}
     assert fit["engine"]["name"] == "pymc" and fit["seed"] == 3
     assert fit["options"] == {"structure": "full", "halo": "factor", "cuts": "fixed",
                               "terms": {"family": "auto", "judge_input": "auto"}, "components": None, "draws": 50,
-                              "tune": 50, "chains": 2, "keep_draws": 80, "allow_simulated": False}
+                              "tune": 50, "chains": 2, "keep_draws": 400, "allow_simulated": False}
     assert sorted(fit["inputs"]) == ["judges", "pairs", "rubric", "runs", "scores"]
     files = {"rubric": RUBRIC, "judges": JUDGES, **C.read_study(STUDY).files()}
     assert fit.stale(files) == [] and fit.stale({**files, "rubric": JUDGES}) != []
     assert fit["counts"]["readings_used"] == 304 and fit["counts"]["pairs_used"] == 18
     assert fit["notes"] == [{"kind": "reading", "id": "s0021", "reason": "replaced by s0305"}]
-    assert [c["name"] for c in fit["diagnostics"]["checks"]] == ["rhat", "ess", "divergences"]
+    assert [c["name"] for c in fit["diagnostics"]["checks"]] == ["rhat", "ess", "divergences", "saved_draws"]
+    assert fit["diagnostics"]["checks"][3] == {"name": "saved_draws", "value": 100, "limit": 400, "ok": False}
+    assert fit["diagnostics"]["converged"] is False              # 100 saved draws cannot carry the intervals
     draws = fit.draws
     for name in ("mu", "sd_input", "sd_run", "corr_input", "corr_run", "q_run", "bias", "tau", "sigma"):
         assert np.isfinite(draws[name]).all(), name

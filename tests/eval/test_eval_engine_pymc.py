@@ -127,8 +127,8 @@ def test_one_small_run_of_a_panel_judge_items_and_a_pairs_only_dimension(monkeyp
     assert np.allclose(np.diagonal(raw["corr_input"], axis1=2, axis2=3), 1.0)
     # the fit file takes it: NaN only where a term says absent, the panel judge keeps its halo_call
     monkeypatch.setattr(engine, "sample", lambda *args, **kwargs: got)    # the same draws: no second run
-    meta, draws = FT.fit_design(design, seed=5, draws=20, tune=30, chains=2, keep_draws=30)
-    assert draws["mu"].shape == (30, 2, 5) and meta["options"]["structure"] == "factor:2"
+    meta, draws = FT.fit_design(design, seed=5, draws=20, tune=30, chains=2, keep_draws=400)
+    assert draws["mu"].shape == (40, 2, 5) and meta["options"]["structure"] == "factor:2"
     assert np.all(draws["halo_call"][:, [0, 2]] == 0.0) and np.all(draws["halo_call"][:, 1] > 0)
     assert np.isnan(draws["sigma"][:, :, 4]).all() and np.isnan(draws["bias"][:, :, 4]).all()
     assert np.isnan(draws["sigma_pair"][:, 2]).all() and np.isfinite(draws["sigma_pair"][:, :2, [0, 4]]).all()
