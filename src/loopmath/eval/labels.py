@@ -82,10 +82,11 @@ weight is the square root of `per_minute`, floored at `FLOOR` times the mean wei
 probability is `k x ((1 - u) x weight share + u / N)`, capped at 1, with `u` the uniform share and `k`
 the number of offers the budget pays for. So `u x k / N` of every offer's probability is blind to the
 scores: a drawn offer is marked `uniform` with the chance that part has in its probability, else
-`active`. The count of `uniform` assignments is `u` of the budget on average, not exactly. A `uniform`
-assignment asks for the full rubric: no component is dropped from it. Recorded probabilities are exact
-for the draw of the assignment. For a component that was dropped from a target, only the uniform part
-applies: every assignment of an active plan records it as `ext.uniform_probability`.
+`active`. The count of `uniform` draws is `u` of the offers drawn on average, not exactly. A `uniform`
+draw asks for the full rubric on every target of the input: the components dropped from a target, and
+the targets left out of the offer, come as assignments of their own, with the uniform part as inclusion
+probability. So a recorded probability is exact, and holds for every component its assignment asks.
+Every assignment of an active plan also records the uniform part as `ext.uniform_probability`.
 
 Both modes: `--repeat-share` of the budget goes to repeats (targets this reviewer scored before, a
 simple random sample) and, with `--overlap ID`, to overlaps (the second reviewer on targets drawn in
@@ -810,7 +811,8 @@ def build(args: argparse.Namespace) -> Result:
                      "second reviewer, so their share of the budget goes to the main draw")
     by_count = unit_name == "n"
     cost = np.array([len(unit.offers) if by_count else unit.minutes for unit in units], dtype=float)
-    cost_full = np.array([len(unit.offers + unit.rest) if by_count else
+    cost_full = np.array([len(unit.offers + unit.rest) + sum(bool(offer.dropped) for offer in unit.offers)
+                          if by_count else
                           sum(minutes_of(fit, offer.ask, full[id(offer)]) for offer in unit.offers + unit.rest)
                           for unit in units], dtype=float)
     drawn = draw(units, budget - extra, cost, cost_full, mode, uniform_share, rng)
@@ -830,7 +832,9 @@ def build(args: argparse.Namespace) -> Result:
     groups: list[list[dict]] = []
     explain: dict[int, dict] = {}
 
-    def record(offer: Offer, kind: str, p: float, who: str, unit: Unit | None = None) -> dict:
+    def record(offer: Offer, kind: str, p: float, who: str, unit: Unit | None = None,
+               asked: Sequence[int] | None = None) -> dict:
+        asked = offer.dims if asked is None else list(asked)
         flip = bool(rng.integers(2)) if offer.ask == "pair" else False
         runs = offer.runs[::-1] if flip else offer.runs
         row: dict = {"ask": offer.ask}
@@ -842,14 +846,13 @@ def build(args: argparse.Namespace) -> Result:
             row["b"] = {"run": fit.index["runs"][runs[1]], "step": offer.step}
             row["shown_first"] = "a" if rng.integers(2) else "b"
             refs = {"a": offer.refs["b" if flip else "a"], "b": offer.refs["a" if flip else "b"]}
-        asked = full[id(offer)] if kind == "uniform" else offer.dims   # a uniform assignment drops nothing
         row.update({"components": [dims[d]["component"] for d in asked], "reviewer": who, "kind": kind,
                     "inclusion_probability": float(p),
                     "scores": dict(offer.scores) if kind in ("active", "uniform") else dict.fromkeys(C.LABEL_SCORES),
                     "minutes": minutes_of(fit, offer.ask, asked), "refs": refs})
         if mode == "active" and unit is not None:
             row["ext"] = {"uniform_probability": unit.p_uniform}
-        explain[id(row)] = {"offer": offer, "unit": unit, "row": row}
+        explain[id(row)] = {"offer": offer, "unit": unit, "row": row, "extra": asked != offer.dims}
         return row
 
     main = []
@@ -857,11 +860,19 @@ def build(args: argparse.Namespace) -> Result:
         kind = "pilot"
         if mode == "active":
             kind = "uniform" if rng.random() < unit.p_uniform / unit.p else "active"
-        asked = unit.offers + (unit.rest if kind == "uniform" else [])
-        group = [record(offer, kind, unit.p_uniform if n >= len(unit.offers) else unit.p, reviewer, unit)
-                 for n, offer in enumerate(asked)]
-        groups.append(group)
-        main += [(row, offer, unit) for row, offer in zip(group, asked)]
+        group = [(record(offer, kind, unit.p, reviewer, unit), offer) for offer in unit.offers]
+        if kind == "uniform":
+            # The full rubric on every target of the input. What the scores left out comes as assignments
+            # of its own, with the uniform part as inclusion probability: a recorded probability then
+            # holds for every component its assignment asks.
+            for offer in unit.offers:
+                if offer.dropped:
+                    others = [d for d in full[id(offer)] if d not in offer.dims]
+                    group.append((record(offer, kind, unit.p_uniform, reviewer, unit, others), offer))
+            group += [(record(offer, kind, unit.p_uniform, reviewer, unit, full[id(offer)]), offer)
+                      for offer in unit.rest]
+        groups.append([row for row, _ in group])
+        main += [(row, offer, unit) for row, offer in group]
     pool = [one for one in main if second and not any(
         _calls(by_run[(r, one[1].step)].read.get(d, {}), second) for r in one[1].runs for d in one[1].dims)]
     n_overlap = count([offer for _, offer, _ in pool], extra / 2 if again else extra)
@@ -873,7 +884,7 @@ def build(args: argparse.Namespace) -> Result:
         row, offer, unit = pool[n]
         copy = dict(row, reviewer=second, kind="overlap", scores=dict.fromkeys(C.LABEL_SCORES),
                     inclusion_probability=float(row["inclusion_probability"] * n_overlap / len(pool)))
-        explain[id(copy)] = {"offer": offer, "unit": unit, "row": copy}
+        explain[id(copy)] = {"offer": offer, "unit": unit, "row": copy, "extra": True}
         groups.append([copy])
 
     # Order and ids: groups in random order, so the plan's order says nothing about arm or stratum.
@@ -904,7 +915,7 @@ def build(args: argparse.Namespace) -> Result:
     for entry in explain.values():
         offer, unit, row = entry["offer"], entry["unit"], entry["row"]
         one = {"id": entry["id"], "kind": row["kind"], "ask": offer.ask, "components": row["components"],
-               "dropped": [] if row["kind"] == "uniform" else [dims[d]["component"] for d in offer.dropped],
+               "dropped": [] if entry["extra"] else [dims[d]["component"] for d in offer.dropped],
                "scores": row["scores"], "minutes": row["minutes"],
                "inclusion_probability": row["inclusion_probability"]}
         if unit is not None:

@@ -284,15 +284,22 @@ def test_active_scores_and_the_uniform_part(built, value_file):
     rows, candidates = plan["assignments"], open_targets(built.fit)
     assert {row["kind"] for row in rows} <= {"active", "uniform"}
     n_offers = result.report["candidates"]["offers"]
+    uniform: dict = {}
     for row in rows:
         scores = row["scores"]
         assert set(scores) == set(C.LABEL_SCORES)
         assert all(isinstance(value, float) and np.isfinite(value) and value >= 0 for value in scores.values())
         assert 0 < row["ext"]["uniform_probability"] <= row["inclusion_probability"] <= 1
-        if row["kind"] == "uniform":                                          # the full rubric, nothing dropped
-            assert row["components"] == candidates[row["target"]["run"]]
-        else:
-            assert set(row["components"]) <= set(candidates[row["target"]["run"]])
+        assert set(row["components"]) <= set(candidates[row["target"]["run"]])
+        if row["kind"] == "uniform":
+            uniform.setdefault(row["target"]["run"], []).append(row)
+    assert uniform
+    for run, group in uniform.items():
+        # A uniform draw asks for the full rubric, each component once. What the scores left out is an
+        # assignment of its own, at the uniform part of the probability.
+        assert sorted(c for row in group for c in row["components"]) == sorted(candidates[run])
+        above = [row for row in group if row["inclusion_probability"] > row["ext"]["uniform_probability"] + 1e-12]
+        assert len(above) <= 1 and len(group) <= 2
     uniform_part = {row["ext"]["uniform_probability"] for row in rows}
     assert len(uniform_part) == 1                                             # the same for every candidate
     assert uniform_part.pop() <= 0.2 * 12 / n_offers + 1e-12
