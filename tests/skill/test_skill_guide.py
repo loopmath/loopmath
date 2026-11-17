@@ -5,7 +5,8 @@ cross reference to another skill or to the reference copy turned into a `loopmat
 nothing else changed, but for the `update` object 0.3.5 documents in the reference and the fit's level
 0.4.0 names in the fit summary. The `flow` topic is
 new with the flow commands, so it is held to no 0.3.3 text; `tests/flows/test_flow_guide.py` checks it
-against those commands. A guide call needs no store and writes nothing.
+against those commands. So are the two `eval` topics (0.4.5): `eval`, which `tests/eval/test_eval_guide.py`
+checks against the eval commands, and `eval-record`. A guide call needs no store and writes nothing.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ LEVEL_040 = ("store level; ", " `options.level` is the fit's level, not an optio
              "`level` is `store` (the default) and \"shared level\" when it is `shared` or `options` has no "
              "`level` (0.3.5's fit).")
 ADDED = {"reference": (UPDATE_035,), "fit": LEVEL_040}
+NEW = {"flow", "eval", "eval-record"}  # topics with no 0.3.3 text
 
 
 def _old(topic: str) -> str:
@@ -47,9 +49,10 @@ def _old(topic: str) -> str:
     return text
 
 
-def test_the_topics_are_the_five_jobs_then_flow_then_the_reference():
-    assert list(guide.TOPICS) == ["onboard", "import", "plan", "record", "fit", "flow", "reference"]
-    assert set(guide.TOPICS) == set(SOURCE) | {"flow"}
+def test_the_topics_are_the_five_jobs_then_flow_then_eval_then_the_reference():
+    assert list(guide.TOPICS) == ["onboard", "import", "plan", "record", "fit", "flow", "eval", "eval-record",
+                                  "reference"]
+    assert set(guide.TOPICS) == set(SOURCE) | NEW
     with pytest.raises(KeyError):
         guide.text("loopmath-plan-task")
 
@@ -121,7 +124,7 @@ def test_an_unknown_topic_exits_2_names_it_and_lists_the_topics(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ("error: no guide 'planning'; the topics are onboard, import, plan, record, fit, flow, "
-                            "reference. Run `loopmath guide <topic>` and follow it.\n")
+                            "eval, eval-record, reference. Run `loopmath guide <topic>` and follow it.\n")
 
 
 def test_guide_has_no_json_or_home_flag():
@@ -143,13 +146,13 @@ def test_a_guide_call_with_no_store_writes_nothing(tmp_path):
     work.mkdir()
     env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "PYTHONPATH": str(SRC), "PYTHONDONTWRITEBYTECODE": "1",
            "LANG": "en_US.UTF-8", "LOOPMATH_NO_UPDATE_CHECK": "1"}
-    for argv, code in ((["guide"], 0), (["guide", "plan"], 0), (["guide", "flow"], 0), (["guide", "reference"], 0),
-                       (["guide", "nope"], 2)):
+    for argv, code in ((["guide"], 0), (["guide", "plan"], 0), (["guide", "flow"], 0), (["guide", "eval"], 0),
+                       (["guide", "eval-record"], 0), (["guide", "reference"], 0), (["guide", "nope"], 2)):
         res = subprocess.run([sys.executable, "-m", "loopmath", *argv], env=env, cwd=work, capture_output=True,
                              text=True, stdin=subprocess.DEVNULL, timeout=60)
         assert res.returncode == code, (argv, res.stderr)
         assert res.stdout if code == 0 else res.stderr
-        if argv == ["guide", "flow"]:
-            assert res.stdout == guide.text("flow")
+        if argv[1:] and argv[1] in NEW:
+            assert res.stdout == guide.text(argv[1])
     assert _tree(tmp_path) == ["home", "work"]
     assert not os.path.exists(home / ".loopmath")

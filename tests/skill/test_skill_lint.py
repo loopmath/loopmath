@@ -2,9 +2,10 @@
 
 The skill is named for its folder, has a short description and may run only loopmath and the few
 commands the guides show; each job guide sends flags and fields to `loopmath guide reference` (the
-flow topic, to its own last section). Every `loopmath ...` command the skill, the guides and the
-README show names a real command, only flags that command has and only values its choices allow;
-every flag a guide uses is in the reference (a flow command's, in the flow topic's last section).
+flow and eval topics, to their own last section; eval-record, to the eval topic). Every `loopmath ...`
+command the skill, the guides and the README show names a real command, only flags that command has
+and only values its choices allow; every flag a guide uses is in the reference (a flow command's, in
+the flow topic's last section; an eval command's, in the eval topic's).
 No example hands the shell a comparison it would read as a redirection. The texts carry no em dash
 and none of the private names.
 """
@@ -26,6 +27,7 @@ from skill_texts import ROOT, PLACEHOLDER, commands, frontmatter, parser, texts,
 SOURCES = [*texts(), "README.md"]
 JOBS = [t for t in guide.TOPICS if t != "reference"]
 FLOW_COMMANDS = "## The flow commands"
+EVAL_COMMANDS = "## The eval commands"
 
 
 def _text(source: str) -> str:
@@ -51,6 +53,12 @@ def test_each_job_guide_sends_flags_to_its_reference_and_never_to_help(topic):
         assert ("Their flags, JSON members and exit codes are in the last section of this guide, "
                 '"The flow commands".') in " ".join(text.split())
         assert re.findall(r"^## .+$", text, re.M)[-1] == FLOW_COMMANDS
+    elif topic == "eval":  # so are the eval commands'
+        assert ('Their flags and exit codes are in the last section of this guide, "The eval commands".'
+                in " ".join(text.split()))
+        assert re.findall(r"^## .+$", text, re.M)[-1] == EVAL_COMMANDS
+    elif topic == "eval-record":  # the commands it shows are eval commands
+        assert "`loopmath guide eval`" in text
     else:
         assert "Flags and fields are in `loopmath guide reference`." in text
     assert "run `--help`" in text.lower()
@@ -87,11 +95,12 @@ def test_every_command_shown_parses(source):
 def test_every_flag_the_skill_or_a_guide_uses_is_in_the_reference():
     top, ref = parser(), guide.text("reference")
     flow_ref = guide.text("flow").split(FLOW_COMMANDS, 1)[1]
+    eval_ref = guide.text("eval").split(EVAL_COMMANDS, 1)[1]
     missing = set()
     for name, text in texts().items():
         for _, command in commands(text):
             chain, _, rest = walk(top, words(command))
-            where = flow_ref if chain[:1] == ["flow"] else ref
+            where = {"flow": flow_ref, "eval": eval_ref}.get(chain[0] if chain else "", ref)
             missing |= {f"{name}: loopmath {' '.join(chain)} {w}" for w in rest
                         if w.startswith("--") and w not in where}
     assert not missing, sorted(missing)
