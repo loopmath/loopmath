@@ -84,15 +84,16 @@ loopmath eval fit study/ --rubric rubric.json --judges judges.json --check-only
 loopmath eval fit study/ --rubric rubric.json --judges judges.json
 ```
 
-`--check-only` prints which terms the design identifies and stops; it writes nothing. The fit itself needs the
-optional modelling extra: if it prints the install line for it, tell the user and stop, and install nothing
-without their agreement. A fit takes minutes: say so before it starts (the "Limits" section has measured times).
+`--check-only` prints which terms the design identifies and stops; it writes nothing. The default engine,
+`laplace`, needs nothing more. `--engine pymc` samples with PyMC and needs the optional modelling extra: if it
+prints the install line for it, tell the user and stop, and install nothing without their agreement. A PyMC fit
+takes minutes: say so before it starts (the "Limits" section has measured times).
 
 Both print `anchor: person` or `anchor: judges_mean`, then one line per dimension with its anchor state and count,
 as in step 3. `anchor: person` only says that some dimension is `weak` or `anchored`: take each dimension's own
 state.
 
-The fit samples, checks convergence and writes `study/fit.json`. If it prints "the fit did not converge", the fit
+The fit runs, checks convergence and writes `study/fit.json`. If it prints "the fit did not converge", the fit
 is written but marked: `eval judges`, `eval value`, `eval steps`, `eval rubric check --fit` and
 `eval labels next --mode active` refuse it. Tell the user; fit again with more `--draws` if they agree. A pilot
 batch still works: `eval labels next --mode pilot` takes an unconverged fit without `--allow-unconverged`, because
@@ -109,7 +110,8 @@ loopmath eval judges study/fit.json
 Per judge and component it prints the bias, the per-output disagreement, the call noise, the error of a mean of 1
 to 5 calls, and for a yes or no component the false pass and false fail rates. Add `--target-error X` to list the
 cheapest judge and repeats that reach an error, or `--budget-usd USD` for the best judge and repeats within a budget
-per output.
+per output. On a yes or no component X is read in the anchors' call noise, the scale the engine fits, not in the
+total noise the table shows (see What the numbers mean); the choice lines say which.
 
 A bias is against the person only on a `weak` or `anchored` dimension; on a `relative` one it is against the mean
 of the judges. The table does not say which: take it from the anchor lines of step 4, or under `--json` from each
@@ -173,6 +175,20 @@ with `--allow-simulated`. Never pass `--allow-simulated` for the user's own scor
   every dimension when no person is declared.
 - Per-output disagreement (`tau`) repeats when the same output is scored again: more calls do not remove it,
   another judge or a person does. Call noise (`sigma`) changes from call to call: repeats average it away.
+- A yes or no component has a hidden quality behind its pass rate, in units of the anchors' total noise of one
+  reading: how far one reading strays from the output's hidden quality, counting the per-output disagreement, the
+  call noise and the judge-by-input part. The anchors are the people in the `anchor` list who scored the
+  component, or every judge who scored it when none did; with several, the unit is the geometric mean of their
+  total noises. So one reading by a judge with no bias, no family or position effect and a total noise equal to
+  the unit (one anchor alone, say) passes an output whose hidden quality is 1 about 84% of the time; do not quote
+  84% for any other judge. A component with comparisons only uses the anchors' total noise of one comparison
+  (the people in the `anchor` list who compared on it, else every judge who did): for such a judge a gap of 1 is
+  called right about 84% of the time, before ties and the order shown. Read pass rates and reported quality;
+  they and every decision (verdicts, judge choices, flags, label picks) do not depend on the unit. It shows in
+  the hidden numbers: `fitting`, and the bias, `tau`, `sigma` and error of the judges table, in plain output as
+  under `--json`. Judge choices and `--target-error` use the scale the engine fits, the anchors' call noise (their
+  call noise of one comparison for comparisons only), and each choice line names it. Fits written before 0.4.5 used
+  the call noise alone; they are still read, and each dimension's `unit` in `fit.json` says which unit it holds.
 - `p_pass` is the chance that one output of an arm passes every gate, from the joint fit; the product of the single
   pass rates, printed beside it as `p_pass_if_independent`, is too low when gated components move together.
 - Every range is a 90% interval unless the line says otherwise.
@@ -187,9 +203,9 @@ Give the ones that touch the user's study before they rely on a number:
   readings at 0 or at the top, expect arm means pulled toward the middle and noise read too small.
 - When a judge scores one output more than once on a yes or no or levels component, the fit often ends not
   converged. One call per output on those components avoids it.
-- Fits with yes or no components, levels or comparisons are slow: 12 to 15 minutes on 2 cores for 80 to 120
-  outputs at 2 chains of 500 draws, against 1 to 3 minutes with linear scales only. The defaults are 4 chains of
-  1000 draws. A linear study of 20,000 readings took about 17 minutes.
+- With `--engine pymc`, fits with yes or no components, levels or comparisons are slow: 12 to 15 minutes on 2
+  cores for 80 to 120 outputs at 2 chains of 500 draws, against 1 to 3 minutes with linear scales only. The
+  defaults are 4 chains of 1000 draws. A linear study of 20,000 readings took about 17 minutes.
 - `eval fit --halo full` and `--cuts free` are not built and are refused.
 - `eval steps` estimates no interactions between steps, and `eval judges` costs have no range.
 - `eval labels next --mode active` beat a random batch by a small margin only in simulation, and is refused under a
@@ -234,8 +250,8 @@ prints an `error:` line on stderr that names what to fix, and under `--json` the
 - `loopmath eval simulate SPEC --out DIR --seed S --json`, or `loopmath eval simulate --list`.
 - `loopmath eval fit STUDY --rubric FILE --judges FILE --check-only --allow-simulated --out FILE --json`; also
   `--seed S`, `--draws N`, `--chains N`, `--keep-draws N`, `--components ID ...`, `--structure FORM`,
-  `--terms NAME=on`, `--halo factor`, `--cuts fixed` and `--engine pymc` (the default; `laplace` is an
-  experimental, approximate engine).
+  `--terms NAME=on`, `--halo factor`, `--cuts fixed` and `--engine pymc` (PyMC sampling, which needs the
+  modelling extra; the default, `laplace`, is an approximate engine that needs nothing more).
 - `loopmath eval judges FIT --target-error X --budget-usd USD --json`.
 - `loopmath eval value FIT --value FILE --reference ARM --check design --labels PLAN ... --seed S --json`.
 - `loopmath eval steps FIT --value FILE --reference ARM --pool --runs FILE --seed S --json`.

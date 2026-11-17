@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import time
 
 import numpy as np
@@ -434,7 +435,7 @@ def test_truth_has_the_index_and_the_array_shapes_of_a_fit(tmp_path):
     sim = S.generate(S.example_spec(), 2)
     paths = S.write(sim, tmp_path / "study")
     truth = S.read_truth(paths["truth.json"])
-    assert truth["schema"] == C.SCHEMA_TRUTH == "loopmath.eval-truth/1" and truth["seed"] == 2
+    assert truth["schema"] == C.SCHEMA_TRUTH == "loopmath.eval-truth/2" and truth["seed"] == 2
     assert truth["spec"] == S.validate_spec(S.example_spec())
     assert truth["index"] == F.build_index(sim.rubric, sim.judges, sim.runs)
     index = truth["index"]
@@ -455,8 +456,11 @@ def test_truth_has_the_index_and_the_array_shapes_of_a_fit(tmp_path):
     assert np.abs(own).max() < 5 and not np.allclose(own, 0)
     # A parameter the design gives no reading for is NaN: the reviewer does not score `overall`, it compares it.
     d = [dim["id"] for dim in index["dimensions"]].index("final/overall")
-    assert np.isnan(truth["sigma"][0, d]) and truth["sigma_pair"][0, d] == 1.0 and np.isnan(truth["bias"][:, d]).all()
-    assert truth["tau"][0, d] == 0.4 and np.isnan(truth["sigma_pair"][1]).all()
+    # `overall` is pairs only: in the reviewer's total pair noise, sqrt(sigma_pair^2 + 2 tau^2) of the spec.
+    pair = math.sqrt(1.0 ** 2 + 2 * 0.4 ** 2)
+    assert np.isnan(truth["sigma"][0, d]) and np.isnan(truth["bias"][:, d]).all()
+    assert truth["sigma_pair"][0, d] == pytest.approx(1.0 / pair, rel=1e-15)
+    assert truth["tau"][0, d] == pytest.approx(0.4 / pair, rel=1e-15) and np.isnan(truth["sigma_pair"][1]).all()
     assert np.isnan(truth["halo_call"][[0, 2]]).all() and truth["halo_call"][1] == 0.4
     assert np.isnan(truth["position"][1]) and truth["position"][2] == 0.5 and truth["tie_width"][0] == 0.5
     assert np.isnan(truth["family"][0]).all() and truth["family"][1, index["families"].index("alpha"), 3] == 0.05
@@ -464,8 +468,13 @@ def test_truth_has_the_index_and_the_array_shapes_of_a_fit(tmp_path):
     assert np.isnan(truth["cuts"][3]).all()
     assert truth["relative"] == ["final/overall"]
     assert truth["units"] == [
-        {"dimension": "final/numbers_right", "rule": "binary", "parameter": "sigma", "judges": ["reviewer"]},
-        {"dimension": "final/overall", "rule": "pairs_only", "parameter": "sigma_pair", "judges": ["reviewer"]}]
+        {"dimension": "final/numbers_right", "rule": "binary", "parameter": "sigma", "judges": ["reviewer"],
+         "unit": "total_noise", "factor": pytest.approx(math.sqrt(1.0 + 0.5 ** 2), rel=1e-15)},
+        {"dimension": "final/overall", "rule": "pairs_only", "parameter": "sigma_pair", "judges": ["reviewer"],
+         "unit": "total_pair_noise", "factor": pytest.approx(pair, rel=1e-15)}]
+    units = [1.0] * 6
+    units[[dim["id"] for dim in index["dimensions"]].index("final/numbers_right")], units[d] = math.sqrt(1.25), pair
+    assert truth["unit"] == pytest.approx(units, rel=1e-15)
     kinds = [dim["kind"] for dim in index["dimensions"]]
     assert np.allclose(truth["reported"]["runs"], Q.reported_all(truth["q_run"], kinds))
     total = np.sqrt(truth["sd_input"] ** 2 + truth["sd_run"] ** 2)
@@ -600,7 +609,10 @@ def test_binary_readings_match_the_expected_rates():
     # The lenient judge passes more failed outputs than the reviewer, and by a closed form.
     assert rates["lenient"]["expected"]["false_pass"] > rates["reviewer"]["expected"]["false_pass"] + 0.2
     place, q = truth_of(sim)
-    hidden = np.array([q[place[row["run"]], 0] for row in rows_of(sim, "lenient")])
+    # truth.json is in the reviewer's total noise sqrt(1 + 0.5^2); the readings use the spec's unit
+    unit = math.sqrt(1.0 + 0.5 ** 2)
+    assert sim.truth["units"][0]["factor"] == pytest.approx(unit, rel=1e-15)
+    hidden = unit * np.array([q[place[row["run"]], 0] for row in rows_of(sim, "lenient")])
     said = np.array([row["value"] for row in rows_of(sim, "lenient")])
     p_pass = ndtr((hidden + 0.8) / np.hypot(1.0, 1.5))   # tau and sigma together, for one call
     assert abs(said.mean() - p_pass.mean()) < 0.01

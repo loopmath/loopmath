@@ -36,10 +36,26 @@ four figures are per item under the k of n model: an item's hidden status passes
 
 For pairs: `position`, `tie_width`, `sigma_pair`, and over every two runs of one input from different
 arms, with both orders equally likely, the tie rate and the chance a call picks the output with the
-higher hidden quality.
+higher hidden quality. `position` and `tie_width` are one number per judge, in the engine's unit; the
+pair figures of a dimension divide them by its `unit` draws (`units.py`), so they are on the scale of
+the dimension's other draws.
+
+Units. On a `binary` dimension the latent figures of each judge (`bias`, `tau`, `sigma`, `mse` and the
+sds) are in the anchors' total noise of one reading, on a pairs-only dimension in the anchors' total noise
+of one pair verdict (`fitfile.py`, Units). The probabilities (`false_pass`, `false_fail`, `flip`,
+`agreement`, tie rate, picks), `r2`, `reliability` and `effective_repeats` do not depend on the unit. The
+choices are decisions, so they are made in the unit the engine fitted in (`dimensions[].unit.fitted_in`:
+the anchors' call noise on a `binary` dimension, their pair noise on a pairs-only one), the same for a fit
+file of either schema: the error of each (judge, repeats) in the table, the second judge and its weight,
+and `--target-error`, which is read in that unit. A posterior mean of an error in the stated unit would
+weigh the draws by a unit that differs from draw to draw, and could pick another judge. Each block of
+choices names its unit in `unit`.
 
 Family effects per model judge: `own_family` and `reference_family` contrasts (the effect on that family
-minus the mean effect on the other families), flagged when the 90% interval excludes 0.
+minus the mean effect on the other families), flagged when the 90% interval excludes 0. `effect` is in
+the dimension's stated unit; the flag reads the interval of the same draws in the unit the engine fitted
+in, named in `decided_in` (Units), since a percentile interpolates between two draws whose units can
+differ.
 
 Across judges: a table of (judge, repeats) choices per dimension with error and cost, the cheapest choice
 for `--target-error` and the best within `--budget-usd`, whether a second judge beats one more repeat,
@@ -392,6 +408,9 @@ class _Report:
         self.not_measured: list[dict] = []
         self.raw: dict[tuple[str, str], dict[str, np.ndarray]] = {}
         self.cost: dict[tuple[str, str], float | None] = {}
+        # the arrays the choices read, in the unit the engine fitted in (Units): mse(k), sigma and the shift
+        self.fitted: dict[tuple[str, str], dict[str, np.ndarray]] = {}
+        self.unit = np.asarray(self.draws["unit"], dtype=float)
         self._pairs: tuple | None = None
         self.anchor_state = {row["dimension"]: row["state"] for row in fit["anchor"]["dimensions"]}
 
@@ -443,8 +462,8 @@ class _Report:
         kind, factor = dim["scale"]["kind"], own_factor(dim)
         counted = next((row for row in judge.get("dims", []) if row["dimension"] == did), {})
         out: dict = {"dimension": did, "step": dim["step"], "component": dim["component"], "kind": kind,
-                     "n_targets": counted.get("n_targets", 0), "n_calls": counted.get("n_calls", 0),
-                     "n_pairs": counted.get("n_pairs", 0)}
+                     "unit": (dim.get("unit") or {}).get("unit"), "n_targets": counted.get("n_targets", 0),
+                     "n_calls": counted.get("n_calls", 0), "n_pairs": counted.get("n_pairs", 0)}
         raw: dict[str, np.ndarray] = {}
 
         anchored = fit["anchor"]["kind"] == "person" and self.anchor_state.get(did) in ("anchored", "weak")
@@ -576,6 +595,13 @@ class _Report:
         if present["sigma_pair"]:
             out["pairs"] = self.pairs(j, jid, d, did, tau, pair_sd, bool(ok["tau"]), factor, family_use)
         self.raw[(jid, did)] = raw
+        u = self.unit[:, d]
+        fitted = {name: x * u ** 2 for name, x in raw.items() if name.startswith("mse")}
+        if "sigma" in raw:
+            fitted["sigma"] = raw["sigma"] * u
+        if "shift" in raw:
+            fitted["shift"] = raw["shift"] * u[:, None]
+        self.fitted[(jid, did)] = fitted
         return out
 
     def pairs(self, j: int, jid: str, d: int, did: str, tau: np.ndarray, pair_sd: np.ndarray, tau_ok: bool,
@@ -600,7 +626,8 @@ class _Report:
         effect = self._family_effect(j, d) if family_use == "measured" else np.zeros(draws["q_run"].shape[:2])
         q = draws["q_run"][:, :, d]
         figures = pair_figures(q[:, a], q[:, b], effect[:, a] - effect[:, b], np.sqrt(2 * tau ** 2 + pair_sd ** 2),
-                               np.nan_to_num(draws["position"][:, j]), np.nan_to_num(draws["tie_width"][:, j]))
+                               np.nan_to_num(draws["position"][:, j]) / draws["unit"][:, d],
+                               np.nan_to_num(draws["tie_width"][:, j]) / draws["unit"][:, d])
         out["measured"] = True
         for name, x in figures.items():
             out[name] = stat(x)
@@ -636,10 +663,13 @@ class _Report:
                     continue
                 if not self._flag(name if name == "reference_family" else "own_family", [name], jid, dim["id"]):
                     continue
-                summary = stat(x)
-                block["dims"].append({"dimension": dim["id"], "effect": summary,
+                # the flag reads the interval in the unit the engine fitted in (Units): a percentile
+                # interpolates between two draws, and a unit that differs between them can move it past 0
+                decided = stat(x * self.unit[:, d])
+                block["dims"].append({"dimension": dim["id"], "effect": stat(x),
                                       "own": _scaled(x, own_factor(dim), sign=_sign(dim)),
-                                      "excludes_zero": bool(summary["lo"] > 0 or summary["hi"] < 0)})
+                                      "excludes_zero": bool(decided["lo"] > 0 or decided["hi"] < 0),
+                                      "decided_in": (dim.get("unit") or {}).get("fitted_in")})
             block["measured"] = bool(block["dims"])
             return block
 
@@ -681,7 +711,8 @@ class _Report:
     # -- across judges
 
     def _rmse(self, jid: str, did: str, k: int) -> float | None:
-        mse = self.raw.get((jid, did), {}).get(f"mse{k}")
+        """The root of the posterior mean `mse(k)`, in the unit the engine fitted in (Units)."""
+        mse = self.fitted.get((jid, did), {}).get(f"mse{k}")
         return None if mse is None else float(np.sqrt(mse.mean()))
 
     def next_step(self, jid: str, did: str, k: int) -> dict | None:
@@ -692,8 +723,9 @@ class _Report:
         term, `(w s1 + (1 - w) s2)^2`, plus `w^2 n1 + (1 - w)^2 n2` of the two independent noises. `w` is
         the weight in [0, 1] with the lowest such error at the posterior means, so a second judge is
         never worse than no second judge. No bias correction is assumed. A person is not offered as the
-        second judge: reviewer time is planned by `eval labels next`."""
-        base = self.raw.get((jid, did), {})
+        second judge: reviewer time is planned by `eval labels next`. In the unit the engine fitted in
+        (Units)."""
+        base = self.fitted.get((jid, did), {})
         if f"mse{k}" not in base:
             return None
         cost = self.cost.get((jid, did))
@@ -706,7 +738,7 @@ class _Report:
         first = float(base[f"mse{k}"].mean())
         for declared in self.declared:
             other = declared["id"]
-            second = self.raw.get((other, did), {})
+            second = self.fitted.get((other, did), {})
             if other == jid or "mse1" not in second or declared["kind"] == "person":
                 continue
             other_mse = float(second["mse1"].mean())
@@ -727,8 +759,9 @@ class _Report:
     def choices(self, target_error: float | None, budget_usd: float | None) -> list[dict]:
         """Per dimension, the table of (judge, repeats) with error and cost, and the choices asked for.
 
-        The error is the root of the posterior mean `mse(k)` on the fitting scale. A cost is for one
-        output on this component: repeats times the cost of one reading."""
+        The error is the root of the posterior mean `mse(k)` on the fitting scale, in the unit the engine
+        fitted in (Units), and `target_error` is read in it. A cost is for one output on this component:
+        repeats times the cost of one reading."""
         out = []
         for dim in self.dims:
             did, factor = dim["id"], own_factor(dim)
@@ -743,7 +776,7 @@ class _Report:
                                       "cost_usd": None if cost is None else k * cost})
             if not table:
                 continue
-            block: dict = {"dimension": did, "table": table,
+            block: dict = {"dimension": did, "unit": (dim.get("unit") or {}).get("fitted_in"), "table": table,
                            "second_judge": [step for jid in self.fit.judges
                                             if (step := self.next_step(jid, did, 1)) is not None]}
             priced = [row for row in table if row["cost_usd"] is not None]
@@ -879,11 +912,22 @@ def _interval(value: dict | None, digits: int = 2) -> str:
     return f"{value['mean']:.{digits}f} ({value['lo']:.{digits}f} to {value['hi']:.{digits}f})"
 
 
+# the unit of an error on a choice line, where it is a judge's noise (Units)
+UNIT_WORDS = {"call_noise": " (in the anchors' call noise)",
+              "pair_noise": " (in the anchors' call noise of one comparison)"}
+
+
 def render(payload: dict) -> str:
     """The report as text: one table per judge, then the choices, the comparisons and what is not measured."""
     lines = [f"eval judges (experimental): {payload['fit']}, {len(payload['judges'])} judges, "
              f"{payload['draws']} draws" + ("" if payload["converged"] else ", NOT CONVERGED"),
              "Figures are posterior means on the fitting scale; intervals are 90%. A dash is not measured."]
+    for unit, what in (("total_noise", "reading"), ("total_pair_noise", "comparison")):
+        dims = list(dict.fromkeys(row["dimension"] for judge in payload["judges"] for row in judge["dims"]
+                                  if row.get("unit") == unit))
+        if dims:
+            lines.append(f"On {', '.join(dims)}: bias, tau, sigma and mse are in the anchors' total noise of one "
+                         f"{what}. The choices use the scale the engine fits, named on each choice line.")
     for judge in payload["judges"]:
         what = [judge["kind"]]
         if judge.get("model"):
@@ -934,7 +978,8 @@ def render(payload: dict) -> str:
             if block["state"] == "confounded":
                 lines.append(f"  {label} ({block['family']}): confounded with the own-family effect")
             for row in block["dims"]:
-                mark = "  <- interval excludes 0" if row["excludes_zero"] else ""
+                mark = ("  <- interval excludes 0" + UNIT_WORDS.get(row.get("decided_in"), "")
+                        if row["excludes_zero"] else "")
                 lines.append(f"  {label} ({block['family']}) on {row['dimension']}: {_interval(row['effect'])}{mark}")
     for block in payload["choices"]:
         for name, label in (("target_error", "cheapest choice for error"), ("budget", "best choice within USD")):
@@ -946,8 +991,9 @@ def render(payload: dict) -> str:
                 lines.append(f"{block['dimension']}: {label} {amount:g}: none ({asked['reason']})")
                 continue
             pick, step = asked["choice"], asked["next"]
+            unit = UNIT_WORDS.get(block.get("unit"), "")
             line = (f"{block['dimension']}: {label} {amount:g}: {pick['judge']} x {pick['repeats']}, error "
-                    f"{pick['rmse']:.3f}, {pick['cost_usd']:g} USD")
+                    f"{pick['rmse']:.3f}{unit}, {pick['cost_usd']:g} USD")
             if name == "target_error" and step and step["second_judge"]:
                 better = "beats" if step["second_judge_beats_repeat"] else "does not beat"
                 line += f"; adding {step['second_judge']['judge']} {better} one more repeat"

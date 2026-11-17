@@ -179,7 +179,9 @@ def add(sub) -> None:
     q = _command(es, "judges", "judges", "judges", "each judge's bias, disagreement, noise and cost, from a fit")
     _fit_reader(q)
     q.add_argument("--target-error", type=float, default=None, metavar="X",
-                   help="the error to reach: lists the cheapest judge and repeats that reach it")
+                   help="the error to reach, on the scale the engine fits (on a yes or no component the "
+                        "anchors' call noise, with comparisons only their call noise of one comparison): lists the "
+                        "cheapest judge and repeats that reach it")
     q.add_argument("--budget-usd", type=float, default=None, metavar="USD",
                    help="the budget per output: lists the best judge and repeats within it")
 

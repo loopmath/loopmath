@@ -1,4 +1,4 @@
-"""The fit file (`loopmath.eval-fit/1`): `fit.json` plus its draws, `fit.draws.npz`.
+"""The fit file (`loopmath.eval-fit/2`): `fit.json` plus its draws, `fit.draws.npz`.
 
 The fit file is the hub. `eval judges`, `rubric check --fit`, `value`, `steps` and `labels next` read
 only it and the small user files, so it carries everything they need: the rubric's dimensions, the
@@ -6,7 +6,7 @@ judges as declared, the arms with their step settings and mean cost, and every t
 
 `fit.json` members
 ------------------
-`schema`       `loopmath.eval-fit/1`.
+`schema`       `loopmath.eval-fit/2`. `read_fit` reads `loopmath.eval-fit/1` too (below, Units).
 `inputs`       per role (`runs`, `scores`, `pairs`, `items`, `rubric`, `judges`): `{"file", "sha256"}`.
 `options`      the options the fit ran with.
 `engine`       `{"name", "version"}`. `testing.py` writes the name `testing`.
@@ -17,8 +17,8 @@ judges as declared, the arms with their step settings and mean cost, and every t
                `run_arm` and `run_input`, positions in `arms` and `inputs`.
 `dimensions`   per dimension, the record of `contracts.dimensions` (`id`, `step`, `component`, `title`,
                `role`, `scale`, `better`, `review_minutes`, `compare_minutes`, `human_only`) plus
-               `relative` (true for a pairs-only dimension: no gate can use it) and `cuts` (`fixed` or
-               `free`, null when the scale is not `levels`).
+               `relative` (true for a pairs-only dimension: no gate can use it), `cuts` (`fixed` or
+               `free`, null when the scale is not `levels`) and `unit` (below, Units).
 `counts`       `runs`, `inputs`, `arms`, `targets`, `readings`, `readings_used`, `pairs`, `pairs_used`.
 `terms`        the identification report, one entry per term, judge and dimension:
                `{"term", "judge", "dimension", "state", "count", "needs"}`; `judge` and `dimension` are
@@ -48,10 +48,42 @@ judges as declared, the arms with their step settings and mean cost, and every t
 A stat is `{"mean", "sd", "lo", "hi"}` with the 90% interval from the 5th to the 95th percentile of the
 draws, or null when the draws hold NaN there.
 
+Units
+-----
+Every location and scale draw of a dimension (`mu`, `q_run`, `sd_input`, `sd_run`, `bias`, `family`,
+`tau`, `sigma`, `sd_judge_input`, `sigma_pair`) is in the dimension's unit; `dimensions[].unit` says
+which, as `{"unit", "fitted_in", "judges", "factor"}` (`units.py` has the rules):
+
+- `total_noise` on a `binary` dimension: the anchors' total noise of one reading,
+  `sqrt(sigma^2 + tau^2 + sd_judge_input^2)` (mean log over the anchors who read it, else over every
+  judge who read it). `fitted_in` is `call_noise`, the engines' unit (the anchors' mean log `sigma`).
+- `total_pair_noise` on a pairs-only dimension: the anchors' total noise of one pair verdict,
+  `sqrt(sigma_pair^2 + 2 tau^2)`. `fitted_in` is `pair_noise` (the anchors' mean log `sigma_pair`).
+- `scale` (`linear`, `fraction`, `levels`: the [0, 1] fitting scale) and `items` (the item model's
+  unit): fixed by the data, the same in both.
+
+`judges` lists who carries the unit (null where the data fix it, or when not recorded). `factor` is the
+stat of the `unit` draws: the size of one reported unit in the engine's unit, per draw. It is null where
+the data fix the unit, and where no conversion is recorded: draws written in the stated unit directly,
+as `testing.py` does when its truth holds no `unit`. A null factor means unit draws of 1, so readers
+take the stated unit as the fitted one. Pass rates and every reported quality are the same in both
+units. `position` and `tie_width` stay in the engine's unit (one number per judge, shared across
+dimensions); divide them by a dimension's `unit` draws to put them on that dimension's unit.
+
+A fit of schema `loopmath.eval-fit/1` holds binary and pairs-only draws in the engine's unit and no
+`unit` record. `read_fit` reads it and labels each dimension with `call_noise`, `pair_noise`, `scale`
+or `items`, with null `judges` and `factor`; its `unit` draws are 1.
+
 The draws
 ---------
 `DRAW_SHAPES` is the contract every later stage reads. S draws, A arms, D dimensions, R runs, J judges,
-F families, C = Lmax - 1 cut points. Every array is float64. `cuts` is optional.
+F families, C = Lmax - 1 cut points. Every array is float64. `cuts` is optional. `unit` (S x D, the
+factor per draw) is required when a dimension's `unit.factor` is not null; `Fit.draws` gives 1 where
+the file has none. Its draws are finite and above 0, 1 on a dimension whose `unit.factor` is null (every
+dimension the data fix, and one written in its stated unit directly), and their stat is the `factor`
+elsewhere (`check_units`). A fit of schema 1 has no `unit` draws. The draws file holds exactly the
+arrays `draws.arrays` declares, in the declared shapes; `Fit.draws` refuses any other file, even one
+that matches its digest.
 """
 
 from __future__ import annotations
@@ -67,6 +99,7 @@ import numpy as np
 
 from . import contracts as C
 from . import quality as Q
+from . import units as U
 from .contracts import ContractError
 
 DRAWS_SUFFIX = ".draws.npz"
@@ -74,8 +107,9 @@ DRAW_SHAPES = {
     "mu": "SAD", "sd_input": "SD", "sd_run": "SD", "corr_input": "SDD", "corr_run": "SDD", "q_run": "SRD",
     "bias": "SJD", "tau": "SJD", "sigma": "SJD", "halo_target": "SJ", "halo_call": "SJ", "family": "SJFD",
     "sd_judge_input": "SJD", "sigma_pair": "SJD", "position": "SJ", "tie_width": "SJ", "cuts": "SDC",
+    "unit": "SD",
 }
-OPTIONAL_DRAWS = ("cuts",)
+OPTIONAL_DRAWS = ("cuts", "unit")
 MEMBERS = ("schema", "inputs", "options", "engine", "seed", "index", "dimensions", "counts", "terms",
            "diagnostics", "anchor", "arms", "levels", "judges", "targets", "notes", "draws")
 TERM_STATES = ("identified", "weak", "prior_only", "confounded", "off", "absent")
@@ -263,17 +297,20 @@ def assemble(*, rubric: dict, judges: dict, runs: Sequence[dict], draws: Mapping
              components: Sequence[str] | None = None, counts: dict | None = None,
              judge_counts: Mapping[tuple[str, str], Mapping[str, int]] | None = None,
              readings: Mapping[tuple[str, str], dict] | None = None, notes: Sequence[dict] = (),
-             relative: Sequence[str] = (), free_cuts: Sequence[str] = ()) -> dict:
+             relative: Sequence[str] = (), free_cuts: Sequence[str] = (), units: Sequence[dict] | None = None) -> dict:
     """Build every member of `fit.json` but `draws` (which `write_fit` adds) from the pieces of a fit.
 
     `eval fit` and `testing.py` both go through here, so the two write the same shape. `relative` and
-    `free_cuts` are lists of dimension ids."""
+    `free_cuts` are lists of dimension ids. `units` is the `unit` record per dimension (`units.records`);
+    by default each dimension's reported unit with null `judges` and `factor`."""
     index = build_index(rubric, judges, runs, components)
+    plain = C.dimensions(rubric, components)
+    units = list(units) if units is not None else U.records(plain, relative)
     dims = []
-    for dim in C.dimensions(rubric, components):
+    for dim, unit in zip(plain, units):
         levels = dim["scale"]["kind"] == "levels"
         dims.append({**dim, "relative": dim["id"] in relative,
-                     "cuts": ("free" if dim["id"] in free_cuts else "fixed") if levels else None})
+                     "cuts": ("free" if dim["id"] in free_cuts else "fixed") if levels else None, "unit": dict(unit)})
     targets = target_block(runs, dims, draws, readings)
     base_counts = {"runs": len(runs), "inputs": len(index["inputs"]), "arms": len(index["arms"]),
                    "targets": len(targets), "readings": 0, "readings_used": 0, "pairs": 0, "pairs_used": 0}
@@ -322,14 +359,49 @@ def check_draws(index: dict, draws: Mapping[str, np.ndarray], file: str = "fit.d
         if np.asarray(array).dtype != np.float64:
             raise ContractError(file, name, f"dtype {np.asarray(array).dtype} is not float64",
                                 "write float64 arrays", "draws_dtype")
+    if "unit" in draws:
+        unit = np.asarray(draws["unit"])
+        if not (np.isfinite(unit).all() and (unit > 0).all()):
+            raise ContractError(file, "unit", "a unit draw is not a finite number above 0",
+                                "write the size of one reported unit in the engine's unit, per draw", "bad_unit")
     return sizes
+
+
+def check_units(dimensions: Sequence[dict], draws: Mapping[str, np.ndarray], file: str = "fit.json") -> None:
+    """Refuse `unit` draws that disagree with the dimensions' `unit` records (`write_fit` and `Fit.draws`).
+
+    A dimension whose record has a null `factor` has nothing to convert: its unit draws are 1 in every
+    draw. That is every dimension the data fix (`unit` equals `fitted_in`), and a `binary` or pairs-only
+    one whose draws were written in the stated unit directly; readers then take that unit as the fitted
+    one. A record with a factor holds the stat of its unit draws. Without `unit` draws every factor is
+    null (`validate_fit`) and `Fit.draws` gives 1."""
+    if "unit" not in draws:
+        return
+    unit = np.asarray(draws["unit"], dtype=float)
+    for d, dim in enumerate(dimensions):
+        record, u = dim.get("unit") or {}, unit[:, d]
+        if record.get("factor") is None:
+            if (u == 1.0).all():
+                continue
+            if record.get("unit") == record.get("fitted_in"):
+                raise ContractError(file, f"dimensions[{d}].unit", f"the unit draws of {dim['id']} are not 1, and "
+                                    f'it is fitted in the unit it is stated in, "{record.get("unit")}"',
+                                    "write 1 in every draw: there is nothing to convert", "bad_unit")
+            raise ContractError(file, f"dimensions[{d}].unit.factor", f"the unit draws of {dim['id']} are not 1, "
+                                "and its unit has no factor", "write the stat of the unit draws, or 1 in every draw",
+                                "bad_unit")
+        want = stat(u)
+        if any(not np.isclose(record["factor"][key], want[key], rtol=1e-9, atol=1e-12) for key in want):
+            raise ContractError(file, f"dimensions[{d}].unit.factor", f"the factor of {dim['id']} is not the stat "
+                                "of its unit draws", "write the stat of the unit draws", "bad_unit")
 
 
 INPUT_ROLES = ("runs", "scores", "pairs", "items", "rubric", "judges")
 COUNTS = ("runs", "inputs", "arms", "targets", "readings", "readings_used", "pairs", "pairs_used")
 STAT = ("mean", "sd", "lo", "hi")
 DIMENSION = ("id", "step", "component", "title", "role", "scale", "better", "review_minutes", "compare_minutes",
-             "human_only", "relative", "cuts")
+             "human_only", "relative", "cuts", "unit")
+DIMENSION_1 = DIMENSION[:-1]   # schema 1: no unit record
 JUDGE_STATS = ("halo_target", "halo_call", "position", "tie_width")
 JUDGE_DIM_STATS = ("bias", "tau", "sigma", "sd_judge_input", "sigma_pair")
 JUDGE_DIM_COUNTS = ("n_targets", "n_calls", "n_pairs")
@@ -389,10 +461,46 @@ def _matrix(c: C._Check, value: Any, where: str, size: int) -> None:
             _number(c, cell, f"{where}[{n}][{m}]")
 
 
-def _check_dimensions(c: C._Check, dims: list, index: dict) -> None:
+def _check_unit(c: C._Check, unit: Any, where: str, kind: str, relative: bool, judges: list) -> bool:
+    """A dimension's `unit` record. True when it has a factor (the file then needs the `unit` draws)."""
+    _record(c, unit, where, U.RECORD, nullable=("judges", "factor"))
+    want = U.unit_of(kind, relative)
+    if unit["unit"] != want:
+        shown = f'"{unit["unit"]}"' if isinstance(unit["unit"], str) else C._kind(unit["unit"])
+        raise c.fail(f"{where}.unit", f"{shown} is not the unit of a{' relative' if relative else ''} "
+                     f'"{kind}" dimension, "{want}"', f'write "{want}"', "bad_unit")
+    if unit["fitted_in"] != U.FITTED_IN[want]:
+        shown = f'"{unit["fitted_in"]}"' if isinstance(unit["fitted_in"], str) else C._kind(unit["fitted_in"])
+        raise c.fail(f"{where}.fitted_in", f'{shown} is not "{U.FITTED_IN[want]}"', f'write "{U.FITTED_IN[want]}"',
+                     "bad_unit")
+    noise = want in ("total_noise", "total_pair_noise")
+    if unit["judges"] is not None:
+        if not noise:
+            raise c.fail(f"{where}.judges", f'the data fix the unit of a "{want}" dimension', "write null",
+                         "bad_unit")
+        for m, name in enumerate(c.array(unit["judges"], f"{where}.judges")):
+            if name not in judges:
+                shown = f'"{name}"' if isinstance(name, str) else C._kind(name)
+                raise c.fail(f"{where}.judges[{m}]", f"unknown judge {shown}", "name a judge of index.judges",
+                             "bad_index")
+    if unit["factor"] is not None:
+        if not noise:
+            raise c.fail(f"{where}.factor", f'the data fix the unit of a "{want}" dimension', "write null",
+                         "bad_unit")
+        _stat(c, unit["factor"], f"{where}.factor")
+        if unit["factor"]["lo"] <= 0:
+            raise c.fail(f"{where}.factor.lo", "the unit factor is not above 0", "write the stat of the unit draws",
+                         "bad_unit")
+        return True
+    return False
+
+
+def _check_dimensions(c: C._Check, dims: list, index: dict, version: int = 2) -> bool:
+    """True when a dimension's unit has a factor."""
+    factored = False
     for n, (dim, known) in enumerate(zip(dims, index["dimensions"])):
         w = f"dimensions[{n}]"
-        _record(c, dim, w, DIMENSION, nullable=("cuts",))
+        _record(c, dim, w, DIMENSION if version >= 2 else DIMENSION_1, nullable=("cuts",))
         for name in ("id", "step", "component", "title"):
             c.string(dim[name], f"{w}.{name}")
         c.choice(dim["role"], f"{w}.role", C.ROLES)
@@ -415,6 +523,10 @@ def _check_dimensions(c: C._Check, dims: list, index: dict) -> None:
                              "give one cut between each two levels", "bad_index")
         elif dim["cuts"] is not None:
             raise c.fail(f"{w}.cuts", f'a "{scale["kind"]}" scale has no cuts', "write null", "scale_member")
+        if version >= 2:
+            factored = _check_unit(c, dim["unit"], f"{w}.unit", scale["kind"], dim["relative"],
+                                   index["judges"]) or factored
+    return factored
 
 
 def _check_arms(c: C._Check, arms: list, index: dict) -> None:
@@ -590,7 +702,7 @@ def _check_targets(c: C._Check, targets: list, index: dict) -> None:
                 c.integer(count, f"{v}.judges.{name}", low=0)
 
 
-def _check_draws(c: C._Check, draws: dict, index: dict) -> None:
+def _check_draws(c: C._Check, draws: dict, index: dict, factored: bool = False, version: int = 2) -> None:
     name = c.string(draws["file"], "draws.file")
     if name in (".", "..") or "/" in name or "\\" in name:
         raise c.fail("draws.file", f'"{name}" is not a file name', "name the draws file that sits beside fit.json",
@@ -606,6 +718,12 @@ def _check_draws(c: C._Check, draws: dict, index: dict) -> None:
     for array in DRAW_SHAPES:
         if array not in arrays and array not in OPTIONAL_DRAWS:
             raise c.fail("draws.arrays", f'missing member "{array}"', "add it", "missing_member")
+    if version < 2 and "unit" in arrays:
+        raise c.fail("draws.arrays.unit", f'a fit of schema "{C.SCHEMA_FIT_READ[-1]}" has no unit draws',
+                     f'remove them, or write "{C.SCHEMA_FIT}" with a unit record per dimension', "draws_unknown")
+    if factored and "unit" not in arrays:
+        raise c.fail("draws.arrays", 'missing member "unit": a dimension\'s unit has a factor',
+                     "write the unit draws, or a null factor", "missing_member")
     for array, shape in arrays.items():
         w = f"draws.arrays.{array}"
         if array not in DRAW_SHAPES:
@@ -632,7 +750,9 @@ def validate_fit(obj: Any, file: str = "fit.json") -> dict:
 
 def _validate(obj: Any, file: str) -> dict:
     c = C._Check(file)
-    C._schema(c, obj, "", C.SCHEMA_FIT)
+    found = obj.get("schema") if isinstance(obj, dict) else None
+    C._schema(c, obj, "", found if found in C.SCHEMA_FIT_READ else C.SCHEMA_FIT)
+    version = 2 if found == C.SCHEMA_FIT else 1
     c.obj(obj, "", MEMBERS, [name for name in MEMBERS if name != "schema"])
     index = c.obj(obj["index"], "index", {"arms", "dimensions", "judges", "families", "inputs", "runs",
                                            "run_arm", "run_input"},
@@ -686,7 +806,7 @@ def _validate(obj: Any, file: str) -> dict:
     if [dim.get("id") if isinstance(dim, dict) else None for dim in dims] != ids:
         raise c.fail("dimensions", "the ids do not match index.dimensions", "list the same dimensions in order",
                      "bad_index")
-    _check_dimensions(c, dims, index)
+    factored = _check_dimensions(c, dims, index, version)
     for name, known in (("arms", index["arms"]), ("judges", index["judges"])):
         rows = c.array(obj[name], name)
         if [row.get("id") if isinstance(row, dict) else None for row in rows] != known:
@@ -765,7 +885,7 @@ def _validate(obj: Any, file: str) -> dict:
         for name in ("kind", "id", "reason"):
             c.string(row[name], f"notes[{n}].{name}")
     _check_draws(c, c.obj(obj["draws"], "draws", {"file", "sha256", "n", "arrays"},
-                          {"file", "sha256", "n", "arrays"}), index)
+                          {"file", "sha256", "n", "arrays"}), index, factored, version)
     return obj
 
 
@@ -799,6 +919,7 @@ def write_fit(path: str | os.PathLike, fit: dict, draws: Mapping[str, np.ndarray
     full["draws"] = {"file": draws_path(path).name, "sha256": hashlib.sha256(data).hexdigest(), "n": sizes["S"],
                      "arrays": {name: list(draws[name].shape) for name in sorted(draws)}}
     validate_fit(full, path.name)
+    check_units(full["dimensions"], draws, path.name)
     text = C.dumps(full)
     C.write_text_atomic(draws_path(path), data)
     return C.write_text_atomic(path, text)
@@ -818,7 +939,8 @@ class Fit:
 
     @property
     def draws(self) -> dict[str, np.ndarray]:
-        """The arrays of `DRAW_SHAPES`. The file's digest and shapes are checked on first use."""
+        """The arrays of `DRAW_SHAPES`. The file's digest and shapes are checked on first use. `unit` is 1
+        in every draw when the file has none (a fit of schema 1, or one written in the reported unit)."""
         if self._draws is None:
             file = self.meta["draws"]["file"]
             source = self.path.with_name(file)
@@ -830,9 +952,29 @@ class Fit:
                                     "fit again: fit.json and its draws come from different fits", "draws_digest")
             with np.load(source, allow_pickle=False) as archive:
                 arrays = {name: archive[name] for name in archive.files}
+            self._same_arrays(arrays, file)
             check_draws(self.index, arrays, file)
+            check_units(self.dimensions, arrays, self.path.name)
+            if "unit" not in arrays:
+                arrays["unit"] = np.ones((arrays["mu"].shape[0], len(self.index["dimensions"])))
             self._draws = arrays
         return self._draws
+
+    def _same_arrays(self, arrays: Mapping[str, np.ndarray], file: str) -> None:
+        """Refuse a draws file that does not hold exactly the arrays and shapes `draws.arrays` declares."""
+        declared = self.meta["draws"]["arrays"]
+        missing, extra = sorted(set(declared) - set(arrays)), sorted(set(arrays) - set(declared))
+        if missing or extra:
+            parts = ([f"lacks {', '.join(missing)}, which fit.json declares"] if missing else []) + (
+                [f"holds {', '.join(extra)}, which fit.json does not declare"] if extra else [])
+            raise ContractError(self.path.name, "draws.arrays", f"the draws file {file} " + " and ".join(parts),
+                                "fit again: fit.json and its draws come from different fits", "draws_mismatch")
+        for name in sorted(arrays):
+            if list(arrays[name].shape) != list(declared[name]):
+                raise ContractError(self.path.name, f"draws.arrays.{name}",
+                                    f"the draws file {file} holds shape {tuple(arrays[name].shape)}, fit.json "
+                                    f"declares {tuple(declared[name])}",
+                                    "fit again: fit.json and its draws come from different fits", "draws_mismatch")
 
     @property
     def arms(self) -> list[str]:
@@ -906,9 +1048,14 @@ class Fit:
 
 
 def read_fit(path: str | os.PathLike, *, allow_unconverged: bool = False) -> Fit:
-    """Read `fit.json`. Refuses an unknown schema, and a fit that did not converge unless allowed."""
+    """Read `fit.json`. Refuses an unknown schema, and a fit that did not converge unless allowed.
+
+    A fit of schema 1 is read as it is, with each dimension labelled with the engine's unit (Units)."""
     path = Path(path)
     meta = validate_fit(C.load_json(path), path.name)
+    if meta["schema"] != C.SCHEMA_FIT:
+        for dim in meta["dimensions"]:
+            dim["unit"] = U.old_record(dim["scale"]["kind"], dim["relative"])
     if not meta["diagnostics"]["converged"] and not allow_unconverged:
         raise ContractError(path.name, "diagnostics.converged", "the fit did not converge",
                             "fit again with more draws, or pass --allow-unconverged", "unconverged")

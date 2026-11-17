@@ -13,8 +13,11 @@ Three parts, kept apart in the output and never merged:
    level. Per step, for runs of the reference arm on one input (`q = mu_reference + u`,
    `u ~ N(0, Sigma_run)`): the share of the variance of the final value that the best linear predictor
    from the step's quality explains, and the slope of that predictor (the expected change in final
-   value per unit of step quality, on the fitting scale). Both are integrated numerically per posterior
-   draw (`value.points`), so gates and every scale are read as `eval value` reads them. It is
+   value per unit of step quality, on the fitting scale, in the unit `dimensions[].unit` of the fit file
+   states). Both are integrated numerically per posterior draw (`value.points`), in the unit the engine
+   fitted (`units.in_fitted_unit`), so gates and every scale are read as `eval value` reads them and the
+   ranking below does not depend on the fit file's schema; the slope is then put in the stated unit, draw
+   by draw. It is
    correlational and every entry says so: a step can correlate with the result without driving it.
 3. `not_run`. The single-step swaps against the reference that no arm of the study ran, over the
    settings seen at each step, ranked by the hint when there is one. The expected cost difference comes
@@ -41,6 +44,7 @@ from . import contracts as C
 from . import fitfile as F
 from . import quality as Q
 from . import value as V
+from .units import in_fitted_unit
 
 REPORT_SCHEMA = "loopmath.eval-steps/1"
 MEASURED_BASIS = "measured: both arms were run"
@@ -157,7 +161,8 @@ def pooled(table: Sequence[dict], rows: Sequence[int], arms: V.ArmDraws, referen
 def hint(fit: F.Fit, spec: Q.ValueSpec, reference: int, seed: int = 0,
          new_runs: int = V.NEW_RUNS) -> tuple[list[dict], str | None]:
     """The correlational part: `(entries, reason)`. `reason` says why there are none."""
-    draws, kinds, dims = fit.draws, fit.kinds, fit.index["dimensions"]
+    draws, kinds, dims = in_fitted_unit(fit.draws), fit.kinds, fit.index["dimensions"]
+    unit = np.asarray(fit.draws["unit"], dtype=float)           # S, D: the slope is shown in the stated unit
     by_step: dict[str, list[int]] = {}
     for d, dim in enumerate(dims):
         if dim["step"] != C.FINAL and not (np.isnan(draws["mu"][:, :, d]).any() or np.isnan(
@@ -196,7 +201,7 @@ def hint(fit: F.Fit, spec: Q.ValueSpec, reference: int, seed: int = 0,
     for step, group in by_step.items():
         out.append({"step": step, "basis": HINT_BASIS, "arm": fit.arms[reference],
                     "share_of_value_variance": F.stat(np.clip(share[step], 0.0, 1.0)),
-                    "value_per_unit": [{"dimension": dims[d]["id"], "slope": F.stat(slope[step][:, k])}
+                    "value_per_unit": [{"dimension": dims[d]["id"], "slope": F.stat(slope[step][:, k] * unit[:, d])}
                                        for k, d in enumerate(group)]})
     return out, None
 

@@ -23,8 +23,9 @@ def test_draw_shapes_are_the_contract():
     assert F.DRAW_SHAPES == {
         "mu": "SAD", "sd_input": "SD", "sd_run": "SD", "corr_input": "SDD", "corr_run": "SDD", "q_run": "SRD",
         "bias": "SJD", "tau": "SJD", "sigma": "SJD", "halo_target": "SJ", "halo_call": "SJ", "family": "SJFD",
-        "sd_judge_input": "SJD", "sigma_pair": "SJD", "position": "SJ", "tie_width": "SJ", "cuts": "SDC"}
-    assert F.OPTIONAL_DRAWS == ("cuts",)
+        "sd_judge_input": "SJD", "sigma_pair": "SJD", "position": "SJ", "tie_width": "SJ", "cuts": "SDC",
+        "unit": "SD"}
+    assert F.OPTIONAL_DRAWS == ("cuts", "unit")
     assert F.MEMBERS == ("schema", "inputs", "options", "engine", "seed", "index", "dimensions", "counts", "terms",
                          "diagnostics", "anchor", "arms", "levels", "judges", "targets", "notes", "draws")
     assert set(F.TERM_NEEDS) == set(F.TERMS)
@@ -56,8 +57,14 @@ def test_fit_json_blocks_have_the_documented_shape(built):
     assert dim == {"id": "final/clarity", "step": "final", "component": "clarity", "title": "Clarity",
                    "role": "criterion", "scale": {"kind": "levels", "levels": ["poor", "ok", "good"]},
                    "better": "higher", "review_minutes": 1.0, "compare_minutes": 0.5, "human_only": False,
-                   "relative": False, "cuts": "fixed"}
+                   "relative": False, "cuts": "fixed",
+                   "unit": {"unit": "scale", "fitted_in": "scale", "judges": None, "factor": None}}
     assert fit.dimensions[0]["cuts"] is None
+    # testing.py writes its draws in the reported unit: no factor, and the unit draws read as 1.
+    assert fit.dimensions[0]["unit"] == {"unit": "total_noise", "fitted_in": "call_noise", "judges": None,
+                                         "factor": None}
+    assert fit.dimensions[3]["unit"]["unit"] == "items" and "unit" not in fit["draws"]["arrays"]
+    assert np.array_equal(fit.draws["unit"], np.ones((200, 5)))
     arm = fit["arms"][1]
     assert {k: arm[k] for k in ("id", "n_runs", "n_inputs", "mixed")} == {"id": "strong-draft", "n_runs": 12,
                                                                          "n_inputs": 12, "mixed": False}
@@ -161,8 +168,8 @@ def test_fit_file_refusals_are_pinned(built, tmp_path):
             F.read_fit(tmp_path / name).draws
         return str(caught.value)
 
-    assert refused(lambda o: o.update(schema="loopmath.eval-fit/2")) == (
-        'fit.json: schema: unknown schema "loopmath.eval-fit/2"; this stage reads "loopmath.eval-fit/1"')
+    assert refused(lambda o: o.update(schema="loopmath.eval-fit/3")) == (
+        'fit.json: schema: unknown schema "loopmath.eval-fit/3"; this stage reads "loopmath.eval-fit/2"')
     assert refused(lambda o: o.pop("terms")) == 'fit.json: missing member "terms"; add it'
     assert refused(lambda o: o.update(extra=1)) == (
         'fit.json: extra: unknown member; remove it, or move it under "ext"')

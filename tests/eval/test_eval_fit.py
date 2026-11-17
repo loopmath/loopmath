@@ -192,7 +192,11 @@ def test_smoke_fit_of_the_small_study_writes_a_fit_every_later_stage_can_read(tm
     for name in ("mu", "sd_input", "sd_run", "corr_input", "corr_run", "q_run", "bias", "tau", "sigma"):
         assert np.isfinite(draws[name]).all(), name
     assert np.all(draws["bias"][:, 0, :] == 0.0)                 # one anchor: its bias is 0 in every draw
-    assert np.allclose(draws["sigma"][:, 0, 0], 1.0)             # and it carries the unit of the binary dimension
+    # It carries the unit of the binary dimension: its call noise was 1 in the engine's unit, and the file holds
+    # the draws in its total noise of one reading (the judge-by-input term is off), so that total is 1.
+    assert np.allclose(draws["sigma"][:, 0, 0] * draws["unit"][:, 0], 1.0)
+    assert np.allclose(np.hypot(draws["sigma"][:, 0, 0], draws["tau"][:, 0, 0]), 1.0)
+    assert fit.dimensions[0]["scale"]["kind"] == "binary" and fit.dimensions[0]["unit"]["unit"] == "total_noise"
     assert np.allclose(np.diagonal(draws["corr_run"], axis1=1, axis2=2), 1.0)
     assert np.isnan(draws["family"][:, 0]).all() and np.isfinite(draws["family"][:, 1:]).all()
     assert np.allclose(draws["family"][:, 1:].sum(axis=2), 0.0)  # family effects sum to 0 over families

@@ -52,16 +52,27 @@ Readings follow the model one to one. For judge j, run r and dimension d the jud
 a number, the level whose interval holds it, 1 when it is at least 0, or k of n items passed. A pair
 compares two views, plus position bias and pair noise, against the tie width.
 
-Units. The spec states the truth on the scale the fit reports, so a spec that is off that scale is refused:
-on a `binary` dimension the anchors' mean log `sigma` is 0; on a dimension with pairs only the anchors'
-mean log `sigma_pair` is 0 and the arm means sum to 0; the anchors' biases sum to 0. Where no anchor reads
-the dimension, the rule is over every judge that reads it.
+Units. The spec states the truth in the unit the engines fit in, so a spec that is off that unit is
+refused: on a `binary` dimension the anchors' mean log `sigma` is 0; on a dimension with pairs only the
+anchors' mean log `sigma_pair` is 0 and the arm means sum to 0; the anchors' biases sum to 0. Where no
+anchor reads the dimension, the rule is over every judge that reads it. `truth.json` states those two
+kinds of dimension in the unit the fit file reports them in, the anchors' total noise of one reading
+(`units.py`): `sqrt(sigma^2 + tau^2 + sd_judge_input^2)` on a `binary` dimension and
+`sqrt(sigma_pair^2 + 2 tau^2)` on a pairs-only one, mean log over the same judges. Every location and
+scale on the dimension is divided by that factor (`mu`, `q_run`, `v_input`, `sd_input`, `sd_run`,
+`bias`, `family`, `tau`, `sigma`, `sd_judge_input`, `sigma_pair`), and `reported` is computed from the
+divided arrays. `overall` and `value` are computed in the engine's unit, as the readers decide
+(`units.py`): a weight on a relative dimension reads its clipped latent quality there. `position` and
+`tie_width` stay in the engine's unit, as in the fit file. `units` gives per such dimension the rule,
+the judges, `unit` and `factor`.
 
-`truth.json` (`loopmath.eval-truth/1`; `read_truth` gives the arrays as numpy): `spec`, `seed`, `index`
+`truth.json` (`loopmath.eval-truth/2`; `read_truth` gives the arrays as numpy and reads
+`loopmath.eval-truth/1`, whose arrays are in the engine's unit, too): `spec`, `seed`, `index`
 (the same orders as the fit file's index), the arrays `mu` (A x D), `sd_input`, `sd_run` (D), `corr_input`,
 `corr_run` (D x D), `q_run` (R x D), `v_input` (I x D), `bias`, `tau`, `sigma`, `sd_judge_input`,
 `sigma_pair` (J x D), `halo_target`, `halo_call`, `position`, `tie_width` (J), `family` (J x F x D) and
-`cuts` (D x Lmax-1, when a `levels` dimension exists); `reported` (true reported quality per arm and per
+`cuts` (D x Lmax-1, when a `levels` dimension exists), `unit` (D: the factor above, 1 where the data fix
+the unit; in a truth of schema 1, absent); `reported` (true reported quality per arm and per
 run); `relative` (pairs-only dimensions) and `units`; `binary_rates` and `pair_rates` (per judge, as
 simulated and, for binary, as expected); `overall` (the share of the overall quality the criteria
 explain); `value`; `human`; `items`; `counts`. A parameter that does not exist for a judge or dimension
@@ -88,13 +99,15 @@ from scipy.special import ndtr
 from ..output import EXIT_OK, emit_json
 from . import contracts as C
 from . import quality as Q
+from . import units as U
 
 TRUTH_FILE = "truth.json"
 ORDERS = ("both", "random", "a_first", "b_first", "unknown")
 SELECTIONS = ("uniform", "judge_scores")
 ITEM_FORMS = ("items", "count")
 ARRAYS = ("mu", "sd_input", "sd_run", "corr_input", "corr_run", "q_run", "v_input", "bias", "tau", "sigma",
-          "sd_judge_input", "sigma_pair", "halo_target", "halo_call", "position", "tie_width", "family", "cuts")
+          "sd_judge_input", "sigma_pair", "halo_target", "halo_call", "position", "tie_width", "family", "cuts",
+          "unit")
 VALUE_DRAWS = 200_000   # new (input, run) draws behind the true value and pass probability of an arm
 VALUE_SEED = 20260101   # their generator's seed: the population truth does not depend on --seed
 ROUND = 6               # decimals of a `linear` or `fraction` reading
@@ -830,6 +843,18 @@ def generate(spec: dict, seed: int = 0, file: str = "spec.json") -> Simulated:
              for n, row in enumerate(pairs, 1)]
     value = spec.get("value")
 
+    # truth.json states binary and pairs-only dimensions in the anchors' total noise of one reading, the
+    # unit the fit file reports them in (units.py). The spec and every reading above are in the engine's.
+    units = _units(spec, dims, scored, paired)
+    unit = _unit_factor(units, judge_ids, dim_ids, sigma, tau, sd_judge_input, sigma_pair)
+    # overall and value are decisions' figures: the readers compute them in the engine's unit
+    fitted = {"mu": mu, "q": q, "cov_input": Q.covariance(sd_input, corr_input),
+              "cov_run": Q.covariance(sd_run, corr_run)}
+    mu, q, v, sd_input, sd_run = mu / unit, q / unit, v / unit, sd_input / unit, sd_run / unit
+    bias, tau, sigma, sd_judge_input, sigma_pair = (x / unit for x in (bias, tau, sigma, sd_judge_input, sigma_pair))
+    family = family / unit
+    cov_input, cov_run = Q.covariance(sd_input, corr_input), Q.covariance(sd_run, corr_run)
+
     index = {"arms": arm_ids,
              "dimensions": [{"id": dim["id"], "step": dim["step"], "component": dim["component"], "kind": kinds[d],
                              "cuts": [float(x) for x in Q.fixed_cuts(len(dim["scale"]["levels"]))]
@@ -841,27 +866,50 @@ def generate(spec: dict, seed: int = 0, file: str = "spec.json") -> Simulated:
                    "mu": mu, "sd_input": sd_input, "sd_run": sd_run, "corr_input": corr_input, "corr_run": corr_run,
                    "q_run": q, "v_input": v, "bias": bias, "tau": tau, "sigma": sigma,
                    "sd_judge_input": sd_judge_input, "sigma_pair": sigma_pair, "halo_target": halo_target,
-                   "halo_call": halo_call, "position": position, "tie_width": tie_width, "family": family}
+                   "halo_call": halo_call, "position": position, "tie_width": tie_width, "family": family,
+                   "unit": unit}
     if cuts.shape[1]:
         truth["cuts"] = cuts
     truth["reported"] = {"arms": np.stack([Q.arm_reported(mu[:, d], total_sd[d], kinds[d]) for d in range(D)], axis=1),
                          "runs": Q.reported_all(q, kinds)}
     truth["relative"] = relative
-    truth["units"] = _units(spec, dims, scored, paired)
+    truth["units"] = units
     truth["binary_rates"] = _binary_rates(binary_log, q, centre, truths, judge_ids, dim_ids)
     truth["pair_rates"] = [{"judge": judge_ids[j], "dimension": dim_ids[d], "n": len(log),
                             "tie_rate": sum(verdict == "tie" for verdict, _ in log) / len(log),
                             "picks_higher": sum(verdict == ("a" if gap > 0 else "b") for verdict, gap in log) / len(log)}
                            for (j, d), log in sorted(pair_log.items())]
-    truth["overall"] = _overall_truth(rubric, dims, cov_input, cov_run, mu, value)
-    truth["value"] = None if value is None else _value_truth(value, dims, relative, mu, cov_input, cov_run, q,
-                                                             run_arm, arm_ids)
+    truth["overall"] = _overall_truth(rubric, dims, fitted["cov_input"], fitted["cov_run"], fitted["mu"], value)
+    truth["value"] = None if value is None else _value_truth(value, dims, relative, fitted["mu"], fitted["cov_input"],
+                                                             fitted["cov_run"], fitted["q"], run_arm, arm_ids)
     truth["human"] = human_truth
     truth["items"] = item_truth
     truth["counts"] = {"inputs": I, "arms": A, "runs": R, "dimensions": D, "judges": J, "readings": len(scores),
                        "calls": tally["calls"], "pairs": len(pairs), "items": len(items),
                        "clipped": int(tally["clipped"])}
     return Simulated(spec, seed, rubric, judges, value, runs, scores, pairs, items, _clean(truth))
+
+
+def _unit_factor(units: list[dict], judge_ids: list[str], dim_ids: list[str], sigma: np.ndarray, tau: np.ndarray,
+                 sd_judge_input: np.ndarray, sigma_pair: np.ndarray) -> np.ndarray:
+    """`[D]`: the anchors' total noise of one reading in the engine's unit (`units.factor`), 1 where the data
+    fix the unit. Sets `unit` and `factor` on each entry of `units`. A judge-by-input sd the spec does not
+    give counts as 0."""
+    J, D = len(judge_ids), len(dim_ids)
+    sigma_w, pair_w = np.zeros((J, D)), np.zeros((J, D))
+    binary, pairs_only = np.zeros(D, dtype=bool), np.zeros(D, dtype=bool)
+    for row in units:
+        d = dim_ids.index(row["dimension"])
+        weights, mask = (sigma_w, binary) if row["rule"] == "binary" else (pair_w, pairs_only)
+        mask[d] = True
+        for name in row["judges"]:
+            weights[judge_ids.index(name), d] = 1.0 / len(row["judges"])
+    noise = {"sigma": sigma, "tau": tau, "sd_judge_input": np.nan_to_num(sd_judge_input), "sigma_pair": sigma_pair}
+    unit = U.factor(noise, sigma_w, pair_w, binary, pairs_only)
+    for row in units:
+        row["unit"] = "total_noise" if row["rule"] == "binary" else "total_pair_noise"
+        row["factor"] = float(unit[dim_ids.index(row["dimension"])])
+    return unit
 
 
 def _units(spec: dict, dims: list[dict], scored: set, paired: set) -> list[dict]:
@@ -1060,14 +1108,21 @@ def example_spec() -> dict:
 # Files
 
 def read_truth(path: str | os.PathLike) -> dict:
-    """Read `truth.json`. The arrays named in `ARRAYS` come back as numpy arrays, null as NaN."""
+    """Read `truth.json`. The arrays named in `ARRAYS` come back as numpy arrays, null as NaN.
+
+    A truth of schema 1 is read as it is: its arrays are in the engine's unit, so each entry of `units`
+    gets `unit` `call_noise` or `pair_noise` and a null `factor`. `simulate(spec, seed)` gives the same
+    study with its truth in the reported unit."""
     path = Path(path)
     obj = C.load_json(path)
     found = obj.get("schema") if isinstance(obj, dict) else None
-    if found != C.SCHEMA_TRUTH:
+    if found not in C.SCHEMA_TRUTH_READ:
         raise C.ContractError(path.name, "schema", "missing" if found is None else f'unknown schema "{found}"',
                               f'this stage reads "{C.SCHEMA_TRUTH}"',
                               "missing_schema" if found is None else "unknown_schema")
+    if found != C.SCHEMA_TRUTH:
+        for row in obj.get("units") or []:
+            row["unit"], row["factor"] = ("call_noise" if row["rule"] == "binary" else "pair_noise"), None
     for name in ARRAYS:
         if name in obj:
             obj[name] = np.array(obj[name], dtype=float)

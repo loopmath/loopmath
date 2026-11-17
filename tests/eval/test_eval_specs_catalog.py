@@ -134,7 +134,9 @@ def test_cheap_vs_strong_judge_differ_in_every_error_term_and_in_cost():
 def test_binary_checks_are_on_the_anchor_unit_with_a_lenient_cheap_judge():
     sim = sim_of("binary-checks")
     assert set(kinds_of(sim).values()) == {"binary"} and len(kinds_of(sim)) == 3
-    assert array(sim, "sigma")[0].tolist() == [1.0, 1.0, 1.0]
+    # The spec sets the reviewer's call noise to 1 and tau to 0.5; truth.json is in its total noise sqrt(1.25).
+    assert np.allclose(array(sim, "sigma")[0], 1.0 / np.sqrt(1.25), rtol=1e-15, atol=0)
+    assert np.allclose(np.hypot(array(sim, "sigma")[0], array(sim, "tau")[0]), 1.0, rtol=1e-15, atol=0)
     assert [unit["rule"] for unit in sim.truth["units"]] == ["binary"] * 3
     rates = {(row["judge"], row["dimension"]): row for row in sim.truth["binary_rates"]}
     assert len(rates) == 9
@@ -221,9 +223,14 @@ def test_pairs_has_one_dimension_with_scores_and_pairs_and_one_with_pairs_only()
     assert {row["shown_first"] for row in sim.pairs} == {"a", "b"} and {row["verdict"] for row in sim.pairs} == {
         "a", "b", "tie"}
     d = place(sim, dimension="final/overall")
-    assert abs(array(sim, "mu")[:, d].sum()) < 1e-9 and array(sim, "sigma_pair")[0, d] == 1.0
+    # The spec sets the reviewer's sigma_pair to 1 and tau to 0.4; truth.json is in its total noise of one
+    # comparison, sqrt(1 + 2 x 0.4^2).
+    assert abs(array(sim, "mu")[:, d].sum()) < 1e-9
+    assert array(sim, "sigma_pair")[0, d] == pytest.approx(1.0 / np.sqrt(1.32), rel=1e-15)
+    assert np.sqrt(array(sim, "sigma_pair")[0, d] ** 2 + 2 * array(sim, "tau")[0, d] ** 2) == pytest.approx(1.0)
     assert sim.truth["units"] == [{"dimension": "final/overall", "rule": "pairs_only", "parameter": "sigma_pair",
-                                   "judges": ["reviewer"]}]
+                                   "judges": ["reviewer"], "unit": "total_pair_noise",
+                                   "factor": pytest.approx(np.sqrt(1.32), rel=1e-15)}]
     # Each judge compares on one dimension, so its tie width and position bias have one unit.
     per_judge: dict[str, set] = {}
     for row in sim.pairs:

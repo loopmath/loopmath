@@ -29,6 +29,13 @@ With `--fit` it adds a rubric health report, computed per posterior draw (stats 
 
 Figures whose term the design does not identify are null and listed as not measured. The command never
 proposes rubric text and never changes a file.
+
+Units. The health report reads the draws in the unit the engine fitted them in (`units.in_fitted_unit`),
+so a flag and a rank are the same for a fit file of either schema. On a relative dimension the spread and
+the arms' quality are latent, and so are the anchors' distances on every dimension: they are in that unit
+(`dimensions[].unit.fitted_in`), which the 0.05 spread threshold and the ranks read. A unit that differs
+from draw to draw would otherwise change a posterior mean, and with it a flag or a rank, though no draw
+changes its order.
 """
 
 from __future__ import annotations
@@ -144,8 +151,9 @@ def health(fit: Any, value: dict | None = None) -> dict:
 
     from . import fitfile as F
     from . import quality as Q
+    from .units import in_fitted_unit
 
-    draws, dims = fit.draws, fit.dimensions
+    draws, dims = in_fitted_unit(fit.draws), fit.dimensions
     kinds = [dim["scale"]["kind"] for dim in dims]
     ids = [dim["id"] for dim in dims]
     A = len(fit.arms)

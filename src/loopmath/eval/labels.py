@@ -70,6 +70,10 @@ covariance
 What the approximation leaves out: a label also teaches the judges' biases and family effects, and that
 part of its worth is not counted. The uniform share below is the guard.
 
+Every moment above is taken over the draws in the unit the engine fitted them in (`units.in_fitted_unit`).
+The fit file reports `binary` and pairs-only dimensions in a unit whose size differs from draw to draw,
+and moments over draws would move with it; this way a plan is the same whichever unit the file reports.
+
 The four scores of an assignment (variances are in units of the component's spread across runs, the
 diagonal of `Sigma_input + Sigma_run`, so 1 means "the judges tell nothing"):
 
@@ -150,6 +154,7 @@ from ..output import EXIT_OK, emit_json
 from . import contracts as C
 from . import fitfile as F
 from . import quality as Q
+from .units import in_fitted_unit
 
 REPORT_SCHEMA = "loopmath.eval-labels-next/1"
 COMMAND = "labels next"
@@ -453,7 +458,9 @@ class Model:
     def __init__(self, fit: F.Fit, spec: Q.ValueSpec | None, reviewer: int, seed: int = 0) -> None:
         # `seed` fixes the normal draws of the scores. It is not the plan's seed: the scores of a fit do
         # not change with `--seed`, only the draw does.
-        draws = fit.draws
+        # The scores are moments over the draws, which a unit that differs per draw would move: they are
+        # computed in the engine's unit, so a plan does not depend on the unit the file reports.
+        draws = in_fitted_unit(fit.draws)
         mu = draws["mu"]
         self.fit, self.spec = fit, spec
         S, A, _ = mu.shape
@@ -638,8 +645,9 @@ def arm_values(fit: F.Fit, spec: Q.ValueSpec, seed: int = 0) -> np.ndarray:
 
     Without gates it is `w'E[m]` in closed form. With gates it is the mean of `V(q)` over `NEW_RUNS`
     new runs, `q ~ N(mu_arm, Sigma_input + Sigma_run)`, from one fixed set of normal draws shared by
-    every arm and every posterior draw."""
-    draws = fit.draws
+    every arm and every posterior draw. They are drawn in the engine's unit, as the scores are: the
+    eigenvector root below is not a rescaling of itself when a dimension's unit changes per draw."""
+    draws = in_fitted_unit(fit.draws)
     need = sorted(set(np.flatnonzero(spec.weights).tolist()) | {d for d, _ in spec.gates})
     mu = draws["mu"][:, :, need]
     sd_input, sd_run = draws["sd_input"][:, need], draws["sd_run"][:, need]

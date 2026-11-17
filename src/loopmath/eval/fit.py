@@ -5,9 +5,11 @@
 1. `model.build` reads the study and prints the identification report. With `--check-only` it stops there.
 2. The engine samples (`engine_pymc.sample`). Without the [bayes] extra the command prints the install
    line, returns 1 and writes nothing.
-3. The draws are thinned to `--keep-draws` (every chain keeps the same evenly spaced draws), a parameter
-   that does not exist is set to NaN (each NaN has a term in state `absent` with its reason), and
-   `fitfile.assemble` and `fitfile.write_fit` write `fit.json` and its draws.
+3. The draws are thinned to `--keep-draws` (every chain keeps the same evenly spaced draws), `binary` and
+   pairs-only dimensions are put in the reported unit, the anchors' total noise of one reading (`units.py`;
+   one step for every engine), a parameter that does not exist is set to NaN (each NaN has a term in
+   state `absent` with its reason), and `fitfile.assemble` and `fitfile.write_fit` write `fit.json` and
+   its draws.
 
 Saved draws. Every later command reads its intervals from the saved draws, so `--keep-draws` below
 `MIN_KEEP_DRAWS` is refused. A 90% interval ends at the 5% and 95% points of the draws: with 400
@@ -49,8 +51,9 @@ from ..output import EXIT_OK, EXIT_USER, emit_json
 from . import contracts as C
 from . import fitfile as F
 from . import model as M
+from . import units as U
 
-OUTPUT_SCHEMA = "loopmath.eval-fit-report/1"   # what `eval fit --json` prints; the fit file is loopmath.eval-fit/1
+OUTPUT_SCHEMA = "loopmath.eval-fit-report/1"   # what `eval fit --json` prints; the fit file is loopmath.eval-fit/2
 RHAT_MAX = 1.05
 ESS_MIN = 100.0
 DIVERGENT_SHARE = 0.01
@@ -294,6 +297,7 @@ def fit_design(design: M.Design, *, seed: int = 0, draws: int | None = None, cha
     raw = result["draws"]
     first = np.asarray(raw["mu"])
     kept = thin(raw, keep_draws)   # the diagnostics describe these draws, the ones the file holds
+    kept = U.for_design(design, kept)   # in the reported unit, as the file holds them, with the `unit` draws
     checked = {**existing(design), "halo_call": design.masks["panel"]}   # elsewhere it is 0 by definition
     clusters = None
     if result.get("theta_point") is not None:   # draws that share a theta point: thinned with the draws
@@ -316,8 +320,18 @@ def fit_design(design: M.Design, *, seed: int = 0, draws: int | None = None, cha
                       terms=design.terms, anchor=design.anchor, diagnostics=diagnostics, inputs=inputs,
                       options=full_options, engine={"name": engine.NAME, "version": result["version"]}, seed=seed,
                       components=design.components, counts=design.counts, judge_counts=design.judge_counts,
-                      readings=unpooled(design, final), notes=design.notes, relative=design.relative)
+                      readings=unpooled(design, final), notes=design.notes, relative=design.relative,
+                      units=U.records(design.dims, design.relative, unit_judges(design), final["unit"]))
     return meta, final
+
+
+def unit_judges(design: M.Design) -> list[list[str]]:
+    """Per dimension, the judges whose noise is its unit: the engine's `sigma_w` on a `binary` dimension
+    with readings, `pair_w` on a pairs-only one, none elsewhere."""
+    data, ids = design.data, design.index["judges"]
+    by_sigma, by_pair = U.unit_judges(data["sigma_w"], ids), U.unit_judges(data["pair_w"], ids)
+    return [by_pair[d] if data["pairs_only"][d] else by_sigma[d] if data["sigma_fixed"][d] else []
+            for d in range(data["D"])]
 
 
 def _positive(value: Any, option: str, least: int = 1) -> None:
