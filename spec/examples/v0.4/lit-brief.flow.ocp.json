@@ -3,7 +3,7 @@
   "kind": "flow",
   "producer": {
     "name": "loopmath",
-    "version": "0.4.3",
+    "version": "0.4.4",
     "capabilities": {
       "flow": true,
       "configuration": true

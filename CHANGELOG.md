@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.4 (2026-11-16)
 
 This release adds `loopmath eval` (experimental). Everything else is 0.4.3's.
 
