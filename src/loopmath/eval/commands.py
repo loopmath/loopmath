@@ -36,7 +36,7 @@ from ..output import EXIT_NOT_IMPLEMENTED, EXIT_USER
 from .contracts import ContractError
 
 EXPERIMENTAL = "experimental: "
-GROUP_HELP = EXPERIMENTAL + "read rubric scores from judges and reviewers: judge noise, value, next labels"
+GROUP_HELP = EXPERIMENTAL + "read rubric scores from judges and people: judge noise, value, next labels"
 MODULES = ("scores", "simulate", "fit", "judges", "rubric", "value", "steps", "labels")
 COMMANDS = ("scores import", "scores check", "scores add", "scores export", "simulate", "fit", "judges",
             "rubric check", "value", "steps", "labels next")
