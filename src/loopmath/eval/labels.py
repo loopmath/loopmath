@@ -6,7 +6,9 @@ reads back.
 
 Blind by construction: no plan, form or printed output holds an arm, a model name or a judge score. The
 options record `--arms` as a count and a digest only. Run ids and refs come from the user's run records
-as they are, so a warning counts those that spell out an arm, a model id or a model family.
+as they are, so the command refuses, and writes nothing, when a candidate's run id or ref spells out an
+arm, a model id or a model family. One exception: when the study's run records mark every candidate run
+as simulated, the plan is written and a note says it is not blind. One real run keeps the refusal.
 
 Candidates
 ----------
@@ -21,8 +23,10 @@ Pilot mode
 A random sample on the full rubric, with no model quantity. Candidates are stratified by step, arm and
 judge score band (thirds of the plain mean of the judges' readings, ranked per component), then drawn by
 systematic sampling with a random start over the strata in turn. Every candidate has the same inclusion
-probability `n / N`, and every stratum gets its proportional share to within one. Reads a fit that did
-not converge.
+probability `n / N`, and every stratum gets its proportional share to within one. With a minutes budget
+the candidates are grouped by their minutes and each group gets a fixed number of draws, so every plan
+spends the same minutes; the probability is then one per group, and the groups differ by rounding only.
+Reads a fit that did not converge.
 
 Active mode
 -----------
@@ -36,24 +40,30 @@ runs of one input touch the rest of the study only through the arm means,
 
     Cov(mu, q_B) ~= S[:, B] T_B^-1 C_B
 
-with `C_B` the covariance of `q_B` given the arm means: `P_B` (first clipped to lie between 0 and `T_B`)
-less the part that is the arm means' own uncertainty, `C_B = P_B - C_B T_B^-1 S[B, B] T_B^-1 C_B`.
+with `C_B` the covariance of `q_B` given the arm means: `P_B` (first brought between 0 and
+`T_B + S[B, B]`) less the part that is the arm means' own uncertainty, `C_B + C_B W C_B = P_B` with
+`W = T_B^-1 S[B, B] T_B^-1`. It is solved in closed form (`given_means`), which gives a positive
+semidefinite `C_B`, never above `P_B`, then kept under `T_B`. With `G = C_B T_B^-1` this is the joint
+normal law `q_B = G mu_B + rest`, `Var(rest) = C_B`, so the step below is never larger than the posterior
+covariance of the arm means, and the command refuses if a computed step breaks that bound.
 
 A label reads linear parts of `q_B` with the reviewer's own noise: `y = L q_B + e`, `e ~ N(0, N)`, with
 `N = tau^2 + sigma^2` of the reviewer per component (for a pair `2 tau^2 + sigma_pair^2`, on the
 difference of the two outputs). Reading `y` moves the posterior mean of `mu` by a normal step with
 covariance
 
-    M = Cov(mu, y) Var(y)^-1 Cov(y, mu),      Var(y) = L P_B L' + N
+    M = Cov(mu, y) Var(y)^-1 Cov(y, mu),      Var(y) = L (C_B + G S[B, B] G') L' + N
 
 - With a value file, the arm values `V_a` per draw are computed as `eval value` defines them (closed
   form without gates, a fixed set of new runs with gates). Their slope on the arm's means is a least
   squares fit across the draws, so the step in arm values is normal with covariance `Omega = b M b'`.
   The **fall in decision loss** is the knowledge-gradient step `E[max_a (V_a + step_a)] - max_a V_a`,
   computed in closed form as the sum, over every arm but the one that looks best now, of the expected
-  gain from switching to it (exact with two arms, an upper bound with more, no sampling noise). Under
-  `best_under_cost`, arms over the cost cap cannot be picked. The other objectives are read as "pick the
-  arm of highest value".
+  gain from switching to it (exact with two arms, an upper bound with more, no sampling noise), and
+  never more than the decision loss there is: the value expected to be lost by picking the arm that
+  looks best now. Under `best_under_cost` only arms under the cost cap can be picked; the command
+  refuses when no arm is, or when an arm has no cost. The objectives `cheapest_within_margin` and
+  `cost_per_pass` are refused in active mode: their loss is not built.
 - Without a value file, the fall is the **fall in the total variance of the arm means** on the reported
   scale, `trace(J M J')`, with `J` the slope of reported quality on the mean.
 
@@ -70,28 +80,43 @@ diagonal of `Sigma_input + Sigma_run`, so 1 means "the judges tell nothing"):
 - `per_minute`: the fall from the whole offer divided by its minutes. Paired targets (the runs of the
   arms on one input) are one offer, drawn together, and share this figure. An offer starts from every
   arm's target on the input and leaves one out at a time while that raises its fall per minute: arms
-  still in the running stay together, and a target left out is asked only under the uniform share, with
-  that share as its inclusion probability.
+  still in the running stay together, and a target left out is asked only by the uniform draw.
 
 A component of a score assignment is dropped when its conditional variance given the other components
 is under `DROP_BELOW`: with the others labelled, a human adds almost nothing on it. The smallest goes
 first. A `human_only` component is never dropped, and one component always stays.
 
-Sampling. Offers are drawn without replacement by systematic sampling in random order. An offer's
-weight is the square root of `per_minute`, floored at `FLOOR` times the mean weight. Its inclusion
-probability is `k x ((1 - u) x weight share + u / N)`, capped at 1, with `u` the uniform share and `k`
-the number of offers the budget pays for. So `u x k / N` of every offer's probability is blind to the
-scores: a drawn offer is marked `uniform` with the chance that part has in its probability, else
-`active`. The count of `uniform` draws is `u` of the offers drawn on average, not exactly. A `uniform`
-draw asks for the full rubric on every target of the input: the components dropped from a target, and
-the targets left out of the offer, come as assignments of their own, with the uniform part as inclusion
-probability. So a recorded probability is exact, and holds for every component its assignment asks.
-Every assignment of an active plan also records the uniform part as `ext.uniform_probability`.
+Sampling. Two independent draws, and no drawn plan is over the budget.
+
+- The uniform draw: a simple random sample of single candidates, blind to the scores, each asked on the
+  full rubric. Its size is fixed: the uniform share `u` of the budget, at least one draw when `u > 0`
+  and the budget pays for it. Every candidate has the same probability `p_u` under it.
+- The draw by the scores: whole offers, without replacement. An offer's weight is the square root of
+  `per_minute`, floored at `FLOOR` times the mean weight. Offers are grouped by what they cost (their
+  assignments, or their minutes), every group gets a fixed number of draws (`allocate`), and within a
+  group the draw is systematic in random order with probabilities in proportion to the weights. Its
+  budget is what the uniform draw leaves. With a count budget that depends on how many of the uniform
+  picks take two assignments (see below), so the layout is made for every such number and the
+  probability an offer has under the scores is summed over them.
+
+A candidate is asked when either draw picks it, and its assignment records exactly that probability:
+`p_u + P(not in the uniform draw, and drawn by the scores)`. It is of kind `uniform` when the uniform
+draw picked it, else `active`. What only the uniform draw asks (the components dropped from a target, and
+the targets left out of an offer) has `p_u` as its probability; dropped components come as an assignment
+of their own, so a recorded probability holds for every component its assignment asks. Every assignment
+of an active plan also records `p_u` as `ext.uniform_probability`.
+
+Offers are whole, so a plan can come in under the budget: by less than the cost of one offer, and by the
+targets both draws picked (asked once). With a minutes budget the uniform draw is sized for its dearest
+candidates, so what cheaper picks leave is not spent either.
 
 Both modes: `--repeat-share` of the budget goes to repeats (targets this reviewer scored before, a
 simple random sample) and, with `--overlap ID`, to overlaps (the second reviewer on targets drawn in
-this plan). With `--minutes`, the expected minutes of the plan are within the budget; one drawn plan can
-be over or under by a few assignments.
+this plan). Their number is what their share pays for whichever are drawn.
+
+Assignment ids carry a digest of every input (the fit, the draws, the value file, and `pairs.jsonl` and
+`items.jsonl` of the study folder when they are read), the options, the seed and the assignments
+themselves.
 """
 
 from __future__ import annotations
@@ -101,6 +126,7 @@ import csv
 import hashlib
 import io
 import math
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -294,6 +320,29 @@ def _cov(x: np.ndarray) -> np.ndarray:
     return x.T @ x / max(len(x), 1)
 
 
+def _bounded(matrix: np.ndarray, bound: np.ndarray) -> np.ndarray:
+    """`matrix` made symmetric and brought between 0 and `bound` (positive definite) in the matrix order."""
+    chol = np.linalg.cholesky(bound)
+    white = np.linalg.solve(chol, np.linalg.solve(chol, (matrix + matrix.T) / 2.0).T)
+    w, v = np.linalg.eigh((white + white.T) / 2.0)
+    return chol @ ((v * np.clip(w, 0.0, 1.0)) @ v.T) @ chol.T
+
+
+def given_means(p: np.ndarray, total: np.ndarray, own: np.ndarray) -> np.ndarray:
+    """The covariance `C` of runs' quality given the arm means, from `C + C W C = P`, `W = T^-1 S T^-1`.
+
+    Solved in closed form, with no iteration: `C = P^1/2 g(P^1/2 W P^1/2) P^1/2`, `g(z) = 2 / (1 + sqrt(1 + 4z))`
+    on the eigenvalues. `g` lies in (0, 1], so `C` is positive semidefinite and never above `P`. It is
+    then kept under `T`, the spread of the runs around their arm means before any reading."""
+    w, v = np.linalg.eigh((p + p.T) / 2.0)
+    root = (v * np.sqrt(np.clip(w, 0.0, None))) @ v.T
+    inner = np.linalg.solve(total, root)
+    z = inner.T @ own @ inner
+    w, v = np.linalg.eigh((z + z.T) / 2.0)
+    g = 2.0 / (1.0 + np.sqrt(1.0 + 4.0 * np.clip(w, 0.0, None)))
+    return _bounded(root @ ((v * g) @ v.T) @ root, total)
+
+
 def switch_gain(base: np.ndarray, step: np.ndarray) -> float:
     """The expected gain in value from labels that move the arm values by a normal step of covariance `step`.
 
@@ -350,6 +399,7 @@ class Model:
                                - Q.arm_reported(mean[:, u] - h, sd[u], fit.kinds[d])) / (2 * h)
                               for u, d in enumerate(self.use)], axis=1)
             self.left = slope.reshape(A * U)[:, None] * s_mu
+            self.prior = self.left * slope.reshape(A * U)[None, :]
         else:
             self.values = arm_values(fit, spec, seed)
             self.base = self.values.mean(axis=0)
@@ -359,16 +409,26 @@ class Model:
                 beta[a, a * U:(a + 1) * U] = np.linalg.lstsq(x - x.mean(axis=0), self.values[:, a] - self.base[a],
                                                              rcond=None)[0]
             self.left = beta @ s_mu
+            self.prior = self.left @ beta.T
             objective = spec.objective
+            if objective["kind"] not in ("best_value", "best_under_cost"):
+                raise _usage("--value", f'active mode does not score labels for the objective "{objective["kind"]}"',
+                             "use --mode pilot, or run active mode without --value (labels are then ranked by "
+                             "what they tell about the arm means)", "objective_not_scored")
             if objective["kind"] == "best_under_cost":
                 costs = [row.get("cost_usd") for row in fit["arms"]]
-                self.allowed = np.array([cost is None or cost <= objective["cost_cap_usd"] for cost in costs])
+                cap = objective["cost_cap_usd"]
+                if any(cost is None for cost in costs):
+                    raise _usage("--value", "an arm has no cost to hold against the cost cap",
+                                 "record cost_usd on its runs and fit again, or use --mode pilot", "no_cost")
+                self.allowed = np.array([cost <= cap for cost in costs])
                 if not self.allowed.any():
-                    self.allowed[:] = True
-                    self.note = "every arm is over the cost cap: the decision loss is read over all arms"
-            elif objective["kind"] != "best_value":
-                self.note = (f'the objective "{objective["kind"]}" is read as "pick the arm of highest value" '
-                             "when a label's worth is scored")
+                    raise _usage("--value", f"every arm costs more than the cost cap of {cap:g} USD, so no arm "
+                                 "can be picked", "raise objective.cost_cap_usd in the value file, or use "
+                                 "--mode pilot", "cost_cap_infeasible")
+            # E[max] is never under the max of the means: anything below 0 is rounding.
+            ok = self.allowed
+            self.loss = max(float(self.values[:, ok].max(axis=1).mean() - self.base[ok].max()), 0.0)
         self._blocks: dict[tuple, tuple] = {}
 
     def _reviewer_noise(self, draws: dict, reviewer: int, pair: bool = False) -> np.ndarray:
@@ -384,11 +444,10 @@ class Model:
         """The value expected to be lost by picking the arm that looks best now."""
         if self.values is None:
             return None
-        ok = self.allowed
-        return float(self.values[:, ok].max(axis=1).mean() - self.base[ok].max())
+        return self.loss
 
     def block(self, runs: Sequence[int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """`(P, clipped P, left x T^-1 P)` for the stacked quality of runs of one input."""
+        """`(P, the variance of q_B in the joint law used, left x T^-1 C)` for runs of one input."""
         key = tuple(runs)
         if key not in self._blocks:
             m, U = len(key), self.U
@@ -396,17 +455,14 @@ class Model:
             same = (self.run_input[list(key)][:, None] == self.run_input[list(key)][None, :]).astype(float)
             total = np.kron(same, self.t_input) + np.kron(np.eye(m), self.t_run)
             total = total + 1e-9 * (np.trace(total) / len(total) + 1e-12) * np.eye(len(total))
-            chol = np.linalg.cholesky(total)
-            white = np.linalg.solve(chol, np.linalg.solve(chol, raw).T)
-            w, v = np.linalg.eigh((white + white.T) / 2.0)
-            clipped = chol @ ((v * np.clip(w, 0.0, 1.0)) @ v.T) @ chol.T
             columns = [int(self.run_arm[r]) * U + u for r in key for u in range(U)]
-            # Given the arm means: P_B less the part that is the arm means' own uncertainty.
-            own, given = self.s_mu[np.ix_(columns, columns)], clipped
-            for _ in range(4):
-                pull = np.linalg.solve(total, given)
-                given = clipped - pull.T @ own @ pull
-            self._blocks[key] = (raw, clipped, self.left[:, columns] @ np.linalg.solve(total, given))
+            own = self.s_mu[np.ix_(columns, columns)]
+            # P_B lies between 0 and the spread of the runs plus the arm means' own uncertainty. Given
+            # the arm means it is C, and q_B = G mu_B + rest with G = C T^-1 and Var(rest) = C. That is a
+            # joint normal law of (mu, q_B), so no label moves the arm means by more than they are open.
+            given = given_means(_bounded(raw, total + own), total, own)
+            pull = np.linalg.solve(total, given)
+            self._blocks[key] = (raw, given + pull.T @ own @ pull, self.left[:, columns] @ pull)
         return self._blocks[key]
 
     def rows(self, runs: Sequence[int], offer: Offer) -> tuple[np.ndarray, np.ndarray]:
@@ -429,9 +485,16 @@ class Model:
         seen = L @ clipped @ L.T + np.diag(noise)
         hit = left @ L.T
         step = hit @ np.linalg.pinv(seen, hermitian=True) @ hit.T
+        size, room = np.diag(step), np.diag(self.prior)
+        if not np.isfinite(step).all() or (size < -1e-9 * (room.sum() + 1e-300)).any() \
+                or (size > room * (1.0 + 1e-6) + 1e-9 * room.sum()).any():
+            raise C.ContractError(self.fit.path.name, "draws",
+                                  "the posterior draws give no valid update for a label: its step in the arm "
+                                  "means is not between 0 and their posterior spread",
+                                  "use --mode pilot, or fit again with more draws", "invalid_update")
         if self.values is None:
-            return float(max(np.trace(step), 0.0))
-        return switch_gain(self.base[self.allowed], step[np.ix_(self.allowed, self.allowed)])
+            return float(min(max(np.trace(step), 0.0), np.trace(self.prior)))
+        return min(switch_gain(self.base[self.allowed], step[np.ix_(self.allowed, self.allowed)]), self.loss)
 
     def open_variance(self, offer: Offer) -> tuple[np.ndarray, np.ndarray]:
         """Per component of an offer, in units of the component's spread across runs: the posterior
@@ -560,42 +623,75 @@ def systematic(pi: np.ndarray, order: np.ndarray, rng: np.random.Generator) -> l
     return [int(order[min(n, len(order) - 1)]) for n in np.searchsorted(edges, points, side="right")]
 
 
-def draw(units: list[Unit], budget: float, cost: np.ndarray, cost_full: np.ndarray, mode: str, uniform_share: float,
-         rng: np.random.Generator) -> list[Unit]:
-    """Set every unit's inclusion probability for the budget and draw. Returns the drawn units.
+def allocate(cost: np.ndarray, base: np.ndarray,
+             budget: float) -> tuple[np.ndarray, dict[float, tuple[np.ndarray, int]]]:
+    """Inclusion probabilities in proportion to `base` for a draw that costs the same whatever comes up.
 
-    `cost` is what a unit takes from the budget, `cost_full` what it takes when it is marked `uniform`
-    and asks for the full rubric."""
-    N = len(units)
-    if mode == "pilot":
-        base = np.full(N, 1.0 / N)
-        order = np.array(sorted(rng.permutation(N).tolist(), key=lambda n: units[n].stratum), dtype=int)
-        share = 0.0
-    else:
-        weight = np.sqrt(np.maximum([unit.per_minute for unit in units], 0.0))
-        weight = weight / weight.sum() if weight.sum() > 0 else np.full(N, 1.0 / N)
-        weight = np.maximum(weight, FLOOR / N)
-        base = (1.0 - uniform_share) * weight / weight.sum() + uniform_share / N
-        order = rng.permutation(N)
-        share = uniform_share
-        for rank, n in enumerate(sorted(range(N), key=lambda n: (-units[n].per_minute, n)), 1):
-            units[n].rank = rank
-    def expected(k: int) -> tuple[np.ndarray, np.ndarray, float]:
-        pi = inclusion(base, k)
-        blind = np.minimum(share * k / N, pi)
-        return pi, blind, float(((pi - blind) * cost + blind * cost_full).sum())
-
+    Units are grouped by cost and each group gets a fixed number of draws: its share of the most draws
+    whose expected cost the budget pays for, rounded down, then one more draw at a time for the group
+    rounded down the most, while the budget pays for it; what is then left moves single draws to dearer
+    groups. Returns the exact inclusion probabilities and,
+    per cost, the positions of the group and its number of draws. Nothing here is random."""
+    N = len(cost)
+    pi = np.zeros(N)
     low, high = 0, N
-    while low < high:                      # the most offers whose expected cost the budget pays for
+    while low < high:
         k = (low + high + 1) // 2
-        if expected(k)[2] <= budget + 1e-9:
+        if float((inclusion(base, k) * cost).sum()) <= budget + 1e-9:
             low = k
         else:
             high = k - 1
-    pi, blind, _ = expected(low)
-    for n, unit in enumerate(units):
-        unit.p, unit.p_uniform = float(pi[n]), float(blind[n])
-    return [units[n] for n in systematic(pi, order, rng)]
+    want = inclusion(base, low) if low else np.zeros(N)
+    groups: dict[float, list[int]] = {}
+    for n in range(N):
+        groups.setdefault(round(float(cost[n]), 9), []).append(n)
+    take = {c: int(np.floor(want[idx].sum() + 1e-9)) for c, idx in groups.items()}
+    left = budget - sum(c * k for c, k in take.items())
+    while True:
+        room = [(float(want[idx].sum()) - take[c], -c) for c, idx in groups.items()
+                if take[c] < len(idx) and c <= left + 1e-9]
+        if not room:
+            break
+        c = -max(room)[1]
+        take[c] += 1
+        left -= c
+    while left > 1e-9:
+        # What is still left: move one draw to a dearer group when the budget pays for the difference.
+        moves = [(b - a, a, b) for a in groups for b in groups
+                 if take[a] and take[b] < len(groups[b]) and 1e-9 < b - a <= left + 1e-9]
+        if not moves:
+            break
+        _, a, b = max(moves)
+        take[a], take[b], left = take[a] - 1, take[b] + 1, left - (b - a)
+    for c, idx in groups.items():
+        if take[c]:
+            share = base[idx] if base[idx].sum() > 0 else np.ones(len(idx))
+            pi[idx] = inclusion(share, take[c])
+    return pi, {c: (np.array(idx, dtype=int), take[c]) for c, idx in groups.items()}
+
+
+def draw_groups(pi: np.ndarray, groups: dict[float, tuple[np.ndarray, int]], rng: np.random.Generator,
+                strata: Sequence[tuple] | None = None) -> list[int]:
+    """Draw what `allocate` laid out: a systematic draw within every cost group, in random order (in
+    random order within the strata in turn when `strata` is given)."""
+    drawn: list[int] = []
+    for c in sorted(groups):
+        idx, k = groups[c]
+        if k:
+            order = rng.permutation(len(idx))
+            if strata is not None:
+                order = np.array(sorted(order.tolist(), key=lambda n: strata[int(idx[n])]), dtype=int)
+            drawn += [int(idx[n]) for n in systematic(pi[idx], order, rng)]
+    return drawn
+
+
+def _ways(n: int, k: int) -> int:
+    return math.comb(n, k) if 0 <= k <= n else 0
+
+
+def worst_case_count(costs: Sequence[float], amount: float) -> int:
+    """How many of a pool the amount pays for whichever are drawn: the dearest ones are counted first."""
+    return int(np.searchsorted(np.cumsum(np.sort(np.asarray(costs, dtype=float))[::-1]), amount + 1e-9, side="right"))
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -634,12 +730,15 @@ def stale_warnings(fit: F.Fit, study: Path, strict: bool) -> list[str]:
     return changes
 
 
-def blind_warnings(fit: F.Fit, rows: Sequence[dict]) -> list[str]:
-    """Count the assignments whose run ids or refs spell out an arm, a model id or a model family."""
+def identifying(fit: F.Fit, offers: Sequence[Offer]) -> int:
+    """How many offers have a run id or a ref that spells out an arm, a model id or a model family.
+
+    A name of three or more characters counts wherever it appears in the text. A shorter name counts
+    when it is a whole word of the text (split at anything that is not a letter or a digit)."""
     words = {str(arm).lower() for arm in fit.arms} | {str(f).lower() for f in fit.index["families"]}
     for arm in fit["arms"]:
         words |= {str(step["model"]["id"]).lower() for step in arm.get("steps", [])}
-    words = {word for word in words if len(word) >= 3}
+    long, short = {word for word in words if len(word) >= 3}, {word for word in words if 0 < len(word) < 3}
 
     def texts(value: Any):
         if isinstance(value, dict):
@@ -648,14 +747,25 @@ def blind_warnings(fit: F.Fit, rows: Sequence[dict]) -> list[str]:
         elif isinstance(value, str):
             yield value.lower()
 
-    n = 0
-    for row in rows:
-        seen = [row[name]["run"].lower() for name in ("target", "a", "b") if name in row] + list(texts(row["refs"]))
-        n += any(word in text for text in seen for word in words)
-    if not n:
-        return []
-    return [f"{n} of {len(rows)} assignments have a run id or a ref that spells out an arm, a model id or a model "
-            "family: the plan is blind only when run ids and refs do not name the configuration"]
+    def names(text: str) -> bool:
+        return any(word in text for word in long) or bool(short & set(re.split(r"[^0-9a-z]+", text)))
+
+    return sum(any(names(text) for text in [str(fit.index["runs"][r]).lower() for r in offer.runs]
+                   + list(texts(offer.refs))) for offer in offers)
+
+
+def all_simulated(fit: F.Fit, study: Path, offers: Sequence[Offer]) -> bool:
+    """Whether the study's run records mark every run of the offers as simulated.
+
+    False when the study folder has no run records, when a run has no record there, or when any record
+    of a run says it is not simulated: one real run keeps the blind refusal."""
+    path = study / C.RUNS_FILE
+    if not path.is_file():
+        return False
+    marked: dict[str, bool] = {}
+    for row in C.read_lines(path, C.SCHEMA_RUNS):
+        marked[row["run"]] = marked.get(row["run"], True) and bool(row.get("simulated", False))
+    return all(marked.get(fit.index["runs"][r], False) for offer in offers for r in offer.runs)
 
 
 def _budget(args: argparse.Namespace) -> tuple[str, float]:
@@ -809,31 +919,26 @@ def build(args: argparse.Namespace) -> Result:
     if repeat_share > 0 and not (again or second):
         notes.append("no repeats or overlaps: this reviewer has scored no target yet and --overlap names no "
                      "second reviewer, so their share of the budget goes to the main draw")
+    # Blind or nothing: a run id or a ref that names the configuration would tell the reviewer the arm.
+    n_named = identifying(fit, offers + again)
+    simulated = n_named > 0 and all_simulated(fit, study, offers + again)
+    if simulated:
+        notes.append(f"the plan is not blind: the study is simulated, and {n_named} of {len(offers) + len(again)} "
+                     "candidates have a run id or a ref that spells out the configuration. With real runs this is "
+                     "refused")
+    elif n_named:
+        raise C.ContractError(fit.path.name, "runs", f"{n_named} of {len(offers) + len(again)} candidates have a run "
+                              "id or a ref that spells out an arm, a model id or a model family, so the plan "
+                              "would not be blind",
+                              "give the runs ids and refs that do not name the configuration (r001, outputs/r001), "
+                              "import the scores under those ids and fit again", "not_blind")
     by_count = unit_name == "n"
-    cost = np.array([len(unit.offers) if by_count else unit.minutes for unit in units], dtype=float)
-    cost_full = np.array([len(unit.offers + unit.rest) + sum(bool(offer.dropped) for offer in unit.offers)
-                          if by_count else
-                          sum(minutes_of(fit, offer.ask, full[id(offer)]) for offer in unit.offers + unit.rest)
-                          for unit in units], dtype=float)
-    drawn = draw(units, budget - extra, cost, cost_full, mode, uniform_share, rng)
-    if not drawn:
-        raise _usage("--" + unit_name, f"the budget of {budget:g} {'assignments' if unit_name == 'n' else 'minutes'} "
-                     "pays for no assignment", "raise the budget", "budget_too_small")
-
-    def count(pool: Sequence[Offer], amount: float) -> int:
-        """How many of `pool` the amount pays for."""
-        if not pool or amount <= 0:
-            return 0
-        if unit_name == "n":
-            return min(len(pool), int(round(amount)))
-        mean = float(np.mean([minutes_of(fit, offer.ask, offer.dims) for offer in pool]))
-        return min(len(pool), int(amount // mean))
-
+    main_budget = budget - extra
     groups: list[list[dict]] = []
     explain: dict[int, dict] = {}
 
     def record(offer: Offer, kind: str, p: float, who: str, unit: Unit | None = None,
-               asked: Sequence[int] | None = None) -> dict:
+               asked: Sequence[int] | None = None, p_scores: float | None = None) -> dict:
         asked = offer.dims if asked is None else list(asked)
         flip = bool(rng.integers(2)) if offer.ask == "pair" else False
         runs = offer.runs[::-1] if flip else offer.runs
@@ -852,31 +957,106 @@ def build(args: argparse.Namespace) -> Result:
                     "minutes": minutes_of(fit, offer.ask, asked), "refs": refs})
         if mode == "active" and unit is not None:
             row["ext"] = {"uniform_probability": unit.p_uniform}
-        explain[id(row)] = {"offer": offer, "unit": unit, "row": row, "extra": asked != offer.dims}
+        explain[id(row)] = {"offer": offer, "unit": unit, "row": row, "extra": asked != offer.dims,
+                            "p_scores": p_scores}
         return row
 
     main = []
-    for unit in drawn:
-        kind = "pilot"
-        if mode == "active":
-            kind = "uniform" if rng.random() < unit.p_uniform / unit.p else "active"
-        group = [(record(offer, kind, unit.p, reviewer, unit), offer) for offer in unit.offers]
-        if kind == "uniform":
-            # The full rubric on every target of the input. What the scores left out comes as assignments
-            # of its own, with the uniform part as inclusion probability: a recorded probability then
-            # holds for every component its assignment asks.
-            for offer in unit.offers:
-                if offer.dropped:
-                    others = [d for d in full[id(offer)] if d not in offer.dims]
-                    group.append((record(offer, kind, unit.p_uniform, reviewer, unit, others), offer))
-            group += [(record(offer, kind, unit.p_uniform, reviewer, unit, full[id(offer)]), offer)
-                      for offer in unit.rest]
-        groups.append([row for row, _ in group])
-        main += [(row, offer, unit) for row, offer in group]
+    n_uniform = 0
+    if mode == "pilot":
+        # One probability for every candidate of one cost. With a count budget that is every candidate.
+        cost = np.array([1.0 if by_count else unit.minutes for unit in units])
+        pi, laid = allocate(cost, np.full(len(units), 1.0 / len(units)), main_budget)
+        for n, unit in enumerate(units):
+            unit.p = float(pi[n])
+        for n in draw_groups(pi, laid, rng, [unit.stratum for unit in units]):
+            row = record(units[n].offers[0], "pilot", units[n].p, reviewer, units[n])
+            groups.append([row])
+            main.append((row, units[n].offers[0], units[n]))
+    else:
+        # The uniform draw: a simple random sample of single candidates, each on the full rubric. A
+        # candidate whose offer leaves components out comes as two assignments (what the scores ask, and
+        # the rest), so in a count budget it takes one assignment more.
+        split = {id(offer) for unit in units for offer in unit.offers if offer.dropped}
+        heavy = np.array([by_count and id(offer) in split for offer in offers])
+        N, M = len(offers), int(heavy.sum())
+        top = 1.0 if by_count else float(max(minutes_of(fit, offer.ask, full[id(offer)]) for offer in offers))
+        if uniform_share > 0:
+            each = top * (1.0 + M / N)
+            n_uniform = min(N, max(1, int(round(uniform_share * main_budget / each))))
+            while n_uniform and (n_uniform + min(M, n_uniform)) * top > main_budget + 1e-9:
+                n_uniform -= 1
+            if not n_uniform:
+                notes.append("the budget does not pay for one draw of the uniform share: no uniform assignment")
+        p_blind = n_uniform / N
+        weight = np.sqrt(np.maximum([unit.per_minute for unit in units], 0.0))
+        weight = weight / weight.sum() if weight.sum() > 0 else np.full(len(units), 1.0 / len(units))
+        weight = np.maximum(weight, FLOOR / len(units))
+        cost = np.array([len(unit.offers) if by_count else unit.minutes for unit in units], dtype=float)
+        # What the uniform draw leaves is the budget of the draw by the scores. With a count budget it
+        # depends on j, the number of two-assignment candidates the uniform draw picked, so the draw by
+        # the scores is laid out for every j, and a recorded probability is the sum over j.
+        most = min(M, n_uniform)
+        laid = [allocate(cost, weight / weight.sum(),
+                         0.0 if uniform_share >= 1 else main_budget - (n_uniform + j) * top)
+                for j in range(most + 1)]
+        for rank, n in enumerate(sorted(range(len(units)), key=lambda n: (-units[n].per_minute, n)), 1):
+            units[n].rank = rank
+        ways = _ways(N, n_uniform)
+        at = {id(offer): n for n, unit in enumerate(units) for offer in unit.offers}
+        p_scores = {}                                    # P(not in the uniform draw, and drawn by the scores)
+        for position, offer in enumerate(offers):
+            if id(offer) in at:
+                h = int(heavy[position])
+                p_scores[id(offer)] = float(sum(
+                    _ways(M - h, j) * _ways(N - M - (1 - h), n_uniform - j) / ways * laid[j][0][at[id(offer)]]
+                    for j in range(most + 1)))
+        for n, unit in enumerate(units):
+            unit.p, unit.p_uniform = float(laid[0][0][n]), p_blind
+        picks = sorted(rng.choice(N, size=n_uniform, replace=False).tolist()) if n_uniform else []
+        pi, groups_now = laid[int(heavy[picks].sum()) if picks else 0]
+        picked = draw_groups(pi, groups_now, rng)
+        blind = {id(offers[n]) for n in picks}
+        home = {id(offer): unit for unit in units for offer in unit.offers + unit.rest}
+        taken = {id(offer) for n in picked for offer in units[n].offers}
+        by_unit: dict[int, list] = {}
+        for offer in offers:
+            if id(offer) not in taken and id(offer) not in blind:
+                continue
+            unit, mine = home[id(offer)], p_scores.get(id(offer), 0.0)
+            either = p_blind + mine                      # asked when either draw picks it
+            given = mine / (1.0 - p_blind) if p_blind < 1 else 0.0
+            if id(offer) not in blind:
+                group = [record(offer, "active", either, reviewer, unit, p_scores=given)]
+            elif id(offer) in split:
+                # What the scores left out is asked under the uniform draw only: an assignment of its own,
+                # so a recorded probability holds for every component its assignment asks.
+                others = [d for d in full[id(offer)] if d not in offer.dims]
+                group = [record(offer, "uniform", either, reviewer, unit, p_scores=given),
+                         record(offer, "uniform", p_blind, reviewer, unit, others, p_scores=0.0)]
+            else:
+                group = [record(offer, "uniform", either, reviewer, unit, full[id(offer)], p_scores=given)]
+            key = id(unit) if id(offer) in taken else id(offer)
+            by_unit.setdefault(key, []).extend(group)
+            main += [(row, offer, unit) for row in group]
+        groups += list(by_unit.values())
+    if not main:
+        raise _usage("--" + unit_name, f"the budget of {budget:g} {'assignments' if unit_name == 'n' else 'minutes'} "
+                     "pays for no assignment", "raise the budget", "budget_too_small")
+
+    def count(pool: Sequence[Offer], amount: float) -> int:
+        """How many of `pool` the amount pays for, whichever are drawn."""
+        if not pool or amount <= 0:
+            return 0
+        if unit_name == "n":
+            return min(len(pool), int(round(amount)))
+        return min(len(pool), worst_case_count([minutes_of(fit, offer.ask, offer.dims) for offer in pool], amount))
+
     pool = [one for one in main if second and not any(
         _calls(by_run[(r, one[1].step)].read.get(d, {}), second) for r in one[1].runs for d in one[1].dims)]
     n_overlap = count([offer for _, offer, _ in pool], extra / 2 if again else extra)
-    spent = n_overlap if unit_name == "n" else sum(row["minutes"] for row, _, _ in pool[:n_overlap])
+    spent = n_overlap if unit_name == "n" else (
+        float(np.sort([row["minutes"] for row, _, _ in pool])[::-1][:n_overlap].sum()) if n_overlap else 0.0)
     n_repeat = count(again, extra - spent)
     for n in sorted(rng.choice(len(again), size=n_repeat, replace=False).tolist()) if n_repeat else []:
         groups.append([record(again[n], "repeat", n_repeat / len(again), reviewer)])
@@ -884,7 +1064,7 @@ def build(args: argparse.Namespace) -> Result:
         row, offer, unit = pool[n]
         copy = dict(row, reviewer=second, kind="overlap", scores=dict.fromkeys(C.LABEL_SCORES),
                     inclusion_probability=float(row["inclusion_probability"] * n_overlap / len(pool)))
-        explain[id(copy)] = {"offer": offer, "unit": unit, "row": copy, "extra": True}
+        explain[id(copy)] = {"offer": offer, "unit": unit, "row": copy, "extra": True, "p_scores": None}
         groups.append([copy])
 
     # Order and ids: groups in random order, so the plan's order says nothing about arm or stratum.
@@ -896,10 +1076,19 @@ def build(args: argparse.Namespace) -> Result:
     files: dict[str, Any] = {"fit": fit.path, "draws": fit.path.with_name(fit["draws"]["file"])}
     if value_path is not None:
         files["value"] = value_path
+    # Every file that decides the candidates or the form is in the provenance and in the ids.
+    if ask in ("pairs", "auto") and (study / C.PAIRS_FILE).is_file():
+        files["pairs"] = study / C.PAIRS_FILE
+    if (study / C.ITEMS_FILE).is_file():
+        files["items"] = study / C.ITEMS_FILE
+    if simulated:
+        files["runs"] = study / C.RUNS_FILE          # its simulated marks let the plan through
     inputs = C.input_digests(files)
-    prefix = "lb" + _digest(inputs, options, seed)[:6]
     rows = [groups[g][n] for g in rng.permutation(len(groups)).tolist()
             for n in rng.permutation(len(groups[g])).tolist()]
+    # The ids carry a digest of the inputs, the options, the seed and the assignments themselves: two
+    # plans share an id only when they ask the same things in the same order.
+    prefix = "lb" + _digest(inputs, options, seed, rows)[:6]
     together: dict[int, list[str]] = {}
     for n, row in enumerate(rows, 1):
         entry = explain[id(row)]
@@ -909,7 +1098,6 @@ def build(args: argparse.Namespace) -> Result:
         rows[n - 1] = {"id": entry["id"], **row}
     plan = C.validate_labels({"schema": C.SCHEMA_LABELS, "inputs": inputs, "options": options, "seed": seed,
                               "mode": mode, "reviewer": reviewer, "assignments": rows})
-    warnings += blind_warnings(fit, plan["assignments"])
 
     by_id = {}
     for entry in explain.values():
@@ -919,7 +1107,8 @@ def build(args: argparse.Namespace) -> Result:
                "scores": row["scores"], "minutes": row["minutes"],
                "inclusion_probability": row["inclusion_probability"]}
         if unit is not None:
-            one.update({"candidates": len(units), "offer_minutes": unit.minutes, "offer_probability": unit.p,
+            one.update({"candidates": len(units), "offer_minutes": unit.minutes,
+                        "offer_probability": unit.p if entry["p_scores"] is None else entry["p_scores"],
                         "uniform_part": unit.p_uniform, "rank": unit.rank or None,
                         "offered_with": [x for x in together.get(id(unit), []) if x != entry["id"]]})
         by_id[entry["id"]] = one
@@ -927,7 +1116,7 @@ def build(args: argparse.Namespace) -> Result:
     kinds = {kind: sum(row["kind"] == kind for row in plan["assignments"]) for kind in C.ASSIGNMENT_KINDS}
     report = {"experimental": True, "mode": mode, "ask": ask, "reviewer": reviewer, "seed": seed, "options": options,
               "candidates": {"offers": len(units), "assignments": len(offers), "repeats": len(again),
-                             "left_to_uniform": sum(len(unit.rest) for unit in units)},
+                             "left_to_uniform": sum(len(unit.rest) for unit in units), "uniform_draws": n_uniform},
               "assignments": len(plan["assignments"]), "kinds": {k: v for k, v in kinds.items() if v},
               "minutes": float(sum(row["minutes"] for row in plan["assignments"])),
               "budget": {"unit": "assignments" if unit_name == "n" else "minutes", "amount": budget},
@@ -1015,10 +1204,11 @@ def explain_lines(one: dict) -> list[str]:
                      "the others")
         lines.append(f"per_minute {_fmt(scores['per_minute'])}: the fall from the whole offer per minute")
     if one.get("offer_probability") is not None:
-        lines.append(f"offer probability {one['offer_probability']:.4g}, of which {one['uniform_part']:.4g} is the "
-                     "uniform share every candidate has")
+        lines.append(f"offer probability {one['offer_probability']:.4g} under the scores, and "
+                     f"{one['uniform_part']:.4g} under the uniform draw every candidate has")
     if one["kind"] == "uniform":
-        lines.append("marked uniform: this draw is credited to the uniform share, and it asks for the full rubric")
+        lines.append("picked by the uniform draw: a simple random sample of single candidates, blind to the scores, "
+                     "on the full rubric")
     if one.get("dropped"):
         lines.append(f"left out, because the other components tell enough: {', '.join(one['dropped'])}")
     if one.get("offered_with"):

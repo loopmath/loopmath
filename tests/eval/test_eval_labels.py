@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ import pytest
 
 from loopmath import cli
 from loopmath.eval import contracts as C
+from loopmath.eval import designcheck as D
 from loopmath.eval import fitfile as F
 from loopmath.eval import labels as L
 from loopmath.eval import testing
@@ -42,10 +44,10 @@ def run_cli(capsys, fit, *argv):
     return code, out, err
 
 
-def neutral_runs(n_inputs: int = 12) -> list[dict]:
+def neutral_runs(n_inputs: int = 12, **more) -> list[dict]:
     """The example runs with run ids and refs that do not spell out the arm."""
     rows = []
-    for n, row in enumerate(testing.example_runs(n_inputs=n_inputs), 1):
+    for n, row in enumerate(testing.example_runs(n_inputs=n_inputs, **more), 1):
         rows.append(C.validate_run(dict(row, run=f"r{n:03d}", refs={"input": row["refs"]["input"],
                                                                     "output": f"outputs/r{n:03d}"})))
     return rows
@@ -147,7 +149,7 @@ def test_two_persons_need_a_named_reviewer(tmp_path, capsys):
 
 
 def test_active_refuses_an_unconverged_fit_and_pilot_reads_it(tmp_path, capsys):
-    fit = testing.build_fit(tmp_path / "fit.json", converged=False)
+    fit = testing.build_fit(tmp_path / "fit.json", runs=neutral_runs(), converged=False)
     code, _, err = run_cli(capsys, fit.path, "--mode", "active", "--n", "5")
     assert code == 1 and err.startswith("error: ")
     code, out, err = run_cli(capsys, fit.path, "--mode", "pilot", "--n", "5")
@@ -268,7 +270,7 @@ def test_overlaps_put_a_second_reviewer_on_targets_of_this_plan(tmp_path):
 
 
 def test_no_repeat_candidates_returns_the_share_to_the_main_draw(tmp_path):
-    fit = testing.build_fit(tmp_path / "fit.json", person_share=0.0)
+    fit = testing.build_fit(tmp_path / "fit.json", runs=neutral_runs(), person_share=0.0)
     result = L.build(ns(fit.path, n=10, repeat_share=0.2))
     assert [row["kind"] for row in result.plan["assignments"]] == ["pilot"] * 10
     assert any(note.startswith("no repeats or overlaps") for note in result.report["notes"])
@@ -302,7 +304,9 @@ def test_active_scores_and_the_uniform_part(built, value_file):
         assert len(above) <= 1 and len(group) <= 2
     uniform_part = {row["ext"]["uniform_probability"] for row in rows}
     assert len(uniform_part) == 1                                             # the same for every candidate
-    assert uniform_part.pop() <= 0.2 * 12 / n_offers + 1e-12
+    # The uniform draw is a simple random sample of single candidates: its size over their number.
+    assert uniform_part.pop() == pytest.approx(len(uniform) / len(candidates))
+    assert len(rows) <= 12 and n_offers <= len(candidates)
 
 
 def test_active_without_a_value_file_has_no_decision_weight(built):
@@ -389,6 +393,84 @@ def test_auto_weighs_scores_against_pairs_in_one_plan(tmp_path, value_file):
     rows = result.plan["assignments"]
     assert {row["ask"] for row in rows} == {"score", "pair"}
     assert result.plan == C.validate_labels(result.plan)
+
+
+def test_a_changed_pair_history_changes_every_assignment_id(tmp_path):
+    fit = testing.build_fit(tmp_path / "fit.json", runs=neutral_runs(n_inputs=4), person_share=0.0)
+    first = L.build(ns(fit.path, n=6, ask="pairs", seed=1)).plan
+    assert set(first["inputs"]) == {"fit", "draws"}
+    judged = first["assignments"][0]
+    C.write_lines(tmp_path / C.PAIRS_FILE, C.SCHEMA_PAIRS, [
+        {"schema": C.SCHEMA_PAIRS, "id": "p1", "a": judged["a"]["run"], "b": judged["b"]["run"], "judge": "reviewer",
+         "call": "c1", "shown_first": "a", "verdict": "tie", "rubric": "example@1",
+         "observed_at": "2026-01-15T09:30:00-08:00"}])
+    second = L.build(ns(fit.path, n=6, ask="pairs", seed=1)).plan
+    pair = lambda row: frozenset((row["a"]["run"], row["b"]["run"]))          # noqa: E731
+    assert pair(judged) not in {pair(row) for row in second["assignments"]}
+    # The history is an input of the plan, and no id of the earlier plan names another pair now.
+    digest = hashlib.sha256((tmp_path / C.PAIRS_FILE).read_bytes()).hexdigest()
+    assert second["inputs"]["pairs"] == {"file": C.PAIRS_FILE, "sha256": digest}
+    assert {row["id"] for row in first["assignments"]}.isdisjoint(row["id"] for row in second["assignments"])
+    assert C.dumps(L.build(ns(fit.path, n=6, ask="pairs", seed=1)).plan) == C.dumps(second)
+    # The check items decide the form, so they are an input too, and the ids follow.
+    scores = L.build(ns(fit.path, n=6, seed=1)).plan
+    C.write_lines(tmp_path / C.ITEMS_FILE, C.SCHEMA_ITEMS, [
+        {"schema": C.SCHEMA_ITEMS, "id": "it-1", "input": "i001", "component": "coverage"}])
+    with_items = L.build(ns(fit.path, n=6, seed=1)).plan
+    assert "items" in with_items["inputs"] and "pairs" not in with_items["inputs"]
+    assert {row["id"] for row in scores["assignments"]}.isdisjoint(row["id"] for row in with_items["assignments"])
+
+
+def test_ids_follow_what_the_assignments_ask(built):
+    # Same fit, options and seed, another candidate set: no id is shared.
+    one = L.build(ns(built.path, n=6, seed=1)).plan
+    other = L.build(ns(built.path, n=6, seed=1, repeat_share=0.0)).plan
+    assert {row["id"] for row in one["assignments"]}.isdisjoint(row["id"] for row in other["assignments"])
+
+
+# ---------------------------------------------------------------------------------------------------
+# Objectives
+
+def value_with(tmp_path, objective: dict) -> Path:
+    value = dict(testing.example_value(gated=False), objective=objective)
+    return C.write_document(tmp_path / f"value-{objective['kind']}.json", C.validate_value(value))
+
+
+@pytest.mark.parametrize("objective", [{"kind": "cheapest_within_margin", "margin": 0.05, "reference": "baseline"},
+                                       {"kind": "cost_per_pass"}], ids=lambda o: o["kind"])
+def test_active_refuses_an_objective_it_does_not_score(built, tmp_path, capsys, objective):
+    value, out_file = value_with(tmp_path, objective), tmp_path / "plan.json"
+    code, out, err = run_cli(capsys, built.path, "--mode", "active", "--n", "6", "--value", value, "--out", out_file)
+    assert code == 1 and out == "" and not out_file.exists()
+    assert err == (f'error: eval labels next: --value: active mode does not score labels for the objective '
+                   f'"{objective["kind"]}"; use --mode pilot, or run active mode without --value (labels are then '
+                   "ranked by what they tell about the arm means)\n")
+    code, _, err = run_cli(capsys, built.path, "--mode", "pilot", "--n", "6", "--value", value)
+    assert code == 0 and err == ""
+
+
+def test_a_cost_cap_decides_which_arms_a_label_can_change(tmp_path, capsys, value_file):
+    # Posterior sd 0.1: wide enough that the best arm is in doubt.
+    built = testing.build_fit(tmp_path / "fit.json", runs=neutral_runs(), posterior_sd=0.1, person_share=0.0)
+    costs = sorted(arm["cost_usd"] for arm in built.fit["arms"])
+    assert costs[0] < costs[1]
+    under = value_with(tmp_path, {"kind": "best_under_cost", "cost_cap_usd": costs[0] / 2})
+    code, out, err = run_cli(capsys, built.path, "--mode", "active", "--n", "6", "--value", under)
+    assert code == 1 and out == ""
+    assert err == (f"error: eval labels next: --value: every arm costs more than the cost cap of {costs[0] / 2:g} USD, "
+                   "so no arm can be picked; raise objective.cost_cap_usd in the value file, or use --mode pilot\n")
+    # One arm under the cap: the pick is settled, so there is no loss and no label is worth anything to it.
+    one = L.build(ns(built.path, mode="active", n=6, repeat_share=0.0, value=str(value_with(
+        tmp_path, {"kind": "best_under_cost", "cost_cap_usd": (costs[0] + costs[1]) / 2}))))
+    assert one.report["expected_loss"] == 0.0
+    assert all(row["scores"]["decision_weight"] == 0.0 for row in one.plan["assignments"])
+    # Every arm under the cap: the same loss as with no cap.
+    every = L.build(ns(built.path, mode="active", n=6, repeat_share=0.0, value=str(value_with(
+        tmp_path, {"kind": "best_under_cost", "cost_cap_usd": costs[-1] * 2}))))
+    free = L.build(ns(built.path, mode="active", n=6, repeat_share=0.0, value=str(value_file)))
+    assert every.report["expected_loss"] == free.report["expected_loss"] > 0
+    assert all(0 <= row["scores"]["decision_weight"] <= free.report["expected_loss"]
+               for row in free.plan["assignments"])
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -548,12 +630,70 @@ def test_plan_form_and_output_hold_no_arm_no_model_and_no_judge_score(built, tmp
                 assert row["scores"] == dict.fromkeys(C.LABEL_SCORES)
 
 
-def test_run_ids_that_name_the_arm_get_a_warning_that_counts_only(tmp_path, capsys):
-    fit = testing.build_fit(tmp_path / "fit.json")                            # run ids like <arm>-i001
-    code, _, err = run_cli(capsys, fit.path, "--n", "7", "--repeat-share", "0")
-    assert code == 0
-    assert err == ("warning: 7 of 7 assignments have a run id or a ref that spells out an arm, a model id or a "
-                   "model family: the plan is blind only when run ids and refs do not name the configuration\n")
+def test_run_ids_that_name_the_arm_are_refused_and_nothing_is_written(tmp_path, capsys):
+    fit = testing.build_fit(tmp_path / "fit.json", person_share=0.0)          # run ids like <arm>-i001
+    out_file, form = tmp_path / "plan.json", tmp_path / "form.csv"
+    for argv, n in ((["--n", "7"], 36), (["--mode", "active", "--n", "7"], 36), (["--n", "7", "--ask", "pairs"], 36)):
+        code, out, err = run_cli(capsys, fit.path, *argv, "--out", out_file, "--form", form)
+        assert code == 1 and out == ""
+        assert err == (f"error: fit.json: runs: {n} of {n} candidates have a run id or a ref that spells out an arm, "
+                       "a model id or a model family, so the plan would not be blind; give the runs ids and refs "
+                       "that do not name the configuration (r001, outputs/r001), import the scores under those ids "
+                       "and fit again\n")
+        assert not out_file.exists() and not form.exists()
+    code, out, _ = run_cli(capsys, fit.path, "--n", "7", "--explain", "lb000000-001")
+    assert code == 1 and out == ""
+
+
+def test_a_simulated_study_is_let_through_with_a_note_and_real_runs_are_not(tmp_path, capsys):
+    refusal = ("error: fit.json: runs: 36 of 36 candidates have a run id or a ref that spells out an arm, a model id "
+               "or a model family, so the plan would not be blind; give the runs ids and refs that do not name the "
+               "configuration (r001, outputs/r001), import the scores under those ids and fit again\n")
+    runs = testing.example_runs()                                             # run ids like <arm>-i001
+    assert all(row["simulated"] for row in runs) and "baseline" in runs[0]["run"]
+    cases = {"simulated": runs,
+             "real": [dict(row, simulated=False) for row in runs],
+             "mixed": [dict(row, simulated=n != 5) for n, row in enumerate(runs)]}
+    for name, rows in cases.items():
+        folder = tmp_path / name
+        folder.mkdir()
+        files = testing.write_study_files(folder, runs=[C.validate_run(row) for row in rows])
+        fit = testing.build_fit(folder / "fit.json", runs=rows, person_share=0.0, inputs=C.input_digests(files))
+        out_file = folder / "plan.json"
+        code, out, err = run_cli(capsys, fit.path, "--study", folder, "--mode", "pilot", "--n", "10", "--out",
+                                 out_file)
+        if name != "simulated":
+            assert (code, out, err) == (1, "", refusal) and not out_file.exists()
+            continue
+        assert code == 0 and err == ""
+        assert out.count("note: the plan is not blind: the study is simulated, and 36 of 36 candidates have a run "
+                         "id or a ref that spells out the configuration. With real runs this is refused") == 1
+        plan = C.read_document(out_file, C.SCHEMA_LABELS)
+        assert len(plan["assignments"]) == 10 and "baseline" in out_file.read_text()
+        digest = hashlib.sha256(files["runs"].read_bytes()).hexdigest()
+        assert plan["inputs"]["runs"] == {"file": C.RUNS_FILE, "sha256": digest}
+        code, out, _ = run_cli(capsys, fit.path, "--study", folder, "--mode", "active", "--n", "10")
+        assert code == 0 and "note: the plan is not blind: the study is simulated" in out
+    # The same simulated fit with no run records beside it: nothing says the runs are simulated.
+    alone = testing.build_fit(tmp_path / "fit.json", runs=runs, person_share=0.0)
+    assert run_cli(capsys, alone.path, "--n", "10") == (1, "", refusal)
+
+
+def test_short_arm_names_and_refs_count_as_naming_the_arm(tmp_path, capsys):
+    step = [{"step": "final", "model": {"id": "m", "family": "f"}, "effort": "low"}]
+    arms = {"k0": step, "k1": step}
+    named = testing.build_fit(tmp_path / "named.json", runs=testing.example_runs(arms=arms, n_inputs=3),
+                              person_share=0.0)                               # run ids like k0-i001
+    code, _, err = run_cli(capsys, named.path, "--n", "3")
+    assert code == 1 and "6 of 6 candidates" in err and "would not be blind" in err
+    runs = [C.validate_run(dict(row, refs={"input": row["refs"]["input"], "output": f"store/k{n % 2}/{row['run']}"}))
+            for n, row in enumerate(neutral_runs(3, arms=arms))]
+    by_ref = testing.build_fit(tmp_path / "ref.json", runs=runs, person_share=0.0)
+    code, _, err = run_cli(capsys, by_ref.path, "--n", "3")
+    assert code == 1 and "6 of 6 candidates" in err
+    neutral = testing.build_fit(tmp_path / "neutral.json", runs=neutral_runs(3, arms=arms), person_share=0.0)
+    code, _, err = run_cli(capsys, neutral.path, "--n", "3")
+    assert code == 0 and err == ""
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -596,7 +736,7 @@ class Study:
         rng = np.random.default_rng([seed, 99])
         self.folder, self.seed, self.n_draws = folder, seed, n_draws
         step = [{"step": "final", "model": {"id": "m", "family": "f"}, "effort": "low"}]
-        runs = testing.example_runs(arms={f"k{a}": step for a in range(n_arms)}, n_inputs=n_inputs)
+        runs = neutral_runs(n_inputs, arms={f"k{a}": step for a in range(n_arms)})
         rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "one", "version": "1", "components": [
             {"id": "quality", "title": "Quality", "scale": {"kind": "linear", "range": [0, 1]}, "review_minutes": 2}]})
         judges = C.validate_judges({"schema": C.SCHEMA_JUDGES, "anchor": ["reviewer"], "judges": [
@@ -610,7 +750,8 @@ class Study:
         self.A, self.I, self.R = n_arms, n_inputs, len(runs)
         self.arm, self.input = np.asarray(self.base.run_arm), np.asarray(self.base.run_input)
         # Two or three arms in the running, the rest well behind.
-        self.mu = np.concatenate([0.60 + 0.03 * rng.standard_normal(2), [0.57], np.full(n_arms - 3, 0.35)])[:n_arms]
+        self.mu = np.concatenate([0.60 + 0.03 * rng.standard_normal(2), [0.57],
+                                  np.full(max(n_arms - 3, 0), 0.35)])[:n_arms]
         self.q = (self.mu[self.arm] + self.S_INPUT * rng.standard_normal(self.I)[self.input]
                   + self.S_RUN * rng.standard_normal(self.R))
         self.calls = np.where(rng.random(self.R) < 0.5, 1, 6)
@@ -664,24 +805,87 @@ class Study:
         mean, _ = self.posterior(sorted({self.run_at[row["target"]["run"]] for row in plan["assignments"]}))
         return float(self.mu.max() - self.mu[int(np.argmax(mean[:self.A]))])
 
-    def design_interval(self, plan: dict) -> tuple[float, float, float]:
-        """The true mean human reading over every target, and a design-based 95% interval for it.
-
-        The estimate is the judge's mean over every target plus the weighted mean gap between the
-        reviewer and the judge on the labelled targets, each weighted by 1 / its recorded probability.
-        Its variance comes from the offers drawn together (the targets of one input in active mode)."""
-        groups: dict = {}
-        for row in plan["assignments"]:
+    def score_rows(self, plan: dict) -> list[dict]:
+        """The judge's reading of every target and the reviewer's reading of every assignment, as score rows."""
+        stamp = {"schema": C.SCHEMA_SCORES, "step": "final", "component": "quality", "call": "c1",
+                 "rubric": "one@1", "observed_at": "2026-01-15T09:30:00-08:00"}
+        rows = [dict(stamp, id=f"j{r}", run=run, judge="cheap", value=float(np.clip(self.judge_mean[r], 0, 1)))
+                for run, r in self.run_at.items()]
+        for n, row in enumerate(plan["assignments"]):
             r = self.run_at[row["target"]["run"]]
-            key = row["id"] if plan["mode"] == "pilot" else int(self.input[r])
-            groups[key] = groups.get(key, 0.0) + (self.human[r] - self.judge_mean[r]) / row["inclusion_probability"]
-        w = np.array(list(groups.values()))
-        k = len(w)
-        estimate = float(self.judge_mean.mean() + w.sum() / self.R)
-        se = float(np.sqrt(k / (k - 1) * ((w - w.mean()) ** 2).sum()) / self.R)
-        z, df = 1.959964, k - 1
-        t = z + (z ** 3 + z) / (4 * df) + (5 * z ** 5 + 16 * z ** 3 + 3 * z) / (96 * df ** 2)
-        return float(self.human.mean()), estimate - t * se, estimate + t * se
+            rows.append(dict(stamp, id=f"h{n}", run=row["target"]["run"], judge=row["reviewer"],
+                             value=float(np.clip(self.human[r], 0, 1)), assignment=row["id"]))
+        return rows
+
+    def arm_truth(self) -> np.ndarray:
+        """Per arm, the mean of what the reviewer would say over every target of the arm."""
+        human = np.clip(self.human, 0, 1)
+        return np.array([human[self.arm == a].mean() for a in range(self.A)])
+
+    def design_cover(self, plan: dict, fit: F.Fit) -> tuple[int, int, int]:
+        """The shipped design check on the plan's labels: (arms with an interval, of them the arms whose
+        interval holds the true mean over the whole arm, arms with labels and no interval)."""
+        report = D.check(fit, self.score_rows(plan), [plan])
+        truth, with_interval, covered, without = self.arm_truth(), 0, 0, 0
+        for cell in report["cells"]:
+            design = cell["design"]
+            if not design or design.get("lo") is None or design.get("hi") is None:
+                without += 1
+                continue
+            with_interval += 1
+            covered += design["lo"] - 1e-12 <= truth[list(fit.arms).index(cell["arm"])] <= design["hi"] + 1e-12
+        return with_interval, covered, without
+
+
+class Wide(Study):
+    """Arm means left far more open than one run is: weak judge readings on few inputs."""
+
+    S_INPUT, S_RUN, TAU, SIGMA, S_HUMAN = 0.01, 0.05, 0.02, 0.30, 0.02
+
+
+def test_the_solved_covariance_given_the_arm_means_is_valid_and_solves_its_equation():
+    rng = np.random.default_rng(5)
+    for n in (1, 2, 5):
+        def spd(scale):
+            m = rng.standard_normal((n, n + 2))
+            return scale * (m @ m.T) / (n + 2)
+        total, own, p = spd(1.0) + np.eye(n), spd(40.0), spd(0.3)
+        c = L.given_means(p, total, own)
+        w = np.linalg.solve(total, np.linalg.solve(total, own).T)
+        assert np.allclose(c + c @ w @ c, p, atol=1e-9)                        # C + C W C = P
+        assert np.linalg.eigvalsh(c).min() >= -1e-12 and np.linalg.eigvalsh(p - c).min() >= -1e-12
+        # A posterior spread far above the spread of the runs: C still stays under T.
+        big = L.given_means(spd(50.0), total, own)
+        assert np.linalg.eigvalsh(big).min() >= -1e-9 and np.linalg.eigvalsh(total - big).min() >= -1e-9
+
+
+def test_a_label_is_never_worth_more_than_the_decision_loss_there_is(tmp_path):
+    study = Wide(tmp_path, seed=4, n_inputs=3, n_arms=2, n_draws=4000)
+    result = L.build(ns(study.write(), mode="active", n=study.R, uniform_share=1.0, value=str(study.value),
+                        repeat_share=0.0))
+    mean, cov = study.posterior()
+    assert np.sqrt(cov[0, 0]) > 1.5 * study.S_RUN                              # the case: arm sd well above run sd
+    z = np.linspace(-12.0, 12.0, 240001)
+    density = np.exp(-0.5 * z * z) / np.sqrt(2 * np.pi)
+
+    def gain(sd: float, gap: float) -> float:
+        """E[max(step - gap, 0)] for a normal step, by plain numerical integration."""
+        f = np.maximum(sd * z - gap, 0.0) * density
+        return float((f[1:] + f[:-1]).sum() * (z[1] - z[0]) / 2)
+
+    gap = abs(mean[0] - mean[1])
+    whole = gain(float(np.sqrt(cov[0, 0] + cov[1, 1] - 2 * cov[0, 1])), gap)   # every doubt about the two arms
+    loss = result.report["expected_loss"]
+    assert loss == pytest.approx(whole, rel=0.1)
+    rows = result.plan["assignments"]
+    assert len(rows) == study.R
+    for row in rows:
+        x = study.X[study.run_at[row["target"]["run"]]]
+        k = cov[:2] @ x
+        exact = gain(float(abs(k[0] - k[1]) / np.sqrt(x @ cov @ x + study.S_HUMAN ** 2)), gap)
+        assert exact <= whole
+        assert 0 <= row["scores"]["decision_weight"] <= loss
+        assert row["scores"]["decision_weight"] == pytest.approx(exact, rel=0.25, abs=0.02 * whole)
 
 
 def test_active_probabilities_follow_per_minute_and_match_the_draw(tmp_path):
@@ -689,30 +893,83 @@ def test_active_probabilities_follow_per_minute_and_match_the_draw(tmp_path):
     path = study.write()
     first = L.build(ns(path, mode="active", n=16, value=str(study.value), repeat_share=0.0))
     assert first.report["expected_loss"] > 0
-    recorded, rate, seen, uniform, sizes = {}, {}, {}, 0, []
+    recorded, rate, size, seen, sizes = {}, {}, {}, {}, []
     seeds = 300
     for seed in range(seeds):
-        rows = study.plan(path, mode="active", n=16, seed=seed)["assignments"]
+        result = L.build(ns(path, mode="active", n=16, value=str(study.value), repeat_share=0.0, seed=seed))
+        rows = result.plan["assignments"]
+        # The budget and the uniform draw hold in every drawn plan, not on average: 3 is round(0.2 x 16),
+        # and a target both draws pick is asked once.
+        assert sum(row["kind"] == "uniform" for row in rows) == 3 and len(rows) <= 16
         sizes.append(len(rows))
-        uniform += len({study.input[study.run_at[row["target"]["run"]]] for row in rows if row["kind"] == "uniform"})
+        assert len({row["target"]["run"] for row in rows}) == len(rows)
         for row in rows:
             run = row["target"]["run"]
+            assert row["ext"]["uniform_probability"] == pytest.approx(3 / study.R)
+            assert row["inclusion_probability"] >= row["ext"]["uniform_probability"]
+            assert recorded.setdefault(run, row["inclusion_probability"]) == pytest.approx(row["inclusion_probability"])
+            seen[run] = seen.get(run, 0) + 1
             if row["kind"] == "active":
-                recorded[run], rate[run] = row["inclusion_probability"], row["scores"]["per_minute"]
-            assert row["inclusion_probability"] >= row["ext"]["uniform_probability"] > 0
-            seen[run] = seen.get(run, 0) + (row["kind"] == "active" or
-                                            row["inclusion_probability"] > row["ext"]["uniform_probability"])
-    # A higher fall per minute never gets a lower probability.
-    order = sorted(recorded, key=lambda run: rate[run])
-    assert all(recorded[a] <= recorded[b] + 1e-12 for a, b in zip(order, order[1:]))
-    assert len(set(np.round(list(recorded.values()), 6))) > 3
-    # Targets asked by the scores come up as often as their recorded probability says.
+                rate[run] = row["scores"]["per_minute"]
+                size[run] = result.explain[row["id"]]["offer_minutes"]
+    # Offers are whole: a plan comes in under by less than one offer (five targets at most here) and by
+    # the targets both draws picked (three at most).
+    assert min(sizes) >= 16 - 4 - 3 and np.mean(sizes) > 14
+    # Among offers of one size, a higher fall per minute never gets a lower probability.
+    for one in set(size.values()):
+        order = sorted((run for run in rate if size[run] == one), key=lambda run: rate[run])
+        assert all(recorded[a] <= recorded[b] + 1e-12 for a, b in zip(order, order[1:]))
+    assert len(set(np.round([recorded[run] for run in rate], 6))) > 3
+    # Every target comes up as often as its recorded probability says, whichever draw picked it.
+    assert len(recorded) > 16
     for run, p in recorded.items():
         assert abs(seen[run] / seeds - p) < 4.5 * np.sqrt(max(p * (1 - p), 0.01) / seeds)
-    # The budget holds on average, and the uniform share is about a fifth of the offers drawn.
-    assert np.mean(sizes) <= 16 * 1.02
-    k = len({study.input[study.run_at[row["target"]["run"]]] for row in first.plan["assignments"]})
-    assert uniform / seeds == pytest.approx(0.2 * k, rel=0.25)
+
+
+def test_every_drawn_plan_keeps_its_budget_and_has_its_uniform_draw(built, value_file):
+    sizes, spent, seen, recorded = [], {"active": [], "pilot": []}, {}, {}
+    seeds = 300
+    for seed in range(seeds):
+        result = L.build(ns(built.path, mode="active", n=8, value=str(value_file), seed=seed))
+        rows = result.plan["assignments"]
+        assert len(rows) <= 8
+        assert len({row["target"]["run"] for row in rows if row["kind"] == "uniform"}) == 1
+        sizes.append(len(rows))
+        for row in rows:
+            if row["kind"] != "repeat":
+                key = (row["target"]["run"], tuple(row["components"]))
+                assert recorded.setdefault(key, row["inclusion_probability"]) == pytest.approx(
+                    row["inclusion_probability"])
+                seen[key] = seen.get(key, 0) + 1
+        if seed < 60:
+            for mode in spent:
+                rows = L.build(ns(built.path, mode=mode, minutes=45, value=str(value_file),
+                                  seed=seed)).plan["assignments"]
+                assert sum(row["minutes"] for row in rows) <= 45 + 1e-9
+                assert mode == "pilot" or any(row["kind"] == "uniform" for row in rows)
+                spent[mode].append(sum(row["minutes"] for row in rows))
+    # Every assignment comes up as often as its recorded probability says, on a rubric where the uniform
+    # draw takes one or two assignments.
+    for key, p in recorded.items():
+        assert abs(seen[key] / seeds - p) < 4.5 * np.sqrt(max(p * (1 - p), 0.01) / seeds), key
+    # Offers are whole (three targets at most here): under by less than one offer and one target both
+    # draws picked, never over. The pilot draw spends the same minutes in every plan.
+    assert min(sizes) >= 8 - 2 - 1
+    assert len(set(spent["pilot"])) == 1 and min(spent["pilot"]) > 45 - 9 and min(spent["active"]) > 45 - 9 - 9
+
+
+def test_the_production_design_check_reads_a_census_as_the_whole_arm(tmp_path):
+    study = Study(tmp_path, seed=6, n_inputs=6, n_arms=3)
+    path = study.write()
+    fit = F.read_fit(path)
+    report = D.check(fit, study.score_rows(study.plan(path, n=study.R)), [study.plan(path, n=study.R)])
+    truth = study.arm_truth()
+    assert len(report["cells"]) == 3
+    for cell in report["cells"]:
+        a = list(fit.arms).index(cell["arm"])
+        assert cell["n_labels"] == cell["n_targets"] == 6 and cell["design"]["interval"] == "census"
+        assert cell["design"]["mean"] == pytest.approx(truth[a]) == cell["design"]["lo"] == cell["design"]["hi"]
+    assert study.design_cover(study.plan(path, n=study.R), fit) == (3, 3, 0)
 
 
 def test_a_uniform_share_of_one_draws_every_offer_alike(tmp_path):
@@ -734,34 +991,37 @@ def test_active_leaves_arms_out_of_the_running_to_the_uniform_share(tmp_path):
 def test_acceptance_12_active_against_pilot_and_uniform_on_simulated_studies(tmp_path):
     """PRD acceptance check 12, on studies with an exact posterior and a fixed label budget.
 
-    Bands, fixed before the first run: active has a lower mean decision loss than pilot; the design-based
-    95% interval covers the true human mean in at least 0.95 less three standard errors of studies, in
-    every mode. Active against uniform is printed, not asserted: the check asks only that uniform stays
-    the default when active does not beat it."""
+    Bands, fixed before the first run: active has a lower mean decision loss than pilot. The design-based
+    interval is the one the shipped `labels check` gives per arm, held against the true mean of the whole
+    arm: it covers in at least its stated level less three standard errors of the arms with an interval,
+    in every mode. Arms with labels and no interval are counted and printed. Active against uniform is
+    printed, not asserted: the check asks only that uniform stays the default when active does not beat it."""
     n_studies, budget = 1000, 20
     loss = {"pilot": [], "uniform": [], "active": []}
-    cover = {"pilot": 0, "uniform": 0, "active": 0}
+    cover = {name: np.zeros(3, dtype=int) for name in loss}
     for seed in range(n_studies):
         folder = tmp_path / f"s{seed:03d}"
         folder.mkdir()
         study = Study(folder, seed)
         path = study.write()
+        fit = F.read_fit(path)
         for name, options in (("pilot", {"mode": "pilot"}), ("uniform", {"mode": "active", "uniform_share": 1.0}),
                               ("active", {"mode": "active"})):
             plan = study.plan(path, n=budget, seed=seed, **options)
             loss[name].append(study.loss(plan))
-            truth, low, high = study.design_interval(plan)
-            cover[name] += low <= truth <= high
+            cover[name] += study.design_cover(plan, fit)
     mean = {name: float(np.mean(values)) for name, values in loss.items()}
     gap = np.array(loss["pilot"]) - np.array(loss["active"])
     gap_uniform = np.array(loss["uniform"]) - np.array(loss["active"])
-    floor = 0.95 - 3 * np.sqrt(0.95 * 0.05 / n_studies)
     print(f"\nacceptance 12: {n_studies} studies, budget {budget} labels")
     print("  mean decision loss: " + ", ".join(f"{name} {mean[name]:.5f}" for name in mean))
     print(f"  pilot less active {gap.mean():.5f} (se {gap.std(ddof=1) / np.sqrt(n_studies):.5f}); "
           f"uniform less active {gap_uniform.mean():.5f} (se {gap_uniform.std(ddof=1) / np.sqrt(n_studies):.5f})")
-    print("  coverage of the design-based 95% interval: "
-          + ", ".join(f"{name} {cover[name] / n_studies:.3f}" for name in cover) + f" (floor {floor:.3f})")
+    floors = {}
+    for name, (n, hit, without) in cover.items():
+        floors[name] = D.LEVEL - 3 * np.sqrt(D.LEVEL * (1 - D.LEVEL) / max(n, 1))
+        print(f"  labels check, {name}: its {D.LEVEL:.0%} interval covers the arm mean in {hit} of {n} arms "
+              f"({hit / max(n, 1):.3f}, floor {floors[name]:.3f}); {without} arms with labels have no interval")
     assert mean["active"] < mean["pilot"]
-    for name in cover:
-        assert cover[name] / n_studies >= floor, name
+    for name, (n, hit, _) in cover.items():
+        assert n > 0 and hit / n >= floors[name], name
