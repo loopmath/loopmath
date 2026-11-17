@@ -132,10 +132,20 @@ def test_latent_reliability_and_effective_repeats(tmp_path):
             assert row["effective_repeats"]["limit"]["mean"] == pytest.approx(1 + s2 / t2)
 
 
-def _items_rows(fit, component="coverage", n=4):
-    """n items per input for one `items` component."""
-    return [C.validate_item({"schema": C.SCHEMA_ITEMS, "id": f"it-{i}-{x}", "input": name, "component": component})
-            for i, name in enumerate(fit.index["inputs"]) for x in range(n)]
+AT = "2026-01-01T00:00:00+00:00"
+
+
+def _reading(ident, run, judge, call, component="coverage", **more):
+    return C.validate_score({"schema": C.SCHEMA_SCORES, "id": ident, "run": run, "component": component,
+                             "judge": judge, "call": call, "rubric": "example@1", "observed_at": AT, **more})
+
+
+def _count_rows(fit, of=4, judges=None, component="coverage", calls=1):
+    """Count lines: every judge reads `of` items in each of `calls` calls on every run. `of` may be a
+    function of the position of the run."""
+    size = of if callable(of) else (lambda r: of)
+    return [_reading(f"{judge}-{r}-{c}", run, judge, f"{judge}-{r}-{c}", component, value=0, of=size(r))
+            for judge in (judges or fit.judges) for r, run in enumerate(fit.index["runs"]) for c in range(calls)]
 
 
 def _simulate_readings(truth, j, d, kind, k, n=20000, seed=5, n_items=4, levels=3, cuts=None):
@@ -167,7 +177,7 @@ KINDS = {"final/numbers_right": "binary", "final/clarity": "levels", "final/dept
 @pytest.mark.parametrize("dimension", DIMS)
 def test_r2_is_of_the_reading_as_recorded_against_a_simulation(tmp_path, judge, dimension):
     built = exact(tmp_path, truth={"family": family_truth()})
-    payload = J.report(built.fit, items=_items_rows(built.fit))
+    payload = J.report(built.fit, scores=_count_rows(built.fit, of=4))       # every call read 4 items
     d = DIMS.index(dimension)
     row = dim_row(payload, built.fit.judges[judge], dimension)
     assert row["r2"]["measured"] is True and row["r2"]["of"] == "reported quality"
@@ -225,23 +235,122 @@ def test_free_cut_points_are_read_from_the_draws(tmp_path):
     assert abs(free - fixed) > 0.01
 
 
-def test_r2_of_an_items_dimension_needs_the_item_counts(tmp_path):
+NO_READINGS = "needs the number of items each call read: the judge's readings in scores.jsonl in the study folder"
+
+
+def test_r2_of_an_items_dimension_needs_the_calls_of_the_judge(tmp_path):
     built = exact(tmp_path)
     row = dim_row(J.report(built.fit), "strong", "final/coverage")
     assert row["r2"]["measured"] is False and row["r2"]["by_repeats"] == [] and row["r2"]["one_call"] is None
-    assert row["r2"]["reason"] == "needs the number of items per target: items.jsonl in the study folder"
+    assert row["r2"]["reason"] == NO_READINGS
     assert row["cost"]["by_repeats"] == [] and row["mse"]["measured"] is True
-    few = dim_row(J.report(built.fit, items=_items_rows(built.fit, n=1)), "strong", "final/coverage")
-    many = dim_row(J.report(built.fit, items=_items_rows(built.fit, n=40)), "strong", "final/coverage")
+    # Readings by one judge say nothing about the calls of another.
+    payload = J.report(built.fit, scores=_count_rows(built.fit, of=4, judges=["strong"]))
+    assert dim_row(payload, "strong", "final/coverage")["r2"]["measured"] is True
+    cheap = dim_row(payload, "cheap", "final/coverage")
+    assert cheap["r2"]["measured"] is False and cheap["r2"]["reason"] == NO_READINGS and cheap["cost"]["by_repeats"] == []
+    few = dim_row(J.report(built.fit, scores=_count_rows(built.fit, of=1)), "strong", "final/coverage")
+    many = dim_row(J.report(built.fit, scores=_count_rows(built.fit, of=40)), "strong", "final/coverage")
     assert few["r2"]["one_call"]["mean"] < many["r2"]["one_call"]["mean"]       # more items, a sharper share
 
 
-def test_the_command_reads_item_counts_from_the_study_folder(tmp_path, capsys):
+def _two_point_items_fit(tmp_path, name="items.json"):
+    """Six targets, three at q = -1 and three at q = +1, and judges with no bias and no noise."""
+    rubric = C.validate_rubric({"schema": C.SCHEMA_RUBRIC, "id": "example", "version": "1", "components": [
+        {"id": "quality", "scale": {"kind": "items"}}]})
+    return exact(tmp_path, name, rubric=rubric, runs=testing.example_runs(n_inputs=2), n_draws=8, truth={
+        "q_run": [[-1], [1], [-1], [1], [-1], [1]], "bias": [[0]] * 3, "tau": [[0]] * 3, "sigma": [[0]] * 3})
+
+
+def _two_point_r2(n, k=1):
+    """A noise-free judge passes each item with probability p = Phi(q), so the share of n items over k
+    calls has the mean p and the variance p (1 - p) / (n k) on a target. With p as reported quality,
+    R-squared is var(p) / (var(p) + mean(p (1 - p)) / (n k))."""
+    p = ndtr(np.array([-1.0, 1.0]))
+    return float(p.var() / (p.var() + (p * (1 - p)).mean() / (n * k)))
+
+
+def test_items_r2_uses_what_the_calls_read_not_the_list_of_items(tmp_path):
+    built = _two_point_items_fit(tmp_path)
+    fit = built.fit
+    assert _two_point_r2(1) == pytest.approx(0.466065, abs=1e-6) and _two_point_r2(100) == pytest.approx(0.988674, abs=1e-6)
+    # One item read per call, whatever the number of items written for the input.
+    row = dim_row(J.report(fit, scores=_count_rows(fit, of=1, component="quality")), "strong", "final/quality")
+    assert row["r2"]["measured"] is True
+    assert row["r2"]["one_call"]["mean"] == pytest.approx(_two_point_r2(1), abs=1e-6)
+    assert row["r2"]["by_repeats"][2]["mean"] == pytest.approx(_two_point_r2(1, k=3), abs=1e-6)
+    # The cost rows follow: the variance of p that one call removes at 0.05 USD.
+    removed = ndtr(np.array([-1.0, 1.0])).var() * _two_point_r2(1)
+    assert row["cost"]["by_repeats"][0]["variance_removed"] == pytest.approx(removed, abs=1e-7)
+    assert row["cost"]["by_repeats"][0]["usd_per_variance_removed"] == pytest.approx(0.05 / removed, rel=1e-5)
+    row = dim_row(J.report(fit, scores=_count_rows(fit, of=100, component="quality")), "strong", "final/quality")
+    assert row["r2"]["one_call"]["mean"] == pytest.approx(_two_point_r2(100), abs=1e-6)
+    # 100 items written for each input and no reading: nothing says a call read them all.
+    inventory = [{"schema": C.SCHEMA_ITEMS, "id": f"{name}-{x}", "input": name, "component": "quality"}
+                 for name in fit.index["inputs"] for x in range(100)]
+    row = dim_row(J.report(fit, items=inventory), "strong", "final/quality")
+    assert row["r2"]["measured"] is False and row["r2"]["reason"] == NO_READINGS and row["r2"]["by_repeats"] == []
+    assert row["cost"]["by_repeats"] == []
+    # Item lines: the call read as many items as it has lines (2 here).
+    lines = [_reading(f"s-{r}-{x}", run, "strong", f"call-{r}", "quality", value=x, item=f"it-{x}")
+             for r, run in enumerate(fit.index["runs"]) for x in range(2)]
+    row = dim_row(J.report(fit, scores=lines), "strong", "final/quality")
+    assert row["r2"]["one_call"]["mean"] == pytest.approx(_two_point_r2(2), abs=1e-6)
+    assert dim_row(J.report(fit, scores=lines), "cheap", "final/quality")["r2"]["measured"] is False
+
+
+def test_items_r2_with_a_number_of_items_per_target(tmp_path):
+    built = _two_point_items_fit(tmp_path)
+    fit = built.fit
+    sizes = [1, 2, 3, 4, 5, 6]                                   # the items read on each of the six targets
+    rows = _count_rows(fit, of=lambda r: sizes[r], judges=["strong"], component="quality", calls=2)
+    row = dim_row(J.report(fit, scores=rows), "strong", "final/quality")
+    p = ndtr(np.array([-1.0, 1.0, -1.0, 1.0, -1.0, 1.0]))
+    want = p.var() / (p.var() + (p * (1 - p) / np.array(sizes)).mean())
+    assert row["r2"]["one_call"]["mean"] == pytest.approx(want, abs=1e-6)
+    # A target the judge did not read has no number: not measured, with the reason.
+    row = dim_row(J.report(fit, scores=rows[2:]), "strong", "final/quality")
+    assert row["r2"]["measured"] is False and row["r2"]["by_repeats"] == [] and row["cost"]["by_repeats"] == []
+    assert row["r2"]["reason"] == "the calls of the judge read different numbers of items (2 to 6) and not one " \
+                                  "number per target"
+    # Two calls on one target that read different numbers: the same.
+    mixed = _count_rows(fit, of=3, judges=["strong"], component="quality") + [
+        _reading("extra", fit.index["runs"][0], "strong", "extra", "quality", value=1, of=7)]
+    row = dim_row(J.report(fit, scores=mixed), "strong", "final/quality")
+    assert row["r2"]["measured"] is False
+    assert row["r2"]["reason"] == "the calls of the judge read different numbers of items (3 to 7) and not one " \
+                                  "number per target"
+    # A corrected reading is not read: with the 7 replaced by a 3, every call read 3.
+    fixed = mixed + [_reading("fix", fit.index["runs"][0], "strong", "extra", "quality", value=1, of=3,
+                              replaces="extra")]
+    row = dim_row(J.report(fit, scores=fixed), "strong", "final/quality")
+    assert row["r2"]["one_call"]["mean"] == pytest.approx(_two_point_r2(3), abs=1e-6)
+
+
+def test_the_command_reads_the_calls_from_the_study_folder(tmp_path, capsys):
+    import hashlib
     built = exact(tmp_path)
-    C.write_lines(tmp_path / C.ITEMS_FILE, C.SCHEMA_ITEMS, _items_rows(built.fit))
     assert cli.main(["eval", "judges", str(built.path), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert dim_row(payload, "strong", "final/coverage")["r2"]["measured"] is True
+    assert dim_row(payload, "strong", "final/coverage")["r2"]["reason"] == NO_READINGS
+    # The list of items written for the inputs does not count as what a call read.
+    C.write_lines(tmp_path / C.ITEMS_FILE, C.SCHEMA_ITEMS, [
+        {"schema": C.SCHEMA_ITEMS, "id": f"it-{i}-{x}", "input": name, "component": "coverage"}
+        for i, name in enumerate(built.fit.index["inputs"]) for x in range(100)])
+    assert cli.main(["eval", "judges", str(built.path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert dim_row(payload, "strong", "final/coverage")["r2"]["measured"] is False
+    assert "items" not in payload["inputs"] and "scores" not in payload["inputs"]
+    scores = C.write_lines(tmp_path / C.SCORES_FILE, C.SCHEMA_SCORES, _count_rows(built.fit, of=1))
+    assert cli.main(["eval", "judges", str(built.path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    one = dim_row(payload, "strong", "final/coverage")["r2"]
+    assert one["measured"] is True
+    assert one["one_call"]["mean"] == pytest.approx(
+        dim_row(J.report(built.fit, scores=_count_rows(built.fit, of=1)), "strong", "final/coverage")["r2"]
+        ["one_call"]["mean"])
+    assert payload["inputs"]["scores"] == {"file": "scores.jsonl",
+                                           "sha256": hashlib.sha256(scores.read_bytes()).hexdigest()}
 
 
 def test_no_disagreement_means_no_limit_on_repeats(tmp_path):
