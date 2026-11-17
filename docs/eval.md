@@ -1,4 +1,4 @@
-# Reading rubric scores from judges and reviewers (experimental)
+# Reading rubric scores from judges and people (experimental)
 
 `loopmath eval` is experimental in 0.4.4: it works and has tests, but it has been checked on simulated studies
 only, on far fewer of them than its acceptance checks ask for, and its files and output may change. The limits are

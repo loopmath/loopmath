@@ -355,7 +355,7 @@ loopmath graph --workspace NAME --format html --out graph.html
 - [Plugin eval results](docs/plugin-eval.md): `adapt plugin-eval`
 - [OpenEvolve and ShinkaEvolve runs](docs/adapters.md#openevolve-and-shinkaevolve): `adapt openevolve`, `adapt shinkaevolve` and `recommend --role`, which model to give an evolution loop's mutator
 - [Release policy](docs/release.md)
-- [Reading rubric scores from judges and reviewers](docs/eval.md): `eval`, the files, the walk from scores to a decision, and its limits
+- [Reading rubric scores from judges and people](docs/eval.md): `eval`, the files, the walk from scores to a decision, and its limits
 - [Screening harness edits](docs/screen.md): `screen`, with a worked 48-session example and its limits
 - [Tuning a Claude Code harness](docs/harness.md): `loopmath harness`, the `/harness` mod and the herdr runner
 - [Packaged model prices](src/loopmath/prices.toml)
