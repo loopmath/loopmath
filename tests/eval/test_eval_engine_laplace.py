@@ -670,18 +670,21 @@ def test_boundary_names_an_sd_already_at_its_bound_and_one_the_data_cannot_see()
 # Split-normal theta draws
 
 class _Objective:
-    """A stand-in for `Problem` in `split_axes`: `evaluate` gives a known function of theta, and a value
-    that is not finite (which `_attempt` refuses) where `refuse(theta)` is true. Keeps the points asked."""
+    """A stand-in for `Problem` in `split_axes`: `evaluate` gives a known function of theta, a value that is
+    not finite (which `_attempt` refuses) where `refuse(theta)` is true, and where `unfinished(theta)` is
+    true a finite value 0.3 off with `mode["ok"]` false, as an inner step stopped at its limit gives.
+    Keeps the points asked."""
 
-    def __init__(self, f, lo, hi, refuse=lambda theta: False):
-        self.f, self.refuse, self.asked = f, refuse, []
+    def __init__(self, f, lo, hi, refuse=lambda theta: False, unfinished=lambda theta: False):
+        self.f, self.refuse, self.unfinished, self.asked = f, refuse, unfinished, []
         self.params = type("Bounds", (), {"lo": np.asarray(lo, dtype=float), "hi": np.asarray(hi, dtype=float)})()
 
     def evaluate(self, theta, start=None, grad=True, **kw):
         self.asked.append(np.array(theta, dtype=float))
-        value = np.nan if self.refuse(theta) else float(self.f(theta))
+        stopped = bool(self.unfinished(theta))
+        value = np.nan if self.refuse(theta) else float(self.f(theta)) - 0.3 * stopped
         return {"value": value, "grad": np.zeros(len(theta)), "laplace": value,
-                "mode": {"bad_cells": 0, "zg": np.zeros(1), "zb": np.zeros((1, 1))}}
+                "mode": {"bad_cells": 0, "zg": np.zeros(1), "zb": np.zeros((1, 1)), "ok": not stopped}}
 
 
 def test_split_normal_values_follow_its_distribution_function_and_moments():
@@ -725,7 +728,7 @@ def test_split_axes_recovers_the_side_scales_of_a_split_gaussian_objective():
     got = EL.split_axes(stub, m, axes, None, top)
     np.testing.assert_allclose(got["minus"], a, rtol=1e-10)
     np.testing.assert_allclose(got["plus"], b, rtol=1e-10)
-    assert (got["evaluations"], got["refused"], got["kept"], got["held"]) == (6, 0, 0, 0)
+    assert (got["evaluations"], got["refused"], got["unfinished"], got["kept"], got["held"]) == (6, 0, 0, 0, 0)
     want = sorted(tuple(np.round(m + s * EL.SPLIT_REACH * axes[:, k], 12)) for k in range(3) for s in (-1, 1))
     assert sorted(tuple(np.round(p, 12)) for p in stub.asked) == want
     nothing = EL.split_axes(stub, m, axes, None, np.nan)   # no value at theta-hat: every side keeps 1
@@ -757,9 +760,34 @@ def test_split_axes_cuts_to_the_bounds_and_keeps_or_holds_a_side_it_cannot_measu
     low, high = EL.SPLIT_RANGE
     np.testing.assert_allclose(got["minus"], [low, 1.0, a[2]], rtol=1e-10)
     np.testing.assert_allclose(got["plus"], [b[0], 1.0, high], rtol=1e-10)
-    assert (got["evaluations"], got["refused"], got["kept"], got["held"]) == (7, 3, 2, 2)
+    assert (got["evaluations"], got["refused"], got["unfinished"], got["kept"], got["held"]) == (7, 3, 0, 2, 2)
     assert any(np.allclose(p, [1.0 * s[0], 0, 0]) for p in stub.asked)          # cut to the room: 1 sd
     assert not any(p[1] < 0 for p in stub.asked)                                # no room: not evaluated
+
+
+def test_split_axes_never_takes_a_scale_from_an_inner_step_that_did_not_finish():
+    """Review S1b item 1. An inner step stopped at its limit gives a finite value with `mode["ok"]` false
+    (the stub's is 0.3 off, so a scale taken from it would be wrong). Such a point is refused and counted
+    unfinished: axis 0 below is unfinished at 2 sds and finished at 1 (the exact scale, from 1 sd); axis
+    1 above is unfinished at 2 sds and not finite at 1 (keeps 1, the Gaussian's scale); the two other
+    sides are exact from 2 sds."""
+    s = np.array([0.5, 2.0])
+    m, top = np.array([1.0, -1.0]), 0.0
+    a, b = np.array([0.7, 1.2]), np.array([1.5, 0.8])
+    t = lambda theta: (theta - m) / s
+
+    def f(theta):
+        return top - float(np.sum(t(theta) ** 2 / (2 * np.where(t(theta) < 0, a, b) ** 2)))
+
+    r = EL.SPLIT_REACH
+    stub = _Objective(f, m - 50, m + 50, refuse=lambda theta: np.isclose(t(theta)[1], r / 2),
+                      unfinished=lambda theta: np.isclose(t(theta)[0], -r) or np.isclose(t(theta)[1], r))
+    got = EL.split_axes(stub, m, np.diag(s), None, top)
+    np.testing.assert_allclose(got["minus"], a, rtol=1e-10)
+    np.testing.assert_allclose(got["plus"], [b[0], 1.0], rtol=1e-10)
+    assert (got["evaluations"], got["refused"], got["unfinished"], got["kept"], got["held"]) == (6, 3, 2, 1, 0)
+    asked = sorted(tuple(np.round(t(p), 12)) for p in stub.asked)
+    assert asked == sorted([(-r, 0.0), (-r / 2, 0.0), (r, 0.0), (0.0, -r), (0.0, r), (0.0, r / 2)])
 
 
 def test_split_normal_draws_put_a_prior_only_sd_near_its_exact_mean():
@@ -796,6 +824,116 @@ def test_sample_draws_theta_from_the_split_normal_by_default_and_names_it():
     assert not np.array_equal(split["draws"]["sd_input"], gauss["draws"]["sd_input"])
     with pytest.raises(ValueError, match="theta_draws"):
         EL.sample(design.data, theta_draws="student", **call)
+
+
+def _cap_scan(monkeypatch, which=lambda n: True) -> dict:
+    """Stop the real inner step after one iteration (one EP sweep, or one Newton step of the Laplace mode)
+    in the evaluations of the split scale scan for which `which(n)` is true, n counted from 1 in the scan.
+    Nothing else in the fit changes. Returns the state: `capped` lists (value, bad cells, ok) of each
+    stopped result, `asked` the theta of each scan evaluation that was not stopped, `got` the scan."""
+    ep, mode, evaluate, scan = EL.Problem.ep, EL.Problem.mode, EL.Problem.evaluate, EL.split_axes
+    state = {"on": False, "cap": False, "n": 0, "capped": [], "asked": [], "got": None}
+
+    def capped_ep(self, *args, **kw):
+        return ep(self, *args, **(dict(kw, max_iter=1) if state["cap"] else kw))
+
+    def capped_mode(self, *args, **kw):
+        return mode(self, *args, **(dict(kw, max_iter=1) if state["cap"] else kw))
+
+    def counted(self, theta, *args, **kw):
+        if not state["on"]:
+            return evaluate(self, theta, *args, **kw)
+        state["n"] += 1
+        state["cap"] = bool(which(state["n"]))
+        try:
+            out = evaluate(self, theta, *args, **kw)
+        finally:
+            stopped, state["cap"] = state["cap"], False
+        if stopped:
+            state["capped"].append((float(out["value"]), int(out["mode"].get("bad_cells") or 0),
+                                    bool(out["mode"]["ok"])))
+        else:
+            state["asked"].append(np.array(theta, dtype=float))
+        return out
+
+    def wrapped(*args, **kw):
+        state["on"] = True
+        try:
+            state["got"] = scan(*args, **kw)
+            return state["got"]
+        finally:
+            state["on"] = False
+
+    monkeypatch.setattr(EL.Problem, "ep", capped_ep)
+    monkeypatch.setattr(EL.Problem, "mode", capped_mode)
+    monkeypatch.setattr(EL.Problem, "evaluate", counted)
+    monkeypatch.setattr(EL, "split_axes", wrapped)
+    return state
+
+
+@pytest.mark.parametrize("inner", ["ep", "laplace"])
+def test_split_scan_refuses_real_unfinished_inner_steps_then_retries_or_keeps_the_gaussian(monkeypatch, inner):
+    """Review S1b item 1, with the real inner steps (EP, and the Laplace mode on the same binary readings,
+    which are not Gaussian, so its Newton steps iterate). Stopped after one iteration, every scan result is
+    finite, has no bad cell and is not `ok`. Every scan point stopped: none is used, each is counted
+    refused and unfinished, and every side keeps 1. The first point of each side stopped: each side is
+    measured at r / 2 instead, on the same points and with the same scales as a scan at half the reach
+    that is not stopped. Neither fails a check: a point that is not used sets no scale."""
+    design, _ = catalog_design("binary-checks", inputs=8)
+    call = dict(seed=3, draws=40, chains=2, theta_points=16, find_boundary=False, cores=1, inner=inner)
+    every = _cap_scan(monkeypatch)
+    res = EL.sample(design.data, **call)
+    h, n = res["checks"][2], len(res["theta"]["labels"])
+    assert every["capped"] and len(every["capped"]) == h["split_evaluations"] and not every["asked"]
+    assert all(np.isfinite(value) and bad == 0 and not ok for value, bad, ok in every["capped"])
+    assert h["split_refused"] == h["split_unfinished"] == h["split_evaluations"]
+    assert h["split_kept"] == 2 * n and h["split_scale_min"] == h["split_scale_max"] == 1.0
+    assert all(check["ok"] for check in res["checks"]), res["checks"]
+    tried = h["split_evaluations"]   # two per side with room
+    monkeypatch.undo()
+
+    first = _cap_scan(monkeypatch, which=lambda k: k % 2 == 1)   # each side's first point, while all retry
+    res = EL.sample(design.data, **call)
+    h, measured = res["checks"][2], len(first["asked"])
+    assert measured and len(first["capped"]) == measured and h["split_evaluations"] == 2 * measured == tried
+    assert all(np.isfinite(value) and bad == 0 and not ok for value, bad, ok in first["capped"])
+    assert h["split_refused"] == h["split_unfinished"] == measured and h["split_kept"] == 2 * n - measured
+    assert all(check["ok"] for check in res["checks"]), res["checks"]
+    monkeypatch.undo()
+
+    half = _cap_scan(monkeypatch, which=lambda k: False)
+    monkeypatch.setattr(EL, "SPLIT_REACH", EL.SPLIT_REACH / 2)
+    EL.sample(design.data, **call)
+    assert half["got"]["refused"] == half["got"]["unfinished"] == 0 and len(half["asked"]) == measured
+    np.testing.assert_allclose(np.array(first["asked"]), np.array(half["asked"]), rtol=0, atol=1e-12)
+    for side in ("minus", "plus"):
+        np.testing.assert_allclose(first["got"][side], half["got"][side], rtol=1e-12)
+    assert not np.allclose(np.r_[half["got"]["minus"], half["got"]["plus"]], 1.0)
+
+
+@pytest.mark.parametrize("inner", ["ep", "laplace"])
+def test_a_fit_whose_split_scan_did_not_finish_keeps_the_gaussian_and_reads_back(monkeypatch, tmp_path, inner):
+    """`fit_design` with every split scan point stopped after one inner iteration (EP, or the Laplace mode
+    on the same binary readings): the fit is converged with Gaussian theta draws (every side scale 1), the
+    `theta_hessian` check counts the unfinished points, and the fit file reads back with the same check
+    and the same draws."""
+    design, _ = catalog_design("binary-checks", inputs=8, seed=1)
+    if inner == "laplace":
+        monkeypatch.setattr(EL, "sample", functools.partial(EL.sample, inner="laplace"))
+    state = _cap_scan(monkeypatch)
+    meta, draws = FT.fit_design(design, seed=4, cores=1, engine="laplace")
+    checks = {c["name"]: c for c in meta["diagnostics"]["checks"]}
+    h = checks["theta_hessian"]
+    assert state["capped"] and all(np.isfinite(v) and bad == 0 and not ok for v, bad, ok in state["capped"])
+    assert h["split_unfinished"] == h["split_refused"] == h["split_evaluations"] == len(state["capped"])
+    assert h["split_kept"] == len(state["got"]["minus"]) * 2 and h["split_scale_min"] == h["split_scale_max"] == 1.0
+    assert meta["diagnostics"]["converged"] is True
+    path = F.write_fit(tmp_path / "fit.json", meta, draws)
+    back = F.read_fit(path)
+    assert back.converged is True
+    assert {c["name"]: c for c in back.meta["diagnostics"]["checks"]}["theta_hessian"] == h
+    for name in draws:
+        np.testing.assert_array_equal(back.draws[name], draws[name], err_msg=name)
 
 
 def test_sample_returns_the_shape_of_engine_pymc_and_checks():

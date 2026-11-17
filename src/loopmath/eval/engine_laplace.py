@@ -1900,16 +1900,19 @@ def split_axes(prob: Problem, theta: np.ndarray, axes: np.ndarray, start: Any, t
     sd, in units of that axis's sd, of the half-Gaussian that falls from `top` to that value over r:
     c = r / sqrt(2 (top - value)). Both are 1 where the objective is Gaussian along the axis.
 
-    Where the bounds leave less room than r on a side, r is cut to the room; with less than
-    `SPLIT_LEAST`, or when the inner step refuses the point (`_attempt`) at r and at r / 2, or when `top`
-    is not finite, the side keeps 1. A scale outside `SPLIT_RANGE` (a value that does not fall included) is
-    held at its limit. Returns `{"minus", "plus"}` (the side scales per axis, below and above theta-hat)
-    and the counts `evaluations`, `refused` (points the inner step refused), `kept` (sides that kept 1)
-    and `held` (sides held at a limit)."""
+    Where the bounds leave less room than r on a side, r is cut to the room. A point is used only when the
+    inner step takes it (`_attempt`) and finishes (`mode["ok"]`): an inner step that stops at its iteration
+    limit can give a finite value that is not the objective, and such a value never sets a scale. A point
+    that is not used is tried again at r / 2. With less room than `SPLIT_LEAST`, with no point used at r
+    or at r / 2, or when `top` is not finite, the side keeps 1, the Gaussian's scale. A scale outside
+    `SPLIT_RANGE` (a value that does not fall included) is held at its limit. Returns `{"minus", "plus"}`
+    (the side scales per axis, below and above theta-hat) and the counts `evaluations`, `refused` (points
+    not used), `unfinished` (those of them with a finite value from an inner step that did not finish),
+    `kept` (sides that kept 1) and `held` (sides held at a limit)."""
     P = prob.params
     n = axes.shape[1]
     scales = {-1.0: np.ones(n), 1.0: np.ones(n)}
-    evaluations = refused = kept = held = 0
+    evaluations = refused = unfinished = kept = held = 0
     low, high = SPLIT_RANGE
     for k in range(n):
         for side in (-1.0, 1.0):
@@ -1920,10 +1923,11 @@ def split_axes(prob: Problem, theta: np.ndarray, axes: np.ndarray, start: Any, t
                 for r in (reach, 0.5 * reach):
                     evaluations += 1
                     res = _attempt(prob, theta + r * step, start, grad=False, tol=VALUE_TOL)
-                    if res is not None:
+                    if res is not None and res["mode"]["ok"]:
                         got = (r, top - float(res["value"]))
                         break
                     refused += 1
+                    unfinished += res is not None
             if got is None:
                 kept += 1
                 continue
@@ -1934,7 +1938,7 @@ def split_axes(prob: Problem, theta: np.ndarray, axes: np.ndarray, start: Any, t
                 c = min(max(c, low), high)
             scales[side][k] = c
     return {"minus": scales[-1.0], "plus": scales[1.0], "evaluations": evaluations, "refused": refused,
-            "kept": kept, "held": held}
+            "unfinished": unfinished, "kept": kept, "held": held}
 
 
 def split_normal(u: np.ndarray, minus: np.ndarray, plus: np.ndarray) -> np.ndarray:
@@ -2173,13 +2177,15 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
     0: there is no sampler. `cores` (default `CELL_WORKERS`) is the number of threads for the cell rule
     in the theta fit, and of processes for the theta points (`_theta_points`). The `theta_hessian` check
     also names the theta draws (`theta_draws`) and, for the split normal, the counts of `split_axes`
-    (`split_evaluations`, `split_refused`, `split_kept`, `split_held`) and the smallest and largest side
-    scale (`split_scale_min`, `split_scale_max`); none of them fails the check.
+    (`split_evaluations`, `split_refused`, `split_unfinished`, `split_kept`, `split_held`) and the smallest
+    and largest side scale (`split_scale_min`, `split_scale_max`); none of them fails the check, because
+    a point that is not used never sets a scale.
 
     A result with a value that is not finite, or with a group the cell rule could not integrate, is never
     used (`_usable`). A trial point of the optimizer, polish, the boundary scan or the split scale scan
-    that gives one is rejected and another tried (the scan keeps the Gaussian's scale on that side), and a
-    theta draw is drawn again; that alone fails no check. Where a result is needed it fails one: the final
+    that gives one is rejected and another tried, and a theta draw is drawn again; that alone fails no
+    check. The split scale scan also rejects a point whose inner step did not finish, and a side with no
+    point used keeps the Gaussian's scale. Where a result is needed it fails one: the final
     evaluation fails `optimizer` (`finite` false), the theta Hessian `theta_hessian`, a theta point with no
     attempt left `inner_newton` (`lost_theta_points`; its draws are NaN), and the doubled rule `cell_rule`.
     `inner_newton` reports `bad_cells`, the groups that could not be integrated anywhere in the fit,
@@ -2288,6 +2294,7 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 250, tune: in
     if split is not None:
         sides = np.concatenate([split["minus"], split["plus"]])
         checks[2].update({"split_evaluations": int(split["evaluations"]), "split_refused": int(split["refused"]),
+                          "split_unfinished": int(split["unfinished"]),
                           "split_kept": int(split["kept"]), "split_held": int(split["held"]),
                           "split_scale_min": float(sides.min()), "split_scale_max": float(sides.max())})
     rule = cell_rule_check(prob, theta, start)
