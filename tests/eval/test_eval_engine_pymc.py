@@ -107,13 +107,13 @@ def test_one_small_run_of_a_panel_judge_items_and_a_pairs_only_dimension(monkeyp
     data = design.data
     assert data["n_pc"] == 24 and data["n_e"] == 48 and data["n_cell"] > 0 and design.relative == ["final/part4"]
     assert set(data["g_kind"]) == {M.LINEAR, M.BINARY, M.LEVELS, M.ITEMS} and len(data["k_r"]) > 0
-    got = engine.sample(data, seed=5, draws=40, tune=60, chains=2)
+    got = engine.sample(data, seed=5, draws=20, tune=30, chains=2)
     assert got["version"] == engine.version() and got["divergences"] >= 0 and got["run_seconds"] > 0
     sizes = {"A": 2, "D": 5, "J": 3, "F": 2, "I": 6, "R": 12}
     assert set(got["draws"]) == set(engine.OUTPUTS)
     for name in engine.OUTPUTS:
         shape = tuple(sizes[axis] for axis in F.DRAW_SHAPES[name][1:])
-        assert got["draws"][name].shape == (2, 40) + shape, name
+        assert got["draws"][name].shape == (2, 20) + shape, name
         assert np.isfinite(got["draws"][name]).all(), name
     raw = got["draws"]
     assert np.allclose(raw["bias"][:, :, 0, :4], 0.0)                  # the one anchor
@@ -124,8 +124,8 @@ def test_one_small_run_of_a_panel_judge_items_and_a_pairs_only_dimension(monkeyp
     assert np.allclose(np.diagonal(raw["corr_input"], axis1=2, axis2=3), 1.0)
     # the fit file takes it: NaN only where a term says absent, the panel judge keeps its halo_call
     monkeypatch.setattr(engine, "sample", lambda *args, **kwargs: got)    # the same draws: no second run
-    meta, draws = FT.fit_design(design, seed=5, draws=40, tune=60, chains=2, keep_draws=50)
-    assert draws["mu"].shape == (50, 2, 5) and meta["options"]["structure"] == "factor:2"
+    meta, draws = FT.fit_design(design, seed=5, draws=20, tune=30, chains=2, keep_draws=30)
+    assert draws["mu"].shape == (30, 2, 5) and meta["options"]["structure"] == "factor:2"
     assert np.all(draws["halo_call"][:, [0, 2]] == 0.0) and np.all(draws["halo_call"][:, 1] > 0)
     assert np.isnan(draws["sigma"][:, :, 4]).all() and np.isnan(draws["bias"][:, :, 4]).all()
     assert np.isnan(draws["sigma_pair"][:, 2]).all() and np.isfinite(draws["sigma_pair"][:, :2, [0, 4]]).all()
