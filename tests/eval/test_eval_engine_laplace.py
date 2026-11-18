@@ -1619,7 +1619,88 @@ def test_laplace_and_pymc_agree_on_the_family_effects_of_a_small_own_family_stud
 # Slow: recovery of family effects with one family sd per judge
 
 OWN_FAMILY_STUDIES = 100
-E_NULL_MAX = 0.30   # mean of e over mid's null contrasts; see the test for what was measured
+E_NULL_MAX = 0.30   # bound on |mean e| over mid's null contrasts, both signs; see the test for what was measured
+
+
+def _own_family_rows(seed: int, design, sim, draws: dict) -> list[dict]:
+    """One row per model judge and dimension of a fitted `own-family` study: the posterior mean, sd and 90%
+    interval of the judge's own-family contrast, and its simulated value."""
+    dims = [d["id"] for d in sim.truth["index"]["dimensions"]]
+    assert dims == [d["id"] for d in design.dims]
+    rows = []
+    for judge, (x, truth) in _own_family_contrasts(sim, draws).items():
+        lo, hi = np.percentile(x, [5, 95], axis=0)
+        for d, dim in enumerate(dims):
+            rows.append({"study": seed, "judge": judge, "kind": "own_family", "dimension": dim,
+                         "truth": float(truth[d]), "mean": float(x[:, d].mean()), "sd": float(x[:, d].std()),
+                         "lo": float(lo[d]), "hi": float(hi[d])})
+    return rows
+
+
+def _own_family_recovery(rows: list[dict]) -> tuple[list[str], str]:
+    """The recovery checks over contrast rows (see `_own_family_rows`). Rows with truth 0 are null, the
+    rest real. Returns the checks that failed and a message with the measured values: the mean of
+    e = mean / sd over the null rows with its study-cluster standard error, the share of null rows whose
+    90% interval excludes 0, real rows held and found pooled, and coverage of the real rows by judge,
+    contrast kind and dimension (reported only; the gate run judges each parameter)."""
+    null = [r for r in rows if r["truth"] == 0.0]
+    real = [r for r in rows if r["truth"] != 0.0]
+    e = np.array([r["mean"] / r["sd"] for r in null])
+    by_study: dict = {}
+    for r, z in zip(null, e):
+        by_study.setdefault(r["study"], []).append(z)
+    means = np.array([np.mean(v) for v in by_study.values()])
+    se = means.std(ddof=1) / np.sqrt(len(means)) if len(means) > 1 else float("nan")
+    flags = np.mean([r["lo"] > 0 or r["hi"] < 0 for r in null])
+    held = np.array([r["lo"] <= r["truth"] <= r["hi"] for r in real])
+    found = np.mean([r["lo"] > 0 or r["hi"] < 0 for r in real])
+    cells: dict = {}
+    for r, h in zip(real, held):
+        cells.setdefault((r["judge"], r["kind"], r["dimension"]), []).append(h)
+    lines = [f"null mean e {e.mean():+.3f} (study-cluster se {se:.3f}, {len(means)} studies, bound +-{E_NULL_MAX}); "
+             f"null flagged {flags:.3f}; real held {held.mean():.3f}, found {found:.3f}",
+             "real coverage by judge, kind, dimension:"]
+    lines += [f"  {j} {k} {d}: {int(np.sum(v))}/{len(v)} = {np.mean(v):.3f}" for (j, k, d), v in sorted(cells.items())]
+    failed = []
+    if not abs(e.mean()) <= E_NULL_MAX:
+        failed.append("null bias")
+    if not flags <= 0.10:
+        failed.append("null flags")
+    if not 0.85 <= held.mean() <= 0.95:
+        failed.append("real coverage")
+    if not found >= 0.90:
+        failed.append("real found")
+    return failed, "\n".join(lines)
+
+
+def _synthetic_own_family_rows(null_e: float, studies: int = 100) -> list[dict]:
+    """Deterministic contrast rows shaped like the `own-family` recovery check: per study a null judge on
+    two dimensions with posterior sd 1 and mean `null_e` (so every null 90% interval holds 0 when
+    |null_e| < 1.64), and two real judges whose intervals hold the truth in 90% of rows and all exclude 0."""
+    rows = []
+    for s in range(studies):
+        for d in ("final/depth", "final/clarity"):
+            rows.append({"study": s, "judge": "mid", "kind": "own_family", "dimension": d, "truth": 0.0,
+                         "mean": null_e, "sd": 1.0, "lo": null_e - 1.64158, "hi": null_e + 1.64158})
+            for judge in ("strong", "cheap"):
+                miss = s % 10 == 0
+                rows.append({"study": s, "judge": judge, "kind": "own_family", "dimension": d, "truth": 0.06,
+                             "mean": 0.09 if miss else 0.06, "sd": 0.01, "lo": 0.07 if miss else 0.045,
+                             "hi": 0.11 if miss else 0.075})
+    return rows
+
+
+@pytest.mark.parametrize("null_e, failed", [(-0.8, ["null bias"]), (0.8, ["null bias"]), (-0.2, []), (0.25, [])])
+def test_the_own_family_recovery_check_refuses_a_null_bias_of_either_sign(null_e, failed):
+    """The review's counterexample: null contrasts with mean error -0.8 posterior sd, intervals that all hold
+    0, real effects held in 90% and found in all. Only the bias check can catch it, and it does, as it does
+    +0.8; biases of -0.2 and +0.25 pass. The message names the cluster standard error and every
+    judge, kind and dimension row."""
+    got, message = _own_family_recovery(_synthetic_own_family_rows(null_e))
+    assert got == failed, message
+    assert "study-cluster se 0.000, 100 studies" in message
+    assert "strong own_family final/clarity: 90/100 = 0.900" in message
+    assert "cheap own_family final/depth: 90/100 = 0.900" in message
 
 
 @slow
@@ -1629,35 +1710,29 @@ def test_own_family_recovery_with_one_family_sd_per_judge():
     sd, so the real effects of `strong` and `cheap` no longer set how far `mid`'s effects are shrunk.
 
     - `mid`'s own-family contrast (truth 0): e = posterior mean / posterior sd. Its mean over the studies
-      stays under E_NULL_MAX, and at most 10% of these contrasts have a 90% interval that excludes 0.
+      lies within +-E_NULL_MAX, and at most 10% of these contrasts have a 90% interval that excludes 0.
     - The real contrasts of `strong` and `cheap`: their 90% intervals hold the truth in 85% to 95% of
-      them, and at least 90% exclude 0.
+      them, pooled, and at least 90% exclude 0. Coverage by judge, kind and dimension is printed in the
+      message, not asserted: the gate run judges each parameter.
 
-    Measured on these seeds (posterior sd taken as the 90% width / 3.29): mean e +0.23 (cluster standard
-    error 0.04), 4.5% flagged, real effects held 0.89 and found 0.96. With one family sd shared by the
-    judges (the 0.4.5 release candidate): +0.37 (0.06), 9.5% flagged, held 0.84, which fails both the
-    bound and the coverage band. The bound is not 0: about +0.2 remains. Most of it is the
+    Measured on these seeds (posterior sd taken as the 90% width / 3.29): mean e +0.23 (study-cluster
+    standard error 0.04), 4.5% flagged, real effects held 0.89 and found 0.96. With one family sd shared
+    by the judges (the 0.4.5 release candidate): +0.37 (0.06), 9.5% flagged, held 0.84, which fails both
+    the bound and the coverage band. The merge owner accepted the residual of about +0.2 as a known limit
+    and set the two-sided bound of 0.30; it is not 0. Most of it is the
     ordinary shrinkage of the real effects, which reaches `mid` through the arm means (family follows arm
     here, so the family effects are measured only against the person reviewer): with the family sd held
     at 0.25, no shrinkage, the same 200 seeds give +0.10 (0.05) and unbiased real effects, but 8% of the
     null contrasts and 15% of the studies flagged."""
-    null, held, found = [], [], []
+    rows = []
     for seed in range(OWN_FAMILY_STUDIES):
         design, sim = catalog_design("own-family", inputs=40, seed=seed)
         meta, draws = FT.fit_design(design, seed=seed, keep_draws=1000)
         assert meta["diagnostics"]["converged"], seed
-        for judge, (x, truth) in _own_family_contrasts(sim, draws).items():
-            lo, hi = np.percentile(x, [5, 95], axis=0)
-            if judge == "mid":
-                assert np.all(truth == 0.0)
-                null.append((x.mean(axis=0) / x.std(axis=0), (lo > 0) | (hi < 0)))
-            else:
-                assert np.all(truth > 0.0)
-                held.extend((lo <= truth) & (truth <= hi))
-                found.extend((lo > 0) | (hi < 0))
-    e = np.concatenate([z for z, _ in null])
-    flags = np.concatenate([f for _, f in null])
-    assert e.mean() < E_NULL_MAX, e.mean()
-    assert flags.mean() <= 0.10, flags.mean()
-    assert 0.85 <= np.mean(held) <= 0.95, np.mean(held)
-    assert np.mean(found) >= 0.90, np.mean(found)
+        study = _own_family_rows(seed, design, sim, draws)
+        assert all((r["truth"] == 0.0) == (r["judge"] == "mid") for r in study), seed
+        assert all(r["truth"] > 0.0 for r in study if r["judge"] != "mid"), seed
+        rows.extend(study)
+    failed, message = _own_family_recovery(rows)
+    print(message)
+    assert not failed, f"failed: {failed}\n{message}"
