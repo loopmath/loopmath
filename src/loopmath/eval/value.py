@@ -40,6 +40,13 @@ half) and the verdict of the objective (`adopt`, `reject` or `more`):
 A rule that needs a cost never adopts without one: the verdict is then `more`.
 
 `arm_draws` is the shared piece: `eval steps` reads the same per-draw figures.
+
+Units. Every figure is computed in the unit the engine fitted the draws in (`units.in_fitted_unit`), not
+in the unit the fit file reports a `binary` or pairs-only dimension in, so a decision is the same for a
+fit file of either schema. Reported quality and pass rates do not depend on the unit. Two things would:
+the clipped latent quality a weight on a relative dimension reads, and the integration points, whose
+eigenvalue root (taken when a covariance is singular) turns with a unit that differs from draw to draw.
+`eval labels next` computes its arm values the same way, so the two commands value an arm alike.
 """
 
 from __future__ import annotations
@@ -58,6 +65,7 @@ from ..output import EXIT_OK, emit_json
 from . import contracts as C
 from . import fitfile as F
 from . import quality as Q
+from .units import in_fitted_unit
 
 REPORT_SCHEMA = "loopmath.eval-value-report/1"
 NEW_RUNS = 4096    # integration points per posterior draw (a power of 2)
@@ -158,8 +166,9 @@ def sub_cov(draws: Any, level: str, dims: Sequence[int], sl: slice) -> np.ndarra
 
 
 def arm_draws(fit: F.Fit, spec: Q.ValueSpec, seed: int = 0, new_runs: int = NEW_RUNS) -> ArmDraws:
-    """The per-draw figures of every arm (see the module docstring for the method)."""
-    draws, kinds = fit.draws, fit.kinds
+    """The per-draw figures of every arm (see the module docstring for the method), in the unit the engine
+    fitted (Units)."""
+    draws, kinds = in_fitted_unit(fit.draws), fit.kinds
     mu = np.asarray(draws["mu"], dtype=float)
     S, A, D = mu.shape
     dims = needed_dims(spec)

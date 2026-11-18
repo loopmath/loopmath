@@ -18,7 +18,10 @@ INVALID = [(s, n) for s in SCHEMAS for n in range(len(C.EXAMPLES[s]["invalid"]))
 def test_every_schema_has_examples_of_both_kinds():
     assert sorted(C.EXAMPLES) == sorted(SCHEMAS) == sorted(C.VALIDATORS)
     assert all(C.EXAMPLES[s]["valid"] and len(C.EXAMPLES[s]["invalid"]) >= 4 for s in SCHEMAS)
-    assert all(s.startswith("loopmath.eval-") and s.endswith("/1") for s in SCHEMAS + [C.SCHEMA_FIT, C.SCHEMA_SIM])
+    assert all(s.startswith("loopmath.eval-") and s.endswith("/1") for s in SCHEMAS + [C.SCHEMA_SIM])
+    # The fit file and the truth moved to /2 with the reported unit of binary and pairs-only dimensions.
+    assert C.SCHEMA_FIT == "loopmath.eval-fit/2" and C.SCHEMA_FIT_READ == (C.SCHEMA_FIT, "loopmath.eval-fit/1")
+    assert C.SCHEMA_TRUTH == "loopmath.eval-truth/2" and C.SCHEMA_TRUTH_READ == (C.SCHEMA_TRUTH, "loopmath.eval-truth/1")
 
 
 @pytest.mark.parametrize("schema,n", VALID)

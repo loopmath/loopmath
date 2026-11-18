@@ -1,0 +1,2 @@
+{"schema": "loopmath.eval-scores/1", "id": "a.b.s1", "run": "a.b", "step": "final", "component": "depth", "judge": "reviewer", "call": "a.b.s1", "rubric": "brief@1", "observed_at": "2026-02-03T10:01:00-08:00", "value": 4, "ext": {"dev.loopmath.eval.ocp": {"id": "s1"}}}
+{"schema": "loopmath.eval-scores/1", "id": "r2.s1", "run": "r2", "step": "final", "component": "depth", "judge": "reviewer", "call": "r2.s1", "rubric": "brief@1", "observed_at": "2026-02-03T10:02:00-08:00", "value": 7, "ext": {"dev.loopmath.eval.ocp": {"id": "s1"}}}

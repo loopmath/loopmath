@@ -134,7 +134,9 @@ def test_cheap_vs_strong_judge_differ_in_every_error_term_and_in_cost():
 def test_binary_checks_are_on_the_anchor_unit_with_a_lenient_cheap_judge():
     sim = sim_of("binary-checks")
     assert set(kinds_of(sim).values()) == {"binary"} and len(kinds_of(sim)) == 3
-    assert array(sim, "sigma")[0].tolist() == [1.0, 1.0, 1.0]
+    # The spec sets the reviewer's call noise to 1 and tau to 0.5; truth.json is in its total noise sqrt(1.25).
+    assert np.allclose(array(sim, "sigma")[0], 1.0 / np.sqrt(1.25), rtol=1e-15, atol=0)
+    assert np.allclose(np.hypot(array(sim, "sigma")[0], array(sim, "tau")[0]), 1.0, rtol=1e-15, atol=0)
     assert [unit["rule"] for unit in sim.truth["units"]] == ["binary"] * 3
     rates = {(row["judge"], row["dimension"]): row for row in sim.truth["binary_rates"]}
     assert len(rates) == 9
@@ -153,7 +155,8 @@ def test_the_levels_specs_use_every_level_and_levels_5_has_an_arm_near_the_top()
     assert {row["value"] for row in five.scores} == {1, 2, 3, 4, 5}
     assert array(three, "cuts").shape == (2, 2) and array(five, "cuts").shape == (2, 4)
     assert np.allclose(array(five, "cuts")[0], [0.125, 0.375, 0.625, 0.875])
-    top = [row["value"] for row in five.scores if row["component"] == "clarity" and row["run"].startswith("strong-")]
+    arm_of = {run["run"]: run["arm"] for run in five.runs}
+    top = [row["value"] for row in five.scores if row["component"] == "clarity" and arm_of[row["run"]] == "strong"]
     assert 0.35 < np.mean([value == 5 for value in top]) < 0.75
     # Read as plain numbers the top arm is squeezed: its reported mean trails its hidden mean.
     d, a = place(five, dimension="final/clarity"), place(five, arm="strong")
@@ -187,8 +190,9 @@ def test_mixed_rubric_has_every_scale_kind_and_a_lower_is_better_component():
     # The strong arm is better on `filler`, so the share it is scored at is lower.
     d = place(sim, dimension="final/filler")
     assert array(sim, "mu")[1, d] > array(sim, "mu")[0, d]
+    arm_of = {run["run"]: run["arm"] for run in sim.runs}
     mean = {arm: np.mean([row["value"] for row in sim.scores if row["component"] == "filler"
-                          and row["judge"] == "strong" and row["run"].startswith(f"{arm}-")])
+                          and row["judge"] == "strong" and arm_of[row["run"]] == arm])
             for arm in ("baseline", "strong")}
     assert mean["strong"] < mean["baseline"] and 0 < mean["strong"] < 1
     assert len(sim.items) > 0 and [unit["dimension"] for unit in sim.truth["units"]] == ["final/numbers_right"]
@@ -219,9 +223,14 @@ def test_pairs_has_one_dimension_with_scores_and_pairs_and_one_with_pairs_only()
     assert {row["shown_first"] for row in sim.pairs} == {"a", "b"} and {row["verdict"] for row in sim.pairs} == {
         "a", "b", "tie"}
     d = place(sim, dimension="final/overall")
-    assert abs(array(sim, "mu")[:, d].sum()) < 1e-9 and array(sim, "sigma_pair")[0, d] == 1.0
+    # The spec sets the reviewer's sigma_pair to 1 and tau to 0.4; truth.json is in its total noise of one
+    # comparison, sqrt(1 + 2 x 0.4^2).
+    assert abs(array(sim, "mu")[:, d].sum()) < 1e-9
+    assert array(sim, "sigma_pair")[0, d] == pytest.approx(1.0 / np.sqrt(1.32), rel=1e-15)
+    assert np.sqrt(array(sim, "sigma_pair")[0, d] ** 2 + 2 * array(sim, "tau")[0, d] ** 2) == pytest.approx(1.0)
     assert sim.truth["units"] == [{"dimension": "final/overall", "rule": "pairs_only", "parameter": "sigma_pair",
-                                   "judges": ["reviewer"]}]
+                                   "judges": ["reviewer"], "unit": "total_pair_noise",
+                                   "factor": pytest.approx(np.sqrt(1.32), rel=1e-15)}]
     # Each judge compares on one dimension, so its tie width and position bias have one unit.
     per_judge: dict[str, set] = {}
     for row in sim.pairs:

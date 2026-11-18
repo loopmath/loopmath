@@ -670,8 +670,36 @@ def test_own_family_contrast_and_its_flag(tmp_path):
     cheap = judge_row(payload, "cheap")["family"]["own_family"]
     assert cheap["family"] == "beta" and all(row["excludes_zero"] is False for row in cheap["dims"])
     assert all(abs(row["effect"]["mean"]) < 0.01 for row in cheap["dims"])
-    assert "own family (alpha) on final/depth: 0.30 (0.25 to 0.35)  <- interval excludes 0" in J.render(payload) or \
-        "<- interval excludes 0" in J.render(payload)
+    # strong's contrasts are 0.3; each is one family term minus the mean of two, all with posterior sd 0.02,
+    # so its sd is about 0.02 x sqrt(1.5) = 0.0245 and it lies about 12 sds from 0 (draw noise keeps it above
+    # 9.5, and 2 T(-9.5 / sqrt(1.01); 99) = 1.7e-15): flagged over the report's contrasts; cheap's hold 0
+    assert all(row["p_value"] < 2e-15 and row["flagged"] is True for row in own["dims"])
+    assert all(row["flagged"] is False for row in cheap["dims"])
+    printed = len(own["dims"]) + len(cheap["dims"])
+    assert payload["family_flag"] == {"rule": "holm", "scope": "report", "level": 0.10, "contrasts": printed,
+                                      "flagged": len(own["dims"]), "also_needs": "the 90% interval excludes 0",
+                                      "undecided": 0,
+                                      "test": "two-sided p-value from the posterior mean and sd of the "
+                                              "contrast's draws in the unit the engine fitted in, widened for "
+                                              "their Monte Carlo error read from the same draws: "
+                                              "2 T(-|mean| / (sd sqrt(1 + 1 / ess_mean)); df)",
+                                      "least_ess": 100.0,
+                                      "undecided_when": "the draws or their squared deviations have fewer than "
+                                                        "100 effective draws: too few effective draws to decide, "
+                                                        "counted among the contrasts, never flagged",
+                                      "holds_when": "designed to keep the chance of any false family flag in a "
+                                                    "report near or under 0.1 when the fit is calibrated, close "
+                                                    "to normal for these contrasts, and its draws mix well; "
+                                                    "checked by simulation, not guaranteed for every fit"}
+    assert all(row["tested_with"] == printed for row in own["dims"] + cheap["dims"])
+    text = J.render(payload)
+    assert any(line.startswith("  own family (alpha) on final/depth: 0.30 (") and line.endswith("  <- flagged")
+               for line in text.splitlines()), text
+    assert (f"Family flags ({len(own['dims'])} of {printed}) are decided over all {printed} family contrasts shown "
+            "(Holm, from each contrast's posterior mean and sd)") in text
+    assert ("designed to keep the chance of any false family flag in this report near or under 0.1 when the fit "
+            "is calibrated, close to normal for these contrasts, and its draws mix well; checked by simulation, "
+            "not guaranteed for every fit") in text
 
 
 def test_reference_family_contrast_and_confounding(tmp_path):
@@ -996,8 +1024,11 @@ def test_json_is_one_object_and_the_same_every_time(tmp_path, capsys):
     assert payload["schema"] == "loopmath.eval-judges-report/1" == J.SCHEMA
     assert payload["fit"] == "fit.json" and payload["converged"] is True and payload["draws"] == 200
     assert payload["stale"] == {"study": None, "changes": [], "not_checked": []}
-    assert set(payload) == {"schema", "fit", "converged", "draws", "anchor", "repeats", "judges", "choices",
-                            "batching_loss", "reference_effect", "not_measured", "stale", "inputs", "options"}
+    assert set(payload) == {"schema", "fit", "converged", "draws", "anchor", "repeats", "judges", "family_flag",
+                            "choices", "batching_loss", "reference_effect", "not_measured", "stale", "inputs",
+                            "options"}
+    assert payload["family_flag"]["rule"] == "holm" and payload["family_flag"]["level"] == 0.10
+    assert payload["family_flag"]["contrasts"] == len(J.family_rows(payload["judges"]))
     import hashlib
     draws_file = tmp_path / "fit.draws.npz"
     assert payload["inputs"] == {

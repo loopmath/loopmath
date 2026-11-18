@@ -141,6 +141,8 @@ def add(sub) -> None:
                  "print the OCP signals and preferences of a study as JSON Lines")
     q.add_argument("study", metavar="STUDY", help="the study folder")
     q.add_argument("--run", action="append", default=None, metavar="RUN", help="only this run (repeatable)")
+    q.add_argument("--judges", nargs="+", action="extend", default=None, metavar="ID",
+                   help="only the readings and pairs of these judges")
 
     # eval simulate
     q = _command(es, "simulate", "simulate", "simulate", "write a synthetic study with known truth")
@@ -150,7 +152,7 @@ def add(sub) -> None:
     q.add_argument("--seed", type=int, default=0)
 
     # eval fit
-    q = _command(es, "fit", "fit", "fit", "fit the quality and judge model to a study (needs the [bayes] extra)")
+    q = _command(es, "fit", "fit", "fit", "fit the quality and judge model to a study (--engine pymc needs the [bayes] extra)")
     q.add_argument("study", metavar="STUDY", help="the study folder")
     q.add_argument("--rubric", required=True, metavar="FILE")
     q.add_argument("--judges", required=True, metavar="FILE")
@@ -170,12 +172,16 @@ def add(sub) -> None:
     q.add_argument("--check-only", action="store_true", help="print the identification report and stop")
     q.add_argument("--allow-simulated", action="store_true", help="fit a study that holds simulated runs")
     q.add_argument("--out", default=None, metavar="FILE", help="the fit file to write (default: STUDY/fit.json)")
+    q.add_argument("--engine", choices=["pymc", "laplace"], default="laplace",
+                   help="laplace fits fast, with approximate draws, and needs no extra (the default); pymc samples")
 
     # eval judges
     q = _command(es, "judges", "judges", "judges", "each judge's bias, disagreement, noise and cost, from a fit")
     _fit_reader(q)
     q.add_argument("--target-error", type=float, default=None, metavar="X",
-                   help="the error to reach: lists the cheapest judge and repeats that reach it")
+                   help="the error to reach, on the scale the engine fits (on a yes or no component the "
+                        "anchors' call noise, with comparisons only their call noise of one comparison): lists the "
+                        "cheapest judge and repeats that reach it")
     q.add_argument("--budget-usd", type=float, default=None, metavar="USD",
                    help="the budget per output: lists the best judge and repeats within it")
 

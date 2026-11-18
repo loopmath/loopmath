@@ -16,7 +16,7 @@ Candidates
   this reviewer. A `human_only` component needs no judge reading of its own.
 - A pair: two targets of one input from different arms, on the step's `overall` component or the
   components named. Pairs this reviewer already judged are left out when the study folder holds
-  `pairs.jsonl`.
+  `pairs.jsonl`; they come back only as repeats (below).
 
 Pilot mode
 ----------
@@ -70,13 +70,19 @@ covariance
 What the approximation leaves out: a label also teaches the judges' biases and family effects, and that
 part of its worth is not counted. The uniform share below is the guard.
 
+Every moment above is taken over the draws in the unit the engine fitted them in (`units.in_fitted_unit`).
+The fit file reports `binary` and pairs-only dimensions in a unit whose size differs from draw to draw,
+and moments over draws would move with it; this way a plan is the same whichever unit the file reports.
+
 The four scores of an assignment (variances are in units of the component's spread across runs, the
 diagonal of `Sigma_input + Sigma_run`, so 1 means "the judges tell nothing"):
 
 - `judge_uncertainty`: the posterior variance of the hidden quality, summed over its components.
 - `decision_weight`: the fall in decision loss from this assignment alone. Null without a value file.
 - `component_gain`: the conditional variance of each component given the others in the assignment and
-  the readings, `Sigma_kk - Sigma_k,rest Sigma_rest^-1 Sigma_rest,k`, averaged over the components.
+  the readings, `Sigma_kk - Sigma_k,rest Sigma_rest^+ Sigma_rest,k`, averaged over the components. The
+  inverse of `Sigma_rest` is taken on its rank (`conditional_variances`), so it holds for a singular
+  `Sigma` too: a component the others fix exactly, such as one of two identical components, has 0.
 - `per_minute`: the fall from the whole offer divided by its minutes. Paired targets (the runs of the
   arms on one input) are one offer, drawn together, and share this figure. An offer starts from every
   arm's target on the input and leaves one out at a time while that raises its fall per minute: arms
@@ -84,7 +90,8 @@ diagonal of `Sigma_input + Sigma_run`, so 1 means "the judges tell nothing"):
 
 A component of a score assignment is dropped when its conditional variance given the other components
 is under `DROP_BELOW`: with the others labelled, a human adds almost nothing on it. The smallest goes
-first. A `human_only` component is never dropped, and one component always stays.
+first and the rest are computed again, so of two identical components one is dropped and one stays. A
+`human_only` component is never dropped, and one component always stays.
 
 Sampling. Two independent draws, and no drawn plan is over the budget.
 
@@ -110,9 +117,18 @@ Offers are whole, so a plan can come in under the budget: by less than the cost 
 targets both draws picked (asked once). With a minutes budget the uniform draw is sized for its dearest
 candidates, so what cheaper picks leave is not spent either.
 
-Both modes: `--repeat-share` of the budget goes to repeats (targets this reviewer scored before, a
-simple random sample) and, with `--overlap ID`, to overlaps (the second reviewer on targets drawn in
-this plan). Their number is what their share pays for whichever are drawn.
+Both modes: `--repeat-share` of the budget goes to repeats and, with `--overlap ID`, to overlaps (the
+second reviewer on targets drawn in this plan). Their number is what their share pays for whichever are
+drawn. Without `--overlap`, the part of the share the whole repeat pool does not use goes to the main
+draw. Repeats are a simple random sample of one pool: with scores asked, the targets this reviewer
+scored before; with pairs asked, the pairs they compared before, read live from `pairs.jsonl` (replaced
+rows left out) on the components this plan compares. A pair repeat is shown in the other order: the
+output the reviewer saw first less often in those comparisons goes first, and when both went first
+equally often, or no order was recorded, the order is drawn at random. Repeats measure the reviewer's
+own noise; a pair repeat in the other order also measures their position bias. A plan can be repeats
+only: when no new candidate is left (every pair compared, say), or when the repeat share takes the
+whole count budget once rounded. The repeat share still sets their number, and what the main draw
+would have spent is not spent. With neither a new candidate nor a repeat the share pays for, it refuses.
 
 Assignment ids carry a digest of every input (the fit, the draws, the value file, and `pairs.jsonl` and
 `items.jsonl` of the study folder when they are read), the options, the seed and the assignments
@@ -138,12 +154,15 @@ from ..output import EXIT_OK, emit_json
 from . import contracts as C
 from . import fitfile as F
 from . import quality as Q
+from .units import in_fitted_unit
 
 REPORT_SCHEMA = "loopmath.eval-labels-next/1"
 COMMAND = "labels next"
 BANDS = 3            # judge score bands of the pilot strata
 FLOOR = 0.1          # an offer's weight is at least this share of the mean weight
 DROP_BELOW = 0.05    # a component is dropped when this little of its spread stays open given the others
+RANK_TOL = 1e-10     # correlation eigenvalues under this count as 0 in a conditional variance
+ZERO_VAR = 1e-20     # a variance under this share of the largest is no variance at all
 NEW_RUNS = 512       # new runs per posterior draw when the value has gates
 STUDY_ROLES = {"runs": C.RUNS_FILE, "scores": C.SCORES_FILE, "pairs": C.PAIRS_FILE, "items": C.ITEMS_FILE}
 SCORE_FORM = ("assignment", "run", "step", "component", "judge", "item", "of", "value", "observed_at")
@@ -180,6 +199,7 @@ class Offer:
     scores: dict = field(default_factory=lambda: dict.fromkeys(C.LABEL_SCORES))
     gain: float = 0.0              # the fall from this assignment alone
     dropped: list[int] = field(default_factory=list)
+    first: int | None = None       # a pair repeat: the run to show first (None: drawn at random)
 
 
 @dataclass
@@ -270,21 +290,63 @@ def pair_offers(fit: F.Fit, targets: Sequence[Target], reviewer: str, by_step: d
     return out
 
 
-def pairs_done(fit: F.Fit, study: Path, reviewer: str) -> set[tuple] | None:
-    """The (runs, dimension) this reviewer already compared, from the study's `pairs.jsonl`. None without it."""
+def pairs_judged(fit: F.Fit, study: Path, reviewer: str) -> dict[tuple, dict[str, int | None]] | None:
+    """This reviewer's live comparisons in the study's `pairs.jsonl`. None without the file.
+
+    Keyed by (runs, dimension), each a map from call id to the run shown first in that call (None when
+    `shown_first` is not recorded). Replaced rows are not read; rows of one call are one comparison."""
     path = study / C.PAIRS_FILE
     if not path.is_file():
         return None
     index = {run: r for r, run in enumerate(fit.index["runs"])}
     overall = {dim["step"]: d for d, dim in enumerate(fit.dimensions) if dim["role"] == "overall"}
     position = {dim["id"]: d for d, dim in enumerate(fit.dimensions)}
-    done = set()
+    judged: dict[tuple, dict[str, int | None]] = {}
     for row in C.live(C.read_lines(path, C.SCHEMA_PAIRS), path.name)[0]:
         d = (overall.get(row["step"]) if row["component"] is None
              else position.get(C.dimension_id(row["step"], row["component"])))
         if row["judge"] == reviewer and row["a"] in index and row["b"] in index and d is not None:
-            done.add((frozenset((index[row["a"]], index[row["b"]])), d))
-    return done
+            first = None if row["shown_first"] is None else index[row[row["shown_first"]]]
+            calls = judged.setdefault((frozenset((index[row["a"]], index[row["b"]])), d), {})
+            if calls.get(row["call"]) is None:
+                calls[row["call"]] = first
+    return judged
+
+
+def pairs_done(fit: F.Fit, study: Path, reviewer: str) -> set[tuple] | None:
+    """The (runs, dimension) this reviewer already compared, from the study's `pairs.jsonl`. None without it."""
+    judged = pairs_judged(fit, study, reviewer)
+    return None if judged is None else set(judged)
+
+
+def pair_repeats(fit: F.Fit, judged: dict[tuple, dict[str, int | None]], by_step: dict[str, list[int]],
+                 arms: set[int], by_run: dict[tuple, Target]) -> list[Offer]:
+    """The live pair-repeat pool: one offer per pair of runs and step this reviewer compared before, on
+    the dimensions of that step this plan compares that they compared it on.
+
+    Shown in the other order: the run the reviewer saw first less often in those comparisons goes first.
+    When both went first equally often, or no order was recorded, `first` is None and the plan draws the
+    order at random, as for any pair."""
+    dims_of: dict[int, str] = {}
+    for step, ds in by_step.items():
+        for d in ds:
+            dims_of[d] = step
+    pool: dict[tuple, dict] = {}
+    for (runs, d), calls in judged.items():
+        if len(runs) != 2 or d not in dims_of or not all(int(fit.run_arm[r]) in arms for r in runs):
+            continue
+        entry = pool.setdefault((tuple(sorted(runs)), dims_of[d]), {"dims": [], "calls": {}})
+        entry["dims"].append(d)
+        for call, first in calls.items():
+            if entry["calls"].get(call) is None:
+                entry["calls"][call] = first
+    out = []
+    for (runs, step), entry in sorted(pool.items()):
+        shown = [sum(first == r for first in entry["calls"].values()) for r in runs]
+        first = None if shown[0] == shown[1] else runs[int(np.argmin(shown))]
+        refs = {key: dict(by_run[(r, step)].refs) if (r, step) in by_run else {} for key, r in zip("ab", runs)}
+        out.append(Offer("pair", runs, step, sorted(entry["dims"]), refs, first=first))
+    return out
 
 
 def set_strata(fit: F.Fit, units: Sequence[Unit], by_run: dict[tuple, Target]) -> None:
@@ -343,6 +405,33 @@ def given_means(p: np.ndarray, total: np.ndarray, own: np.ndarray) -> np.ndarray
     return _bounded(root @ ((v * g) @ v.T) @ root, total)
 
 
+def conditional_variances(cov: np.ndarray) -> np.ndarray:
+    """Per component, its variance given all the others: `cov_kk - cov_k,rest cov_rest^+ cov_rest,k`.
+
+    The Schur complement against the remaining components, solved on their correlations: `cov_rest^+`
+    inverts the correlation matrix of the rest on its eigenvalues above `RANK_TOL` and leaves the other
+    directions out, so a singular `cov` gets its conditional variance too. A component that is a linear
+    function of the others gets 0, and so does each of two identical components. A component with no
+    variance left (under `ZERO_VAR` times the largest) gets 0 and tells nothing about the others."""
+    cov = (np.asarray(cov, dtype=float) + np.asarray(cov, dtype=float).T) / 2.0
+    var = np.clip(np.diag(cov), 0.0, None)
+    out = np.zeros(len(cov))
+    if not len(cov) or not var.max() > 0:
+        return out
+    live = np.flatnonzero(var > ZERO_VAR * var.max())
+    sd = np.sqrt(var[live])
+    corr = cov[np.ix_(live, live)] / sd[:, None] / sd[None, :]
+    for n, k in enumerate(live):
+        rest = [m for m in range(len(live)) if m != n]
+        explained = 0.0
+        if rest:
+            w, v = np.linalg.eigh(corr[np.ix_(rest, rest)])
+            keep = w > RANK_TOL
+            explained = float(((corr[n, rest] @ v[:, keep]) ** 2 / w[keep]).sum())
+        out[k] = var[k] * min(max(1.0 - explained, 0.0), 1.0)
+    return out
+
+
 def switch_gain(base: np.ndarray, step: np.ndarray) -> float:
     """The expected gain in value from labels that move the arm values by a normal step of covariance `step`.
 
@@ -369,7 +458,9 @@ class Model:
     def __init__(self, fit: F.Fit, spec: Q.ValueSpec | None, reviewer: int, seed: int = 0) -> None:
         # `seed` fixes the normal draws of the scores. It is not the plan's seed: the scores of a fit do
         # not change with `--seed`, only the draw does.
-        draws = fit.draws
+        # The scores are moments over the draws, which a unit that differs per draw would move: they are
+        # computed in the engine's unit, so a plan does not depend on the unit the file reports.
+        draws = in_fitted_unit(fit.draws)
         mu = draws["mu"]
         self.fit, self.spec = fit, spec
         S, A, _ = mu.shape
@@ -503,9 +594,7 @@ class Model:
         L, _ = self.rows(offer.runs, offer)
         scale = np.sqrt(np.array([self.scale[self.at[d]] for d in offer.dims]))
         cov = (L @ raw @ L.T) / scale[:, None] / scale[None, :]
-        precision = np.diag(np.linalg.pinv(cov, hermitian=True))
-        conditional = np.where(precision > 0, 1.0 / np.where(precision > 0, precision, 1.0), 0.0)
-        return np.diag(cov), np.minimum(conditional, np.diag(cov))
+        return np.diag(cov), conditional_variances(cov)
 
     def score(self, offer: Offer) -> None:
         """Fill the scores of one offer (all but `per_minute`, which belongs to the unit)."""
@@ -556,8 +645,9 @@ def arm_values(fit: F.Fit, spec: Q.ValueSpec, seed: int = 0) -> np.ndarray:
 
     Without gates it is `w'E[m]` in closed form. With gates it is the mean of `V(q)` over `NEW_RUNS`
     new runs, `q ~ N(mu_arm, Sigma_input + Sigma_run)`, from one fixed set of normal draws shared by
-    every arm and every posterior draw."""
-    draws = fit.draws
+    every arm and every posterior draw. They are drawn in the engine's unit, as the scores are: the
+    eigenvector root below is not a rescaling of itself when a dimension's unit changes per draw."""
+    draws = in_fitted_unit(fit.draws)
     need = sorted(set(np.flatnonzero(spec.weights).tolist()) | {d for d, _ in spec.gates})
     mu = draws["mu"][:, :, need]
     sd_input, sd_run = draws["sd_input"][:, need], draws["sd_run"][:, need]
@@ -847,14 +937,23 @@ def build(args: argparse.Namespace) -> Result:
     targets = read_targets(fit)
     by_run = {(target.run, target.step): target for target in targets}
     offers: list[Offer] = []
+    judged = None
     if ask in ("scores", "auto"):
         offers += score_offers(fit, targets, reviewer, keep, arms)
     if ask in ("pairs", "auto"):
-        done = pairs_done(fit, study, reviewer)
-        if done is None:
+        judged = pairs_judged(fit, study, reviewer)
+        if judged is None:
             notes.append(f"no {C.PAIRS_FILE} beside the fit: pairs this reviewer already judged are not known "
                          "and may be offered again")
-        offers += pair_offers(fit, targets, reviewer, pair_dims(fit, named), arms, done or set())
+        offers += pair_offers(fit, targets, reviewer, pair_dims(fit, named), arms, set(judged or {}))
+    # The repeat pool: what this reviewer labelled before. Built first, so a plan can be repeats only.
+    again = []
+    for target in targets:
+        mine = [d for d, row in sorted(target.read.items()) if d in keep and _calls(row, reviewer)]
+        if mine and int(fit.run_arm[target.run]) in arms and ask != "pairs":
+            again.append(Offer("score", (target.run,), target.step, mine, dict(target.refs)))
+    if judged:
+        again += pair_repeats(fit, judged, pair_dims(fit, named), arms, by_run)
 
     model = None
     if mode == "active":
@@ -869,8 +968,8 @@ def build(args: argparse.Namespace) -> Result:
                          "estimate for them (pilot mode can draw them)")
         if model.note:
             notes.append(model.note)
-    if not offers:
-        what = {"scores": "target", "pairs": "pair", "auto": "target or pair"}[ask]
+    what = {"scores": "target", "pairs": "pair", "auto": "target or pair"}[ask]
+    if not offers and not again:
         raise _usage("candidates", f'no {what} is left for "{reviewer}" to label',
                      "widen --components or --arms, name another reviewer, or add judge readings and fit again",
                      "no_candidates")
@@ -908,16 +1007,16 @@ def build(args: argparse.Namespace) -> Result:
 
     # The budget: a share for repeats and overlaps, the rest for the main draw.
     rng = np.random.default_rng(seed)
-    again = []
-    for target in targets:
-        mine = [d for d, row in sorted(target.read.items()) if d in keep and _calls(row, reviewer)]
-        if mine and int(fit.run_arm[target.run]) in arms and ask != "pairs":
-            again.append(Offer("score", (target.run,), target.step, mine, dict(target.refs)))
     extra = repeat_share * budget if (again or second) else 0.0
     if unit_name == "n":
         extra = float(int(round(extra)))
+    if second is None:                                   # what a small repeat pool cannot use goes to the main draw
+        extra = min(extra, float(len(again)) if unit_name == "n"
+                    else float(sum(minutes_of(fit, offer.ask, offer.dims) for offer in again)))
     if repeat_share > 0 and not (again or second):
-        notes.append("no repeats or overlaps: this reviewer has scored no target yet and --overlap names no "
+        done = {"scores": "scored no target", "pairs": "compared no pair",
+                "auto": "scored no target and compared no pair"}[ask]
+        notes.append(f"no repeats or overlaps: this reviewer has {done} yet and --overlap names no "
                      "second reviewer, so their share of the budget goes to the main draw")
     # Blind or nothing: a run id or a ref that names the configuration would tell the reviewer the arm.
     n_named = identifying(fit, offers + again)
@@ -950,6 +1049,8 @@ def build(args: argparse.Namespace) -> Result:
             row["a"] = {"run": fit.index["runs"][runs[0]], "step": offer.step}
             row["b"] = {"run": fit.index["runs"][runs[1]], "step": offer.step}
             row["shown_first"] = "a" if rng.integers(2) else "b"
+            if offer.first is not None:                  # a pair repeat, shown in the other order
+                row["shown_first"] = "a" if runs[0] == offer.first else "b"
             refs = {"a": offer.refs["b" if flip else "a"], "b": offer.refs["a" if flip else "b"]}
         row.update({"components": [dims[d]["component"] for d in asked], "reviewer": who, "kind": kind,
                     "inclusion_probability": float(p),
@@ -963,7 +1064,10 @@ def build(args: argparse.Namespace) -> Result:
 
     main = []
     n_uniform = 0
-    if mode == "pilot":
+    noun = "assignments" if by_count else "minutes"
+    if not units or main_budget <= 1e-9:
+        pass                                             # no main draw: the plan can still be repeats only
+    elif mode == "pilot":
         # One probability for every candidate of one cost. With a count budget that is every candidate.
         cost = np.array([1.0 if by_count else unit.minutes for unit in units])
         pi, laid = allocate(cost, np.full(len(units), 1.0 / len(units)), main_budget)
@@ -1040,9 +1144,6 @@ def build(args: argparse.Namespace) -> Result:
             by_unit.setdefault(key, []).extend(group)
             main += [(row, offer, unit) for row in group]
         groups += list(by_unit.values())
-    if not main:
-        raise _usage("--" + unit_name, f"the budget of {budget:g} {'assignments' if unit_name == 'n' else 'minutes'} "
-                     "pays for no assignment", "raise the budget", "budget_too_small")
 
     def count(pool: Sequence[Offer], amount: float) -> int:
         """How many of `pool` the amount pays for, whichever are drawn."""
@@ -1058,6 +1159,22 @@ def build(args: argparse.Namespace) -> Result:
     spent = n_overlap if unit_name == "n" else (
         float(np.sort([row["minutes"] for row, _, _ in pool])[::-1][:n_overlap].sum()) if n_overlap else 0.0)
     n_repeat = count(again, extra - spent)
+    if not main and not n_repeat:                        # neither draw can supply an assignment
+        if not units:
+            raise _usage("candidates", f'no new {what} is left for "{reviewer}" to label, and the repeat share '
+                         "pays for no repeat", "raise --repeat-share or the budget to ask repeats, widen "
+                         "--components or --arms, name another reviewer, or add judge readings and fit again",
+                         "no_candidates")
+        raise _usage("--" + unit_name, f"the budget of {budget:g} {noun} pays for no assignment",
+                     "raise the budget", "budget_too_small")
+    if not main:
+        why = (f'no new {what} is left for "{reviewer}" to label' if not units
+               else "the repeat share takes the whole budget once rounded" if main_budget <= 1e-9
+               else f"the {main_budget:g} {noun} left for the main draw pay for no new assignment")
+        notes.append(f"{why}, so the plan asks repeats only" + (
+            f": the {main_budget:g} {noun} left for the main draw are not spent" if not units and main_budget > 1e-9
+            else "") + (f'; no overlap for "{second}" either (an overlap repeats a new assignment of this plan)'
+                        if second else ""))
     for n in sorted(rng.choice(len(again), size=n_repeat, replace=False).tolist()) if n_repeat else []:
         groups.append([record(again[n], "repeat", n_repeat / len(again), reviewer)])
     for n in sorted(rng.choice(len(pool), size=n_overlap, replace=False).tolist()) if n_overlap else []:
@@ -1183,6 +1300,12 @@ def explain_lines(one: dict) -> list[str]:
         lines.append(f"pilot mode draws every candidate with the same probability, "
                      f"{one['inclusion_probability']:.4g} over {one['candidates']} candidates, stratified by arm "
                      "and judge score band. No model quantity is used.")
+        return lines
+    if one["kind"] == "repeat" and one["ask"] == "pair":
+        lines.append("a repeat of a pair this reviewer compared before, drawn at random with probability "
+                     f"{one['inclusion_probability']:.4g}. The output they saw first less often before is shown "
+                     "first (at random when that is even or not recorded). It measures the reviewer's own noise "
+                     "on pairs and their position bias.")
         return lines
     if one["kind"] == "repeat":
         lines.append("a repeat of a target this reviewer scored before, drawn at random with probability "

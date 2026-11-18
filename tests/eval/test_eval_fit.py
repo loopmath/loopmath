@@ -69,7 +69,7 @@ def test_diagnose_fails_each_check_alone_and_skips_what_does_not_exist():
     rng = np.random.default_rng(1)
     raw = {name: rng.standard_normal((2, 400, 2)) for name in FT.CHECKED}
     good = FT.diagnose(raw, {}, 0, 1.5)
-    assert good["converged"] and [c["name"] for c in good["checks"]] == ["rhat", "ess", "divergences"]
+    assert good["converged"] and [c["name"] for c in good["checks"]] == ["rhat", "ess", "divergences", "finite_draws"]
     assert good["run_seconds"] == 1.5 and good["rhat_max"] < FT.RHAT_MAX and good["ess_min"] > FT.ESS_MIN
     assert not FT.diagnose(raw, {}, 9, 0.0)["converged"]            # more than 1% of 800 draws diverged
     assert FT.diagnose(raw, {}, 8, 0.0)["converged"]
@@ -79,6 +79,25 @@ def test_diagnose_fails_each_check_alone_and_skips_what_does_not_exist():
     assert FT.diagnose(bad, {"tau": np.zeros(2, dtype=bool)}, 0, 0.0)["converged"]   # masked out: not checked
     fixed = dict(raw, sigma=np.ones((2, 400, 2)))                                    # a fixed unit: not checked
     assert FT.diagnose(fixed, {}, 0, 0.0)["converged"]
+
+
+def test_diagnose_fails_a_draw_that_is_not_finite_where_the_parameter_exists():
+    """One NaN saved draw of a parameter that exists fails `finite_draws` (R-hat cannot see that column);
+    NaN where the mask says the parameter does not exist is not counted."""
+    rng = np.random.default_rng(1)
+    raw = {name: rng.standard_normal((2, 400, 2)) for name in FT.CHECKED}
+    assert FT.diagnose(raw, {}, 0, 0.0)["checks"][-1] == {"name": "finite_draws", "value": 0, "limit": 0, "ok": True,
+                                                          "worst": None}
+    holed = dict(raw, mu=raw["mu"].copy())
+    holed["mu"][1, 7, 1] = np.nan
+    told = FT.diagnose(holed, {}, 0, 0.0)
+    assert not told["converged"] and told["checks"][-1] == {"name": "finite_draws", "value": 1, "limit": 0,
+                                                            "ok": False, "worst": "mu[1]"}
+    assert [c["name"] for c in told["checks"] if not c["ok"]] == ["finite_draws"]
+    absent = dict(raw, tau=np.where(np.array([False, True]), np.nan, raw["tau"]))   # tau[1] does not exist
+    assert FT.diagnose(absent, {"tau": np.array([True, False])}, 0, 0.0)["converged"]
+    told = FT.diagnose(absent, {"tau": np.array([True, True])}, 0, 0.0)
+    assert not told["converged"] and told["checks"][-1]["value"] == 800 and told["checks"][-1]["worst"] == "tau[1]"
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -104,7 +123,8 @@ def test_check_only_prints_the_report_and_writes_nothing(tmp_path, capsys):
 def test_without_the_engine_it_prints_the_install_line_and_writes_nothing(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(engine, "available", lambda: False)
     out = tmp_path / "fit.json"
-    assert cli.main(["eval", "fit", str(STUDY), "--rubric", RUBRIC, "--judges", JUDGES, "--out", str(out)]) == 1
+    assert cli.main(["eval", "fit", str(STUDY), "--rubric", RUBRIC, "--judges", JUDGES, "--out", str(out),
+                     "--engine", "pymc"]) == 1
     captured = capsys.readouterr()
     assert captured.err == engine.INSTALL + "\n" and captured.out == ""
     assert "pip install 'loopmath[bayes]'" in engine.INSTALL and list(tmp_path.iterdir()) == []
@@ -136,7 +156,7 @@ def test_a_simulated_study_needs_allow_simulated(tmp_path, capsys):
     argv = ["eval", "fit", str(folder), "--rubric", str(folder / "rubric.json"), "--judges",
             str(folder / "judges.json"), "--check-only"]
     assert cli.main(argv) == 1
-    assert capsys.readouterr().err == ('error: runs.jsonl: run "baseline-i001": the run is simulated; '
+    assert capsys.readouterr().err == ('error: runs.jsonl: run "r0005": the run is simulated; '
                                        "pass --allow-simulated to fit a simulated study\n")
     assert cli.main(argv + ["--allow-simulated"]) == 0
     assert "readings: 28 of 28 used" in capsys.readouterr().out
@@ -149,7 +169,8 @@ def test_a_simulated_study_needs_allow_simulated(tmp_path, capsys):
 def test_smoke_fit_of_the_small_study_writes_a_fit_every_later_stage_can_read(tmp_path, capsys):
     out = tmp_path / "fit.json"
     assert cli.main(["eval", "fit", str(STUDY), "--rubric", RUBRIC, "--judges", JUDGES, "--seed", "3", "--draws",
-                     "50", "--chains", "2", "--keep-draws", "400", "--out", str(out), "--json"]) == 0
+                     "50", "--chains", "2", "--keep-draws", "400", "--out", str(out), "--json",
+                     "--engine", "pymc"]) == 0
     obj = json.loads(capsys.readouterr().out)
     assert obj["schema"] == FT.OUTPUT_SCHEMA and obj["fit"] == str(out) and obj["checked_only"] is False
     fit = F.read_fit(out, allow_unconverged=True)
@@ -163,14 +184,19 @@ def test_smoke_fit_of_the_small_study_writes_a_fit_every_later_stage_can_read(tm
     assert fit.stale(files) == [] and fit.stale({**files, "rubric": JUDGES}) != []
     assert fit["counts"]["readings_used"] == 304 and fit["counts"]["pairs_used"] == 18
     assert fit["notes"] == [{"kind": "reading", "id": "s0021", "reason": "replaced by s0305"}]
-    assert [c["name"] for c in fit["diagnostics"]["checks"]] == ["rhat", "ess", "divergences", "saved_draws"]
+    assert [c["name"] for c in fit["diagnostics"]["checks"]] == ["rhat", "ess", "divergences", "saved_draws",
+                                                                "finite_draws"]
     assert fit["diagnostics"]["checks"][3] == {"name": "saved_draws", "value": 100, "limit": 400, "ok": False}
     assert fit["diagnostics"]["converged"] is False              # 100 saved draws cannot carry the intervals
     draws = fit.draws
     for name in ("mu", "sd_input", "sd_run", "corr_input", "corr_run", "q_run", "bias", "tau", "sigma"):
         assert np.isfinite(draws[name]).all(), name
     assert np.all(draws["bias"][:, 0, :] == 0.0)                 # one anchor: its bias is 0 in every draw
-    assert np.allclose(draws["sigma"][:, 0, 0], 1.0)             # and it carries the unit of the binary dimension
+    # It carries the unit of the binary dimension: its call noise was 1 in the engine's unit, and the file holds
+    # the draws in its total noise of one reading (the judge-by-input term is off), so that total is 1.
+    assert np.allclose(draws["sigma"][:, 0, 0] * draws["unit"][:, 0], 1.0)
+    assert np.allclose(np.hypot(draws["sigma"][:, 0, 0], draws["tau"][:, 0, 0]), 1.0)
+    assert fit.dimensions[0]["scale"]["kind"] == "binary" and fit.dimensions[0]["unit"]["unit"] == "total_noise"
     assert np.allclose(np.diagonal(draws["corr_run"], axis1=1, axis2=2), 1.0)
     assert np.isnan(draws["family"][:, 0]).all() and np.isfinite(draws["family"][:, 1:]).all()
     assert np.allclose(draws["family"][:, 1:].sum(axis=2), 0.0)  # family effects sum to 0 over families
@@ -224,7 +250,7 @@ def study_record(name: str, seed: int, *, draws: int | None = None, chains: int 
     `eval judges` reads it: `false_pass` and `false_fail` of a binary dimension against the simulated rates."""
     study, sim = catalog_study(name, seed, inputs)
     design = M.build(study, sim.rubric, sim.judges, allow_simulated=True, **build)
-    meta, post = FT.fit_design(design, seed=seed, draws=draws, chains=chains, cores=2)
+    meta, post = FT.fit_design(design, seed=seed, draws=draws, chains=chains, cores=2, engine="pymc")
     truth = {key: np.array(value, dtype=float) for key, value in sim.truth.items()
              if key in F.DRAW_SHAPES or key in ("sd_input", "sd_run")}
     state = {(row["term"], row["judge"], row["dimension"]): row["state"] for row in meta["terms"]}
@@ -392,7 +418,7 @@ def test_pairs_added_to_readings_narrow_the_arm_difference():
             design = M.build(C.Study(Path("."), study.runs, study.scores, pairs), sim.rubric, sim.judges,
                              allow_simulated=True, components=["depth"])
             assert design.counts["pairs_used"] == (160 if pairs else 0) and design.relative == []
-            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2)
+            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2, engine="pymc")
             difference = post["mu"][:, 1, 0] - post["mu"][:, 0, 0]
             sds[label] = {"mean": float(difference.mean()), "sd": float(difference.std()),
                           "converged": meta["diagnostics"]["converged"]}
@@ -426,7 +452,7 @@ def test_levels_5_beside_a_fit_that_reads_the_levels_as_plain_numbers():
         row = {"seed": seed, "truth": (truth[1] - truth[0]).tolist()}
         for label, rubric, scores in (("levels", sim.rubric, study.scores), ("plain_numbers", plain, numbers)):
             design = M.build(C.Study(Path("."), study.runs, scores), rubric, sim.judges, allow_simulated=True)
-            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2)
+            meta, post = FT.fit_design(design, seed=seed, draws=N_DRAWS, chains=2, cores=2, engine="pymc")
             difference = post["mu"][:, 1, :] - post["mu"][:, 0, :]
             lo, hi = np.percentile(difference, [5.0, 95.0], axis=0)
             row[label] = {"mean": difference.mean(axis=0).tolist(), "lo": lo.tolist(), "hi": hi.tolist(),
@@ -460,7 +486,7 @@ def test_link_to_the_flow_fit_on_one_linear_component():
     study = C.Study(Path("."), study.runs, scores)
     design = M.build(study, sim.rubric, sim.judges, allow_simulated=True, terms=["family=off", "judge_input=off"])
     assert int(design.data["s_n"].max()) == 1 and design.data["D"] == 1
-    meta, post = FT.fit_design(design, seed=4, chains=2, cores=2)
+    meta, post = FT.fit_design(design, seed=4, chains=2, cores=2, engine="pymc")
 
     dim = design.dims[0]
     values: dict[str, dict] = {}
@@ -528,7 +554,7 @@ def test_size_500_runs_5_components_4_judges_2_repeats_fits_in_10_minutes():
     assert len(runs) == 500 and len(scores) == 20000
     started = time.time()
     design = M.build(C.Study(Path("."), runs, scores, [], []), rubric, judges, allow_simulated=True)
-    meta, _ = FT.fit_design(design, seed=0, chains=2, cores=2)
+    meta, _ = FT.fit_design(design, seed=0, chains=2, cores=2, engine="pymc")
     seconds = time.time() - started
     folder = os.environ.get("LOOPMATH_EVAL_RECOVERY_REPORT")
     if folder:

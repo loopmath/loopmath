@@ -1,0 +1,3 @@
+{"schema": "loopmath.eval-items/1", "id": "doc-01.deadline", "input": "doc-01", "component": "covers", "label": "States the deadline", "source": {"kind": "expert"}}
+{"schema": "loopmath.eval-items/1", "id": "doc-01.owner", "input": "doc-01", "component": "covers", "label": "Names who is responsible", "source": {"kind": "expert"}}
+{"schema": "loopmath.eval-items/1", "id": "doc-01.cost", "input": "doc-01", "component": "covers", "label": "Gives the cost", "source": {"kind": "model_verified", "model": "model-large"}}

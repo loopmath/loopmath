@@ -109,7 +109,7 @@ def run_fit(folder: Path, seed: int, out: str = "fit.json", extra: tuple = ()) -
     seconds = 0.0
     if not (target.exists() and stamp.exists() and stamp.read_text(encoding="utf-8") == options):
         argv = ["eval", "fit", folder, "--rubric", folder / "rubric.json", "--judges", folder / "judges.json",
-                "--seed", seed, "--out", target, "--allow-simulated", "--chains", 2, *extra]
+                "--seed", seed, "--out", target, "--allow-simulated", "--chains", 2, "--engine", "pymc", *extra]
         if DRAWS is not None:
             argv += ["--draws", DRAWS]
         start = time.monotonic()
@@ -558,13 +558,15 @@ def family_rows(fit: Fitted) -> list[dict]:
                 true = truth[judges.index(judge["id"]), families.index(part["family"]), dims.index(dim["dimension"])]
                 rows.append({"judge": judge["id"], "kind": kind, "family": part["family"],
                              "dimension": dim["dimension"], "true": float(np.nan_to_num(true)),
-                             "effect": dim["effect"], "flagged": bool(dim["excludes_zero"])})
+                             "effect": dim["effect"], "flagged": bool(dim["flagged"]),
+                             "excludes_zero": bool(dim["excludes_zero"])})
     return rows
 
 
 def test_check_9_family_effects_are_found_where_simulated(root):
     """Acceptance check 9, first part: on `own-family` and `reference-family`, the simulated effects are
-    flagged (their interval excludes 0) in at least half of the cases, and held by their intervals."""
+    flagged (the product flag, decided over every family contrast of the report) in at least half of the
+    cases, and held by their intervals."""
     got = {}
     for name in ("own-family", "reference-family"):
         fits = [fitted(root, name, seed) for seed in seeds()]
@@ -781,7 +783,8 @@ def test_check_14_size_20000_readings_fit_in_10_minutes(root):
         assert counts["runs"] == 500, counts
     start = time.monotonic()
     code, _, err = E.lm("eval", "fit", folder, "--rubric", folder / "rubric.json", "--judges", folder / "judges.json",
-                        "--seed", 0, "--allow-simulated", "--chains", 2, "--out", folder / "fit.json")
+                        "--seed", 0, "--allow-simulated", "--chains", 2, "--engine", "pymc",
+                        "--out", folder / "fit.json")
     seconds = time.monotonic() - start
     assert code == 0, err.strip()[-800:]
     meta = json.loads((folder / "fit.json").read_text(encoding="utf-8"))

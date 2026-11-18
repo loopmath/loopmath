@@ -42,7 +42,8 @@ Priors. With s = 0.25 on a [0, 1] dimension and s = 1 on a probit or pairs-only 
 N(centre, 2s); every sd (`sd_input`, `sd_run`, `tau`, `sigma`) half-normal(s); a person's `sigma` on a
 `linear` or `fraction` dimension half-normal(0.04), as in the flow fit; `sigma` on a `levels` dimension
 Gamma(2) with mean 0.8 s, and `sigma_pair` Gamma(2) with mean 1.6 s (see below); bias N(0, s); the sd
-of family effects half-normal(0.4 s) and the effects sum to 0 over families; the judge-by-input sd
+of family effects half-normal(0.4 s), one per model judge with family effects (its sd on dimension d
+is its relative sd times the s of d), and the effects sum to 0 over families; the judge-by-input sd
 half-normal(0.6 s); halo shares Beta(1, 2), sampled as an angle; relative log sds N(0, 0.5).
 
 Two priors are not half-normal. A reading that is cut at fixed points (a level, a verdict) has a
@@ -220,9 +221,13 @@ def sample(data: Mapping[str, Any], *, seed: int = 0, draws: int = 1000, tune: i
         root_call, halo_call = share("halo_call")
         family_on = np.asarray(d["family_on"], dtype=float)
         if family_on.any():
-            family_sd = pm.HalfNormal("family_sd", sigma=0.4 * scale, shape=D)
+            # one sd per model judge with a family term, relative to each dimension's scale
+            fam_judges = np.flatnonzero(family_on.any(axis=1))
+            family_sd = pm.HalfNormal("family_sd", sigma=0.4, shape=len(fam_judges))
+            judge_sd = pt.set_subtensor(pt.zeros(J)[fam_judges], family_sd)
             family_raw = pm.Normal("family_raw", 0.0, 1.0, shape=(J, N, D))
-            family = (family_raw - family_raw.mean(axis=1, keepdims=True)) * family_sd * family_on[:, None, :]
+            family = ((family_raw - family_raw.mean(axis=1, keepdims=True)) * judge_sd[:, None, None]
+                      * scale[None, None, :] * family_on[:, None, :])
             family = pm.Deterministic("family", family)
         else:
             family = None

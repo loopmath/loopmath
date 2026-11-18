@@ -13,6 +13,7 @@ import pytest
 
 from loopmath import cli
 from loopmath.eval import contracts as C
+from loopmath.eval import engine_laplace
 from loopmath.eval import engine_pymc as engine
 from loopmath.eval import fit as FT
 from loopmath.eval import model as M
@@ -61,6 +62,7 @@ def chains(rng, shape=(2, 400)) -> dict:
 def test_keep_draws_below_the_minimum_is_refused_before_anything_is_sampled(loaded, monkeypatch, tmp_path, capsys):
     design = M.build(*loaded)
     monkeypatch.setattr(engine, "sample", lambda *args, **kwargs: pytest.fail("the engine ran"))
+    monkeypatch.setattr(engine_laplace, "sample", lambda *args, **kwargs: pytest.fail("the engine ran"))
     for keep in (1, FT.MIN_KEEP_DRAWS - 1):
         found = refusal(lambda: FT.fit_design(design, keep_draws=keep))
         assert found.code == "bad_option" and found.where == "--keep-draws"
@@ -91,7 +93,7 @@ def test_the_diagnostics_describe_the_saved_draws_not_the_chains_before_thinning
     raw = {name: 0.3 + 0.02 * rng.standard_normal((4, 1000, 2)) for name in FT.CHECKED}
     kept = FT.thin(raw, 400)
     told = FT.diagnose(kept, {}, 40, 0.0, sampled=4000, least=FT.MIN_KEEP_DRAWS)
-    assert [check["name"] for check in told["checks"]] == ["rhat", "ess", "divergences", "saved_draws"]
+    assert [check["name"] for check in told["checks"]] == ["rhat", "ess", "divergences", "saved_draws", "finite_draws"]
     assert told["converged"] and told["checks"][3] == {"name": "saved_draws", "value": 400, "limit": 400, "ok": True}
     assert told["checks"][2]["limit"] == 40.0                        # 1% of the 4000 draws sampled
     assert not FT.diagnose(kept, {}, 41, 0.0, sampled=4000, least=FT.MIN_KEEP_DRAWS)["converged"]
@@ -101,7 +103,7 @@ def test_the_diagnostics_describe_the_saved_draws_not_the_chains_before_thinning
     few = FT.thin({name: x[:2, :150] for name, x in raw.items()}, 400)
     short = FT.diagnose(few, {}, 0, 0.0, sampled=300, least=FT.MIN_KEEP_DRAWS)
     assert few["mu"].shape == (2, 150, 2) and not short["converged"]
-    assert [check["ok"] for check in short["checks"]] == [True, True, True, False]
+    assert [check["ok"] for check in short["checks"]] == [True, True, True, False, True]
     assert short["checks"][3]["value"] == 300
 
 

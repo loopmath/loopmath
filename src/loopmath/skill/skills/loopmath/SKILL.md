@@ -22,6 +22,8 @@ Three words come up everywhere:
 
 loopmath never starts agents itself, except `loopmath harness` (experimental), which runs Claude Code sessions to tune a repo's harness once the user agrees to its cost; `loopmath harness skill` prints its instructions. Otherwise it recommends; you start the agents, and only for the workflow the user chose.
 
+`loopmath eval` (experimental) is a separate group for outputs that are scored on a rubric by model judges and people instead of by tests. It reads the scores the user brings; it runs no pipeline and calls no judge.
+
 ## How to learn each job
 
 The step by step instructions for each job come from the CLI: `loopmath guide <topic>`. A guide call only prints instructions; it never runs the job or changes anything. The guides ship inside the installed loopmath, so they always match its commands and JSON output, even after an upgrade. Read a job's guide in full before running the commands it names, then follow it. `loopmath guide` alone lists every topic.
@@ -41,6 +43,8 @@ Do not run loopmath commands with `--help`: the help text is written for people 
 | a task is done: record its run, or judge two runs blind | `loopmath guide record` |
 | update the fit, or what loopmath learned | `loopmath guide fit` |
 | an experiment on a fixed multi-step workflow (a flow) | `loopmath guide flow` |
+| outputs scored on a rubric by model judges and people: judge noise, value, reviewer labels (experimental) | `loopmath guide eval` |
+| record a pipeline's runs and judge calls in the files `loopmath eval` reads (experimental) | `loopmath guide eval-record` |
 | a command, flag, JSON field or exit code you need | `loopmath guide reference` |
 
    For example, if you need to onboard the user, run `loopmath guide onboard` and follow its output.

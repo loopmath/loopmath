@@ -1,8 +1,8 @@
 # Reading rubric scores from judges and people (experimental)
 
-`loopmath eval` is experimental in 0.4.4: it works and has tests, but it has been checked on simulated studies
-only, on far fewer of them than its acceptance checks ask for, and its files and output may change. The limits are
-listed at the end of this page; read them before you rely on a number.
+`loopmath eval` is experimental in 0.4.5: it works and has tests, but it has been checked on simulated studies
+only, not all of its recovery checks pass yet, and its files and output may change. The limits are listed at the
+end of this page; read them before you rely on a number.
 
 Use it when the outputs you compare have no test to pass: reports, briefs, summaries, answers. Such outputs are
 scored on a rubric, by model judges and by people. A judge's score is part output and part judge: a judge can be
@@ -52,19 +52,22 @@ $ loopmath eval labels next study/fit.json --value value.json --mode active --mi
 1. **Get the scores in.** `eval scores import` builds or extends the study folder from OCP run documents with score
    signals and preferences (`--ocp`), from harness-runs rows (`--rows`), or from plain tables (`--csv` for readings,
    `--pairs-csv` for comparisons). Importing the same rows again changes nothing. `eval scores add` adds single
-   readings by hand, and `eval scores export` prints the study as OCP signals and preferences.
+   readings by hand, and `eval scores export` prints the study as OCP signals and preferences: all of it, one run
+   (`--run`), or the readings and comparisons of named judges (`--judges`).
 2. **Check the study.** `eval scores check` reads the folder against the rubric and the judges: unknown components,
    values off their scale, arms that mix settings. It also prints a table of what the design can identify, term by
    term, with what each term needs: for example, a judge's call noise needs 2 or more calls by that judge on the
    same output and component.
-3. **Fit.** `eval fit` needs the optional modelling extra: `pip install 'loopmath[bayes]'`. It first prints which
-   terms the design identifies (`--check-only` prints that and stops), then samples, checks convergence and writes
-   `fit.json`. A fit that did not converge is written and marked; later commands refuse it unless you pass
+3. **Fit.** `eval fit` uses the Laplace engine by default, an approximation that needs no extra. `--engine pymc`
+   samples with PyMC instead and needs the optional modelling extra: `pip install 'loopmath[bayes]'`. It first
+   prints which terms the design identifies (`--check-only` prints that and stops), then fits, checks convergence
+   and writes `fit.json`. A fit that did not converge is written and marked; later commands refuse it unless you pass
    `--allow-unconverged`.
 4. **Read the judges.** `eval judges` prints, per judge and component: the bias against the anchor (the people,
    when there are any), the per-output disagreement, the call noise, the error of a mean of 1 to 5 calls, and for
    a yes or no component the false pass and false fail rates. With `--target-error` or `--budget-usd` it lists
-   which judge and how many repeats reach an error or fit a budget.
+   which judge and how many repeats reach an error or fit a budget. On a yes or no component that error is on the
+   scale the engine fits, the anchors' call noise (see the hidden quality under What the numbers mean).
 5. **Ask a reviewer.** `eval labels next --mode pilot` draws a random, blind batch: the plan names outputs and
    components, never the arm, the model or a judge's score. `--form` writes a table to fill in. The filled table
    comes back with `eval scores import --csv FORM --labels PLAN --rubric rubric.json`. Then fit again.
@@ -97,12 +100,45 @@ with `--allow-simulated`, so that simulated runs never mix into real ones by acc
 - **Bias** is how much higher a judge scores than the anchor on average. The anchor is the people in
   `judges.json`; without a person, biases are relative to the mean of the judges and the report says so.
 - **Per-output disagreement** (`tau`) is the part of a judge's error that repeats when the same output is scored
-  again. More calls do not remove it; another judge or a person does.
+  again. More calls by the same judge do not remove it. Every judge has its own, people too. Scoring the same
+  outputs with other independent judges or people helps the fit tell quality from disagreement and narrows the
+  ranges, but it does not remove any judge's disagreement.
 - **Call noise** (`sigma`) is the part that changes from call to call. Repeats average it away.
+- **Hidden quality of a yes or no component.** Behind each pass rate the fit keeps a hidden quality per output,
+  in units of the anchors' total noise of one reading: how far one reading strays from the output's hidden
+  quality, counting the per-output disagreement, the call noise and the part that repeats across the outputs of
+  one input. The anchors are the people in the `anchor` list of `judges.json` who scored the component; when none
+  did, every judge who scored it. With several, the unit is the geometric mean of their total noises. So for one
+  reading by a judge with no bias, no family or position effect, and a total noise equal to the unit (one anchor
+  alone, for instance), an output with hidden quality 1 passes about 84% of the time; another judge's readings
+  pass at a rate set by its own bias and noise. A component with comparisons only uses the anchors' total noise
+  of one comparison instead (the people in the `anchor` list who compared on it, else every judge who did): for
+  such a judge, a gap of 1 between two outputs is called right about 84% of the time, before ties and the order
+  they were shown in. Pass rates, reported quality and every decision the reports make (verdicts, judge choices,
+  flags, label picks) do not depend on this unit. It shows in the hidden numbers: the `fitting` figures, and the
+  bias, per-output disagreement, call noise and error of the judges table, in plain output as under `--json`,
+  which on such a component are in the anchors' total noise. The judge choices of `--target-error` and
+  `--budget-usd` are made on the scale the engine fits, the anchors' call noise (their call noise of one
+  comparison for comparisons only); `--target-error X` is read on that scale and each choice line says so. Fits written
+  before 0.4.5 used the anchors' call noise alone as the unit; they are still read, and each dimension's `unit`
+  in `fit.json` says which unit it holds.
 - **Halo** is the part of a judge's error shared across components: by output (`halo_target`) or, for a `panel`
   judge, by call (`halo_call`).
 - **Family effect** is the extra a judge gives to outputs written by its own model family, or by the family that
-  wrote the reference answer it was shown. It is reported with a range and flagged when the range excludes 0.
+  wrote the reference answer it was shown. It is reported with a 90% range. The flag (`<- flagged`) is decided
+  over all the family effects one report shows, every judge and component together (Holm's method at 0.10,
+  each effect tested from the mean and sd of its draws, widened for their Monte Carlo error read from the
+  same draws). The rule is designed to keep the chance of any false family flag in a report near or under
+  0.1 when the fit is calibrated, close to normal for these contrasts, and its draws mix well; checked by
+  simulation, not guaranteed for every fit. An effect whose draws, or their squared deviations, have
+  fewer than 100 effective draws is not decided: the line says "too few effective draws to decide a
+  flag", it is never flagged, and it still counts among the effects tested. If the fit is miscalibrated
+  for these effects, for example when the model's family prior pulls some of them away from 0, more false
+  flags can appear; the recovery checks measure this per catalog spec. A range can therefore exclude 0 without a flag;
+  the line then says how many family effects the flag was decided over. The report states the rule, the
+  level, the count and the condition (`family_flag` in `--json`). On a yes or no component the flag reads the range on the
+  scale the engine fits, which can differ a little from the range shown; the line then says "(in the
+  anchors' call noise)".
 - **Relative** marks a component that has comparisons but no scores. Its arms can be ordered but not placed on the
   scale, so a gate on it is refused.
 - **p_pass** is the chance that one output of an arm passes every gate. It is computed from the joint fit: gated
@@ -129,23 +165,44 @@ number for that arm should not be trusted yet.
 
 `loopmath eval` is new, and these are the things to know before relying on it.
 
-- **The recovery checks are not established.** The checks that a fit recovers what a study was simulated from
-  ask for 200 simulated studies per spec. They ran on far fewer, one study per spec in most cases and with fewer
-  draws, and their assertions pool over parameters, so a parameter that is recovered badly can hide among ones
-  that are recovered well. No real study has been through the group yet.
+- **The recovery checks do not all pass.** The checks that a fit recovers what a study was simulated from ask for
+  200 simulated studies per spec. With the default engine they ran at that count on the 4 specs that test
+  interval coverage. One passes (`one-component`); `linear`, `binary-checks` and `levels-3` fail. No class of
+  parameters had coverage below the band, but for a few classes (judge bias, arm differences, correlations) 90%
+  intervals held the truth in 95% to 98% of studies, against a band of 85% to 95%. On `binary-checks` the hidden
+  arm means of most arms came out low. Pass rates computed from the posterior means of the parameters (plug-in
+  estimates) were close to the truth on average: over 20 studies, the mean error of each arm and component was
+  under 0.02. That does not bound the error in one study, which was often larger. The other specs of the
+  catalog are covered in the 0.4.5 entry of the changelog. No real study has been through the group yet.
+- **The default engine is an approximation.** It was compared with `--engine pymc` on simulated studies of
+  `binary-checks`, `pairs`, `linear` and `one-component`, 20 of each. Plug-in pass rates and reported quality,
+  computed from each engine's posterior means of the parameters, agreed to within 0.03 per arm and component.
+  The pass rates and reported quality the reports print are means over the draws; how far the engines differ on
+  those was not measured. Its hidden arm means on yes or no components came out about 5% below PyMC's on
+  average, and its noise and correlation terms differ more. For readings that are not numbers it uses
+  expectation propagation (EP). When one group of readings holds every reading of its unknowns, EP computes the
+  likelihood the engine fits, at fixed noise and correlation terms, exactly, up to the error of numerical
+  integration and to constants that depend on the data alone; when groups share unknowns, it is an approximation
+  without a bound. Either way, its draws of the hidden quality behind such readings are Gaussian approximations.
+  For an item count the engine leaves out one such constant, the number of ways to pick which of the items
+  passed, so its likelihood is not the probability of the readings; the fit does not depend on it. On a design
+  with very little call noise EP may not converge, and the fit is then marked as not converged. A study of
+  20,000 number readings fits in about 18 seconds on 2 cores. Readings that are not numbers take longer, and a
+  study of that size with such readings has not been timed on this release. To check a fit, fit the same study
+  again with `--engine pymc`.
 - **Scores at the ends of a scale.** `eval simulate` clips `linear` and `fraction` readings at the ends of the
   scale, while the fit treats them as unclipped normal readings. What the checks say about recovery holds for
   studies whose readings sit inside the scale. With many readings at 0 or at the top, expect arm means pulled
-  toward the middle and noise read too small. A censored likelihood is planned for 0.4.5.
-- **Fits with yes or no components, levels or comparisons are slow.** On 2 cores, with 2 chains of 500 draws,
+  toward the middle and noise read too small. A censored likelihood is not built yet.
+- **With `--engine pymc`, fits with yes or no components, levels or comparisons are slow.** On 2 cores, with 2
+  chains of 500 draws,
   simulated studies of 80 to 120 outputs took 12 to 15 minutes with such components and 1 to 3 minutes with
   linear scales only. A linear study of 500 outputs, 5 components, 4 judges and 2 repeats (20,000 readings) took
-  about 17 minutes, against a target of 10.
+  about 30 minutes with 2 chains of 1000 draws, against a target of 10.
 - **Priors for two noise terms.** The call noise of levels components and of comparisons has a Gamma prior, not
   the half-normal prior the other noise terms have: with a half-normal prior the sampler diverged.
 - **Not built:** `eval fit --halo full` and `--cuts free` are refused by name. A reference answer's family has no
-  parameter of its own: it is read as a family effect of the judge that saw the reference. `eval scores export`
-  writes the whole study or one run (`--run`), with no filter by judge.
+  parameter of its own: it is read as a family effect of the judge that saw the reference.
 - **`eval steps` estimates no interactions**: each swap is read alone, against the reference arm.
 - **`eval judges` costs** come from the cost per call in `judges.json`, with no range.
 - **`eval value --check design`** treats every labelled output as drawn alone: it has no variance term for
@@ -160,8 +217,10 @@ number for that arm should not be trusted yet.
   or `cost_per_pass`, active mode is refused; it runs without `--value`.
 - **Blind plans depend on your run ids.** A plan never names an arm, but a run id such as `strong-017` does.
   `eval labels next` refuses to plan when run ids or refs spell out an arm, a model or a model family: give the
-  runs neutral ids (`r001`), import the scores under those ids and fit again. A study from `eval simulate`, whose
-  run ids do name the arm, is let through with a note that its plan is not blind.
+  runs neutral ids (`r001`), import the scores under those ids and fit again. `eval simulate` writes neutral run
+  ids and refs (`r0001`, `outputs/r0001`) in an order drawn from the seed, so its plans pass this check. A
+  simulated study whose run ids still spell out an arm, such as one simulated by loopmath 0.4.4, is let through
+  with a note that its plan is not blind.
 
 ## JSON
 

@@ -8,7 +8,10 @@
 mapping with any of the arrays of `fitfile.DRAW_SHAPES` without the leading S axis (`mu` is A x D, `bias`
 is J x D, and so on). What is not given gets a default. Every draw is the truth plus posterior noise of
 sd `posterior_sd`; with `posterior_sd=0` every draw equals the truth, so a later stage's output can be
-checked against a closed form.
+checked against a closed form. `unit` (D) is the exception: the factor of each dimension, written as it
+is in every draw, with its stat as the dimension's `unit.factor` on `binary` and pairs-only dimensions.
+It must be 1 on the dimensions the data fix (`fitfile.check_units`). Without it the draws carry no
+conversion: the unit draws are 1 and every factor is null.
 
 All data here is synthetic.
 """
@@ -25,6 +28,7 @@ import numpy as np
 from . import contracts as C
 from . import fitfile as F
 from . import quality as Q
+from . import units as U
 
 ENGINE = {"name": "testing", "version": "1"}
 
@@ -173,6 +177,9 @@ def build_fit(path: str | os.PathLike, *, rubric: dict | None = None, judges: di
 
     draws: dict[str, np.ndarray] = {}
     for name in sorted(true):
+        if name == "unit":                                     # a factor, not an estimate: no posterior noise
+            draws[name] = np.broadcast_to(true[name], (n_draws, D)).astype(float).copy()
+            continue
         base = true[name]
         noise = posterior_sd * rng.standard_normal((n_draws,) + base.shape)
         if name in POSITIVE:
@@ -247,7 +254,9 @@ def build_fit(path: str | os.PathLike, *, rubric: dict | None = None, judges: di
                       diagnostics=diagnostics, inputs=inputs, engine=ENGINE, seed=seed,
                       options=options or {"n_draws": n_draws, "posterior_sd": posterior_sd},
                       counts={"readings": n_readings, "readings_used": n_readings}, judge_counts=judge_counts,
-                      readings=readings, relative=relative)
+                      readings=readings, relative=relative,
+                      units=U.records(dims, relative, [anchored or None] * D, draws["unit"]) if "unit" in draws
+                      else None)
     path = F.write_fit(path, meta, draws)
     return Built(path, F.read_fit(path, allow_unconverged=True), true)
 

@@ -1,0 +1,81 @@
+{
+ "ocp": "0.4",
+ "producer": {
+  "name": "example",
+  "version": "1"
+ },
+ "privacy": {
+  "profile": "metadata_only"
+ },
+ "run": {
+  "id": "a.b",
+  "task": {
+   "id": "case-01"
+  },
+  "labels": {
+   "arm": "baseline"
+  },
+  "configuration": {
+   "workflow": {
+    "pieces": [
+     {
+      "id": "final",
+      "role": "dev"
+     }
+    ],
+    "edges": []
+   },
+   "settings": {
+    "final": {
+     "harness": "cli",
+     "effort": "low",
+     "model": {
+      "id": "model-baseline",
+      "family": "baseline"
+     }
+    }
+   }
+  },
+  "signals": [
+   {
+    "id": "s1",
+    "kind": "score",
+    "name": "depth",
+    "value": 4,
+    "tier": "reported",
+    "observed_at": "2026-02-03T10:01:00-08:00",
+    "source": {
+     "kind": "judge",
+     "ref": "reviewer"
+    }
+   }
+  ],
+  "slate": {
+   "id": "slate-1",
+   "members": [
+    "a.b",
+    "r2"
+   ]
+  },
+  "preferences": [
+   {
+    "id": "f1",
+    "slate": "slate-1",
+    "winner": "a.b",
+    "members": [
+     "a.b",
+     "r2"
+    ],
+    "observed_at": "2026-02-03T10:05:00-08:00",
+    "judge": {
+     "kind": "model",
+     "model": "judge-1"
+    }
+   }
+  ]
+ },
+ "nodes": [],
+ "edges": [],
+ "attempts": [],
+ "artifacts": []
+}

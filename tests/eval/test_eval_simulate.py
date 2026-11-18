@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import time
 
 import numpy as np
@@ -13,9 +14,10 @@ from scipy.special import ndtr
 from loopmath import cli
 from loopmath.eval import contracts as C
 from loopmath.eval import fitfile as F
+from loopmath.eval import labels as L
 from loopmath.eval import quality as Q
 from loopmath.eval import simulate as S
-from loopmath.eval import specs
+from loopmath.eval import specs, testing
 
 DROP = object()
 
@@ -342,8 +344,11 @@ def test_the_written_study_reads_back_through_the_contracts(tmp_path):
     assert sorted(path.name for path in (tmp_path / "study").iterdir()) == sorted(paths)
     read = C.read_study(tmp_path / "study")
     assert len(read.runs) == 12 and all(run["simulated"] is True for run in read.runs)
-    assert [run["run"] for run in read.runs][:3] == ["baseline-i001", "strong-i001", "baseline-i002"]
-    assert read.runs[0]["refs"] == {"input": "inputs/i001", "output": "outputs/baseline-i001"}
+    assert [(run["input"], run["arm"]) for run in read.runs][:3] == [("i001", "baseline"), ("i001", "strong"),
+                                                                     ("i002", "baseline")]
+    assert sorted(run["run"] for run in read.runs) == [f"r{n:04d}" for n in range(1, 13)]
+    assert all(run["refs"] == {"input": f"inputs/{run['input']}", "output": f"outputs/{run['run']}"}
+               for run in read.runs)
     assert read.runs[0]["cost_usd"] == 0.1 and [s["step"] for s in read.runs[0]["steps"]] == ["draft", "final"]
     assert len(read.scores) == len(sim.scores) and len(read.pairs) == len(sim.pairs)
     assert len(read.items) == len(sim.items) > 0
@@ -362,11 +367,75 @@ def test_the_written_study_reads_back_through_the_contracts(tmp_path):
     assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
 
 
+@pytest.mark.parametrize("runs_per_input", [1, 3])
+def test_run_ids_and_refs_name_no_arm_and_the_arm_stays_in_the_run_record_and_the_truth(runs_per_input):
+    spec = dict(S.example_spec(), runs_per_input=runs_per_input)
+    sim = S.generate(spec, 3)
+    names, R = [run["run"] for run in sim.runs], 12 * runs_per_input
+    assert sorted(names) == [f"r{n:04d}" for n in range(1, R + 1)]
+    assert all(run["refs"] == {"input": f"inputs/{run['input']}", "output": f"outputs/{run['run']}"}
+               for run in sim.runs)
+    # No run id or ref holds an arm, a model id or a model family, wherever a file names a run.
+    secret = ("baseline", "strong", "model-small", "model-large", "alpha", "beta")
+    named = (names + [ref for run in sim.runs for ref in run["refs"].values()] + [row["run"] for row in sim.scores]
+             + [row[side] for row in sim.pairs for side in ("a", "b")]
+             + [target["run"] for person in sim.truth["human"] for target in person["targets"]])
+    assert len(named) > 3 * R and not [text for text in named if any(word in text.lower() for word in secret)]
+    # The arm stays in each run record and in truth.json, run by run.
+    index = sim.truth["index"]
+    assert index["runs"] == names
+    assert [run["arm"] for run in sim.runs] == [index["arms"][a] for a in index["run_arm"]]
+    # The rows keep the order input, arm, repeat; the numbers go to them in an order drawn from the seed, so
+    # an id's number does not give the arm (with two arms and one run per input, not even by its parity).
+    arm_of = {int(run["run"][1:]): run["arm"] for run in sim.runs}
+    assert [arm_of[n] for n in range(1, R + 1)] != [run["arm"] for run in sim.runs]
+    assert ({arm_of[n] for n in range(1, R + 1, 2)} == {arm_of[n] for n in range(2, R + 1, 2)}
+            == {"baseline", "strong"})
+    # The same seed gives the same ids, another seed another order.
+    assert [run["run"] for run in S.generate(spec, 3).runs] == names
+    assert [run["run"] for run in S.generate(spec, 4).runs] != names
+
+
+def fit_from_truth(study, folder, runs: list[dict]):
+    """`folder/fit.json` for `runs` from the truth of a written study, with no sampling (as the end-to-end walk)."""
+    truth = S.read_truth(study / S.TRUTH_FILE)
+    arrays = {name: np.nan_to_num(truth[name], nan=0.0) if name in ("bias", "tau", "sigma") else truth[name]
+              for name in F.DRAW_SHAPES if name != "cuts" and truth.get(name) is not None}
+    folder.mkdir(exist_ok=True)
+    return testing.build_fit(folder / "fit.json", rubric=C.read_document(study / "rubric.json", C.SCHEMA_RUBRIC),
+                             judges=C.read_document(study / "judges.json", C.SCHEMA_JUDGES), runs=runs,
+                             truth=arrays, relative=truth["relative"]).fit.path
+
+
+@pytest.mark.parametrize("name", ["example", "pairs", "steps-swap"])
+def test_labels_next_finds_a_simulated_study_blind_without_the_simulated_exemption(name, tmp_path, capsys,
+                                                                                   monkeypatch):
+    """The ids alone pass the blind check of `eval labels next`: the plan has no note that it is not blind, and
+    it is the same plan when no run counts as simulated, so the exemption for simulated studies is not used.
+    The control: the same runs under arm-named ids (`baseline-i001`, as 0.4.4 wrote them) are refused then."""
+    spec = S.example_spec() if name == "example" else specs.get(name, inputs=12)
+    sim = S.generate(spec, 0)
+    study = tmp_path / "study"
+    S.write(sim, study)
+    argv = ["eval", "labels", "next", str(fit_from_truth(study, study, sim.runs)), "--n", "20", "--json"]
+    assert cli.main(argv) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["assignments"] > 0 and not [note for note in report["notes"] if "blind" in note]
+    monkeypatch.setattr(L, "all_simulated", lambda *args: False)
+    assert cli.main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["plan"]["assignments"] == report["plan"]["assignments"]
+    named = [dict(run, run=f"{run['arm']}-{run['input']}",
+                  refs={"input": run["refs"]["input"], "output": f"outputs/{run['arm']}-{run['input']}"})
+             for run in sim.runs]
+    assert cli.main([*argv[:3], str(fit_from_truth(study, tmp_path / "named", named)), *argv[4:]]) == 1
+    assert "spells out an arm, a model id or a model family" in capsys.readouterr().err
+
+
 def test_truth_has_the_index_and_the_array_shapes_of_a_fit(tmp_path):
     sim = S.generate(S.example_spec(), 2)
     paths = S.write(sim, tmp_path / "study")
     truth = S.read_truth(paths["truth.json"])
-    assert truth["schema"] == C.SCHEMA_TRUTH == "loopmath.eval-truth/1" and truth["seed"] == 2
+    assert truth["schema"] == C.SCHEMA_TRUTH == "loopmath.eval-truth/2" and truth["seed"] == 2
     assert truth["spec"] == S.validate_spec(S.example_spec())
     assert truth["index"] == F.build_index(sim.rubric, sim.judges, sim.runs)
     index = truth["index"]
@@ -387,8 +456,11 @@ def test_truth_has_the_index_and_the_array_shapes_of_a_fit(tmp_path):
     assert np.abs(own).max() < 5 and not np.allclose(own, 0)
     # A parameter the design gives no reading for is NaN: the reviewer does not score `overall`, it compares it.
     d = [dim["id"] for dim in index["dimensions"]].index("final/overall")
-    assert np.isnan(truth["sigma"][0, d]) and truth["sigma_pair"][0, d] == 1.0 and np.isnan(truth["bias"][:, d]).all()
-    assert truth["tau"][0, d] == 0.4 and np.isnan(truth["sigma_pair"][1]).all()
+    # `overall` is pairs only: in the reviewer's total pair noise, sqrt(sigma_pair^2 + 2 tau^2) of the spec.
+    pair = math.sqrt(1.0 ** 2 + 2 * 0.4 ** 2)
+    assert np.isnan(truth["sigma"][0, d]) and np.isnan(truth["bias"][:, d]).all()
+    assert truth["sigma_pair"][0, d] == pytest.approx(1.0 / pair, rel=1e-15)
+    assert truth["tau"][0, d] == pytest.approx(0.4 / pair, rel=1e-15) and np.isnan(truth["sigma_pair"][1]).all()
     assert np.isnan(truth["halo_call"][[0, 2]]).all() and truth["halo_call"][1] == 0.4
     assert np.isnan(truth["position"][1]) and truth["position"][2] == 0.5 and truth["tie_width"][0] == 0.5
     assert np.isnan(truth["family"][0]).all() and truth["family"][1, index["families"].index("alpha"), 3] == 0.05
@@ -396,8 +468,13 @@ def test_truth_has_the_index_and_the_array_shapes_of_a_fit(tmp_path):
     assert np.isnan(truth["cuts"][3]).all()
     assert truth["relative"] == ["final/overall"]
     assert truth["units"] == [
-        {"dimension": "final/numbers_right", "rule": "binary", "parameter": "sigma", "judges": ["reviewer"]},
-        {"dimension": "final/overall", "rule": "pairs_only", "parameter": "sigma_pair", "judges": ["reviewer"]}]
+        {"dimension": "final/numbers_right", "rule": "binary", "parameter": "sigma", "judges": ["reviewer"],
+         "unit": "total_noise", "factor": pytest.approx(math.sqrt(1.0 + 0.5 ** 2), rel=1e-15)},
+        {"dimension": "final/overall", "rule": "pairs_only", "parameter": "sigma_pair", "judges": ["reviewer"],
+         "unit": "total_pair_noise", "factor": pytest.approx(pair, rel=1e-15)}]
+    units = [1.0] * 6
+    units[[dim["id"] for dim in index["dimensions"]].index("final/numbers_right")], units[d] = math.sqrt(1.25), pair
+    assert truth["unit"] == pytest.approx(units, rel=1e-15)
     kinds = [dim["kind"] for dim in index["dimensions"]]
     assert np.allclose(truth["reported"]["runs"], Q.reported_all(truth["q_run"], kinds))
     total = np.sqrt(truth["sd_input"] ** 2 + truth["sd_run"] ** 2)
@@ -532,7 +609,10 @@ def test_binary_readings_match_the_expected_rates():
     # The lenient judge passes more failed outputs than the reviewer, and by a closed form.
     assert rates["lenient"]["expected"]["false_pass"] > rates["reviewer"]["expected"]["false_pass"] + 0.2
     place, q = truth_of(sim)
-    hidden = np.array([q[place[row["run"]], 0] for row in rows_of(sim, "lenient")])
+    # truth.json is in the reviewer's total noise sqrt(1 + 0.5^2); the readings use the spec's unit
+    unit = math.sqrt(1.0 + 0.5 ** 2)
+    assert sim.truth["units"][0]["factor"] == pytest.approx(unit, rel=1e-15)
+    hidden = unit * np.array([q[place[row["run"]], 0] for row in rows_of(sim, "lenient")])
     said = np.array([row["value"] for row in rows_of(sim, "lenient")])
     p_pass = ndtr((hidden + 0.8) / np.hypot(1.0, 1.5))   # tau and sigma together, for one call
     assert abs(said.mean() - p_pass.mean()) < 0.01
@@ -673,10 +753,12 @@ def test_pairs_follow_the_view_the_position_bias_and_the_tie_width():
     spec["quality"]["sd_input"]["overall"], spec["quality"]["sd_run"]["overall"] = 0.6, 0.8
     sim = S.generate(spec, 8)
     place, q = truth_of(sim)
+    run_of = {run["run"]: run for run in sim.runs}
     by: dict[str, list[dict]] = {}
     for row in sim.pairs:
         by.setdefault(row["judge"], []).append(row)
-        assert (row["a"], row["b"]) == (f"arm1-{row['a'][5:]}", f"arm2-{row['a'][5:]}")   # two outputs of one input
+        a, b = run_of[row["a"]], run_of[row["b"]]
+        assert (a["arm"], b["arm"]) == ("arm1", "arm2") and a["input"] == b["input"]   # two outputs of one input
         assert row["step"] == "final" and row["rubric"] == "case@1"
     assert {name: len(rows) for name, rows in by.items()} == {"reviewer": 4000, "exact": 2000, "first": 4000,
                                                               "unsure": 2000, "noisy": 8000 + 500}
@@ -719,7 +801,8 @@ def test_the_human_design_selects_uniformly_or_by_the_judges_scores():
                  inputs=2000)
     sim = S.generate(spec, 7)
     scorer = rows_of(sim, "scorer")
-    assert len(scorer) == 800 and {row["run"].split("-")[0] for row in scorer} == {"arm2"}
+    arm_of = {run["run"]: run["arm"] for run in sim.runs}
+    assert len(scorer) == 800 and {arm_of[row["run"]] for row in scorer} == {"arm2"}
     uniform, dependent = sim.truth["human"]
     assert (uniform["judge"], uniform["selection"], dependent["judge"], dependent["selection"]) == (
         "reviewer", "uniform", "second", "judge_scores")
@@ -779,10 +862,13 @@ def test_more_runs_per_input_get_their_own_ids_and_share_the_input_part():
     spec["judges"]["judges"][1]["truth"]["sigma_pair"] = {"depth": 0.01}
     sim = S.generate(spec, 0)
     runs = [run["run"] for run in sim.runs]
-    assert runs[:6] == ["arm1-i001-r1", "arm1-i001-r2", "arm1-i001-r3", "arm2-i001-r1", "arm2-i001-r2",
-                        "arm2-i001-r3"] and len(runs) == 300
+    assert [(run["input"], run["arm"]) for run in sim.runs[:6]] == [("i001", "arm1")] * 3 + [("i001", "arm2")] * 3
+    assert sorted(runs) == [f"r{n:04d}" for n in range(1, 301)]
     assert sim.truth["index"] == F.build_index(sim.rubric, sim.judges, sim.runs)
-    assert len(sim.pairs) == 150 and all(row["a"][-3:] == row["b"][-3:] for row in sim.pairs)
+    # Rows go input, arm, repeat (6 per input): a pair is repeat k of arm1 and repeat k of arm2 on one input.
+    place = {run: n for n, run in enumerate(runs)}
+    assert len(sim.pairs) == 150 and all(place[row["b"]] - place[row["a"]] == 3 and place[row["a"]] % 6 < 3
+                                         for row in sim.pairs)
     assert len(np.array(sim.truth["v_input"])) == 50
 
 

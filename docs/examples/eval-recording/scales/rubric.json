@@ -1,0 +1,16 @@
+{
+ "schema": "loopmath.eval-rubric/1",
+ "id": "report",
+ "version": "2",
+ "steps": ["draft", "final"],
+ "components": [
+  {"id": "correct", "title": "The facts are right", "scale": {"kind": "binary"}},
+  {"id": "clarity", "title": "Clear to a new reader", "scale": {"kind": "levels", "levels": ["poor", "ok", "good"]}},
+  {"id": "tone", "title": "Tone fits the reader", "scale": {"kind": "levels", "levels": [1, 2, 3, 4, 5]}},
+  {"id": "depth", "title": "Depth", "scale": {"kind": "linear", "range": [0, 10]}, "applies_to": ["draft", "final"]},
+  {"id": "sourced", "title": "Share of claims with a source", "scale": {"kind": "fraction"}},
+  {"id": "errors", "title": "Errors left in the text", "scale": {"kind": "linear", "range": [0, 20]}, "better": "lower"},
+  {"id": "covers", "title": "Covers the required points", "scale": {"kind": "items"}, "review_minutes": 3},
+  {"id": "overall", "title": "Overall", "role": "overall", "scale": {"kind": "linear", "range": [1, 5]}}
+ ]
+}
