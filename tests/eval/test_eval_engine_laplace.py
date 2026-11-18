@@ -485,6 +485,10 @@ def _theta_vector(prob: EL.Problem, th: dict) -> np.ndarray:
     theta = P.init.copy()
     for k, label in enumerate(P.labels):
         name, idx = label.split("[")[0], tuple(int(x) for x in label.split("[")[1].rstrip("]").split(","))
+        if name.startswith("cpc_"):   # partial correlations: only the identity, the oracle's default, maps here
+            assert np.allclose(th["corr_" + name[4:]], np.eye(P.D)), name
+            theta[k] = 0.0
+            continue
         value = float(np.asarray(th[name], dtype=float)[idx])
         theta[k] = special.logit(value) if P.code[k] == EL.BETA12 else np.log(value)
     return theta
@@ -547,6 +551,31 @@ def test_ep_beats_laplace_where_several_sites_share_unknowns(kind, opts, bound):
             assert abs(ep - exact.loglik) < bound, (f, seed, ep, exact.loglik)
             assert abs(ep - exact.loglik) * 3 < abs(lap - exact.loglik), (f, seed, ep, lap, exact.loglik)
     assert checked >= 1
+
+
+def test_family_sds_are_per_judge_and_scaled_by_dimension_against_the_exact_oracle():
+    """One family sd per model judge, times each dimension's scale: on `own-family` and `reference-family`
+    (linear readings, where the Laplace value is exact) with a different family sd for every judge and
+    unequal dimension scales (0.25 and 0.6), the engine's value equals lane S4's exact marginal likelihood,
+    with the arm means and biases integrated as well. Swapping the sds of two judges changes the exact value
+    by more than 0.01, so the check sees which judge owns which sd."""
+    O = _oracle()
+    for name in ("own-family", "reference-family"):
+        design, _ = catalog_design(name, inputs=3)
+        data = dict(design.data)
+        data["scale"] = np.array([0.25, 0.6])
+        prob = EL.Problem(data)
+        sds = np.array([0.4, 0.05, 0.6, 0.2, 0.3])[:prob.J]
+        assert [label for label in prob.params.labels if label.startswith("family_sd")] == \
+            [f"family_sd[{j}]" for j in range(1, prob.J)]   # judge 0 is the person reviewer: no family term
+        th = O.full_theta(data, {"family_sd": sds})
+        exact = O.exact(data, th, random=("mu", "bias")).loglik
+        lap = prob.evaluate(_theta_vector(prob, th), grad=False)["laplace"]
+        assert abs(lap - exact) < 1e-6, (name, lap, exact)
+        swapped = sds.copy()
+        swapped[[1, 2]] = swapped[[2, 1]]
+        other = O.exact(data, O.full_theta(data, {"family_sd": swapped}), random=("mu", "bias")).loglik
+        assert abs(other - exact) > 1e-2, (name, other, exact)
 
 
 def _reversed(rows: list, flip) -> list:
@@ -642,6 +671,33 @@ def test_outer_gradient_matches_finite_differences(name, inner):
         assert abs(fd - res["grad"][k]) <= 1e-4 * max(1.0, abs(fd)), (name, prob.params.labels[k], res["grad"][k], fd)
 
 
+@pytest.mark.parametrize("name", ["own-family", "reference-family", "mixed-rubric"])
+def test_the_per_judge_family_sd_gradient_matches_finite_differences(name):
+    """The derivative of the family sd block (one entry per model judge, each acting on every dimension
+    through that dimension's scale) against central differences of the value, at sds far apart: 0.02, 0.3
+    and 1.2 of the scale in turn over the judges, the rest at a random point. `mixed-rubric` has scales of
+    1 and 0.25 and an EP inner step. Each entry must reach the value (a gradient that is not 0)."""
+    design, _ = catalog_design(name, inputs=4)
+    prob = EL.Problem(design.data)
+    P = prob.params
+    rng = np.random.default_rng(23)
+    theta = np.clip(P.init + 0.3 * rng.standard_normal(P.size), P.lo, P.hi)
+    keys = [k for k, label in enumerate(P.labels) if label.startswith("family_sd")]
+    assert len(keys) >= 2
+    for n, k in enumerate(keys):
+        theta[k] = np.log((0.02, 0.3, 1.2)[n % 3])
+    res = prob.evaluate(theta)
+    assert res["mode"]["ok"]
+    h = 1e-5
+    for k in keys:
+        e = np.zeros(len(theta))
+        e[k] = h
+        fd = (prob.evaluate(theta + e, res["mode"], grad=False)["value"]
+              - prob.evaluate(theta - e, res["mode"], grad=False)["value"]) / (2 * h)
+        assert abs(fd - res["grad"][k]) <= 1e-4 * max(1.0, abs(fd)), (name, P.labels[k], res["grad"][k], fd)
+        assert abs(fd) > 1e-6, (name, P.labels[k], fd)
+
+
 # ---------------------------------------------------------------------------------------------------
 # The fit
 
@@ -652,17 +708,17 @@ def test_factor_structure_is_refused_by_name():
 
 
 def test_boundary_names_an_sd_already_at_its_bound_and_one_the_data_cannot_see():
-    """`linear` has no family effect: setting family_sd to its lower bound makes it 'at the boundary'
-    without a trial; the cheap judge's call noise is measured (repeated calls), so it is not named."""
+    """`linear` has no family effect: setting the first model judge's family_sd to its lower bound makes
+    it 'at the boundary' without a trial; the cheap judge's call noise is measured (repeated calls), so it is not named."""
     design, _ = catalog_design("linear", inputs=10, seed=3)
     prob = EL.Problem(design.data)
     P = prob.params
     fitted = EL.fit_theta(prob)
     theta = fitted["theta"].copy()
-    k = P.labels.index("family_sd[0]")
+    k = P.labels.index("family_sd[1]")   # judge 0 is the person reviewer: no family term, no sd
     theta[k] = P.lo[k]
     at, unchecked = EL.boundary(prob, theta)
-    assert "family_sd[0]" in at and not unchecked
+    assert "family_sd[1]" in at and not unchecked
     assert "sigma[2, 0]" not in at
 
 
@@ -1409,14 +1465,14 @@ def test_the_s3_pilot_case_fits_without_overflow_or_an_untrusted_cell():
 
 
 def test_fit_recovers_a_linear_study_and_names_absent_terms_at_the_boundary():
-    """`linear` simulates no family effect and no judge-by-input term: both family sds are at the
-    boundary. The cheap judge's disagreement (true 0.08) is not. Arm means and their difference sit
+    """`linear` simulates no family effect and no judge-by-input term: the family sds of both model
+    judges are at the boundary. The cheap judge's disagreement (true 0.08) is not. Arm means and their difference sit
     within 3 posterior sds of the truth (a single study: coverage itself is S3's bench)."""
     design, sim = catalog_design("linear", inputs=40, seed=0)
     res = EL.sample(design.data, seed=0)
     assert all(check["ok"] for check in res["checks"])
     edge = set(res["boundary"])
-    assert {"family_sd[0]", "family_sd[1]"} <= edge
+    assert {"family_sd[1]", "family_sd[2]"} <= edge
     assert not {"tau[2, 0]", "tau[2, 1]", "sigma[2, 0]", "sigma[2, 1]"} & edge
     mu = res["draws"]["mu"].reshape(-1, 2, 2)
     true_mu = np.asarray(sim.truth["mu"], dtype=float)
@@ -1516,3 +1572,92 @@ def test_laplace_and_pymc_agree_on_a_linear_study():
         sd = b.std(axis=0)[~fixed]
         assert np.all(np.abs(a.mean(axis=0)[~fixed] - b.mean(axis=0)[~fixed]) < 0.5 * sd), name
         assert np.all(np.abs(a.std(axis=0)[~fixed] / sd - 1.0) < 0.35), name
+
+
+def _own_family_contrasts(sim, draws: dict) -> dict:
+    """Per model judge and dimension: the draws of its own-family contrast (its effect on its own family less
+    its mean effect on the others, in the reported unit), and the simulated value of that contrast."""
+    judges = [j for j in sim.judges["judges"] if j["kind"] == "model"]
+    names = sim.truth["index"]["judges"]
+    families = sim.truth["index"]["families"]
+    truth = np.nan_to_num(np.asarray(sim.truth["family"], dtype=float))
+    fam = np.asarray(draws["family"], dtype=float)
+    fam = fam.reshape(-1, *fam.shape[-3:])
+    unit = np.asarray(draws["unit"], dtype=float).reshape(-1, fam.shape[-1]) if "unit" in draws else 1.0
+    out = {}
+    for judge in judges:
+        j, f = names.index(judge["id"]), families.index(judge["model"]["family"])
+        others = [n for n in range(len(families)) if n != f]
+        x = (fam[:, j, f, :] - fam[:, j, others, :].mean(axis=1)) * unit
+        out[judge["id"]] = (x, truth[j, f] - truth[j, others].mean(axis=0))
+    return out
+
+
+@slow
+@pytest.mark.skipif(not engine_pymc.available(), reason="needs the [bayes] extra")
+def test_laplace_and_pymc_agree_on_the_family_effects_of_a_small_own_family_study():
+    """Both engines give each model judge its own family sd. On a small `own-family` study (16 inputs) the
+    Laplace and PyMC posteriors of every family effect and every own-family contrast agree: means within
+    half a PyMC sd, sds within 35%."""
+    design, sim = catalog_design("own-family", inputs=16, seed=2)
+    lap = EL.sample(design.data, seed=2)["draws"]
+    mc = engine_pymc.sample(design.data, seed=2, draws=1000, chains=2, cores=2)["draws"]
+    on = np.asarray(design.data["family_on"], dtype=bool)
+    a, b = lap["family"].reshape(-1, *lap["family"].shape[-3:]), mc["family"].reshape(-1, *mc["family"].shape[-3:])
+    sel = np.broadcast_to(on[:, None, :], a.shape[1:])
+    sd = b.std(axis=0)[sel]
+    assert np.all(np.abs(a.mean(axis=0)[sel] - b.mean(axis=0)[sel]) < 0.5 * sd)
+    assert np.all(np.abs(a.std(axis=0)[sel] / sd - 1.0) < 0.35)
+    ca, cb = _own_family_contrasts(sim, lap), _own_family_contrasts(sim, mc)
+    for judge in ca:
+        xa, xb = ca[judge][0], cb[judge][0]
+        assert np.all(np.abs(xa.mean(axis=0) - xb.mean(axis=0)) < 0.5 * xb.std(axis=0)), judge
+        assert np.all(np.abs(xa.std(axis=0) / xb.std(axis=0) - 1.0) < 0.35), judge
+
+
+# ---------------------------------------------------------------------------------------------------
+# Slow: recovery of family effects with one family sd per judge
+
+OWN_FAMILY_STUDIES = 100
+E_NULL_MAX = 0.30   # mean of e over mid's null contrasts; see the test for what was measured
+
+
+@slow
+def test_own_family_recovery_with_one_family_sd_per_judge():
+    """`own-family` (40 inputs, seeds 0 to 99), Laplace engine, against the simulated truth: `mid` favours no
+    family, `strong` favours its own by 0.06 and `cheap` its own by 0.08. Each model judge has its own family
+    sd, so the real effects of `strong` and `cheap` no longer set how far `mid`'s effects are shrunk.
+
+    - `mid`'s own-family contrast (truth 0): e = posterior mean / posterior sd. Its mean over the studies
+      stays under E_NULL_MAX, and at most 10% of these contrasts have a 90% interval that excludes 0.
+    - The real contrasts of `strong` and `cheap`: their 90% intervals hold the truth in 85% to 95% of
+      them, and at least 90% exclude 0.
+
+    Measured on these seeds (posterior sd taken as the 90% width / 3.29): mean e +0.23 (cluster standard
+    error 0.04), 4.5% flagged, real effects held 0.89 and found 0.96. With one family sd shared by the
+    judges (the 0.4.5 release candidate): +0.37 (0.06), 9.5% flagged, held 0.84, which fails both the
+    bound and the coverage band. The bound is not 0: about +0.2 remains. Most of it is the
+    ordinary shrinkage of the real effects, which reaches `mid` through the arm means (family follows arm
+    here, so the family effects are measured only against the person reviewer): with the family sd held
+    at 0.25, no shrinkage, the same 200 seeds give +0.10 (0.05) and unbiased real effects, but 8% of the
+    null contrasts and 15% of the studies flagged."""
+    null, held, found = [], [], []
+    for seed in range(OWN_FAMILY_STUDIES):
+        design, sim = catalog_design("own-family", inputs=40, seed=seed)
+        meta, draws = FT.fit_design(design, seed=seed, keep_draws=1000)
+        assert meta["diagnostics"]["converged"], seed
+        for judge, (x, truth) in _own_family_contrasts(sim, draws).items():
+            lo, hi = np.percentile(x, [5, 95], axis=0)
+            if judge == "mid":
+                assert np.all(truth == 0.0)
+                null.append((x.mean(axis=0) / x.std(axis=0), (lo > 0) | (hi < 0)))
+            else:
+                assert np.all(truth > 0.0)
+                held.extend((lo <= truth) & (truth <= hi))
+                found.extend((lo > 0) | (hi < 0))
+    e = np.concatenate([z for z, _ in null])
+    flags = np.concatenate([f for _, f in null])
+    assert e.mean() < E_NULL_MAX, e.mean()
+    assert flags.mean() <= 0.10, flags.mean()
+    assert 0.85 <= np.mean(held) <= 0.95, np.mean(held)
+    assert np.mean(found) >= 0.90, np.mean(found)

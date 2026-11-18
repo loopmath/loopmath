@@ -718,7 +718,7 @@ class Problem:
         # ---- slots: coefficients that depend on theta ---------------------------------------------
         off = {}
         at = 0
-        for name, size in (("Lin", D * D), ("Lrun", D * D), ("famsd", D), ("sdji", J * D), ("ajt", J * D),
+        for name, size in (("Lin", D * D), ("Lrun", D * D), ("famsd", J * D), ("sdji", J * D), ("ajt", J * D),
                            ("acell", J * D), ("apc", J * D)):
             off[name] = at
             at += size
@@ -784,7 +784,8 @@ class Problem:
             pos = np.broadcast_to(pos, np.shape(row_ids)) if pos.size == 1 else pos
             for ff in range(N):
                 base = sign * ((ff == f) - 1.0 / N)
-                ent(row_ids, "family", np.where(pos >= 0, pos * N + ff, -1), base, off["famsd"] + dd)
+                ent(row_ids, "family", np.where(pos >= 0, pos * N + ff, -1), base,
+                    off["famsd"] + np.asarray(j, dtype=np.int64) * D + np.asarray(dd, dtype=np.int64))
 
         def view(row_ids, r, dd, j, f, jt, ji=None, sign=1.0, with_v=True, with_mu=True):
             quality(row_ids, r, dd, sign, with_v, with_mu)
@@ -928,7 +929,7 @@ class Problem:
         lin = nu["sd_in"][:, None] * nu["Lc_in"]
         lrun = nu["sd_run"][:, None] * nu["Lc_run"]
         rh, r1h, rc = np.sqrt(nu["h"]), np.sqrt(1.0 - nu["h"]), np.sqrt(nu["hc"])
-        return np.concatenate([lin.ravel(), lrun.ravel(), nu["famsd"], nu["sdji"].ravel(),
+        return np.concatenate([lin.ravel(), lrun.ravel(), nu["famsd"].ravel(), nu["sdji"].ravel(),
                                (nu["tau"] * rh[:, None]).ravel(), (nu["tau"] * r1h[:, None]).ravel(),
                                (nu["sigma"] * rc[:, None]).ravel(), [1.0]])
 
@@ -1379,7 +1380,7 @@ class Problem:
         dnu["Lc_in"] += dlin * nu["sd_in"][:, None]
         dnu["sd_run"] += (dlrun * nu["Lc_run"]).sum(axis=1)
         dnu["Lc_run"] += dlrun * nu["sd_run"][:, None]
-        dnu["famsd"] += dgam[off["famsd"]:off["famsd"] + D]
+        dnu["famsd"] += dgam[off["famsd"]:off["famsd"] + J * D].reshape(J, D)
         dnu["sdji"] += dgam[off["sdji"]:off["sdji"] + J * D].reshape(J, D)
         dajt = dgam[off["ajt"]:off["ajt"] + J * D].reshape(J, D)
         dacell = dgam[off["acell"]:off["acell"] + J * D].reshape(J, D)
@@ -1470,7 +1471,9 @@ class Params:
         add("sigma", (J, D), has_score, sig_code, sig_const, sig_init)
         add("halo_target", (J,), prob.halo_on & jt_judges, BETA12, 0.0, -np.log(2.0))
         add("halo_call", (J,), pc_judges, BETA12, 0.0, -np.log(2.0))
-        add("family_sd", (D,), prob.family_on.any(axis=0), HN, 0.4 * s, np.log(0.2 * s))
+        # one family sd per model judge with a family term, relative to each dimension's scale s: the
+        # effect sd of judge j on dimension d is family_sd[j] * s[d] (half-normal(0.4 s), as before)
+        add("family_sd", (J,), prob.family_on.any(axis=1), HN, 0.4, np.log(0.2))
         add("sd_judge_input", (J, D), ji_used, HN, 0.6 * wide, np.log(0.3 * wide))
         only = np.broadcast_to(prob.pairs_only, (J, D))
         add("sigma_pair", (J, D), pair_jd, np.where(only, REL, GAMMA), np.where(only, 0.0, 2.0 / (1.6 * wide)),
@@ -1501,7 +1504,7 @@ class Params:
         D, J = self.D, self.J
         return {"sd_in": np.zeros(D), "sd_run": np.zeros(D), "Lc_in": np.zeros((D, D)), "Lc_run": np.zeros((D, D)),
                 "tau": np.zeros((J, D)), "sigma": np.zeros((J, D)), "h": np.zeros(J), "hc": np.zeros(J),
-                "sqrt_h": np.zeros(J), "sqrt_1mh": np.zeros(J), "sqrt_hc": np.zeros(J), "famsd": np.zeros(D),
+                "sqrt_h": np.zeros(J), "sqrt_1mh": np.zeros(J), "sqrt_hc": np.zeros(J), "famsd": np.zeros((J, D)),
                 "sdji": np.zeros((J, D)), "sp": np.zeros((J, D)), "tie": np.zeros(J)}
 
     def _take(self, theta: np.ndarray, name: str, default: float | np.ndarray) -> np.ndarray:
@@ -1526,7 +1529,8 @@ class Params:
         nu["sigma"] = np.where(self.fixed, rel, np.where(self.idx["sigma"] >= 0, np.exp(raw), 0.5 * wide))
         nu["h"] = special.expit(self._take(theta, "halo_target", -np.inf))
         nu["hc"] = special.expit(self._take(theta, "halo_call", -np.inf))
-        nu["famsd"] = np.exp(self._take(theta, "family_sd", np.log(0.2 * s)))
+        nu["famsd"] = (np.exp(self._take(theta, "family_sd", np.log(0.2)))[:, None]
+                       * np.broadcast_to(np.asarray(s, dtype=float), (D,))[None, :])
         nu["sdji"] = np.exp(self._take(theta, "sd_judge_input", np.log(0.3 * wide)))
         raw = self._take(theta, "sigma_pair", 0.0)
         rel = np.exp(raw - (raw * self.pair_w).sum(axis=0, keepdims=True))
@@ -1558,7 +1562,7 @@ class Params:
             if sq1:
                 total = total - dnu[sq1] * 0.5 * h * np.sqrt(1.0 - h)
             put(name, total)
-        put("family_sd", dnu["famsd"] * nu["famsd"])
+        put("family_sd", (dnu["famsd"] * nu["famsd"]).sum(axis=1))
         put("sd_judge_input", dnu["sdji"] * nu["sdji"])
         g = dnu["sp"] * nu["sp"]
         rel = g - self.pair_w * np.where(self.only, g, 0.0).sum(axis=0, keepdims=True)
@@ -1849,7 +1853,7 @@ def outputs(prob: Problem, nu: dict, zg: np.ndarray, zb: np.ndarray) -> dict:
         raw = glob("family").reshape(n, len(prob.fam_keys), N)
         raw = raw - raw.mean(axis=2, keepdims=True)
         for k, (j, d) in enumerate(prob.fam_keys):
-            family[:, j, :, d] = raw[:, k] * nu["famsd"][d]
+            family[:, j, :, d] = raw[:, k] * nu["famsd"][j, d]
     position = prob.pair_scale[None] * glob("position")
 
     def rep(x):
