@@ -503,7 +503,8 @@ def family_contrasts(report: Mapping, truth: Mapping, families: Sequence[str]) -
                 rows.append({"judge": judge["id"], "kind": kind, "family": part["family"], "dimension": dim["dimension"],
                              "truth": value, "mean": effect["mean"], "lo": effect["lo"], "hi": effect["hi"],
                              "excludes_zero": bool(dim["excludes_zero"]), "flagged": bool(dim["flagged"]),
-                             "p_value": float(dim["p_value"]), "tested_with": int(dim["tested_with"])})
+                             "p_value": None if dim.get("p_value") is None else float(dim["p_value"]),
+                             "decided": bool(dim.get("decided", True)), "tested_with": int(dim["tested_with"])})
     return rows
 
 

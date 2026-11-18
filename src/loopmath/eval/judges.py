@@ -55,16 +55,17 @@ Family effects per model judge: `own_family` and `reference_family` contrasts (t
 minus the mean effect on the other families), each with its 90% interval (`effect`, in the dimension's
 stated unit) and `excludes_zero`: whether the 90% interval of the same draws in the unit the engine fitted
 in, named in `decided_in` (Units), excludes 0 (a percentile interpolates between two draws whose units can
-differ). The flag (`flagged`) is decided jointly over the family contrasts of the whole report, so that a
-report with no family effect shows a false flag with chance at most `FAMILY_LEVEL` (0.10), however many
-contrasts it shows, when the condition below holds: Holm's step-down rule at family-wise level 0.10 over every contrast printed (own-family
-and reference-family, every judge and dimension), each tested with a two-sided p-value from the
+differ). The flag (`flagged`) is decided jointly over the family contrasts of the whole report, however
+many it shows: Holm's step-down rule at family-wise level `FAMILY_LEVEL` (0.10) over every contrast
+printed (own-family and reference-family, every judge and dimension), each tested with a two-sided p-value from the
 posterior mean and sd of its draws in the fitted unit, widened for their Monte Carlo error at the
-effective sample size `eval fit` requires (`normal_p`). A flag also needs `excludes_zero`. The bound
-holds when the fitted posterior of these contrasts is calibrated and close to normal and the fit passed
-its effective sample size check; it reads no count of draws, so repeated or chained draws do not void it.
-`family_flag` states the rule, the condition,
-the level and how many contrasts were tested; `family_groups` is the one place that chooses which
+effective sample sizes read from the same draws in their saved order (`normal_p`, `contrast_ess`); a
+contrast with fewer than 100 effective draws, or 100 for its squared deviations, is not decided (never
+flagged, still counted). A flag also needs `excludes_zero`. The rule is designed to keep the chance of any
+false family flag in a report near or under 0.1 when the fit is calibrated, close to normal for these
+contrasts, and its draws mix well; it is checked by simulation, not guaranteed for every fit.
+`family_flag` states the rule, the condition, the level, how many contrasts were tested and how many
+could not be decided; `family_groups` is the one place that chooses which
 contrasts are tested together.
 
 Across judges: a table of (judge, repeats) choices per dimension with error and cost, the cheapest choice
@@ -101,7 +102,11 @@ MAX_PAIRS = 4000        # pairs of targets read for the pair figures; more are t
 MIN_DEFINED = 0.1       # a ratio that is undefined in more than 90% of the draws is not reported
 FAMILY_LEVEL = 0.10     # chance of one or more false family flags in a report with no family effect
 FAMILY_SCOPE = "report" # which family contrasts are tested together (`family_groups`)
-FAMILY_ESS = 100.0      # effective sample size the p-value allows for: `eval fit` checks it on every family term
+FAMILY_ESS = 100.0      # fewest effective draws (of a contrast and of its squared deviations) to decide a flag
+UNDECIDED = "too few effective draws to decide"
+HOLDS_WHEN = ("designed to keep the chance of any false family flag in a report near or under 0.1 when the fit is "
+              "calibrated, close to normal for these contrasts, and its draws mix well; checked by simulation, not "
+              "guaranteed for every fit")
 STUDY_ROLES = {"runs": C.RUNS_FILE, "scores": C.SCORES_FILE, "pairs": C.PAIRS_FILE, "items": C.ITEMS_FILE}
 
 
@@ -119,27 +124,50 @@ def stat(x: Any) -> dict | None:
     return {"mean": float(x.mean()), "sd": float(x.std()), "lo": float(lo), "hi": float(hi)}
 
 
-def normal_p(x: Any, ess: float = FAMILY_ESS) -> float:
-    """Two-sided p-value of 0 from the posterior mean and sd of the finite draws, with their Monte Carlo
-    error: `2 T(-|mean| / (sd sqrt(1 + 1 / ess)); ess - 1)`, T the Student t distribution function.
-
-    It reads only the mean and the sd, so draws that repeat (Laplace draws grouped at shared theta points)
-    or follow one another (a chain) enter only through the effective sample size, never as a count of
-    independent draws. For a calibrated, normal posterior the draw mean misses the posterior mean with
-    variance sd^2 / ess and the draw sd has about ess - 1 degrees of freedom, so the p-value is valid for
-    any fit whose effective sample size is at least `ess`; the default is the floor `eval fit` checks on
-    every family term (`fit.ESS_MIN`, 100). The plain `2 Phi(-|mean| / sd)` is not: it lets through up to
-    1.12 times the promised false flags (Round 2 of FIX-F). No spread and a nonzero mean give 0; no spread
-    at 0, or no draws, give 1."""
+def contrast_ess(x: Any, chains: int = 1) -> tuple[float, float]:
+    """Effective sample sizes of the draws `x` in their saved order (chains joined, `chains` of them), by
+    the split-chain estimator `eval fit` uses (`fit.split_rhat_ess`): of the draws themselves, which sets
+    the Monte Carlo error of their mean, and of their squared deviations from the mean, which sets that of
+    their sd. With `chains` not dividing the draws they are read as one chain."""
+    from .fit import split_rhat_ess
     x = np.asarray(x, dtype=float).ravel()
-    x = x[np.isfinite(x)]
-    if x.size == 0:
-        return 1.0
+    S = x.size
+    c = int(chains) if chains and int(chains) > 0 and S % int(chains) == 0 and S // int(chains) >= 4 else 1
+    columns = np.stack([x, (x - x.mean()) ** 2], axis=1).reshape(c, S // c, 2)
+    _, ess = split_rhat_ess(columns)
+    return float(ess[0]), float(ess[1])
+
+
+def normal_p(x: Any, chains: int = 1, floor: float = FAMILY_ESS) -> dict:
+    """The test of one family contrast from its draws in the unit the engine fitted in, in saved order.
+
+    Two-sided p-value of 0 from the draws' mean and sd with their Monte Carlo error read from the same
+    draws: `2 T(-|mean| / (sd sqrt(1 + 1 / ess_mean)); df)`, T the Student t distribution function, with
+    `ess_mean = min(ess of the draws, S)` and `df = min(ess of the draws, ess of their squared deviations,
+    S) - 1` (`contrast_ess`). If either effective sample size is under `floor` (100), the contrast is not
+    decided: `p_value` is null, it is never flagged, and it still counts among the contrasts tested.
+
+    An approximation, checked by simulation (calibrated normal posteriors with independent, repeated,
+    sticky, positively and negatively autocorrelated draws), not a guarantee for every sampler. No spread
+    and a nonzero mean give 0; no spread at 0 gives 1; no draws, or any draw that is not finite, is not
+    decided."""
+    x = np.asarray(x, dtype=float).ravel()
+    out = {"p_value": None, "ess": None, "ess_squares": None, "decided": False}
+    if x.size == 0 or not np.isfinite(x).all():
+        return {**out, "why_not": "draws that are not finite"}
     mean = float(x.mean())
     sd = float(x.std(ddof=1)) if x.size > 1 else 0.0
     if not sd > 0.0:
-        return 1.0 if mean == 0.0 else 0.0
-    return float(min(1.0, 2.0 * stdtr(ess - 1.0, -abs(mean) / (sd * np.sqrt(1.0 + 1.0 / ess)))))
+        return {**out, "p_value": 1.0 if mean == 0.0 else 0.0, "decided": True}
+    if x.size < 4:                       # too few to estimate an effective sample size
+        return {**out, "why_not": UNDECIDED}
+    ess, ess_sq = contrast_ess(x, chains)
+    out.update(ess=ess, ess_squares=ess_sq)
+    if not min(ess, ess_sq) >= floor:
+        return {**out, "why_not": UNDECIDED}
+    ess_mean, df = min(ess, x.size), min(ess, ess_sq, x.size) - 1.0
+    p = 2.0 * stdtr(df, -abs(mean) / (sd * np.sqrt(1.0 + 1.0 / ess_mean)))
+    return {**out, "p_value": float(min(1.0, p)), "decided": True}
 
 
 def holm(p: Any, level: float = FAMILY_LEVEL) -> list[bool]:
@@ -190,20 +218,23 @@ def flag_family(judges: list[dict], level: float = FAMILY_LEVEL, scope: str = FA
     `family_groups`, and the 90% interval excludes 0), and return the rule as the report states it."""
     rows = family_rows(judges)
     for group in family_groups(rows, scope):
-        rejected = holm([rows[n][2]["p_value"] for n in group], level)
+        # a contrast that cannot be decided counts among the k tested, with p = 1: it is never flagged
+        rejected = holm([1.0 if rows[n][2].get("p_value") is None else rows[n][2]["p_value"] for n in group], level)
         for n, hit in zip(group, rejected):
             row = rows[n][2]
             row["flagged"] = bool(hit and row["excludes_zero"])
             row["tested_with"] = len(group)
     return {"rule": "holm", "scope": scope, "level": level, "contrasts": len(rows),
             "flagged": sum(bool(row["flagged"]) for _, _, row in rows),
-            "test": "two-sided p-value from the posterior mean and sd of the contrast's draws, in the unit the "
-                    "engine fitted in, widened for their Monte Carlo error: 2 T(-|mean| / (sd sqrt(1 + 1 / ess)); "
-                    "ess - 1)",
-            "ess": FAMILY_ESS,
+            "undecided": sum(row.get("p_value") is None for _, _, row in rows),
+            "test": "two-sided p-value from the posterior mean and sd of the contrast's draws in the unit the "
+                    "engine fitted in, widened for their Monte Carlo error read from the same draws: "
+                    "2 T(-|mean| / (sd sqrt(1 + 1 / ess_mean)); df)",
+            "least_ess": FAMILY_ESS,
+            "undecided_when": f"the draws or their squared deviations have fewer than {FAMILY_ESS:g} effective "
+                              f"draws: {UNDECIDED}, counted among the contrasts, never flagged",
             "also_needs": "the 90% interval excludes 0",
-            "holds_when": "the fitted posterior is calibrated and close to normal for these contrasts, and the "
-                          f"fit's effective sample size is at least {FAMILY_ESS:g}"}
+            "holds_when": HOLDS_WHEN}
 
 
 def _mean(x: Any) -> float | None:
@@ -511,6 +542,7 @@ class _Report:
         # the arrays the choices read, in the unit the engine fitted in (Units): mse(k), sigma and the shift
         self.fitted: dict[tuple[str, str], dict[str, np.ndarray]] = {}
         self.unit = np.asarray(self.draws["unit"], dtype=float)
+        self.chains = int((fit["options"] or {}).get("chains") or 1)   # the saved draws join this many chains
         self._pairs: tuple | None = None
         self.anchor_state = {row["dimension"]: row["state"] for row in fit["anchor"]["dimensions"]}
 
@@ -771,7 +803,7 @@ class _Report:
                 block["dims"].append({"dimension": dim["id"], "effect": stat(x),
                                       "own": _scaled(x, own_factor(dim), sign=_sign(dim)),
                                       "excludes_zero": bool(decided["lo"] > 0 or decided["hi"] < 0),
-                                      "p_value": normal_p(fitted), "flagged": False, "tested_with": None,
+                                      **normal_p(fitted, self.chains), "flagged": False, "tested_with": None,
                                       "decided_in": (dim.get("unit") or {}).get("fitted_in")})
             block["measured"] = bool(block["dims"])
             return block
@@ -1028,10 +1060,13 @@ def family_rule_text(rule: dict) -> str:
             "judge": "the family contrasts shown for each judge",
             "contrast": "each family contrast alone"}[rule["scope"]]
     bound = {"report": "in this report", "judge": "for one judge", "contrast": "for one contrast"}[rule["scope"]]
+    undecided = rule.get("undecided") or 0
     return (f"Family flags ({rule['flagged']} of {rule['contrasts']}) are decided over {over} (Holm, from each "
-            f"contrast's posterior mean and sd): with no family effect, the chance of any false flag {bound} is at "
-            f"most {rule['level']:g} when the fitted posterior is calibrated and close to normal for these "
-            f"contrasts and the fit passed its checks. The 90% intervals shown are not adjusted, so one can exclude 0 without a flag.")
+            f"contrast's posterior mean and sd). The rule is designed to keep the chance of any false family flag "
+            f"{bound} near or under {rule['level']:g} when the fit is calibrated, close to normal for these "
+            f"contrasts, and its draws mix well; checked by simulation, not guaranteed for every fit. The 90% "
+            f"intervals shown are not adjusted, so one can exclude 0 without a flag."
+            + (f" {undecided} of the contrasts had {UNDECIDED} and cannot be flagged." if undecided else ""))
 
 
 def render(payload: dict) -> str:
@@ -1100,6 +1135,8 @@ def render(payload: dict) -> str:
             for row in block["dims"]:
                 unit = UNIT_WORDS.get(row.get("decided_in"), "")
                 mark = ("  <- flagged" + unit if row.get("flagged")
+                        else (f"  interval excludes 0{unit};" if row["excludes_zero"] else " ") + f" {UNDECIDED} a flag"
+                        if row.get("p_value") is None
                         else f"  interval excludes 0{unit}, not flagged over {row['tested_with']} family contrasts"
                         if row["excludes_zero"] else "")
                 lines.append(f"  {label} ({block['family']}) on {row['dimension']}: {_interval(row['effect'])}{mark}")

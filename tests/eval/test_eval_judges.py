@@ -678,22 +678,28 @@ def test_own_family_contrast_and_its_flag(tmp_path):
     printed = len(own["dims"]) + len(cheap["dims"])
     assert payload["family_flag"] == {"rule": "holm", "scope": "report", "level": 0.10, "contrasts": printed,
                                       "flagged": len(own["dims"]), "also_needs": "the 90% interval excludes 0",
+                                      "undecided": 0,
                                       "test": "two-sided p-value from the posterior mean and sd of the "
-                                              "contrast's draws, in the unit the engine fitted in, widened for "
-                                              "their Monte Carlo error: 2 T(-|mean| / (sd sqrt(1 + 1 / ess)); "
-                                              "ess - 1)",
-                                      "ess": 100.0,
-                                      "holds_when": "the fitted posterior is calibrated and close to normal for "
-                                                    "these contrasts, and the fit's effective sample size is at "
-                                                    "least 100"}
+                                              "contrast's draws in the unit the engine fitted in, widened for "
+                                              "their Monte Carlo error read from the same draws: "
+                                              "2 T(-|mean| / (sd sqrt(1 + 1 / ess_mean)); df)",
+                                      "least_ess": 100.0,
+                                      "undecided_when": "the draws or their squared deviations have fewer than "
+                                                        "100 effective draws: too few effective draws to decide, "
+                                                        "counted among the contrasts, never flagged",
+                                      "holds_when": "designed to keep the chance of any false family flag in a "
+                                                    "report near or under 0.1 when the fit is calibrated, close "
+                                                    "to normal for these contrasts, and its draws mix well; "
+                                                    "checked by simulation, not guaranteed for every fit"}
     assert all(row["tested_with"] == printed for row in own["dims"] + cheap["dims"])
     text = J.render(payload)
     assert any(line.startswith("  own family (alpha) on final/depth: 0.30 (") and line.endswith("  <- flagged")
                for line in text.splitlines()), text
     assert (f"Family flags ({len(own['dims'])} of {printed}) are decided over all {printed} family contrasts shown "
             "(Holm, from each contrast's posterior mean and sd)") in text
-    assert ("at most 0.1 when the fitted posterior is calibrated and close to normal for these contrasts and "
-            "the fit passed its checks") in text
+    assert ("designed to keep the chance of any false family flag in this report near or under 0.1 when the fit "
+            "is calibrated, close to normal for these contrasts, and its draws mix well; checked by simulation, "
+            "not guaranteed for every fit") in text
 
 
 def test_reference_family_contrast_and_confounding(tmp_path):

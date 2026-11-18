@@ -696,18 +696,43 @@ def test_family_flags_read_the_interval_in_the_fitted_unit(fits, tmp_path):
     assert row["excludes_zero"] is True                                       # fitted: 0.05 x -0.1 + 0.95 x 0.01 > 0
     old_row = next(row for row in J.report(a)["judges"] if row["id"] == "strong")["family"]["own_family"]["dims"][0]
     assert old_row["effect"]["lo"] == pytest.approx(0.0045, rel=1e-9) and old_row["excludes_zero"] is True
-    # fitted draws: 20 at -0.1 and 380 at +0.01, mean 0.0045, sd (ddof 1) sqrt((0.000595 - 0.0045^2) x
-    # 400 / 399); the p-value 2 T(-0.0045 / (sd sqrt(1.01)); 99) = 0.852 is far above any Holm bound, so the interval
-    # excludes 0 (a lopsided posterior, far from normal) without a flag, and the text says both and the unit
+    # fitted draws in saved order: 20 at -0.1, then 380 at +0.01. One block of 20 and one of 380 is a chain
+    # that has not mixed: its effective size, read in the fitted unit, is far under 100, so the contrast is
+    # not decided; the interval excludes 0 without a flag, and the text says both and the unit
     payload = J.report(b)
-    sd = math.sqrt(((20 * 0.01 + 380 * 0.0001) / 400 - 0.0045 ** 2) * 400 / 399)
-    from scipy import stats
-    assert row["p_value"] == pytest.approx(2 * stats.t.sf(0.0045 / (sd * math.sqrt(1.01)), 99), rel=1e-9)
-    assert row["p_value"] == pytest.approx(0.852, abs=1e-3) and payload["family_flag"]["contrasts"] > 1
-    assert row["flagged"] is False
-    assert any(line.endswith("interval excludes 0 (in the anchors' call noise), not flagged over "
-                             f"{payload['family_flag']['contrasts']} family contrasts") and "final/numbers_right" in line
+    assert row["p_value"] is None and row["decided"] is False and row["ess"] < 100
+    assert row["why_not"] == "too few effective draws to decide"
+    assert row["flagged"] is False and payload["family_flag"]["undecided"] >= 1
+    assert any(line.endswith("interval excludes 0 (in the anchors' call noise); too few effective draws to "
+                             "decide a flag") and "final/numbers_right" in line
                for line in J.render(payload).splitlines())
+
+
+def test_the_family_flag_reads_effective_draws_in_the_fitted_unit(fits, tmp_path):
+    """A fit whose unit varies by draw, through a whole fit file: the contrast in the fitted unit is a
+    slowly mixing chain (AR(1) at 0.95, effective size about 14) around 3, and a unit that varies
+    independently per draw (1 / 0.9 in a tenth of the draws, else 10,000) makes the reported-unit draws
+    look well mixed (effective size over 100 for them and their squared deviations, so `eval fit`'s check
+    on the reported unit passes). The flag reads the fitted-unit draws, finds too few effective draws and does not
+    decide the contrast, though it lies 3 sds from 0."""
+    old, _, _ = fits
+    S = old.draws["mu"].shape[0]
+    rng = np.random.default_rng(17)
+    z = np.empty(S)
+    z[0] = rng.standard_normal()
+    for t in range(1, S):
+        z[t] = 0.95 * z[t - 1] + math.sqrt(1 - 0.95 ** 2) * rng.standard_normal()
+    x = 3.0 + z
+    unit = np.where(rng.random(S) < 0.1, 1 / 0.9, 1e4)
+    _, b = _family_pair(old, tmp_path / "mix", x, unit)
+    reported = x / unit
+    assert min(J.contrast_ess(reported)) >= 100          # the reported-unit draws pass a mixing check
+    assert J.contrast_ess(x)[0] < 30                     # the draws the flag tests do not
+    payload = J.report(b)
+    row = next(row for row in payload["judges"] if row["id"] == "strong")["family"]["own_family"]["dims"][0]
+    assert row["decided"] is False and row["p_value"] is None and row["flagged"] is False
+    assert row["ess"] == pytest.approx(J.contrast_ess(x)[0], rel=1e-9)
+    assert payload["family_flag"]["undecided"] >= 1
 
 
 def _fixed_scale_draws(old) -> dict:

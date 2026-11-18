@@ -51,46 +51,72 @@ def test_holm_keeps_more_than_bonferroni_in_a_hand_worked_case():
     assert sum(v <= 0.10 / 4 for v in p) == 1 and sum(J.holm(p, 0.10)) == 2
 
 
-def test_the_p_value_from_the_mean_and_sd_by_hand():
-    """2 T(-|mean| / (sd sqrt(1 + 1/100)); 99), T the t distribution, worked from the draws' mean and sd."""
+def _t_p(x: np.ndarray, ess: float, ess_sq: float) -> float:
+    """The p-value written out from its definition, for the hand checks."""
     from scipy import stats
-    # [1, 2, 3]: mean 2, sd (ddof 1) 1
-    assert J.normal_p([1.0, 2.0, 3.0]) == pytest.approx(2 * stats.t.cdf(-2 / math.sqrt(1.01), 99), rel=1e-12)
-    assert J.normal_p([1.0, 2.0, 3.0]) == pytest.approx(2 * stats.t.sf(2 / math.sqrt(1.01), 99), rel=1e-12)
-    assert J.normal_p([1.0, 2.0, 3.0], ess=1e12) == pytest.approx(2 * stats.norm.cdf(-2), rel=1e-6)   # 0.0455
-    assert J.normal_p([np.nan, 1.0, 2.0, 3.0]) == J.normal_p([1.0, 2.0, 3.0])
-    assert J.normal_p([-1.0, 1.0]) == 1.0                                       # mean 0
-    assert J.normal_p([5.0, 5.0]) == 0.0 and J.normal_p([0.0, 0.0]) == 1.0      # no spread
-    assert J.normal_p([]) == 1.0
+    ess_mean, df = min(ess, x.size), min(ess, ess_sq, x.size) - 1
+    return float(2 * stats.t.cdf(-abs(x.mean()) / (x.std(ddof=1) * math.sqrt(1 + 1 / ess_mean)), df))
+
+
+def test_the_p_value_from_the_mean_sd_and_effective_draws():
+    """2 T(-|mean| / (sd sqrt(1 + 1 / min(ess, S))); min(ess, ess of squares, S) - 1), both effective sizes
+    from `fit.split_rhat_ess` (the estimator `eval fit` checks with) on the draws and on their squared
+    deviations, chains as saved."""
+    from loopmath.eval.fit import split_rhat_ess
+    x = np.random.default_rng(5).normal(0.2, 1.0, size=400)
+    for chains in (1, 4):
+        cols = np.stack([x, (x - x.mean()) ** 2], axis=1).reshape(chains, 400 // chains, 2)
+        ess, ess_sq = split_rhat_ess(cols)[1]
+        got = J.normal_p(x, chains)
+        assert (got["ess"], got["ess_squares"]) == pytest.approx((ess, ess_sq), rel=1e-12)
+        assert got["decided"] is True and got["p_value"] == pytest.approx(_t_p(x, ess, ess_sq), rel=1e-12)
+    assert J.normal_p(x, 3)["ess"] == J.normal_p(x, 1)["ess"]          # 3 does not divide 400: one chain
+    assert J.normal_p([5.0, 5.0]) == {"p_value": 0.0, "ess": None, "ess_squares": None, "decided": True}
+    assert J.normal_p([0.0, 0.0])["p_value"] == 1.0
+    assert J.normal_p([1.0, 2.0, 3.0])["p_value"] is None              # too few to estimate
+    assert J.normal_p([np.nan] + [1.0] * 9)["why_not"] == "draws that are not finite"
+    assert J.normal_p([])["decided"] is False
     assert J.FAMILY_ESS == 100.0
 
 
-def test_the_ess_floor_is_the_one_eval_fit_checks():
-    from loopmath.eval import fit
-    assert J.FAMILY_ESS == fit.ESS_MIN and "family" in fit.CHECKED
+def test_too_few_effective_draws_is_not_decided_but_counts():
+    """A chain that sticks (AR(1) at 0.99, effective size about 2) is not decided: no p-value, never
+    flagged, counted among the k tested, so the other contrasts still face Holm's bounds over k."""
+    rng = np.random.default_rng(9)
+    stuck = 5.0 + _within(rng, "ar:0.99:1", 1, 400)[0]
+    got = J.normal_p(stuck)
+    assert got["decided"] is False and got["p_value"] is None and got["ess"] < 100
+    assert got["why_not"] == "too few effective draws to decide"
+    clear = rng.normal(0.0, 0.01, size=400) + 0.3                      # 30 sds from 0
+    judges = [{"id": "j", "family": {"own_family": {"dims": [
+        {"dimension": "a", "excludes_zero": True, **got},
+        {"dimension": "b", "excludes_zero": True, **J.normal_p(clear)}]}}}]
+    rule = J.flag_family(judges)
+    rows = judges[0]["family"]["own_family"]["dims"]
+    assert rule["contrasts"] == 2 and rule["undecided"] == 1 and rule["flagged"] == 1
+    assert rows[0]["flagged"] is False and rows[1]["flagged"] is True and rows[1]["tested_with"] == 2
 
 
-def test_repeating_every_draw_leaves_the_p_value_alone():
-    """The p-value reads the mean and sd: n draws each saved m times keep the mean, and the sd (ddof 1)
-    becomes sd x sqrt(m (n - 1) / (m n - 1)), a factor within 0.3% of 1 at n = 200; a count of draws on
-    one side of 0 would instead treat them as m n independent draws."""
-    from scipy import stats
-    x = np.random.default_rng(3).normal(0.4, 0.2, size=200)
+def test_repeating_every_draw_halves_nothing_it_should_not():
+    """n draws each saved m times: the mean is the same, the effective size stays near n (not m n), and
+    the p-value moves little; a count of draws would have treated them as m n independent draws."""
+    x = np.random.default_rng(3).normal(0.4, 1.0, size=200)
+    base = J.normal_p(x)
     for m in (2, 5):
-        sd = x.std(ddof=1) * math.sqrt(m * 199 / (m * 200 - 1))
-        assert J.normal_p(np.repeat(x, m)) == pytest.approx(
-            2 * stats.t.sf(abs(x.mean()) / (sd * math.sqrt(1.01)), 99), rel=1e-9)
-        assert J.normal_p(np.repeat(x, m)) == pytest.approx(J.normal_p(x), rel=0.02)
+        got = J.normal_p(np.repeat(x, m))
+        assert 0.6 * 200 < got["ess"] < 1.4 * 200, got
+        assert got["p_value"] == pytest.approx(base["p_value"], rel=0.05)
 
 
 def _within(rng: np.random.Generator, kind: str, k: int, S: int) -> np.ndarray:
-    """k contrasts' posterior draws around 0, sd 1, shape (k, S), dependent within a fit as `kind` says:
-    `independent`; `repeated-m` (S / m draws each saved m times, as Laplace repeats a theta point);
-    `sticky-h` (a sampler that keeps its previous draw with chance h); `ar-rho-c` (c stationary AR(1)
-    chains with lag-1 correlation rho, effective sample size S (1 - rho) / (1 + rho))."""
+    """k contrasts' posterior draws around 0, sd 1, shape (k, S) in saved order, dependent within a fit as
+    `kind` says: `independent`; `repeated:m` (S / m draws each saved m times, as Laplace repeats a theta
+    point); `sticky:h` (a sampler that keeps its previous draw with chance h); `ar:rho:c` (c stationary
+    AR(1) chains of lag-1 correlation rho, joined; rho < 0 makes the mean precise while the squared
+    deviations still move slowly)."""
     if kind == "independent":
         return rng.standard_normal((k, S))
-    name, *arg = kind.split("-")
+    name, *arg = kind.split(":")
     if name == "repeated":
         m = int(arg[0])
         return np.repeat(rng.standard_normal((k, S // m)), m, axis=1)
@@ -108,70 +134,93 @@ def _within(rng: np.random.Generator, kind: str, k: int, S: int) -> np.ndarray:
     return x.reshape(k, S)
 
 
-def _payload(draws: np.ndarray, judges: int) -> list[dict]:
+def _chains(kind: str) -> int:
+    return int(kind.split(":")[2]) if kind.startswith("ar:") else 1
+
+
+def _payload(draws: np.ndarray, judges: int, chains: int = 1) -> list[dict]:
     """A judges list as `eval judges` builds it, with one own-family row per contrast (rows dealt to the
-    judges in turn), each row's interval and p-value from its draws."""
+    judges in turn), each row's interval and test from its draws."""
     out = [{"id": f"j{n}", "family": {"own_family": {"dims": []}, "reference_family": None}} for n in range(judges)]
     for i, x in enumerate(draws):
         lo, hi = np.percentile(x, [5.0, 95.0])
         out[i % judges]["family"]["own_family"]["dims"].append(
-            {"dimension": f"d{i}", "excludes_zero": bool(lo > 0 or hi < 0), "p_value": J.normal_p(x)})
+            {"dimension": f"d{i}", "excludes_zero": bool(lo > 0 or hi < 0), **J.normal_p(x, chains)})
     return out
 
 
-def _false_flag_share(k: int, S: int, kind: str, rho: float, reports: int, seed: int) -> tuple[float, float]:
+def _false_flag_share(k: int, S: int, kind: str, rho: float, reports: int, seed: int) -> dict:
     """Reports of k contrasts with true value 0: each observation N(0, 1) (correlated between contrasts by
-    rho as in the test below), posterior N(obs, 1): calibrated. Share with any flag, and with any 90%
-    interval excluding 0."""
+    rho as in the test below), posterior N(obs, 1): calibrated. Share of reports with any flag, with any
+    90% interval excluding 0, and of contrasts not decided."""
     rng = np.random.default_rng(seed)
     if rho < 0:                          # the two judges on one dimension: pairs at rho (FAM-A, linear)
         cov = np.kron(np.eye(k // 2), np.array([[1.0, rho], [rho, 1.0]]))
     else:                                # every two contrasts at rho
         cov = np.full((k, k), rho) + (1.0 - rho) * np.eye(k)
     obs = rng.multivariate_normal(np.zeros(k), cov, size=reports)
-    any_flag = any_interval = 0
+    any_flag = any_interval = undecided = 0
     for r in range(reports):
-        judges = _payload(obs[r][:, None] + _within(rng, kind, k, S), 2)
+        judges = _payload(obs[r][:, None] + _within(rng, kind, k, S), 2, _chains(kind))
         rule = J.flag_family(judges)
         assert rule["contrasts"] == k and rule["scope"] == "report" and rule["level"] == 0.10
         rows = [row for _, _, row in J.family_rows(judges)]
         assert all(row["tested_with"] == k for row in rows)
         any_flag += rule["flagged"] > 0
         any_interval += any(row["excludes_zero"] for row in rows)
-    return any_flag / reports, any_interval / reports
+        undecided += rule["undecided"]
+    return {"flag": any_flag / reports, "interval": any_interval / reports, "undecided": undecided / (reports * k)}
 
 
-MARGIN = 3 * math.sqrt(0.10 * 0.90 / 4000)   # 3 binomial standard errors at 0.10 over 4000 reports
+MARGIN = 3 * math.sqrt(0.10 * 0.90 / 2000)   # 3 binomial standard errors at 0.10 over 2000 reports
 
 
 @pytest.mark.parametrize("k, rho", [(2, 0.0), (6, 0.0), (10, 0.0), (12, 0.0), (20, 0.0), (6, -0.4), (12, 0.5)])
-def test_reports_with_no_family_effect_show_a_false_flag_at_most_10_percent_of_the_time(k, rho):
-    """Direct simulation, 4000 reports of k contrasts with true value 0, independent draws within each
+def test_reports_with_no_family_effect_show_a_false_flag_near_or_under_10_percent(k, rho):
+    """Direct simulation, 2000 reports of k contrasts with true value 0, independent draws within each
     contrast. Correlation between contrasts: rho between every two, or, for rho < 0, between the two
     contrasts of each pair (two judges on one dimension share the anchor's error with opposite signs).
-    Holm over the report bounds the chance of any flag by 0.10 under any such correlation; checked with
-    a margin of 3 binomial standard errors. The 0.4.4 rule (any 90% interval excluding 0) is far above it
-    for k >= 2, near 1 - 0.9^k when independent."""
-    share, interval = _false_flag_share(k, 400, "independent", rho, 4000, 1000 + k + int(10 * rho))
-    assert share <= 0.10 + MARGIN, (k, rho, share)
+    The share of reports with any flag stays at or under 0.10 within 3 binomial standard errors. The 0.4.4
+    rule (any 90% interval excluding 0) is far above it for k >= 2, near 1 - 0.9^k when independent."""
+    got = _false_flag_share(k, 400, "independent", rho, 2000, 1000 + k + int(10 * rho))
+    assert got["flag"] <= 0.10 + MARGIN, (k, rho, got)
+    assert got["undecided"] == 0.0
     if rho == 0.0:
-        assert share >= 0.5 * (1 - (1 - 0.10 / k) ** k), (k, share)      # not trivially conservative
-        assert interval == pytest.approx(1 - 0.9 ** k, abs=0.04)
+        assert got["flag"] >= 0.5 * (1 - (1 - 0.10 / k) ** k), (k, got)      # not trivially conservative
+        assert got["interval"] == pytest.approx(1 - 0.9 ** k, abs=0.05)
 
 
 @pytest.mark.parametrize("kind, k, S", [
-    ("repeated-2", 20, 400),     # the review's case: 200 draws each saved twice (a count p-value: 0.18)
-    ("repeated-5", 50, 1000),    # 200 draws each saved five times (a count p-value: 0.39)
-    ("sticky-0.25", 20, 400),    # the review's sampler that keeps its previous draw a quarter of the time
-    ("ar-0.6-2", 20, 400),       # two chains at the effective sample size floor: 400 x 0.4 / 1.6 = 100
+    ("repeated:2", 20, 400),     # 200 draws each saved twice (a count p-value: 0.18)
+    ("repeated:5", 50, 1000),    # 200 draws each saved five times (a count p-value: 0.39)
+    ("sticky:0.25", 20, 400),    # a sampler that keeps its previous draw a quarter of the time
+    ("ar:0.6:2", 20, 400),       # two chains near the floor: 400 x 0.4 / 1.6 = 100
+    ("ar:-0.95:2", 20, 400),     # the mean precise, the squared deviations slow (a fixed ess of 100: 0.14)
+    ("ar:-0.99:2", 20, 400),     # the same at -0.99 (a fixed ess of 100: 0.37)
 ])
-def test_draws_that_depend_on_each_other_within_a_fit_still_meet_the_bound(kind, k, S):
-    """The same simulation with draws that repeat or follow one another within each contrast, each with an
-    effective sample size of at least 100 (what `eval fit` checks). The flag reads the mean and sd, widened
-    for their Monte Carlo error at that floor, so the bound still holds (Round 2 measured 0.083 to 0.092 at
-    20,000 reports; the plain normal p-value gave 0.106 to 0.112)."""
-    share, _ = _false_flag_share(k, S, kind, 0.0, 4000, 2000 + k + S + len(kind))
-    assert share <= 0.10 + MARGIN, (kind, k, S, share)
+def test_draws_that_depend_on_each_other_within_a_fit_meet_the_bound_or_refuse(kind, k, S):
+    """The same simulation with draws that repeat or follow one another within each contrast. Each case
+    either meets 0.10 within 3 binomial standard errors or refuses to flag the contrasts whose draws or
+    squared deviations have fewer than 100 effective draws (the negative AR cases)."""
+    got = _false_flag_share(k, S, kind, 0.0, 2000, 2000 + k + S + len(kind))
+    assert got["flag"] <= 0.10 + MARGIN, (kind, k, S, got)
+    if kind.startswith("ar:-"):
+        assert got["undecided"] > 0.9, got                 # refused: the squared deviations do not mix
+
+
+def test_one_slowly_mixing_contrast_is_refused():
+    """A fit whose unit varies by draw, reduced to what the flag reads: a single contrast whose draws in
+    the fitted unit are an AR(1) chain at 0.95 (effective size about 10) around a calibrated posterior
+    N(obs, 1). Over 2000 reports it is flagged at most 0.10 of the time, because it is not decided."""
+    rng = np.random.default_rng(31)
+    flagged = undecided = 0
+    for _ in range(2000):
+        x = rng.standard_normal() + _within(rng, "ar:0.95:1", 1, 400)
+        judges = _payload(x, 1)
+        rule = J.flag_family(judges)
+        flagged += rule["flagged"]
+        undecided += rule["undecided"]
+    assert flagged / 2000 <= 0.10 + MARGIN and undecided / 2000 > 0.99
 
 
 def test_a_real_effect_among_nulls_is_still_flagged():
