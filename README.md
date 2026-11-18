@@ -47,6 +47,8 @@ Then ask your agent to onboard, for example "onboard loopmath". The agent runs a
 | `loopmath guide record` | a task planned with loopmath is done; "record", "log" or "save" a run; both runs of a pair need a blind judge |
 | `loopmath guide fit` | "update", "refresh" or "rerun" the fit; what loopmath learned; runs imported or recorded without a refit |
 | `loopmath guide flow` | an experiment on a fixed multi-step workflow (a flow): set it up, run its arms, record them, read the verdicts |
+| `loopmath guide eval` | outputs scored on a rubric by model judges and people: judge noise, value, reviewer labels (experimental) |
+| `loopmath guide eval-record` | record a pipeline's runs and judge calls in the files `loopmath eval` reads (experimental) |
 
 `loopmath guide` alone lists them, and `loopmath guide reference` prints the command reference they share, with every command, flag and JSON field they use. A guide is read only: it needs no store and writes nothing.
 
@@ -313,7 +315,7 @@ loopmath eval labels next study/fit.json --mode pilot --n 30 --out study/labels-
 loopmath eval value study/fit.json --value study/value.json
 ```
 
-`eval simulate` writes a practice study with known truth (`--list` names the 17 specs); with your own scores, start from `eval scores import` and leave out `--allow-simulated`. `eval fit` needs the optional modelling extra, `pip install 'loopmath[bayes]'`. `value.json`, which the `gated` spec writes for you, holds a weight per rubric component and the gates an output must pass. `eval steps` reports what each step of a pipeline adds, and `eval rubric check` reads a rubric, its judges and a fit for problems. It is experimental: it has been checked on simulated studies only, on far fewer than its acceptance checks ask for, and it reads `linear` scores at the ends of their scale as if they were not cut off there. The files, each command, how to read the output and the full list of limits are in [`docs/eval.md`](docs/eval.md).
+`eval simulate` writes a practice study with known truth (`--list` names the 17 specs); with your own scores, start from `eval scores import` and leave out `--allow-simulated`. `eval fit` needs no extra; `eval fit --engine pymc` needs the optional modelling extra, `pip install 'loopmath[bayes]'`. `value.json`, which the `gated` spec writes for you, holds a weight per rubric component and the gates an output must pass. `eval steps` reports what each step of a pipeline adds, and `eval rubric check` reads a rubric, its judges and a fit for problems. It is experimental: it has been checked on simulated studies only, not all of its recovery checks pass yet, and it reads `linear` scores at the ends of their scale as if they were not cut off there. The files, each command, how to read the output and the full list of limits are in [`docs/eval.md`](docs/eval.md).
 
 ## The store and privacy
 

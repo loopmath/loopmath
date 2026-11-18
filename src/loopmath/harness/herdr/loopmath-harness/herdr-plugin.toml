@@ -3,7 +3,7 @@
 
 id = "loopmath-harness"
 name = "loopmath harness"
-version = "0.4.4"
+version = "0.4.5"
 min_herdr_version = "0.9.3"
 description = "Watch, check and stop a loopmath harness tune from herdr."
 

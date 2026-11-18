@@ -4,7 +4,7 @@
 exactly what to write down, in which file and in which form, so that `eval scores check`, `eval fit`,
 `eval judges`, `eval value` and `eval labels` work on your data.
 
-> **Experimental.** `loopmath eval` is experimental in 0.4.4. The file formats and the numbers may change.
+> **Experimental.** `loopmath eval` is experimental in 0.4.5. The file formats and the numbers may change.
 > Read the [limits](eval.md#limits) before you rely on a result.
 
 What the commands do and how to read their numbers is in [eval.md](eval.md). This page is about the input.
@@ -150,8 +150,9 @@ judge and component, with what each term needs. On `depth` every judge was asked
 anchor is `weak`. The last line is `ok` and the exit code is 0. When a row says `no`, the last column says what
 to record. See [what makes a study fit well](#what-makes-a-study-fit-well).
 
-Fit. This needs the modelling extra: `pip install 'loopmath[bayes]'`. The runs of this example are made up and
-say so, and `eval fit` refuses such a study unless you allow it:
+Fit. The default engine needs nothing more; `--engine pymc` needs the modelling extra,
+`pip install 'loopmath[bayes]'`. The runs of this example are made up and say so, and `eval fit` refuses such a
+study unless you allow it:
 
 ```
 $ loopmath eval fit my-study --rubric my-study/rubric.json --judges my-study/judges.json
@@ -162,11 +163,10 @@ $ loopmath eval fit my-study --rubric my-study/rubric.json --judges my-study/jud
 error: runs.jsonl: run "r001": the run is simulated; pass --allow-simulated to fit a simulated study
 ```
 
-So the example needs `--allow-simulated`. A study of real runs does not. `--chains 2` keeps the sampler on two
-cores; the default is 4 chains.
+So the example needs `--allow-simulated`. A study of real runs does not.
 
 ```
-$ loopmath eval fit my-study --rubric my-study/rubric.json --judges my-study/judges.json --allow-simulated --chains 2
+$ loopmath eval fit my-study --rubric my-study/rubric.json --judges my-study/judges.json --allow-simulated
 ```
 
 <!-- recorded: fit -->
@@ -177,11 +177,12 @@ anchor: person
   final/correct: weak on 12 anchored targets
 ...
 fit: my-study/fit.json (1000 draws in fit.draws.npz)
-converged: yes (R-hat 1.018, effective sample size 203, 3 divergences, 109 s)
+converged: yes (R-hat 1.016, effective sample size 334, 0 divergences, 8 s)
 ```
 
-The fit took about 2 minutes on a laptop. Before it samples it prints the design table again and what it will
-fit. `eval fit --check-only` prints that part and stops.
+The fit took 8 seconds on a laptop. Before it fits it prints the design table again and what it will fit.
+`eval fit --check-only` prints that part and stops. The default engine does not sample, so it always reports 0
+divergences.
 
 Read the judges:
 
@@ -193,43 +194,45 @@ $ loopmath eval judges my-study/fit.json
 ```
 eval judges (experimental): fit.json, 3 judges, 1000 draws
 Figures are posterior means on the fitting scale; intervals are 90%. A dash is not measured.
+On final/correct: bias, tau, sigma and mse are in the anchors' total noise of one reading. The choices use the scale the engine fits, named on each choice line.
 
 judge reviewer-1 (person, per_component, anchor)
   dimension                       bias     tau   sigma   mse(1)   mse(3)     r2  eff(3)
   final/correct                 +0.000       -       -        -        -      -       -
   final/clarity                 +0.000       -       -        -        -      -       -
-  final/depth                   +0.000   0.019   0.039   0.0022   0.0012   0.85    2.25
-  final/overall                 +0.000   0.071   0.023   0.0065   0.0061   0.65    1.14
-  halo: shared share of output disagreement 0.38 (0.04 to 0.84), of call noise does not apply (the judge reads one component per call)
-  pairs: position bias -0.00 (-0.23 to 0.23), tie width not measured
+  final/depth                   +0.000   0.019   0.037   0.0021   0.0011   0.85    2.22
+  final/overall                 +0.000   0.071   0.020   0.0063   0.0060   0.66    1.09
+  halo: shared share of output disagreement 0.42 (0.06 to 0.84), of call noise does not apply (the judge reads one component per call)
+  pairs: position bias 0.01 (-0.21 to 0.28), tie width not measured
 
 judge judge-main (model, model-large, effort high, per_component, 0.03 USD per call)
   dimension                       bias     tau   sigma   mse(1)   mse(3)     r2  eff(3)
-  final/correct                 +1.342       -       -        -        -      -       -
-  final/clarity                 +0.116       -       -        -        -      -       -
-  final/depth                   +0.089   0.040   0.035   0.0133   0.0124   0.72    1.34
-  final/overall                 +0.050   0.056   0.040   0.0102   0.0090   0.57    1.33
-  final/overall pairs: tie rate 0.22 (0.07 to 0.40), picks the better output 0.68 (0.50 to 0.83)
-  halo: shared share of output disagreement 0.32 (0.03 to 0.71), of call noise does not apply (the judge reads one component per call)
-  pairs: position bias 0.00 (-0.05 to 0.05), tie width 0.06 (0.02 to 0.10)
-  own family (alpha) on final/correct: 0.06 (-0.55 to 0.77)
-  own family (alpha) on final/clarity: 0.04 (-0.07 to 0.19)
-  own family (alpha) on final/depth: 0.00 (-0.03 to 0.05)
-  own family (alpha) on final/overall: -0.04 (-0.12 to 0.03)
+  final/correct                 +1.148       -       -        -        -      -       -
+  final/clarity                 +0.119       -       -        -        -      -       -
+  final/depth                   +0.090   0.043   0.034   0.0138   0.0130   0.71    1.26
+  final/overall                 +0.047   0.061   0.038   0.0107   0.0097   0.55    1.22
+  final/overall pairs: tie rate 0.23 (0.10 to 0.43), picks the better output 0.67 (0.51 to 0.82)
+  halo: shared share of output disagreement 0.32 (0.06 to 0.69), of call noise does not apply (the judge reads one component per call)
+  pairs: position bias -0.00 (-0.05 to 0.05), tie width 0.06 (0.03 to 0.10)
+  own family (alpha) on final/correct: 0.08 (-0.47 to 0.78)
+  own family (alpha) on final/clarity: 0.05 (-0.09 to 0.20)
+  own family (alpha) on final/depth: 0.01 (-0.03 to 0.05)
+  own family (alpha) on final/overall: -0.03 (-0.11 to 0.03)
 
 judge judge-cheap (model, model-small, effort low, panel, 0.004 USD per call)
   dimension                       bias     tau   sigma   mse(1)   mse(3)     r2  eff(3)
-  final/correct                 +2.059   1.038   1.158   8.3615   7.1828   0.14    1.61
-  final/clarity                 +0.158   0.162   0.223   0.1397   0.1034   0.20    1.71
-  final/depth                   +0.146   0.043   0.095   0.0358   0.0295   0.48    2.03
-  final/overall                 +0.093   0.053   0.072   0.0219   0.0183   0.41    1.62
+  final/correct                 +1.794   1.152   0.890   7.0325   6.3054   0.14    1.42
+  final/clarity                 +0.168   0.198   0.217   0.1557   0.1208   0.21    1.57
+  final/depth                   +0.146   0.055   0.097   0.0385   0.0317   0.45    1.90
+  final/overall                 +0.091   0.066   0.066   0.0222   0.0191   0.39    1.44
 ...
 ```
 
 A dash is a figure this design does not measure. `reviewer-1` and `judge-main` have dashes on `correct` and
 `clarity`, where each was asked once per output. `judge-cheap` has all its figures, because its panel requests
-were repeated. The reviewer's bias is 0 by definition: the reviewer is the anchor. The output goes on with the
-other components and a list of what is not measured. What the columns mean is in
+were repeated. The reviewer's bias is 0 by definition: the reviewer is the anchor. On `correct`, a yes or no
+component, the figures are in the anchors' total noise of one reading, as the third line says. The output goes
+on with the other components and a list of what is not measured. What the columns mean is in
 [eval.md](eval.md#what-the-numbers-mean).
 
 The same fit answers the question the study was run for:
@@ -241,17 +244,17 @@ $ loopmath eval value my-study/fit.json --value my-study/value.json
 <!-- recorded: value -->
 ```
 eval value (experimental): 2 arms, reference baseline, objective best_value
-  baseline: value 0.519 [0.121, 0.954]  p_pass 0.382 [0.086, 0.681]  cost $0.01107
-      gate final/correct alone: 0.382 [0.086, 0.681]
-      final/correct: 0.382 [0.086, 0.681]
-      final/clarity: 0.488 [0.336, 0.642]
-      final/depth: 0.437 [0.381, 0.490]
-  candidate: value 1.307 [0.815, 1.731]  p_pass 0.737 [0.450, 0.951]  cost $0.09735
-      gate final/correct alone: 0.737 [0.450, 0.951]
-      final/correct: 0.737 [0.450, 0.951]
-      final/clarity: 0.639 [0.492, 0.782]
-      final/depth: 0.568 [0.518, 0.617]
-  candidate against baseline: value 0.788 [0.324, 1.299]  p_pass 0.354 [0.068, 0.667]  p_better 1.000  adopt (p_better 1.000 is at least 0.95)
+  baseline: value 0.524 [0.161, 0.940]  p_pass 0.389 [0.125, 0.686]  cost $0.01107
+      gate final/correct alone: 0.389 [0.125, 0.686]
+      final/correct: 0.389 [0.125, 0.686]
+      final/clarity: 0.490 [0.340, 0.644]
+      final/depth: 0.438 [0.384, 0.492]
+  candidate: value 1.311 [0.786, 1.730]  p_pass 0.742 [0.449, 0.947]  cost $0.09735
+      gate final/correct alone: 0.742 [0.449, 0.947]
+      final/correct: 0.742 [0.449, 0.947]
+      final/clarity: 0.638 [0.484, 0.787]
+      final/depth: 0.568 [0.515, 0.624]
+  candidate against baseline: value 0.787 [0.313, 1.252]  p_pass 0.353 [0.080, 0.641]  p_better 0.998  adopt (p_better 0.998 is at least 0.95)
 ```
 
 And it plans the next labels for the reviewer:
@@ -268,8 +271,8 @@ eval labels next (experimental): pilot mode, 6 assignments for reviewer-1 (5 pil
   wrote form: labels-001.csv
 ```
 
-Your numbers will differ a little from these when you run the fit yourself. The sampler does not give the same
-draws on every machine.
+Your numbers may differ a little from these on another machine. With `--engine pymc` they differ more: its
+sampler does not give the same draws on every machine.
 
 The rest of the page is what you need to write these files for your own system.
 
@@ -881,7 +884,7 @@ There is no cost file. Record costs in three places.
 |---|---|---|
 | each line of `runs.jsonl` | `cost_usd`: what it cost to produce this output | The mean over an arm's runs is the arm's cost in `eval value` and `eval steps`. `eval labels next --mode active` needs it under a `best_under_cost` objective. |
 | each judge in `judges.json` | `cost_usd_per_call`: what one call of the judge costs | `eval judges`, to price repeats and to pick a judge under `--budget-usd`. |
-| each line of `scores.jsonl` and `pairs.jsonl` | `cost_usd`: what this call cost | Nothing in 0.4.4. It is kept, so record it when you have it. |
+| each line of `scores.jsonl` and `pairs.jsonl` | `cost_usd`: what this call cost | Nothing in 0.4.5. It is kept, so record it when you have it. |
 
 Record the cost of a run when the run ends. It is hard to rebuild later.
 
@@ -911,10 +914,11 @@ In practice:
 2. **Use at least two judges, and let every judge score outputs of every arm.** If one judge scores only one
    arm, a lenient judge and a good arm look the same.
 3. **Repeat on a share of the targets.** Pick them at random, not where a score looked odd. In the example,
-   `judge-main` gets a second request on half of the outputs and `judge-cheap` on a quarter. Repeats on yes or
-   no and levels components have a known problem in 0.4.4: the fit often ends marked as not converged. See the
-   0.4.4 entry of the changelog. The example has 8 such repeated requests and converged. If your fit does not,
-   keep one request per output on those components and repeat on the number scales.
+   `judge-main` gets a second request on half of the outputs and `judge-cheap` on a quarter. With
+   `--engine pymc`, repeats on yes or no and levels components have a known problem: the fit often ends marked
+   as not converged. See the 0.4.4 entry of the changelog. The default engine converged on every such fit
+   measured for 0.4.5. The example has 8 such repeated requests and converged. If your fit does not, keep one
+   request per output on those components and repeat on the number scales.
 4. **Get some human labels on the same outputs the model judges scored.** 6 outputs per dimension is the least
    that counts. 30 makes a firm anchor. Let a reviewer score a few outputs twice.
 5. **Keep an arm fixed.** One arm, one setting of every step.
@@ -1031,7 +1035,7 @@ optional object is required only when the object is there.
 | `judges[].reference.author.model.id` | text | yes | Its id. |
 | `judges[].reference.author.model.family` | id | yes | Its family. |
 | `judges[].reference.version` | text | no | The version of the reference set. |
-| `judges[].blinded` | true or false | no, default false | True when the judge could not see which arm wrote the output. It is kept with the fit. No number depends on it in 0.4.4. Leave it out for the default; `null` is refused. |
+| `judges[].blinded` | true or false | no, default false | True when the judge could not see which arm wrote the output. It is kept with the fit. No number depends on it in 0.4.5. Leave it out for the default; `null` is refused. |
 | `judges[].cost_usd_per_call` | number, 0 or more | no | What one call of this judge costs. `eval judges` prices repeats with it. |
 | `judges[].components` | list of component ids | no, default all | The components this judge scores. |
 | `anchor` | list of judge ids | no | The anchor judges. They must be of kind `person`. Without an anchor, a judge's bias is measured against the mean of the judges. |

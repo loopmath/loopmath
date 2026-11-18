@@ -23,9 +23,9 @@ here against the real commands and the real validators:
 - every `loopmath eval` command shown parses, every link to a heading lands, and the agent guide's JSON
   examples validate.
 
-A block marked `<!-- recorded: NAME -->` is output that depends on the sampler. The test marked `slow` runs the
-fit of the walk (about 2 minutes on 2 cores) and compares those blocks with the numbers masked. It runs only
-with LOOPMATH_EVAL_SLOW=1.
+A block marked `<!-- recorded: NAME -->` is output that depends on the engine's draws. The test marked `slow`
+runs the fit of the walk with the default engine (about 10 seconds on 2 cores) and compares those blocks with
+the numbers masked. It runs only with LOOPMATH_EVAL_SLOW=1.
 """
 
 from __future__ import annotations
@@ -139,7 +139,7 @@ def shown_in(block: list[str], real: list[str]) -> bool:
 
 
 def masked(lines: list[str]) -> list[str]:
-    """Lines with every number replaced, for output that depends on the sampler."""
+    """Lines with every number replaced, for output that depends on the engine's draws."""
     return [re.sub(r"[-+]?\d+(?:\.\d+)?", "N", line) for line in lines]
 
 
@@ -1183,7 +1183,7 @@ def test_every_link_in_the_tutorial_lands(doc):
 
 
 def test_the_tutorial_says_eval_is_experimental_and_links_the_limits(doc):
-    assert "experimental in 0.4.4" in doc and "(eval.md#limits)" in doc
+    assert "experimental in 0.4.5" in doc and "(eval.md#limits)" in doc
     assert "## Limits" in (DOC.parent / "eval.md").read_text(encoding="utf-8")
 
 
@@ -1282,20 +1282,20 @@ def test_the_guide_gives_the_refusals_their_real_codes_and_words(guide, tmp_path
 
 
 # ---------------------------------------------------------------------------------------------------
-# The fit of the walk (slow: it samples)
+# The fit of the walk (slow: it fits)
 
 @pytest.mark.slow
-@needs_engine
 def test_the_walk_fits_and_the_recorded_outputs_have_their_shape(doc, walk, monkeypatch, tmp_path):
     """The fit, the judges table, the value and the reviewer plan of the walk, run as written. The blocks marked
-    `recorded` are compared with every number masked: the sampler does not give the same draws on every machine."""
+    `recorded` are compared with every number masked: the draws may differ from one machine to another. The
+    default engine needs no extra, so this test needs none."""
     root, _ = walk
     recorded = dict(tagged(doc, "recorded"))
     assert set(recorded) == {"fit", "judges", "value", "labels", "not-blind"}
     monkeypatch.chdir(root)
-    code, out, err = lm("eval", "fit", "my-study", *STUDY_ARGS, "--chains", "2")
+    code, out, err = lm("eval", "fit", "my-study", *STUDY_ARGS)
     assert code == 1 and "--allow-simulated" in err and not (root / "my-study" / "fit.json").exists(), err
-    code, out, err = lm("eval", "fit", "my-study", *STUDY_ARGS, "--allow-simulated", "--chains", "2")
+    code, out, err = lm("eval", "fit", "my-study", *STUDY_ARGS, "--allow-simulated")
     assert code == 0 and "converged: yes" in out, (out[-400:], err[-400:])
     assert shown_in(masked(recorded["fit"]), masked(out.splitlines())), out
     code, out, err = lm("eval", "judges", "my-study/fit.json")
