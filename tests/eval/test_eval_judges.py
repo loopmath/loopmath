@@ -670,22 +670,30 @@ def test_own_family_contrast_and_its_flag(tmp_path):
     cheap = judge_row(payload, "cheap")["family"]["own_family"]
     assert cheap["family"] == "beta" and all(row["excludes_zero"] is False for row in cheap["dims"])
     assert all(abs(row["effect"]["mean"]) < 0.01 for row in cheap["dims"])
-    # every draw of strong's contrasts is above 0 (0.3, sd 0.02): tail share 2 / (S + 1), flagged over the
-    # report's contrasts; cheap's hold 0 and are not
-    S = payload["draws"]
-    assert all(row["tail_share"] == pytest.approx(2 / (S + 1)) and row["flagged"] is True for row in own["dims"])
+    # strong's contrasts are 0.3; each is one family term minus the mean of two, all with posterior sd 0.02,
+    # so its sd is about 0.02 x sqrt(1.5) = 0.0245 and it lies about 12 sds from 0 (draw noise keeps it above
+    # 9.5, and 2 T(-9.5 / sqrt(1.01); 99) = 1.7e-15): flagged over the report's contrasts; cheap's hold 0
+    assert all(row["p_value"] < 2e-15 and row["flagged"] is True for row in own["dims"])
     assert all(row["flagged"] is False for row in cheap["dims"])
     printed = len(own["dims"]) + len(cheap["dims"])
     assert payload["family_flag"] == {"rule": "holm", "scope": "report", "level": 0.10, "contrasts": printed,
                                       "flagged": len(own["dims"]), "also_needs": "the 90% interval excludes 0",
-                                      "smallest_tail_share": pytest.approx(2 / (S + 1)),
-                                      "test": "two-sided posterior tail share of 0, in the unit the engine fitted in"}
+                                      "test": "two-sided p-value from the posterior mean and sd of the "
+                                              "contrast's draws, in the unit the engine fitted in, widened for "
+                                              "their Monte Carlo error: 2 T(-|mean| / (sd sqrt(1 + 1 / ess)); "
+                                              "ess - 1)",
+                                      "ess": 100.0,
+                                      "holds_when": "the fitted posterior is calibrated and close to normal for "
+                                                    "these contrasts, and the fit's effective sample size is at "
+                                                    "least 100"}
     assert all(row["tested_with"] == printed for row in own["dims"] + cheap["dims"])
     text = J.render(payload)
     assert any(line.startswith("  own family (alpha) on final/depth: 0.30 (") and line.endswith("  <- flagged")
                for line in text.splitlines()), text
     assert (f"Family flags ({len(own['dims'])} of {printed}) are decided over all {printed} family contrasts shown "
-            "(Holm)") in text
+            "(Holm, from each contrast's posterior mean and sd)") in text
+    assert ("at most 0.1 when the fitted posterior is calibrated and close to normal for these contrasts and "
+            "the fit passed its checks") in text
 
 
 def test_reference_family_contrast_and_confounding(tmp_path):

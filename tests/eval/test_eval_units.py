@@ -696,10 +696,14 @@ def test_family_flags_read_the_interval_in_the_fitted_unit(fits, tmp_path):
     assert row["excludes_zero"] is True                                       # fitted: 0.05 x -0.1 + 0.95 x 0.01 > 0
     old_row = next(row for row in J.report(a)["judges"] if row["id"] == "strong")["family"]["own_family"]["dims"][0]
     assert old_row["effect"]["lo"] == pytest.approx(0.0045, rel=1e-9) and old_row["excludes_zero"] is True
-    # 20 of 400 draws at or below 0: tail share 2 x 21 / 401 = 0.105, above the Holm bound 0.10 / k of a
-    # report of k > 1 contrasts, so the interval excludes 0 without a flag, and the text says both and the unit
+    # fitted draws: 20 at -0.1 and 380 at +0.01, mean 0.0045, sd (ddof 1) sqrt((0.000595 - 0.0045^2) x
+    # 400 / 399); the p-value 2 T(-0.0045 / (sd sqrt(1.01)); 99) = 0.852 is far above any Holm bound, so the interval
+    # excludes 0 (a lopsided posterior, far from normal) without a flag, and the text says both and the unit
     payload = J.report(b)
-    assert row["tail_share"] == pytest.approx(42 / 401, abs=1e-12) and payload["family_flag"]["contrasts"] > 1
+    sd = math.sqrt(((20 * 0.01 + 380 * 0.0001) / 400 - 0.0045 ** 2) * 400 / 399)
+    from scipy import stats
+    assert row["p_value"] == pytest.approx(2 * stats.t.sf(0.0045 / (sd * math.sqrt(1.01)), 99), rel=1e-9)
+    assert row["p_value"] == pytest.approx(0.852, abs=1e-3) and payload["family_flag"]["contrasts"] > 1
     assert row["flagged"] is False
     assert any(line.endswith("interval excludes 0 (in the anchors' call noise), not flagged over "
                              f"{payload['family_flag']['contrasts']} family contrasts") and "final/numbers_right" in line

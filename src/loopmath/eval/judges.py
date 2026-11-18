@@ -57,12 +57,13 @@ stated unit) and `excludes_zero`: whether the 90% interval of the same draws in 
 in, named in `decided_in` (Units), excludes 0 (a percentile interpolates between two draws whose units can
 differ). The flag (`flagged`) is decided jointly over the family contrasts of the whole report, so that a
 report with no family effect shows a false flag with chance at most `FAMILY_LEVEL` (0.10), however many
-contrasts it shows: Holm's step-down rule at family-wise level 0.10 over every contrast printed (own-family
-and reference-family, every judge and dimension), each tested with its two-sided posterior tail share
-`tail_share = 2 (b + 1) / (S + 1)` over the S draws in the fitted unit, with b the draws on the side of
-0 that holds fewer (a valid Monte Carlo p-value). A flag also needs `excludes_zero`. With k contrasts the
-smallest tail share must be at most 0.10 / k, so the shown 90% interval excluding 0 is enough for a flag
-only in a report of one contrast; a fit of S draws can flag nothing once k exceeds 0.05 (S + 1). `family_flag` states the rule,
+contrasts it shows, when the condition below holds: Holm's step-down rule at family-wise level 0.10 over every contrast printed (own-family
+and reference-family, every judge and dimension), each tested with a two-sided p-value from the
+posterior mean and sd of its draws in the fitted unit, widened for their Monte Carlo error at the
+effective sample size `eval fit` requires (`normal_p`). A flag also needs `excludes_zero`. The bound
+holds when the fitted posterior of these contrasts is calibrated and close to normal and the fit passed
+its effective sample size check; it reads no count of draws, so repeated or chained draws do not void it.
+`family_flag` states the rule, the condition,
 the level and how many contrasts were tested; `family_groups` is the one place that chooses which
 contrasts are tested together.
 
@@ -86,7 +87,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.special import ndtr, owens_t
+from scipy.special import ndtr, owens_t, stdtr
 
 from ..output import EXIT_OK, emit_json
 from . import contracts as C
@@ -100,6 +101,7 @@ MAX_PAIRS = 4000        # pairs of targets read for the pair figures; more are t
 MIN_DEFINED = 0.1       # a ratio that is undefined in more than 90% of the draws is not reported
 FAMILY_LEVEL = 0.10     # chance of one or more false family flags in a report with no family effect
 FAMILY_SCOPE = "report" # which family contrasts are tested together (`family_groups`)
+FAMILY_ESS = 100.0      # effective sample size the p-value allows for: `eval fit` checks it on every family term
 STUDY_ROLES = {"runs": C.RUNS_FILE, "scores": C.SCORES_FILE, "pairs": C.PAIRS_FILE, "items": C.ITEMS_FILE}
 
 
@@ -117,17 +119,27 @@ def stat(x: Any) -> dict | None:
     return {"mean": float(x.mean()), "sd": float(x.std()), "lo": float(lo), "hi": float(hi)}
 
 
-def tail_share(x: Any) -> float:
-    """Two-sided posterior tail share of 0 from S finite draws: `2 (b + 1) / (S + 1)`, at most 1, with `b`
-    the draws on the smaller side (`x <= 0` or `x >= 0`). The `+ 1` makes it a valid Monte Carlo p-value:
-    under a calibrated posterior it is at most u with chance at most u. The plain share `2 b / S` is not:
-    at a small bound such as 0.10 / k it lets through about twice as many null contrasts."""
+def normal_p(x: Any, ess: float = FAMILY_ESS) -> float:
+    """Two-sided p-value of 0 from the posterior mean and sd of the finite draws, with their Monte Carlo
+    error: `2 T(-|mean| / (sd sqrt(1 + 1 / ess)); ess - 1)`, T the Student t distribution function.
+
+    It reads only the mean and the sd, so draws that repeat (Laplace draws grouped at shared theta points)
+    or follow one another (a chain) enter only through the effective sample size, never as a count of
+    independent draws. For a calibrated, normal posterior the draw mean misses the posterior mean with
+    variance sd^2 / ess and the draw sd has about ess - 1 degrees of freedom, so the p-value is valid for
+    any fit whose effective sample size is at least `ess`; the default is the floor `eval fit` checks on
+    every family term (`fit.ESS_MIN`, 100). The plain `2 Phi(-|mean| / sd)` is not: it lets through up to
+    1.12 times the promised false flags (Round 2 of FIX-F). No spread and a nonzero mean give 0; no spread
+    at 0, or no draws, give 1."""
     x = np.asarray(x, dtype=float).ravel()
     x = x[np.isfinite(x)]
     if x.size == 0:
         return 1.0
-    b = min(int(np.sum(x <= 0.0)), int(np.sum(x >= 0.0)))
-    return float(min(1.0, 2.0 * (b + 1) / (x.size + 1)))
+    mean = float(x.mean())
+    sd = float(x.std(ddof=1)) if x.size > 1 else 0.0
+    if not sd > 0.0:
+        return 1.0 if mean == 0.0 else 0.0
+    return float(min(1.0, 2.0 * stdtr(ess - 1.0, -abs(mean) / (sd * np.sqrt(1.0 + 1.0 / ess)))))
 
 
 def holm(p: Any, level: float = FAMILY_LEVEL) -> list[bool]:
@@ -173,22 +185,25 @@ def family_groups(rows: list[tuple[str, str, dict]], scope: str = FAMILY_SCOPE) 
     raise ValueError(f"unknown family flag scope {scope!r}")
 
 
-def flag_family(judges: list[dict], level: float = FAMILY_LEVEL, scope: str = FAMILY_SCOPE,
-                draws: int | None = None) -> dict:
+def flag_family(judges: list[dict], level: float = FAMILY_LEVEL, scope: str = FAMILY_SCOPE) -> dict:
     """Set `flagged` and `tested_with` on every printed family contrast (Holm within each group of
     `family_groups`, and the 90% interval excludes 0), and return the rule as the report states it."""
     rows = family_rows(judges)
     for group in family_groups(rows, scope):
-        rejected = holm([rows[n][2]["tail_share"] for n in group], level)
+        rejected = holm([rows[n][2]["p_value"] for n in group], level)
         for n, hit in zip(group, rejected):
             row = rows[n][2]
             row["flagged"] = bool(hit and row["excludes_zero"])
             row["tested_with"] = len(group)
     return {"rule": "holm", "scope": scope, "level": level, "contrasts": len(rows),
             "flagged": sum(bool(row["flagged"]) for _, _, row in rows),
-            "test": "two-sided posterior tail share of 0, in the unit the engine fitted in",
+            "test": "two-sided p-value from the posterior mean and sd of the contrast's draws, in the unit the "
+                    "engine fitted in, widened for their Monte Carlo error: 2 T(-|mean| / (sd sqrt(1 + 1 / ess)); "
+                    "ess - 1)",
+            "ess": FAMILY_ESS,
             "also_needs": "the 90% interval excludes 0",
-            "smallest_tail_share": None if not draws else 2.0 / (draws + 1)}
+            "holds_when": "the fitted posterior is calibrated and close to normal for these contrasts, and the "
+                          f"fit's effective sample size is at least {FAMILY_ESS:g}"}
 
 
 def _mean(x: Any) -> float | None:
@@ -756,7 +771,7 @@ class _Report:
                 block["dims"].append({"dimension": dim["id"], "effect": stat(x),
                                       "own": _scaled(x, own_factor(dim), sign=_sign(dim)),
                                       "excludes_zero": bool(decided["lo"] > 0 or decided["hi"] < 0),
-                                      "tail_share": tail_share(fitted), "flagged": False, "tested_with": None,
+                                      "p_value": normal_p(fitted), "flagged": False, "tested_with": None,
                                       "decided_in": (dim.get("unit") or {}).get("fitted_in")})
             block["measured"] = bool(block["dims"])
             return block
@@ -975,7 +990,7 @@ def report(fit: F.Fit, target_error: float | None = None, budget_usd: float | No
                                 "out_of_range")
     builder = _Report(fit, item_counts(fit, scores or []))
     judges = [builder.judge(j, judge) for j, judge in enumerate(builder.declared)]
-    family_flag = flag_family(judges, draws=int(fit.sizes["S"]))
+    family_flag = flag_family(judges)
     batching, reference = builder.comparisons()
     anchor = fit["anchor"]
     return {"fit": fit.path.name, "converged": fit.converged, "draws": fit.sizes["S"],
@@ -1013,9 +1028,10 @@ def family_rule_text(rule: dict) -> str:
             "judge": "the family contrasts shown for each judge",
             "contrast": "each family contrast alone"}[rule["scope"]]
     bound = {"report": "in this report", "judge": "for one judge", "contrast": "for one contrast"}[rule["scope"]]
-    return (f"Family flags ({rule['flagged']} of {rule['contrasts']}) are decided over {over} (Holm): with no "
-            f"family effect, the chance of any false flag {bound} is at most {rule['level']:g}. The 90% intervals "
-            f"shown are not adjusted, so one can exclude 0 without a flag.")
+    return (f"Family flags ({rule['flagged']} of {rule['contrasts']}) are decided over {over} (Holm, from each "
+            f"contrast's posterior mean and sd): with no family effect, the chance of any false flag {bound} is at "
+            f"most {rule['level']:g} when the fitted posterior is calibrated and close to normal for these "
+            f"contrasts and the fit passed its checks. The 90% intervals shown are not adjusted, so one can exclude 0 without a flag.")
 
 
 def render(payload: dict) -> str:

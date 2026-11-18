@@ -506,8 +506,10 @@ def render_summary(name: str, s: dict) -> list[str]:
                  f"effect, {fam['studies_flagged']} flagged (share {f(fam['share_of_studies'], 2)}, 95% "
                  f"[{f(fam['lo'], 2)}, {f(fam['hi'], 2)}], limit {fam['limit']}; by the 90% interval alone "
                  f"{f(fam.get('share_of_studies_interval'), 2)}, not gated); per contrast "
-                 f"{f(fam['share_of_contrasts'], 2)}; simulated effects {fam['simulated_effects']}, found "
-                 f"{f(fam['found'], 2)}, held by the interval {f(fam.get('held'), 2)} "
+                 f"{f(fam['share_of_contrasts'], 2)}; simulated effects {fam['simulated_effects']} in "
+                 f"{fam.get('held_studies')} studies, found {fam.get('effects_found')}/{fam.get('effects_with_flag')} "
+                 f"measured" + (f"; {fam['effects_without_flag']} unknown" if fam.get("effects_without_flag") else "")
+                 + f", held by the interval {f(fam.get('held'), 2)} "
                  f"[{f(fam.get('held_lo'), 2)}, {f(fam.get('held_hi'), 2)}]")
     for klass, z in s.get("zero_classes", {}).items():
         if z.get("counted"):
@@ -515,7 +517,8 @@ def render_summary(name: str, s: dict) -> list[str]:
                          f"{z['studies_flagged']} of {z['studies']} studies with a printed contrast flagged (share "
                          f"{f(z['share_of_studies'], 2)}, 95% [{f(z['lo'], 2)}, {f(z['hi'], 2)}], limit "
                          f"{z['limit']}); per contrast {f(z['share_of_rows'], 3)}; raw terms with an interval "
-                         f"that excludes 0 in {z['raw_studies_flagged']} of {z['raw_studies']} studies, not gated"
+                         f"that excludes 0 in {z['raw_studies_flagged']} of {z['raw_studies']} studies, not gated "
+                         f"as a false alarm (their coverage is gated from below)"
                          + (f"; {z['studies_missing_flag']} studies without the flag" if z["studies_missing_flag"]
                             else ""))
             continue

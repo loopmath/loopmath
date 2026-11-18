@@ -104,8 +104,13 @@ Statistics
   only) has nothing to count.
 - Real family contrasts (`family_table`): the share of contrasts with a nonzero true value whose 90%
   interval holds it, pooled over studies with the cluster interval (`cluster_share`), must lie in the
-  85 to 95% band like a class; the share flagged (`found`) is shown, not gated here (acceptance check 9
-  in `test_eval_recovery.py` asks at least 0.5).
+  85 to 95% band like a class, over enough independent studies: the item passes only when every real
+  contrast (judge, kind, family, dimension) is measured in `GATE_STUDIES` studies (`held_studies_min`),
+  and fails early only when the cluster interval lies wholly outside the band. The share flagged
+  (`found`) is shown, not gated here (acceptance check 9 in `test_eval_recovery.py` asks at least 0.5);
+  it counts only effects whose record has the flag (`effects_with_flag`, `effects_found`), and while
+  any effect lacks it (`effects_without_flag`) `found` is null and the item says "n/m measured; u
+  unknown".
 - Classes whose truth is 0 in every row (`zero_class_table`): a gated class with a true value of 0 in
   every row of every study of the spec (for example `family` where no family effect is simulated) is
   judged by a false-alarm rule, not by the 85 to 95% band. A study counts once if any row of the class
@@ -115,9 +120,14 @@ Statistics
   `family_table` (a study counts once if any is flagged), not its raw centred terms. The raw terms are
   not what a report shows, and with F families there are F of them per judge and dimension that sum to
   0 (18 per study in `gated` for 6 printed contrasts); their misses stay in the table
-  (`raw_rows`, `raw_rows_flagged`), not gated. Records without the flag leave it incomplete. The class and its parameters stay in the
-  tables with their coverage; only the two band items of the gate leave them out, and the rule is its
-  own gate item. Every other class keeps the two-sided band. When every gated class is judged this way,
+  (`raw_rows`, `raw_rows_flagged`), not counted as false alarms. Records without the flag leave it
+  incomplete. The raw terms are still each an identified parameter (PRD 10.3), so their coverage is
+  gated from below by its own item (`family_raw_terms_not_undercovered`): the class coverage must reach
+  85% (a fail at `GATE_STUDIES` studies, or earlier when the cluster interval lies below), and no raw
+  term's Bonferroni interval may lie wholly below 85%. Coverage above the band is allowed at the
+  all-zero boundary. Without it, terms that cancel in every printed contrast could miss their truth in
+  every study unseen. The class and its parameters stay in the tables with their coverage; only the
+  two band items of the gate leave them out, and the rule is its own gate item. Every other class keeps the two-sided band. When every gated class is judged this way,
   the band item is `not applicable`; when no class is, the false-alarm item is. A spec with no gated
   class at all has nothing measured, and its band item stays incomplete.
 
@@ -493,7 +503,7 @@ def family_contrasts(report: Mapping, truth: Mapping, families: Sequence[str]) -
                 rows.append({"judge": judge["id"], "kind": kind, "family": part["family"], "dimension": dim["dimension"],
                              "truth": value, "mean": effect["mean"], "lo": effect["lo"], "hi": effect["hi"],
                              "excludes_zero": bool(dim["excludes_zero"]), "flagged": bool(dim["flagged"]),
-                             "tail_share": float(dim["tail_share"]), "tested_with": int(dim["tested_with"])})
+                             "p_value": float(dim["p_value"]), "tested_with": int(dim["tested_with"])})
     return rows
 
 
@@ -900,11 +910,18 @@ def _has_flag(rows: Sequence[Mapping]) -> bool:
 def family_table(records: Iterable[Mapping], limit: float = FAMILY_LIMIT, band: tuple[float, float] = BAND) -> dict:
     """False family findings counted once per study by the product flag, the simulated effects found (by
     the flag) and held (by the interval), and how many records were made without the measurement or
-    without the flag."""
+    without the flag.
+
+    Found is counted only over effects whose record has the flag (`effects_with_flag`, of them
+    `effects_found`); `effects_without_flag` are unknown, and `found` is null while any is. Coverage of the
+    real contrasts reads the interval, which every record has; `held_studies` counts the independent
+    studies with a real contrast and `held_studies_min` the fewest studies in which any one real contrast
+    (judge, kind, family, dimension) is measured."""
     studies = flagged = flagged_interval = 0
     contrasts = contrast_flags = 0
-    real = real_found = 0
+    real = real_found = real_unflagged = 0
     held_hits, held_sizes = [], []
+    real_in: Counter = Counter()
     measured = skipped = unflagged = 0
     for record in _usable(records):
         rows = record.get("family")
@@ -916,8 +933,10 @@ def family_table(records: Iterable[Mapping], limit: float = FAMILY_LIMIT, band: 
         if real_rows:                    # coverage reads the interval, which every record has
             held_hits.append(sum(bool(row["lo"] <= row["truth"] <= row["hi"]) for row in real_rows))
             held_sizes.append(len(real_rows))
+            real_in.update({(row["judge"], row["kind"], row["family"], row["dimension"]) for row in real_rows})
         if not _has_flag(rows):
             unflagged += 1
+            real_unflagged += len(real_rows)
             continue
         null = [row for row in rows if row["truth"] == 0.0]
         if null:
@@ -939,8 +958,11 @@ def family_table(records: Iterable[Mapping], limit: float = FAMILY_LIMIT, band: 
             "place": None if share is None else ("above" if lo > limit else "below" if hi <= limit else "undecided"),
             "share_of_studies_interval": flagged_interval / studies if studies else None,
             "null_contrasts": contrasts, "share_of_contrasts": contrast_flags / contrasts if contrasts else None,
-            "simulated_effects": int(sum(held_sizes)), "found": real_found / real if real else None,
+            "simulated_effects": int(sum(held_sizes)), "effects_with_flag": real, "effects_found": real_found,
+            "effects_without_flag": real_unflagged,
+            "found": real_found / real if real and not real_unflagged else None,
             "held": cover["share"], "held_lo": cover["lo"], "held_hi": cover["hi"], "held_studies": cover["studies"],
+            "held_studies_min": min(real_in.values()) if real_in else 0,
             "held_in_band": None if cover["share"] is None else bool(band[0] <= cover["share"] <= band[1])}
 
 
@@ -1057,6 +1079,7 @@ def summarise(records: Sequence[Mapping], band: tuple[float, float] = BAND, stud
            "parameters_outside": [p for p in params if p["outside"]],
            "parameters_biased": [p for p in params if p["gated"] and p["unbiased"] is False],
            "parameters": len(params), "family": family, "zero_classes": zero,
+           "family_raw_parameters": [p for p in params if p["class"] == "family"],
            "degenerate": degenerate, "degenerate_gated": [x for x in degenerate if ":" not in x["class"]],
            "no_truth_gated": [x for x in no_truth if ":" not in x["class"]]}
     out["gate"] = spec_gate(out, band, studies_needed)
@@ -1102,6 +1125,20 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
         zero_why = "within the limit: " + "; ".join(f"{k} {z['share_of_studies']:.3f} of {z['studies']} studies"
                                                     + (" (printed contrasts)" if z.get("counted") else "")
                                                     for k, z in zero.items())
+    raw = gated.get("family")
+    if raw is None or "family" not in zero:
+        # absent, or with a simulated effect: then the class is in the band items like any other
+        raw_state, raw_why = NOT_APPLICABLE, ("no raw family term" if raw is None else
+                                              "raw family terms have simulated effects: judged by the band items")
+    else:
+        under = [p for p in summary.get("family_raw_parameters") or [] if p["hi_adj"] < band[0]]
+        low_class = raw["coverage"] < band[0]
+        raw_why = (f"raw family terms (truth 0) cover {raw['coverage']:.3f} of {raw['rows']} in {raw['studies']} "
+                   f"studies, at least {band[0]} asked; {len(under)} terms clearly below {band[0]}"
+                   + (f" {[p['name'] for p in under[:6]]}" if under else "")
+                   + "; above the band is allowed at the all-zero boundary")
+        raw_state = (FAIL if under or (low_class and (enough or raw["place"] == "outside"))
+                     else INCOMPLETE if low_class or raw["studies"] < studies_needed else PASS)
     arms = [p for p in summary["arm_means"] if p["class"] == "mu"]
     biased = sorted(p["name"] for p in arms if p["unbiased"] is False)
     undecided = sorted(p["name"] for p in arms if p["unbiased"] is None)
@@ -1121,18 +1158,28 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
         family_why = f"share of studies {fam['share_of_studies']:.3f} above {fam['limit']}"
     else:
         family_state, family_why = until, "within the limit"
+    real_enough = fam.get("held_studies_min", 0) >= studies_needed
+    real_count = (f"{fam['held_studies']} of {studies_needed} real-effect studies"
+                  + ("" if fam.get("held_studies_min", 0) == fam["held_studies"]
+                     else f", the sparsest real contrast in {fam.get('held_studies_min', 0)}"))
+    clear_out = (fam["held_studies"] >= MIN_STUDIES and fam["held_lo"] is not None
+                 and place(fam["held_lo"], fam["held_hi"], band) == "outside")
     if fam["studies_skipped"]:
         real_state, real_why = INCOMPLETE, f"{fam['studies_skipped']} studies made without the family measurement"
     elif not fam["simulated_effects"]:
         real_state, real_why = NOT_APPLICABLE, "no family contrast with a simulated effect"
     elif not fam["held_in_band"]:
-        real_state = FAIL if enough else INCOMPLETE
-        real_why = f"coverage {fam['held']:.3f} outside {band[0]} to {band[1]}"
+        real_state = FAIL if real_enough or clear_out else INCOMPLETE
+        real_why = f"coverage {fam['held']:.3f} outside {band[0]} to {band[1]}; {real_count}"
     else:
-        real_state, real_why = until, f"coverage {fam['held']:.3f} in the band"
+        real_state = PASS if real_enough else INCOMPLETE
+        real_why = f"coverage {fam['held']:.3f} in the band; {real_count}"
     if fam["simulated_effects"]:
-        real_why += ("; found " + ("not counted (records before the flag)" if fam["found"] is None
-                                   else f"{fam['found']:.3f}") + f" of {fam['simulated_effects']}")
+        if fam.get("effects_without_flag"):
+            real_why += (f"; found {fam['effects_found']}/{fam['effects_with_flag']} measured; "
+                         f"{fam['effects_without_flag']} unknown (records before the flag)")
+        else:
+            real_why += f"; found {fam['found']:.3f} of {fam['effects_with_flag']}"
     items = {
         "enough_studies": (PASS if enough else INCOMPLETE, f"{summary['studies']} of {studies_needed}"),
         "records_current": (INCOMPLETE if summary.get("old_schema") else PASS,
@@ -1160,6 +1207,7 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
         "family_false_alarms_within_limit": (family_state, family_why),
         "family_real_contrasts_covered": (real_state, real_why),
         "zero_classes_false_alarms_within_limit": (zero_state, zero_why),
+        "family_raw_terms_not_undercovered": (raw_state, raw_why),
         "every_fit_clean": (FAIL if summary["failed"] or summary["unconverged"] else until,
                             f"{len(summary['failed'])} failed, {len(summary['unconverged'])} not converged"),
     }

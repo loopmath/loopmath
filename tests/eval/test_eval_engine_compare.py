@@ -382,8 +382,10 @@ def test_a_spec_whose_every_gated_class_has_truth_0_can_pass(studies):
     assert items["no_parameter_outside_band"]["state"] == "pass"
     assert "1 more in classes judged by false alarms" in items["no_parameter_outside_band"]["why"]
     assert items["family_real_contrasts_covered"]["state"] == "not applicable"     # no real family contrast
+    assert items["family_raw_terms_not_undercovered"]["state"] == "not applicable"  # no raw family term
     assert {k for k, v in items.items() if v["state"] != "pass"} == {"coverage_per_class_in_band",
-                                                                    "family_real_contrasts_covered"}
+                                                                    "family_real_contrasts_covered",
+                                                                    "family_raw_terms_not_undercovered"}
     assert summary["gate"]["state"] == "pass" and summary["gate"]["pass"] is True
 
 
