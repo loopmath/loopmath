@@ -558,13 +558,15 @@ def family_rows(fit: Fitted) -> list[dict]:
                 true = truth[judges.index(judge["id"]), families.index(part["family"]), dims.index(dim["dimension"])]
                 rows.append({"judge": judge["id"], "kind": kind, "family": part["family"],
                              "dimension": dim["dimension"], "true": float(np.nan_to_num(true)),
-                             "effect": dim["effect"], "flagged": bool(dim["excludes_zero"])})
+                             "effect": dim["effect"], "flagged": bool(dim["flagged"]),
+                             "excludes_zero": bool(dim["excludes_zero"])})
     return rows
 
 
 def test_check_9_family_effects_are_found_where_simulated(root):
     """Acceptance check 9, first part: on `own-family` and `reference-family`, the simulated effects are
-    flagged (their interval excludes 0) in at least half of the cases, and held by their intervals."""
+    flagged (the product flag, decided over every family contrast of the report) in at least half of the
+    cases, and held by their intervals."""
     got = {}
     for name in ("own-family", "reference-family"):
         fits = [fitted(root, name, seed) for seed in seeds()]

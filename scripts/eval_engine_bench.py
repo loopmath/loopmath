@@ -33,7 +33,8 @@ otherwise.
 `stats` reads the records of each engine and prints, per spec: coverage per parameter class with its
 interval over independent studies, the arm means one by one, bias per class, the parameters whose
 coverage is outside 85% to 95% by their own binomial interval, degenerate parameters, family false
-alarms counted once per study, and the spec's part of the gate; then the engine gate item by item, each
+alarms counted once per study by the flag `eval judges` prints, coverage of real family contrasts, and the
+spec's part of the gate; then the engine gate item by item, each
 `pass`, `fail` or `incomplete`. The gate's required specs are the whole catalog and the seven specs that
 read a binary or levels component repeatedly, 200 studies each, whatever records exist; `--catalog`,
 `--repeated`, `--studies`, `--catalog-studies` (studies per spec for the clean-fit items) and
@@ -498,12 +499,26 @@ def render_summary(name: str, s: dict) -> list[str]:
     fam = s["family"]
     if fam["studies_skipped"]:
         lines.append(f"  family: {fam['studies_skipped']} studies made without the family measurement")
-    lines.append(f"  family: {fam['studies_with_a_null_contrast']} studies measured a contrast with no simulated "
+    if fam.get("studies_without_flag"):
+        lines.append(f"  family: {fam['studies_without_flag']} studies recorded before the family flag (no "
+                     f"`flagged`); false alarms and found are not counted from them")
+    lines.append(f"  family: {fam['studies_with_a_null_contrast']} studies printed a contrast with no simulated "
                  f"effect, {fam['studies_flagged']} flagged (share {f(fam['share_of_studies'], 2)}, 95% "
-                 f"[{f(fam['lo'], 2)}, {f(fam['hi'], 2)}], limit {fam['limit']}); per contrast "
+                 f"[{f(fam['lo'], 2)}, {f(fam['hi'], 2)}], limit {fam['limit']}; by the 90% interval alone "
+                 f"{f(fam.get('share_of_studies_interval'), 2)}, not gated); per contrast "
                  f"{f(fam['share_of_contrasts'], 2)}; simulated effects {fam['simulated_effects']}, found "
-                 f"{f(fam['found'], 2)}")
+                 f"{f(fam['found'], 2)}, held by the interval {f(fam.get('held'), 2)} "
+                 f"[{f(fam.get('held_lo'), 2)}, {f(fam.get('held_hi'), 2)}]")
     for klass, z in s.get("zero_classes", {}).items():
+        if z.get("counted"):
+            lines.append(f"  truth 0 in every row, judged by false alarms and not the band: {klass}, "
+                         f"{z['studies_flagged']} of {z['studies']} studies with a printed contrast flagged (share "
+                         f"{f(z['share_of_studies'], 2)}, 95% [{f(z['lo'], 2)}, {f(z['hi'], 2)}], limit "
+                         f"{z['limit']}); per contrast {f(z['share_of_rows'], 3)}; raw terms with an interval "
+                         f"that excludes 0 in {z['raw_studies_flagged']} of {z['raw_studies']} studies, not gated"
+                         + (f"; {z['studies_missing_flag']} studies without the flag" if z["studies_missing_flag"]
+                            else ""))
+            continue
         lines.append(f"  truth 0 in every row, judged by false alarms and not the band: {klass}, "
                      f"{z['studies_flagged']} of {z['studies']} studies with an interval that excludes 0 (share "
                      f"{f(z['share_of_studies'], 2)}, 95% [{f(z['lo'], 2)}, {f(z['hi'], 2)}], limit {z['limit']}); "

@@ -670,8 +670,22 @@ def test_own_family_contrast_and_its_flag(tmp_path):
     cheap = judge_row(payload, "cheap")["family"]["own_family"]
     assert cheap["family"] == "beta" and all(row["excludes_zero"] is False for row in cheap["dims"])
     assert all(abs(row["effect"]["mean"]) < 0.01 for row in cheap["dims"])
-    assert "own family (alpha) on final/depth: 0.30 (0.25 to 0.35)  <- interval excludes 0" in J.render(payload) or \
-        "<- interval excludes 0" in J.render(payload)
+    # every draw of strong's contrasts is above 0 (0.3, sd 0.02): tail share 2 / (S + 1), flagged over the
+    # report's contrasts; cheap's hold 0 and are not
+    S = payload["draws"]
+    assert all(row["tail_share"] == pytest.approx(2 / (S + 1)) and row["flagged"] is True for row in own["dims"])
+    assert all(row["flagged"] is False for row in cheap["dims"])
+    printed = len(own["dims"]) + len(cheap["dims"])
+    assert payload["family_flag"] == {"rule": "holm", "scope": "report", "level": 0.10, "contrasts": printed,
+                                      "flagged": len(own["dims"]), "also_needs": "the 90% interval excludes 0",
+                                      "smallest_tail_share": pytest.approx(2 / (S + 1)),
+                                      "test": "two-sided posterior tail share of 0, in the unit the engine fitted in"}
+    assert all(row["tested_with"] == printed for row in own["dims"] + cheap["dims"])
+    text = J.render(payload)
+    assert any(line.startswith("  own family (alpha) on final/depth: 0.30 (") and line.endswith("  <- flagged")
+               for line in text.splitlines()), text
+    assert (f"Family flags ({len(own['dims'])} of {printed}) are decided over all {printed} family contrasts shown "
+            "(Holm)") in text
 
 
 def test_reference_family_contrast_and_confounding(tmp_path):
@@ -996,8 +1010,11 @@ def test_json_is_one_object_and_the_same_every_time(tmp_path, capsys):
     assert payload["schema"] == "loopmath.eval-judges-report/1" == J.SCHEMA
     assert payload["fit"] == "fit.json" and payload["converged"] is True and payload["draws"] == 200
     assert payload["stale"] == {"study": None, "changes": [], "not_checked": []}
-    assert set(payload) == {"schema", "fit", "converged", "draws", "anchor", "repeats", "judges", "choices",
-                            "batching_loss", "reference_effect", "not_measured", "stale", "inputs", "options"}
+    assert set(payload) == {"schema", "fit", "converged", "draws", "anchor", "repeats", "judges", "family_flag",
+                            "choices", "batching_loss", "reference_effect", "not_measured", "stale", "inputs",
+                            "options"}
+    assert payload["family_flag"]["rule"] == "holm" and payload["family_flag"]["level"] == 0.10
+    assert payload["family_flag"]["contrasts"] == len(J.family_rows(payload["judges"]))
     import hashlib
     draws_file = tmp_path / "fit.draws.npz"
     assert payload["inputs"] == {

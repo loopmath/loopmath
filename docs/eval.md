@@ -125,9 +125,14 @@ with `--allow-simulated`, so that simulated runs never mix into real ones by acc
 - **Halo** is the part of a judge's error shared across components: by output (`halo_target`) or, for a `panel`
   judge, by call (`halo_call`).
 - **Family effect** is the extra a judge gives to outputs written by its own model family, or by the family that
-  wrote the reference answer it was shown. It is reported with a range and flagged when the range excludes 0.
-  On a yes or no component the flag reads the range on the scale the engine fits, which can differ a little
-  from the range shown; the marker then says "(in the anchors' call noise)".
+  wrote the reference answer it was shown. It is reported with a 90% range. The flag (`<- flagged`) is decided
+  over all the family effects one report shows, every judge and component together, so that a report of a
+  study with no family effect shows any false flag at most 10% of the time, however many it shows (Holm's
+  method, from the share of draws on the other side of 0). A range can therefore exclude 0 without a flag;
+  the line then says how many family effects the flag was decided over. The report states the rule, the
+  level and the count (`family_flag` in `--json`). On a yes or no component the flag reads the range on the
+  scale the engine fits, which can differ a little from the range shown; the line then says "(in the
+  anchors' call noise)".
 - **Relative** marks a component that has comparisons but no scores. Its arms can be ordered but not placed on the
   scale, so a gate on it is refused.
 - **p_pass** is the chance that one output of an arm passes every gate. It is computed from the joint fit: gated

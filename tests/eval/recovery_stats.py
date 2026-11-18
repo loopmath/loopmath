@@ -93,14 +93,29 @@ Statistics
 - Bias per class: the mean of posterior mean less truth, with a ratio-estimator standard error (shown,
   never gated; the centred family effects sum to 0, so the class `family` always shows 0).
 - Family false alarms (`family_table`): a study counts once if any family contrast that `eval judges`
-  measured with a true value of 0 has an interval that excludes 0, over the studies that measured one.
-  A record made without the measurement (`family` null) leaves the spec incomplete; a measured study
-  with no such contrast (`family` an empty list) is a design with nothing to measure.
+  printed with a true value of 0 carries the product flag (`flagged`: Holm over every family contrast
+  of the report, `judges.flag_family`), over the studies that printed one. The 90% interval of each
+  contrast is kept beside the flag (`excludes_zero`, `lo`, `hi`): coverage reads the interval, false
+  alarms and the found rate read the flag. The share of studies with a null contrast whose interval
+  excludes 0 is shown (`share_of_studies_interval`), never gated. A record made without the measurement
+  (`family` null), or before the flag (a contrast without `flagged`, as in records of 0.4.5 gate run 3
+  and earlier), leaves the item incomplete and is said so; such records are never counted by their
+  interval instead. A measured study with no null contrast (`family` an empty list, or real effects
+  only) has nothing to count.
+- Real family contrasts (`family_table`): the share of contrasts with a nonzero true value whose 90%
+  interval holds it, pooled over studies with the cluster interval (`cluster_share`), must lie in the
+  85 to 95% band like a class; the share flagged (`found`) is shown, not gated here (acceptance check 9
+  in `test_eval_recovery.py` asks at least 0.5).
 - Classes whose truth is 0 in every row (`zero_class_table`): a gated class with a true value of 0 in
   every row of every study of the spec (for example `family` where no family effect is simulated) is
   judged by a false-alarm rule, not by the 85 to 95% band. A study counts once if any row of the class
   misses, that is if its interval excludes 0 (a degenerate row is a miss); the share of studies must
-  stay within `ZERO_CLASS_LIMIT`, as for family contrasts. The class and its parameters stay in the
+  stay within `ZERO_CLASS_LIMIT`, as for family contrasts. The class `family` is the exception: its
+  false alarms are the family contrasts `eval judges` prints, with the product flag, as in
+  `family_table` (a study counts once if any is flagged), not its raw centred terms. The raw terms are
+  not what a report shows, and with F families there are F of them per judge and dimension that sum to
+  0 (18 per study in `gated` for 6 printed contrasts); their misses stay in the table
+  (`raw_rows`, `raw_rows_flagged`), not gated. Records without the flag leave it incomplete. The class and its parameters stay in the
   tables with their coverage; only the two band items of the gate leave them out, and the rule is its
   own gate item. Every other class keeps the two-sided band. When every gated class is judged this way,
   the band item is `not applicable`; when no class is, the false-alarm item is. A spec with no gated
@@ -477,7 +492,8 @@ def family_contrasts(report: Mapping, truth: Mapping, families: Sequence[str]) -
                 effect = dim["effect"]
                 rows.append({"judge": judge["id"], "kind": kind, "family": part["family"], "dimension": dim["dimension"],
                              "truth": value, "mean": effect["mean"], "lo": effect["lo"], "hi": effect["hi"],
-                             "excludes_zero": bool(dim["excludes_zero"])})
+                             "excludes_zero": bool(dim["excludes_zero"]), "flagged": bool(dim["flagged"]),
+                             "tail_share": float(dim["tail_share"]), "tested_with": int(dim["tested_with"])})
     return rows
 
 
@@ -635,6 +651,8 @@ def record_problems(record: Mapping) -> list[str]:
     for row in record.get("family") or []:
         if not all(_finite_number(row.get(k)) for k in ("truth", "mean", "lo", "hi")):
             out.append(f"{where}: family contrast {row.get('judge')} {row.get('family')} has a number that is not finite")
+        if "flagged" in row and not isinstance(row["flagged"], bool):
+            out.append(f"{where}: family contrast {row.get('judge')} {row.get('family')} has a flag that is not true or false")
     return out
 
 
@@ -874,40 +892,76 @@ def parameter_table(records: Iterable[Mapping], band: tuple[float, float] = BAND
     return out
 
 
-def family_table(records: Iterable[Mapping], limit: float = FAMILY_LIMIT) -> dict:
-    """False family findings counted once per study, the simulated effects found, and how many records
-    were made without the measurement."""
-    studies = flagged = 0
+def _has_flag(rows: Sequence[Mapping]) -> bool:
+    """Whether a record's family contrasts carry the product flag (records before it have only the interval)."""
+    return all("flagged" in row for row in rows)
+
+
+def family_table(records: Iterable[Mapping], limit: float = FAMILY_LIMIT, band: tuple[float, float] = BAND) -> dict:
+    """False family findings counted once per study by the product flag, the simulated effects found (by
+    the flag) and held (by the interval), and how many records were made without the measurement or
+    without the flag."""
+    studies = flagged = flagged_interval = 0
     contrasts = contrast_flags = 0
-    real = real_found = real_held = 0
-    measured = skipped = 0
+    real = real_found = 0
+    held_hits, held_sizes = [], []
+    measured = skipped = unflagged = 0
     for record in _usable(records):
         rows = record.get("family")
         if rows is None:
             skipped += 1
             continue
         measured += 1
+        real_rows = [row for row in rows if row["truth"] != 0.0]
+        if real_rows:                    # coverage reads the interval, which every record has
+            held_hits.append(sum(bool(row["lo"] <= row["truth"] <= row["hi"]) for row in real_rows))
+            held_sizes.append(len(real_rows))
+        if not _has_flag(rows):
+            unflagged += 1
+            continue
         null = [row for row in rows if row["truth"] == 0.0]
         if null:
             studies += 1
-            flagged += any(row["excludes_zero"] for row in null)
+            flagged += any(row["flagged"] for row in null)
+            flagged_interval += any(row["excludes_zero"] for row in null)
             contrasts += len(null)
-            contrast_flags += sum(row["excludes_zero"] for row in null)
-        for row in rows:
-            if row["truth"] != 0.0:
-                real += 1
-                real_found += bool(row["excludes_zero"])
-                real_held += bool(row["lo"] <= row["truth"] <= row["hi"])
+            contrast_flags += sum(row["flagged"] for row in null)
+        real += len(real_rows)
+        real_found += sum(bool(row["flagged"]) for row in real_rows)
     lo, hi = clopper_pearson(flagged, studies)
     share = flagged / studies if studies else None
-    return {"studies_read": measured, "studies_skipped": skipped, "studies_with_a_null_contrast": studies,
+    cover = cluster_share(held_hits, held_sizes)
+    return {"studies_read": measured, "studies_skipped": skipped, "studies_without_flag": unflagged,
+            "studies_with_a_null_contrast": studies,
             "studies_flagged": flagged, "share_of_studies": share, "lo": lo if studies else None,
             "hi": hi if studies else None, "limit": limit,
             "within_limit": None if share is None else bool(share <= limit),
             "place": None if share is None else ("above" if lo > limit else "below" if hi <= limit else "undecided"),
+            "share_of_studies_interval": flagged_interval / studies if studies else None,
             "null_contrasts": contrasts, "share_of_contrasts": contrast_flags / contrasts if contrasts else None,
-            "simulated_effects": real, "found": real_found / real if real else None,
-            "held": real_held / real if real else None}
+            "simulated_effects": int(sum(held_sizes)), "found": real_found / real if real else None,
+            "held": cover["share"], "held_lo": cover["lo"], "held_hi": cover["hi"], "held_studies": cover["studies"],
+            "held_in_band": None if cover["share"] is None else bool(band[0] <= cover["share"] <= band[1])}
+
+
+def printed_family_counts(records: Iterable[Mapping]) -> dict:
+    """False alarms of the class `family` read from the printed contrasts with the product flag: studies
+    with a printed contrast, studies with one flagged, the contrasts, those flagged, and the records that
+    lack the measurement or the flag."""
+    out = {"studies": 0, "studies_flagged": 0, "contrasts": 0, "contrasts_flagged": 0,
+           "studies_skipped": 0, "studies_without_flag": 0}
+    for record in _usable(records):
+        rows = record.get("family")
+        if rows is None:
+            out["studies_skipped"] += 1
+        elif not _has_flag(rows):
+            out["studies_without_flag"] += 1
+        elif rows:
+            out["studies"] += 1
+            out["studies_flagged"] += any(row["flagged"] for row in rows)
+            out["contrasts"] += len(rows)
+            out["contrasts_flagged"] += sum(row["flagged"] for row in rows)
+    return out
 
 
 def zero_class_table(records: Iterable[Mapping], limit: float = ZERO_CLASS_LIMIT) -> dict:
@@ -915,6 +969,7 @@ def zero_class_table(records: Iterable[Mapping], limit: float = ZERO_CLASS_LIMIT
     once per study: a study is flagged if any row of the class misses (with truth 0, a miss is an interval
     that excludes 0; a degenerate row is a miss). A class with an aggregate, or with any other truth, is
     not one of them."""
+    records = list(records)
     per: dict[str, dict] = {}
     aggregated: set = set()
     for record in _usable(records):
@@ -933,6 +988,25 @@ def zero_class_table(records: Iterable[Mapping], limit: float = ZERO_CLASS_LIMIT
     out = {}
     for klass, acc in sorted(per.items()):
         if not acc["zero"] or ":" in klass or klass in aggregated:
+            continue
+        if klass == "family":            # the printed contrasts with the product flag, not the raw terms
+            printed = printed_family_counts(records)
+            k, n = printed["studies_flagged"], printed["studies"]
+            lo, hi = clopper_pearson(k, n)
+            share = k / n if n else None
+            missing = printed["studies_skipped"] + printed["studies_without_flag"]
+            out[klass] = {"counted": "printed family contrasts with the product flag",
+                          "studies": n, "studies_flagged": k, "share_of_studies": share,
+                          "lo": lo if n else None, "hi": hi if n else None, "limit": limit,
+                          "within_limit": None if share is None else bool(share <= limit),
+                          "place": None if share is None else
+                          "above" if lo > limit else "below" if hi <= limit else "undecided",
+                          "rows": printed["contrasts"], "rows_flagged": printed["contrasts_flagged"],
+                          "share_of_rows": printed["contrasts_flagged"] / printed["contrasts"]
+                          if printed["contrasts"] else None,
+                          "studies_missing_flag": missing,
+                          "raw_rows": acc["rows"], "raw_rows_flagged": acc["row_flags"],
+                          "raw_studies_flagged": acc["flagged"], "raw_studies": acc["studies"]}
             continue
         k, n = acc["flagged"], acc["studies"]
         lo, hi = clopper_pearson(k, n)
@@ -959,7 +1033,7 @@ def summarise(records: Sequence[Mapping], band: tuple[float, float] = BAND, stud
     cpu = [float(r["cpu_seconds"]) for r in usable if r.get("cpu_seconds") is not None]
     classes = class_table(usable, band)
     params = parameter_table(usable, band)
-    family = family_table(usable)
+    family = family_table(usable, band=band)
     zero = zero_class_table(usable)
     for klass, c in classes.items():
         c["always_zero"] = klass in zero
@@ -1010,8 +1084,15 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
     outside = [p for p in summary["parameters_outside"] if p["class"] not in zero]
     outside_zero = len(summary["parameters_outside"]) - len(outside)
     over = {k: z for k, z in zero.items() if z["within_limit"] is False}
+    short_flag = {k: z for k, z in zero.items() if z.get("studies_missing_flag") or z["share_of_studies"] is None}
     if not zero:
         zero_state, zero_why = NOT_APPLICABLE, "no gated class has truth 0 in every row"
+    elif short_flag and not any(z["place"] == "above" for z in over.values()):
+        zero_state = INCOMPLETE
+        zero_why = "; ".join((f"{k}: {z['studies_missing_flag']} studies made without the family measurement or "
+                              f"before the family flag (their raw terms and intervals are not used); "
+                              f"{z['studies']} counted") if z.get("studies_missing_flag")
+                             else f"{k}: no study printed a family contrast" for k, z in short_flag.items())
     elif over:
         zero_state = FAIL if enough or any(z["place"] == "above" for z in over.values()) else INCOMPLETE
         zero_why = "; ".join(f"{k}: share of studies {z['share_of_studies']:.3f} above {z['limit']}"
@@ -1019,6 +1100,7 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
     else:
         zero_state = until
         zero_why = "within the limit: " + "; ".join(f"{k} {z['share_of_studies']:.3f} of {z['studies']} studies"
+                                                    + (" (printed contrasts)" if z.get("counted") else "")
                                                     for k, z in zero.items())
     arms = [p for p in summary["arm_means"] if p["class"] == "mu"]
     biased = sorted(p["name"] for p in arms if p["unbiased"] is False)
@@ -1026,6 +1108,10 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
     fam = summary["family"]
     if fam["studies_skipped"]:
         family_state, family_why = INCOMPLETE, f"{fam['studies_skipped']} studies made without the family measurement"
+    elif fam.get("studies_without_flag"):
+        family_state = INCOMPLETE
+        family_why = (f"{fam['studies_without_flag']} studies recorded before the family flag (no `flagged`); "
+                      "their intervals are not used as flags")
     elif not fam["studies_read"]:
         family_state, family_why = INCOMPLETE, "no study measured"
     elif not fam["studies_with_a_null_contrast"]:
@@ -1035,6 +1121,18 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
         family_why = f"share of studies {fam['share_of_studies']:.3f} above {fam['limit']}"
     else:
         family_state, family_why = until, "within the limit"
+    if fam["studies_skipped"]:
+        real_state, real_why = INCOMPLETE, f"{fam['studies_skipped']} studies made without the family measurement"
+    elif not fam["simulated_effects"]:
+        real_state, real_why = NOT_APPLICABLE, "no family contrast with a simulated effect"
+    elif not fam["held_in_band"]:
+        real_state = FAIL if enough else INCOMPLETE
+        real_why = f"coverage {fam['held']:.3f} outside {band[0]} to {band[1]}"
+    else:
+        real_state, real_why = until, f"coverage {fam['held']:.3f} in the band"
+    if fam["simulated_effects"]:
+        real_why += ("; found " + ("not counted (records before the flag)" if fam["found"] is None
+                                   else f"{fam['found']:.3f}") + f" of {fam['simulated_effects']}")
     items = {
         "enough_studies": (PASS if enough else INCOMPLETE, f"{summary['studies']} of {studies_needed}"),
         "records_current": (INCOMPLETE if summary.get("old_schema") else PASS,
@@ -1060,6 +1158,7 @@ def spec_gate(summary: Mapping, band: tuple[float, float] = BAND, studies_needed
         "arm_means_unbiased": (FAIL if biased else (INCOMPLETE if undecided or not arms else until),
                                f"biased: {biased}; undecided: {len(undecided)}"),
         "family_false_alarms_within_limit": (family_state, family_why),
+        "family_real_contrasts_covered": (real_state, real_why),
         "zero_classes_false_alarms_within_limit": (zero_state, zero_why),
         "every_fit_clean": (FAIL if summary["failed"] or summary["unconverged"] else until,
                             f"{len(summary['failed'])} failed, {len(summary['unconverged'])} not converged"),

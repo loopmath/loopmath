@@ -207,7 +207,8 @@ def test_one_false_family_contrast_in_ten_flags_every_study():
     excludes 0. Per contrast that is 10%, within the 0.4.4 check's limit; per study it is 100%."""
     def one(seed):
         family = [{"judge": "j", "kind": "own_family", "family": f"f{n}", "dimension": "d", "truth": 0.0,
-                   "mean": 0.0, "lo": -1.0, "hi": 1.0, "excludes_zero": n == seed % 10} for n in range(10)]
+                   "mean": 0.0, "lo": -1.0, "hi": 1.0, "excludes_zero": n == seed % 10,
+                   "flagged": n == seed % 10} for n in range(10)]
         return [row("mu", "mu[a,d]", True)], family
 
     summary = RS.summarise(synthetic(200, one))
@@ -270,36 +271,37 @@ def zero_row(klass: str, name: str, flagged: bool) -> dict:
 
 
 def zero_class_records(studies: int, flagged_studies: int, nonzero_in_seed=None, double_in_seed=None) -> list[dict]:
-    """One arm mean that holds its truth in 9 of 10 seeds, and four `family` rows with truth 0; in the first
-    `flagged_studies` seeds the first of them excludes 0. `nonzero_in_seed` gives the second family row a
+    """One arm mean that holds its truth in 9 of 10 seeds, and four `sd_judge_input` rows with truth 0 (the
+    class `family` is counted from the printed contrasts instead, see the tests below); in the first
+    `flagged_studies` seeds the first of them excludes 0. `nonzero_in_seed` gives the second such row a
     truth of 0.5 (held) in that seed; `double_in_seed` makes it exclude 0 too in that seed. The family
     contrasts were measured and none has truth 0."""
     def one(seed):
         rows = [row("mu", "mu[a,d]", seed % 10 != 0)]
         for n in range(4):
             if n == 1 and seed == nonzero_in_seed:
-                rows.append(row("family", f"family[j,f{n},d]", True))
+                rows.append(row("sd_judge_input", f"sd_judge_input[j{n},d]", True))
             else:
-                rows.append(zero_row("family", f"family[j,f{n},d]", (n == 0 and seed < flagged_studies)
+                rows.append(zero_row("sd_judge_input", f"sd_judge_input[j{n},d]", (n == 0 and seed < flagged_studies)
                                      or (n == 1 and seed == double_in_seed)))
         return rows, []
     return synthetic(studies, one)
 
 
 def test_a_class_with_truth_0_in_every_row_is_judged_by_false_alarms_not_the_band():
-    """Four family effects with truth 0 in 200 studies, one interval excluding 0 in 15 studies: the class
+    """Four judge-input sds with truth 0 in 200 studies, one interval excluding 0 in 15 studies: the class
     covers 785 of 800 rows (0.98, above the band) and three of its parameters cover 200 of 200 (outside
     the band by their own intervals). That over-coverage is what an interval does at a true 0, so the
     class leaves both band items, which pass, and its own item counts 15 of 200 studies (0.075, within
     0.10) and passes. The family contrast item is unchanged."""
     summary = RS.summarise(zero_class_records(200, 15))
-    family = summary["classes"]["family"]
-    assert family["always_zero"] is True and family["in_band"] is False
-    assert family["coverage"] == pytest.approx(785 / 800)
-    assert sorted(p["name"] for p in summary["parameters_outside"]) == [f"family[j,f{n},d]" for n in (1, 2, 3)]
+    judged = summary["classes"]["sd_judge_input"]
+    assert judged["always_zero"] is True and judged["in_band"] is False
+    assert judged["coverage"] == pytest.approx(785 / 800)
+    assert sorted(p["name"] for p in summary["parameters_outside"]) == [f"sd_judge_input[j{n},d]" for n in (1, 2, 3)]
     zero = summary["zero_classes"]
-    assert set(zero) == {"family"}
-    z = zero["family"]
+    assert set(zero) == {"sd_judge_input"}
+    z = zero["sd_judge_input"]
     assert (z["studies"], z["studies_flagged"], z["rows"], z["rows_flagged"]) == (200, 15, 800, 15)
     assert z["share_of_studies"] == pytest.approx(0.075) and z["within_limit"] is True and z["limit"] == 0.10
     lo, hi = binomial_interval(15, 200)
@@ -307,17 +309,17 @@ def test_a_class_with_truth_0_in_every_row_is_judged_by_false_alarms_not_the_ban
     assert z["place"] == "undecided"                      # 0.10 lies inside [0.043, 0.121]
     items = summary["gate"]["items"]
     assert items["coverage_per_class_in_band"]["state"] == "pass"
-    assert "family" in items["coverage_per_class_in_band"]["why"]
+    assert "sd_judge_input" in items["coverage_per_class_in_band"]["why"]
     assert items["no_parameter_outside_band"]["state"] == "pass"
     assert "3 more in classes judged by false alarms" in items["no_parameter_outside_band"]["why"]
     assert items["zero_classes_false_alarms_within_limit"]["state"] == "pass"
     assert items["family_false_alarms_within_limit"] == {
         "state": "pass", "why": "measured; the design has no contrast without a simulated effect"}
-    assert summary["gate"]["classes_judged_by_false_alarms"] == ["family"]
+    assert summary["gate"]["classes_judged_by_false_alarms"] == ["sd_judge_input"]
     assert summary["gate"]["state"] == "pass", summary["gate"]
     shown = "\n".join(bench_module().render_summary("synthetic", summary))
     assert "zero_classes_false_alarms_within_limit: pass" in shown
-    assert "family, 15 of 200 studies with an interval that excludes 0" in shown
+    assert "sd_judge_input, 15 of 200 studies with an interval that excludes 0" in shown
 
 
 def test_a_class_with_truth_0_fails_on_false_alarms_in_30_of_200_studies():
@@ -325,13 +327,13 @@ def test_a_class_with_truth_0_fails_on_false_alarms_in_30_of_200_studies():
     interval [0.104, 0.207] lies above it), so its item fails and the spec fails, while the band items
     still pass. One study with two intervals excluding 0 counts once."""
     summary = RS.summarise(zero_class_records(200, 30, double_in_seed=0))
-    z = summary["zero_classes"]["family"]
+    z = summary["zero_classes"]["sd_judge_input"]
     assert (z["studies_flagged"], z["rows_flagged"]) == (30, 31)
     assert z["share_of_studies"] == pytest.approx(0.15) and z["within_limit"] is False
     assert z["lo"] == pytest.approx(binomial_interval(30, 200)[0], abs=1e-9) and z["place"] == "above"
     items = summary["gate"]["items"]
     assert items["zero_classes_false_alarms_within_limit"]["state"] == "fail"
-    assert "family" in items["zero_classes_false_alarms_within_limit"]["why"]
+    assert "sd_judge_input" in items["zero_classes_false_alarms_within_limit"]["why"]
     assert items["coverage_per_class_in_band"]["state"] == "pass"
     assert items["no_parameter_outside_band"]["state"] == "pass"
     assert summary["gate"]["state"] == "fail"
@@ -342,20 +344,20 @@ def test_a_class_with_truth_0_short_of_studies_is_incomplete_until_it_is_above()
     the item is incomplete; 15 flagged (0.30) lies above 0.10 whatever comes, so it fails now."""
     some = RS.summarise(zero_class_records(50, 8))
     assert binomial_interval(8, 50)[0] < 0.10 < binomial_interval(15, 50)[0]
-    assert some["zero_classes"]["family"]["place"] == "undecided"
+    assert some["zero_classes"]["sd_judge_input"]["place"] == "undecided"
     assert some["gate"]["items"]["zero_classes_false_alarms_within_limit"]["state"] == "incomplete"
     many = RS.summarise(zero_class_records(50, 15))
     assert many["gate"]["items"]["zero_classes_false_alarms_within_limit"]["state"] == "fail"
 
 
 def test_one_nonzero_truth_keeps_a_class_in_the_band():
-    """The same records with one family row of truth 0.5 in one study: the class is not 0 in every row, so
+    """The same records with one such row of truth 0.5 in one study: the class is not 0 in every row, so
     it keeps the band, and its over-coverage fails both band items as before."""
     summary = RS.summarise(zero_class_records(200, 15, nonzero_in_seed=7))
-    assert summary["zero_classes"] == {} and summary["classes"]["family"]["always_zero"] is False
+    assert summary["zero_classes"] == {} and summary["classes"]["sd_judge_input"]["always_zero"] is False
     items = summary["gate"]["items"]
     assert items["coverage_per_class_in_band"]["state"] == "fail"
-    assert summary["gate"]["classes_out_of_band"] == ["family"]
+    assert summary["gate"]["classes_out_of_band"] == ["sd_judge_input"]
     assert items["no_parameter_outside_band"]["state"] == "fail"
     assert items["zero_classes_false_alarms_within_limit"]["state"] == "not applicable"
     assert "no gated class has truth 0" in items["zero_classes_false_alarms_within_limit"]["why"]
@@ -379,7 +381,9 @@ def test_a_spec_whose_every_gated_class_has_truth_0_can_pass(studies):
     assert items["zero_classes_false_alarms_within_limit"]["state"] == "pass"
     assert items["no_parameter_outside_band"]["state"] == "pass"
     assert "1 more in classes judged by false alarms" in items["no_parameter_outside_band"]["why"]
-    assert {k for k, v in items.items() if v["state"] != "pass"} == {"coverage_per_class_in_band"}
+    assert items["family_real_contrasts_covered"]["state"] == "not applicable"     # no real family contrast
+    assert {k for k, v in items.items() if v["state"] != "pass"} == {"coverage_per_class_in_band",
+                                                                    "family_real_contrasts_covered"}
     assert summary["gate"]["state"] == "pass" and summary["gate"]["pass"] is True
 
 
