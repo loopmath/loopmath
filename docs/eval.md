@@ -100,7 +100,9 @@ with `--allow-simulated`, so that simulated runs never mix into real ones by acc
 - **Bias** is how much higher a judge scores than the anchor on average. The anchor is the people in
   `judges.json`; without a person, biases are relative to the mean of the judges and the report says so.
 - **Per-output disagreement** (`tau`) is the part of a judge's error that repeats when the same output is scored
-  again. More calls do not remove it; another judge or a person does.
+  again. More calls by the same judge do not remove it. Every judge has its own, people too. Scoring the same
+  outputs with other independent judges or people helps the fit tell quality from disagreement and narrows the
+  ranges, but it does not remove any judge's disagreement.
 - **Call noise** (`sigma`) is the part that changes from call to call. Repeats average it away.
 - **Hidden quality of a yes or no component.** Behind each pass rate the fit keeps a hidden quality per output,
   in units of the anchors' total noise of one reading: how far one reading strays from the output's hidden
@@ -154,19 +156,26 @@ number for that arm should not be trusted yet.
 
 - **The recovery checks do not all pass.** The checks that a fit recovers what a study was simulated from ask for
   200 simulated studies per spec. With the default engine they ran at that count on the 4 specs that test
-  interval coverage. One passes (`one-component`); `linear`, `binary-checks` and `levels-3` fail. No interval
-  was too narrow, but for a few parameters (judge bias, arm differences, correlations) 90% intervals held the
-  truth in 95% to 98% of studies, against a band of 85% to 95%. On `binary-checks` the hidden arm means of most
-  arms came out low, while the pass rates stayed within 0.02 of the truth. The other specs of the catalog are
-  covered in the 0.4.5 entry of the changelog. No real study has been through the group yet.
-- **The default engine is an approximation.** Its pass rates and reported quality agree with `--engine pymc` to
-  within 0.03 per arm on the simulated studies compared. Its hidden arm means on yes or no components came out
-  about 5% below PyMC's, and its noise and correlation terms differ more. For readings that are not numbers it
-  uses expectation propagation (EP): exact when one group of readings holds every reading of its unknowns, an
-  approximation without a bound when groups share unknowns. On a design with very little call noise EP may not
-  converge, and the fit is then marked as not converged. A study of 20,000 number readings fits in about 18
-  seconds on 2 cores. Readings that are not numbers take longer, and a study of that size with such readings has
-  not been timed on this release. To check a fit, fit the same study again with `--engine pymc`.
+  interval coverage. One passes (`one-component`); `linear`, `binary-checks` and `levels-3` fail. No class of
+  parameters had coverage below the band, but for a few classes (judge bias, arm differences, correlations) 90%
+  intervals held the truth in 95% to 98% of studies, against a band of 85% to 95%. On `binary-checks` the hidden
+  arm means of most arms came out low. Pass rates computed from the posterior means of the parameters (plug-in
+  estimates) were close to the truth on average: over 20 studies, the mean error of each arm and component was
+  under 0.02. That does not bound the error in one study, which was often larger. The other specs of the
+  catalog are covered in the 0.4.5 entry of the changelog. No real study has been through the group yet.
+- **The default engine is an approximation.** It was compared with `--engine pymc` on simulated studies of
+  `binary-checks`, `pairs`, `linear` and `one-component`, 20 of each. Plug-in pass rates and reported quality,
+  computed from each engine's posterior means of the parameters, agreed to within 0.03 per arm and component.
+  The pass rates and reported quality the reports print are means over the draws; how far the engines differ on
+  those was not measured. Its hidden arm means on yes or no components came out about 5% below PyMC's on
+  average, and its noise and correlation terms differ more. For readings that are not numbers it uses
+  expectation propagation (EP). When one group of readings holds every reading of its unknowns, EP gives the
+  exact marginal likelihood (the chance of the readings given the noise and correlation terms), up to the error
+  of numerical integration; when groups share unknowns, it is an approximation without a bound. Either way, its
+  draws of the hidden quality behind such readings are Gaussian approximations. On a design with very little
+  call noise EP may not converge, and the fit is then marked as not converged. A study of 20,000 number readings
+  fits in about 18 seconds on 2 cores. Readings that are not numbers take longer, and a study of that size with
+  such readings has not been timed on this release. To check a fit, fit the same study again with `--engine pymc`.
 - **Scores at the ends of a scale.** `eval simulate` clips `linear` and `fraction` readings at the ends of the
   scale, while the fit treats them as unclipped normal readings. What the checks say about recovery holds for
   studies whose readings sit inside the scale. With many readings at 0 or at the top, expect arm means pulled

@@ -181,7 +181,7 @@ converged: yes (R-hat 1.016, effective sample size 334, 0 divergences, 8 s)
 ```
 
 The fit took 8 seconds on a laptop. Before it fits it prints the design table again and what it will fit.
-`eval fit --check-only` prints that part and stops. The default engine does not sample, so it always reports 0
+`eval fit --check-only` prints that part and stops. The default engine does not use MCMC, so it always reports 0
 divergences.
 
 Read the judges:
