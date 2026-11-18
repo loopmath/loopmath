@@ -36,7 +36,8 @@ theta
 A mapping with the names of `engine_pymc.OUTPUTS` where they are parameters, without draw axes:
 `mu` (A, D), `sd_input` (D), `sd_run` (D), `corr_input` and `corr_run` (D, D), `bias` (J, D), `tau`
 (J, D), `sigma` (J, D), `halo_target` (J), `halo_call` (J), `sd_judge_input` (J, D), `sigma_pair`
-(J, D), `position` (J), `tie_width` (J); and `family_sd` (D), the sd of the family effects (the
+(J, D), `position` (J), `tie_width` (J); and `family_sd` (J), each judge's sd of its family effects
+relative to the scale of each dimension: on dimension d the sd is `family_sd[j] * scale[d]` (the
 effects themselves are random). A scalar is broadcast; a name left out takes `default_theta`. Values are
 used as given: the oracle does not impose the units of `model.py` (sum-to-zero biases, an anchor's
 `sigma` of 1); the engine's own parameterisation has to map onto these values.
@@ -169,7 +170,7 @@ def shapes(data: Mapping[str, Any]) -> dict:
     A, D, J = s["A"], s["D"], s["J"]
     return {"mu": (A, D), "sd_input": (D,), "sd_run": (D,), "corr_input": (D, D), "corr_run": (D, D),
             "bias": (J, D), "tau": (J, D), "sigma": (J, D), "halo_target": (J,), "halo_call": (J,),
-            "family_sd": (D,), "sd_judge_input": (J, D), "sigma_pair": (J, D), "position": (J,),
+            "family_sd": (J,), "sd_judge_input": (J, D), "sigma_pair": (J, D), "position": (J,),
             "tie_width": (J,)}
 
 
@@ -182,7 +183,7 @@ def default_theta(data: Mapping[str, Any]) -> dict:
             "sd_input": 0.5 * scale, "sd_run": 0.5 * scale, "corr_input": np.eye(D), "corr_run": np.eye(D),
             "bias": np.zeros((J, D)), "tau": np.broadcast_to(0.5 * scale, (J, D)).copy(),
             "sigma": np.broadcast_to(0.5 * scale, (J, D)).copy(), "halo_target": np.full(J, 0.3),
-            "halo_call": np.full(J, 0.3), "family_sd": 0.4 * scale,
+            "halo_call": np.full(J, 0.3), "family_sd": np.full(J, 0.4),
             "sd_judge_input": np.broadcast_to(0.3 * scale, (J, D)).copy(),
             "sigma_pair": np.broadcast_to(scale, (J, D)).copy(), "position": np.zeros(J),
             "tie_width": np.full(J, 0.3)}
@@ -308,7 +309,7 @@ def build_problem(data: Mapping[str, Any], theta: Mapping[str, Any] | None = Non
             for d in range(D):
                 if family_on[j, d]:
                     for f in range(N):
-                        fam_T[j, f, d, zfam[j, :, d]] = th["family_sd"][d] * ((np.arange(N) == f) - 1.0 / N)
+                        fam_T[j, f, d, zfam[j, :, d]] = th["family_sd"][j] * scale[d] * ((np.arange(N) == f) - 1.0 / N)
     sd_ji = th["sd_judge_input"]
     ji_j, ji_d = np.asarray(data["ji_j"], dtype=np.int64), np.asarray(data["ji_d"], dtype=np.int64)
     halo_on = np.asarray(data["halo_on"], dtype=bool)
