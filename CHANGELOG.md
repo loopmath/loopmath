@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.5 (unreleased)
+## 0.4.5 (2026-11-18)
 
 This release changes `loopmath eval` (experimental): a faster default engine that needs no extra, a new unit for the hidden quality behind yes or no and comparison results, and fixes. Everything else is 0.4.4's.
 
