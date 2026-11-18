@@ -152,7 +152,7 @@ def add(sub) -> None:
     q.add_argument("--seed", type=int, default=0)
 
     # eval fit
-    q = _command(es, "fit", "fit", "fit", "fit the quality and judge model to a study (needs the [bayes] extra)")
+    q = _command(es, "fit", "fit", "fit", "fit the quality and judge model to a study (--engine pymc needs the [bayes] extra)")
     q.add_argument("study", metavar="STUDY", help="the study folder")
     q.add_argument("--rubric", required=True, metavar="FILE")
     q.add_argument("--judges", required=True, metavar="FILE")

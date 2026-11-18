@@ -9,8 +9,8 @@ most.
 
 It runs no pipeline and calls no judge. The user brings the scores; each command reads named files and writes one.
 
-It is experimental: it works and has tests, but it has been checked on simulated studies only, on far fewer of them
-than its acceptance checks ask for, and its files and output may change. Say so once when you first show a result,
+It is experimental: it works and has tests, but it has been checked on simulated studies only, not all of its
+recovery checks pass yet, and its files and output may change. Say so once when you first show a result,
 and give the limits in the "Limits" section below before the user relies on a number.
 
 Use exactly the commands below. Their flags and exit codes are in the last section of this guide, "The eval
@@ -173,8 +173,10 @@ with `--allow-simulated`. Never pass `--allow-simulated` for the user's own scor
 - Bias is how much higher a judge scores than the anchor on average, dimension by dimension. The anchor is the
   person on a `weak` or `anchored` dimension (step 3), and the mean of the judges on a `relative` one, which is
   every dimension when no person is declared.
-- Per-output disagreement (`tau`) repeats when the same output is scored again: more calls do not remove it,
-  another judge or a person does. Call noise (`sigma`) changes from call to call: repeats average it away.
+- Per-output disagreement (`tau`) repeats when the same output is scored again: more calls by the same judge do
+  not remove it. Every judge has its own, people too; other independent judges or people on the same outputs
+  help the fit tell quality from disagreement and narrow the ranges, but remove no judge's disagreement. Call
+  noise (`sigma`) changes from call to call: repeats average it away.
 - A yes or no component has a hidden quality behind its pass rate, in units of the anchors' total noise of one
   reading: how far one reading strays from the output's hidden quality, counting the per-output disagreement, the
   call noise and the judge-by-input part. The anchors are the people in the `anchor` list who scored the
@@ -197,15 +199,27 @@ with `--allow-simulated`. Never pass `--allow-simulated` for the user's own scor
 
 Give the ones that touch the user's study before they rely on a number:
 
-- The checks that a fit recovers what a study was simulated from ran on far fewer simulated studies than they ask
-  for, and no real study has been through the group yet.
+- The checks that a fit recovers what a study was simulated from do not all pass: on 3 of the 4 specs that test
+  interval coverage some 90% intervals are too wide, and on one the hidden arm means of yes or no components come
+  out low. There, pass rates computed from the posterior means of the parameters were close to the truth only on
+  average over 20 studies (mean error under 0.02 per arm), not in each study. No real study has been through the
+  group yet.
+- The default engine is an approximation. Pass rates of yes or no components and reported quality of linear
+  ones, computed from each engine's posterior means of the parameters, agreed with `--engine pymc` to within 0.03
+  per arm on simulated studies of `binary-checks`, `pairs`, `linear` and `one-component`; the pass rates and
+  reported quality the reports print average over the draws, and how far the engines differ on those was not
+  measured. Its hidden figures differ more. It fits a study of 20,000 number readings in about 18 seconds on 2
+  cores. Readings that are not numbers take longer; a study of that size with such readings has not been timed
+  on this release.
 - `linear` and `fraction` readings at the ends of the scale are read as if they were not cut off there. With many
   readings at 0 or at the top, expect arm means pulled toward the middle and noise read too small.
-- When a judge scores one output more than once on a yes or no or levels component, the fit often ends not
-  converged. One call per output on those components avoids it.
+- With `--engine pymc`, when a judge scores one output more than once on a yes or no or levels component, the
+  fit often ends not converged. One call per output on those components avoids it. The default engine converged
+  on every such fit measured.
 - With `--engine pymc`, fits with yes or no components, levels or comparisons are slow: 12 to 15 minutes on 2
   cores for 80 to 120 outputs at 2 chains of 500 draws, against 1 to 3 minutes with linear scales only. The
-  defaults are 4 chains of 1000 draws. A linear study of 20,000 readings took about 17 minutes.
+  defaults are 4 chains of 1000 draws. A linear study of 20,000 readings took about 30 minutes at 2 chains of
+  1000 draws.
 - `eval fit --halo full` and `--cuts free` are not built and are refused.
 - `eval steps` estimates no interactions between steps, and `eval judges` costs have no range.
 - `eval labels next --mode active` beat a random batch by a small margin only in simulation, and is refused under a
