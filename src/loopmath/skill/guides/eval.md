@@ -204,12 +204,13 @@ Give the ones that touch the user's study before they rely on a number:
   out low. There, pass rates computed from the posterior means of the parameters were close to the truth only on
   average over 20 studies (mean error under 0.02 per arm), not in each study. No real study has been through the
   group yet.
-- The default engine is an approximation. Pass rates computed from each engine's posterior means of the
-  parameters agreed with `--engine pymc` to within 0.03 per arm on simulated studies of `binary-checks`, `pairs`,
-  `linear` and `one-component`; the pass rates the reports print average over the draws, and how far the engines
-  differ on those was not measured. Its hidden figures differ more. It fits a study of 20,000 number readings in
-  about 18 seconds on 2 cores. Readings that are not numbers take longer; a study of that size with such readings
-  has not been timed on this release.
+- The default engine is an approximation. Pass rates of yes or no components and reported quality of linear
+  ones, computed from each engine's posterior means of the parameters, agreed with `--engine pymc` to within 0.03
+  per arm on simulated studies of `binary-checks`, `pairs`, `linear` and `one-component`; the pass rates and
+  reported quality the reports print average over the draws, and how far the engines differ on those was not
+  measured. Its hidden figures differ more. It fits a study of 20,000 number readings in about 18 seconds on 2
+  cores. Readings that are not numbers take longer; a study of that size with such readings has not been timed
+  on this release.
 - `linear` and `fraction` readings at the ends of the scale are read as if they were not cut off there. With many
   readings at 0 or at the top, expect arm means pulled toward the middle and noise read too small.
 - With `--engine pymc`, when a judge scores one output more than once on a yes or no or levels component, the

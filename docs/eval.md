@@ -169,13 +169,16 @@ number for that arm should not be trusted yet.
   The pass rates and reported quality the reports print are means over the draws; how far the engines differ on
   those was not measured. Its hidden arm means on yes or no components came out about 5% below PyMC's on
   average, and its noise and correlation terms differ more. For readings that are not numbers it uses
-  expectation propagation (EP). When one group of readings holds every reading of its unknowns, EP gives the
-  exact marginal likelihood (the chance of the readings given the noise and correlation terms), up to the error
-  of numerical integration; when groups share unknowns, it is an approximation without a bound. Either way, its
-  draws of the hidden quality behind such readings are Gaussian approximations. On a design with very little
-  call noise EP may not converge, and the fit is then marked as not converged. A study of 20,000 number readings
-  fits in about 18 seconds on 2 cores. Readings that are not numbers take longer, and a study of that size with
-  such readings has not been timed on this release. To check a fit, fit the same study again with `--engine pymc`.
+  expectation propagation (EP). When one group of readings holds every reading of its unknowns, EP computes the
+  likelihood the engine fits, at fixed noise and correlation terms, exactly, up to the error of numerical
+  integration and to constants that depend on the data alone; when groups share unknowns, it is an approximation
+  without a bound. Either way, its draws of the hidden quality behind such readings are Gaussian approximations.
+  For an item count the engine leaves out one such constant, the number of ways to pick which of the items
+  passed, so its likelihood is not the probability of the readings; the fit does not depend on it. On a design
+  with very little call noise EP may not converge, and the fit is then marked as not converged. A study of
+  20,000 number readings fits in about 18 seconds on 2 cores. Readings that are not numbers take longer, and a
+  study of that size with such readings has not been timed on this release. To check a fit, fit the same study
+  again with `--engine pymc`.
 - **Scores at the ends of a scale.** `eval simulate` clips `linear` and `fraction` readings at the ends of the
   scale, while the fit treats them as unclipped normal readings. What the checks say about recovery holds for
   studies whose readings sit inside the scale. With many readings at 0 or at the top, expect arm means pulled
