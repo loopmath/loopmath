@@ -125,9 +125,20 @@ with `--allow-simulated`, so that simulated runs never mix into real ones by acc
 - **Halo** is the part of a judge's error shared across components: by output (`halo_target`) or, for a `panel`
   judge, by call (`halo_call`).
 - **Family effect** is the extra a judge gives to outputs written by its own model family, or by the family that
-  wrote the reference answer it was shown. It is reported with a range and flagged when the range excludes 0.
-  On a yes or no component the flag reads the range on the scale the engine fits, which can differ a little
-  from the range shown; the marker then says "(in the anchors' call noise)".
+  wrote the reference answer it was shown. It is reported with a 90% range. The flag (`<- flagged`) is decided
+  over all the family effects one report shows, every judge and component together (Holm's method at 0.10,
+  each effect tested from the mean and sd of its draws, widened for their Monte Carlo error read from the
+  same draws). The rule is designed to keep the chance of any false family flag in a report near or under
+  0.1 when the fit is calibrated, close to normal for these contrasts, and its draws mix well; checked by
+  simulation, not guaranteed for every fit. An effect whose draws, or their squared deviations, have
+  fewer than 100 effective draws is not decided: the line says "too few effective draws to decide a
+  flag", it is never flagged, and it still counts among the effects tested. If the fit is miscalibrated
+  for these effects, for example when the model's family prior pulls some of them away from 0, more false
+  flags can appear; the recovery checks measure this per catalog spec. A range can therefore exclude 0 without a flag;
+  the line then says how many family effects the flag was decided over. The report states the rule, the
+  level, the count and the condition (`family_flag` in `--json`). On a yes or no component the flag reads the range on the
+  scale the engine fits, which can differ a little from the range shown; the line then says "(in the
+  anchors' call noise)".
 - **Relative** marks a component that has comparisons but no scores. Its arms can be ordered but not placed on the
   scale, so a gate on it is refused.
 - **p_pass** is the chance that one output of an arm passes every gate. It is computed from the joint fit: gated
