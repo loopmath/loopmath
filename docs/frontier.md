@@ -21,8 +21,9 @@ and 0 for a fail, and USD is what the run cost in dollars.
 
 A frontier keeps the strategy it was made with. `next --strategy NAME` refuses a frontier made with another one.
 
-- **`adaptive-blocks`** is the default for new frontiers. `next` hands out a block: one run, or 8 or 64 runs of one
-  setting.
+- **`adaptive-blocks`** is the default for new frontiers. `next` hands out a block of runs of one setting: one run,
+  or up to 8 or 64 runs. A block is shorter when the pair cap or the budget leaves fewer runs, and it can run a task
+  more than once, within the cap.
 - **`kg+random`** was the only strategy up to 0.4.5. Frontiers made with it resume on the same code and give the same
   trials and the same report as before. Their report adds `strategy` and one line saying that a newer strategy
   exists. `init --strategy kg+random` still makes one.
@@ -38,6 +39,10 @@ It buys the run or block of runs that adds the most value per planned dollar.
 - **Candidates.** Every open pair (setting, task) as a single run, and per setting a block of 8 and a block of 64
   runs. A block takes the open tasks that lower the setting's uncertainty most per planned dollar, one run each.
   Blocks let it spend a large budget on a setting that matters without deciding run by run.
+- **Block sizes.** 1, 8 and 64 are candidate sizes. A block is shorter when the setting has fewer runs left under
+  the pair cap (in study mode, also in the pool), and `next` cuts it before a run that would pass the budget. When
+  fewer tasks are open than a block's size, the block gives tasks a second run (then a third, and so on), within the
+  cap.
 - **Pair cap.** A pair takes at most 4 runs (`init --pair-cap N`). Copies of one pair add little about a setting's
   pass rate across your tasks.
 - **Optimistic price.** Whether a setting can serve a budget is judged by the 20th percentile of the belief about its
@@ -51,7 +56,9 @@ It buys the run or block of runs that adds the most value per planned dollar.
   gets its tasks by the balanced rule below.
 
 `init --task-rule balanced` swaps how tasks are chosen and keeps everything else. A candidate is a block of 1, 8 or
-64 runs of one setting on its least-run open tasks, or one run on each of its open tasks. Each is scored on that
+64 runs of one setting on its least-run open tasks, or one run on each of its open tasks. The same limits apply: a
+block is shorter when fewer runs are left under the cap or the budget, and it gives a task more than one run, within
+the cap, when fewer tasks are open than the block's size. Each is scored on that
 allocation, and ties among least-run tasks are drawn at random. Every run is then a probe.
 
 The success model is a two-parameter logistic model per task, with learned effort steps and a Laplace

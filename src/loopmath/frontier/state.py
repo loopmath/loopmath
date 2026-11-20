@@ -1,9 +1,10 @@
 """A frontier in the store: `frontiers/<frn>.json`, written by `init`, `next` and `record` with `atomic_write_json`.
 
 The file is the record. The posterior is rebuilt from `trials` (the snapshot `frontiers/<frn>.npz` is a cache that
-can always be thrown away), so a killed run resumes and `next` gives the same pick: `rng` holds the picker's
-generator state after the last `next`. Settings, tasks, prices and the strategy are fixed at `init`; `fingerprint`
-covers them, and a resume that finds them changed is refused. Paths, `latest` and ids follow `screen/record.py`.
+can always be thrown away), so a killed run resumes and `next` gives the same pick: `rng` holds the strategy's
+generator states after the last `next`. Settings, tasks, prices, the strategy, the cost model, the mode, the seed,
+`config` and the budget are fixed at `init`; `fingerprint` covers them, and a resume that finds them changed is
+refused. Paths, `latest` and ids follow `screen/record.py`.
 """
 
 from __future__ import annotations
@@ -40,8 +41,15 @@ class Trial(TypedDict, total=False):
     setting: int         # index into settings
     task: int            # index into tasks
     p_task: float        # the chooser's probability of this task
-    why: dict[str, Any]  # the strategy's reasons (KG value, L)
+    why: dict[str, Any]  # the strategy's reasons (kg+random: KG value, L; adaptive-blocks: rule, branch, gain, ...)
     issued: str          # now_iso() at next
+    predicted_usd: float # the cost model's expected cost of the run when it was issued
+    # adaptive-blocks only, set at next:
+    block: int           # the block the trial belongs to, numbered from 1 in issue order
+    pos: int             # its place in the block, from 0
+    explore: bool        # its task was drawn at equal chance (a probe for the misfit test)
+    support: int         # the number of tasks it was drawn from (0 when not a probe)
+    p_pred: float        # the success model's pass chance for the pair when the block was issued
     state: Literal["pending", "recorded"]
     passed: int          # 0 or 1, at record
     usd: float           # cost of the run, at record
@@ -54,17 +62,22 @@ class FrontierState(TypedDict, total=False):
     schema: str          # FRONTIER_SCHEMA
     frontier: str        # frn_...
     created: str
-    budget_usd: float    # advisory: next refuses once recorded spend plus the pick's per_run() goes over it
-    strategy: str        # a STRATEGIES key, "kg+random" in v1
-    cost_model: Literal["study", "frontier"]
-    mode: Literal["product", "study"]   # study: no replacement, cell cap, pool correction (parity and replays only)
+    budget_usd: float    # next issues no trial whose expected cost would take the spend (recorded plus issued) over it
+    strategy: str        # a STRATEGIES key: "adaptive-blocks" (the default) or "kg+random" (up to 0.4.5)
+    cost_model: Literal["study", "frontier", "frontier-separate"]   # frontier-separate: adaptive-blocks only
+    mode: Literal["product", "study"]   # study (parity and replays only): no replacement and the cell cap; kg+random
+    #                                     also corrects the task weights for the pool, adaptive-blocks keeps the
+    #                                     declared weights
     seed: int
     settings: list[SettingEntry]
     tasks: list[TaskEntry]
     prices: str          # path of the price table used, "shipped" for the package prices.toml
-    fingerprint: str     # sha256 over settings, tasks, prices, strategy, cost_model, mode and seed
-    config: dict[str, Any]   # ModelConfig fields that differ from the defaults (alpha, refit periods, cell cap)
-    rng: dict[str, Any]      # numpy bit_generator.state after the last next
+    fingerprint: str     # sha256 over settings, tasks, prices, strategy, cost_model, mode, seed, config, budget_usd
+    config: dict[str, Any]   # ModelConfig fields that differ from the defaults (alpha, refit periods, cell cap);
+    #                          adaptive-blocks adds policy (tasks, pair_cap, q0, explore, refit_every), run_budgets
+    #                          and quality_model
+    rng: dict[str, Any]      # numpy bit_generator states after the last next: kg+random "tasks" and "picker";
+    #                          adaptive-blocks "explore" and "balanced" (one per setting)
     trials: list[Trial]      # in issue order
     refits: list[dict[str, Any]]   # task, step and cost refit summaries, with the trial count they ran at
 
