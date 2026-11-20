@@ -14,7 +14,7 @@ def test_cost_model_protocol_methods():
 
 
 def test_strategy_registry_and_seam():
-    assert list(strategy.STRATEGIES) == ["kg+random"]
+    assert list(strategy.STRATEGIES) == ["kg+random", "adaptive-blocks"]
     assert strategy.KGThenTask.name == "kg+random"
     assert list(inspect.signature(strategy.Strategy.pick).parameters) == ["self", "post", "cost", "open_", "k", "rng"]
     assert list(inspect.signature(strategy.TaskChooser.choose).parameters) == ["self", "setting", "post", "rng"]

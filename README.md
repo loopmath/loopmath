@@ -300,7 +300,7 @@ loopmath frontier record TRL --passed PASSED --usd USD
 loopmath frontier report
 ```
 
-`tasks.jsonl` holds one task per line (`{"id": "t1"}`); `settings.toml` holds `[[settings]]` blocks with `name`, `model` and `effort`. TRL is the trial id `next` gave, PASSED is 1 for a pass and 0 for a fail, and USD is what the run cost in dollars. It is experimental: on simulated fresh DeepSWE runs it found the right frontier in about a quarter of runs at a $8,000 budget, level with the study design it is ported from. P is not yet calibrated, so do not stop on it.
+`tasks.jsonl` holds one task per line (`{"id": "t1"}`); `settings.toml` holds `[[settings]]` blocks with `name`, `model` and `effort`. TRL is a trial id `next` gave, PASSED is 1 for a pass and 0 for a fail, and USD is what the run cost in dollars. New frontiers use the `adaptive-blocks` strategy: `next` hands out one run or a block of 8 or 64 runs of one setting, and `report` adds the pick for each budget per run with its chance of fitting that budget. Frontiers made by 0.4.5 and earlier keep `kg+random`. It is experimental, and P is not yet calibrated, so do not stop on it. How it chooses runs is in [`docs/frontier.md`](docs/frontier.md).
 
 ## Scoring outputs on a rubric (experimental)
 

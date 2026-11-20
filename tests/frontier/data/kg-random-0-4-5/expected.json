@@ -1,0 +1,131 @@
+{
+ "after": [
+  {
+   "p_task": 0.26666666666666666,
+   "passed": 1,
+   "predicted_usd": 0.7672282207307162,
+   "setting": 0,
+   "task": 3,
+   "usd": 1.012455,
+   "why": {
+    "picker": "kg_dollar"
+   }
+  },
+  {
+   "p_task": 0.26666666666666666,
+   "passed": 1,
+   "predicted_usd": 0.8136666272194938,
+   "setting": 0,
+   "task": 3,
+   "usd": 1.047268,
+   "why": {
+    "picker": "kg_dollar"
+   }
+  },
+  {
+   "p_task": 0.2,
+   "passed": 1,
+   "predicted_usd": 0.011931771476987433,
+   "setting": 1,
+   "task": 2,
+   "usd": 0.01554,
+   "why": {
+    "picker": "kg_dollar"
+   }
+  },
+  {
+   "p_task": 0.3333333333333333,
+   "passed": 1,
+   "predicted_usd": 0.8521168749059471,
+   "setting": 0,
+   "task": 4,
+   "usd": 0.495551,
+   "why": {
+    "picker": "kg_dollar"
+   }
+  },
+  {
+   "p_task": 0.26666666666666666,
+   "passed": 0,
+   "predicted_usd": 1.0687466032310764,
+   "setting": 2,
+   "task": 3,
+   "usd": 1.454867,
+   "why": {
+    "picker": "kg_dollar"
+   }
+  },
+  {
+   "p_task": 0.26666666666666666,
+   "passed": 0,
+   "predicted_usd": 0.012143195847358379,
+   "setting": 1,
+   "task": 3,
+   "usd": 0.011802,
+   "why": {
+    "picker": "kg_dollar"
+   }
+  }
+ ],
+ "frontier": "frn_01M7V5P5N3QGBNFH3G2KTZ7J0N",
+ "report": {
+  "budget_usd": 400,
+  "frontier": "frn_01M7V5P5N3QGBNFH3G2KTZ7J0N",
+  "p_match": 0.0675,
+  "pending": 0,
+  "probability_label": "model probability, not yet checked for calibration",
+  "refits": [],
+  "settings": [
+   {
+    "cost_interval": [
+     0.6388933205863527,
+     0.9973456172255658
+    ],
+    "cost_usd": 0.8085763790118161,
+    "name": "opus-high",
+    "on_frontier": true,
+    "p_frontier": 0.9975,
+    "pass_interval": [
+     0.6935088669255619,
+     0.9460047209871828
+    ],
+    "pass_rate": 0.8361173075045409,
+    "runs": 8
+   },
+   {
+    "cost_interval": [
+     0.010901866354581688,
+     0.013432564489674228
+    ],
+    "cost_usd": 0.012133669552927868,
+    "name": "haiku-low",
+    "on_frontier": true,
+    "p_frontier": 1.0,
+    "pass_interval": [
+     0.21249441001320643,
+     0.45284064762702414
+    ],
+    "pass_rate": 0.3271373532327313,
+    "runs": 19
+   },
+   {
+    "cost_interval": [
+     0.8054021781499224,
+     1.7539692344574163
+    ],
+    "cost_usd": 1.2204000435113291,
+    "name": "fake-high",
+    "on_frontier": false,
+    "p_frontier": 0.0405,
+    "pass_interval": [
+     0.04630310001499617,
+     0.4983837159787121
+    ],
+    "pass_rate": 0.23897767693739605,
+    "runs": 3
+   }
+  ],
+  "spend_usd": 9.589173
+ },
+ "version": "0.4.5"
+}

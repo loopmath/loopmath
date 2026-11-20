@@ -27,7 +27,7 @@ def test_a_fresh_frontier_prices_runs_inside_its_intervals_and_issues_under_50_u
     store = Store(tmp_path / "store")
     settings = [dict(name="opus-high", model="claude-opus-4-7", effort="high"),
                 dict(name="haiku-low", model="claude-haiku-5-5", effort="low")]
-    rec = C.initialize(store, [{"id": "t1"}, {"id": "t2"}], settings, 50)
+    rec = C.initialize(store, [{"id": "t1"}, {"id": "t2"}], settings, 50, strategy="kg+random")
     assert rec["cost_model"] == "frontier"
     view = C.report(store, rec["frontier"], check_rng=np.random.default_rng(0))
     for s in view["settings"]:

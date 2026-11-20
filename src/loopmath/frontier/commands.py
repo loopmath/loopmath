@@ -22,16 +22,28 @@ from ..store.ids import new_id, now_iso
 from ..store.home import NotFound
 from . import FRONTIER_EXT
 from . import record as R
+from .. import __version__
 from ..price import load_prices
+from .belief import AdaptiveBelief, InertCost
+from .blocks import POLICY_DEFAULTS, RUN_BUDGETS, UNLIMITED, budget_grid
 from .cost import FrontierCost, StudyCost, anchors
 from .kg import MatchSpec, ci_check, p_match
+from .misfit import Monitor
 from .model import ModelConfig, TaskPosterior, build_prior, family
 from .pareto import frontier_mask_batch
 from .state import new_state, check_resume
 from .strategy import STRATEGIES, StrategyConfig
+from .value import pick as budget_pick, returned_default
 
-COST_MODELS = {"study": StudyCost, "frontier": FrontierCost}
+COST_MODELS = {"study": StudyCost, "frontier": FrontierCost, "frontier-separate": FrontierCost}
 DEFAULT_COST_MODEL = "frontier"
+DEFAULT_STRATEGY = "adaptive-blocks"
+BLOCK_STRATEGIES = ("adaptive-blocks",)       # strategies that hand out blocks and hold the two models apart
+STRATEGY_COST_MODELS = {"adaptive-blocks": ("frontier-separate",)}   # any other strategy: study or frontier
+QUALITY_MODELS = ("task-laplace",)
+MODEL_VERSIONS = {"kg+random": "joint-posterior/1", "adaptive-blocks": "task-laplace/1+frontier-separate/1"}
+NEWER_STRATEGY_NOTE = ("a newer strategy, adaptive-blocks, is the default for new frontiers; this frontier keeps "
+                       "its own strategy")
 PROBABILITY_LABEL = "model probability, not yet checked for calibration"
 EFFORT = {"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4, "default": 2, "": 2}
 COST_STEP = .4  # the study prior's log-cost step per effort level, fixed, not fitted to target outcomes
@@ -88,8 +100,37 @@ def _prices_digest(prices):
         raise UserError(f"cannot read prices: {exc}") from None
 
 
-def initialize(store, tasks, settings, budget, *, seed=0, strategy="kg+random", prices="shipped",
-               cost_model=None, mode="product", config=None):
+def _block_config(config, policy, run_budgets):
+    """config["policy"], config["run_budgets"] and config["quality_model"] of a block strategy, checked."""
+    policy = dict(POLICY_DEFAULTS, **dict(policy or config.get("policy") or {}))
+    unknown = set(policy) - set(POLICY_DEFAULTS)
+    if unknown:
+        raise UserError(f"unknown policy settings: {', '.join(sorted(unknown))}")
+    every = policy["refit_every"]
+    if isinstance(every, bool) or not isinstance(every, int) or every < 1:
+        raise UserError("refit_every must be a positive integer")
+    grid = run_budgets if run_budgets is not None else config.get("run_budgets", budget_grid(*RUN_BUDGETS))
+    try:
+        grid = [float(b) for b in grid]
+    except (TypeError, ValueError):
+        raise UserError("run budgets must be a list of numbers") from None
+    if not grid or any(not math.isfinite(b) or b <= 0 for b in grid) or grid != sorted(set(grid)):
+        raise UserError("run budgets must be finite, positive and increasing")
+    config.update(policy=policy, run_budgets=grid, quality_model=config.get("quality_model", QUALITY_MODELS[0]))
+    if config["quality_model"] not in QUALITY_MODELS:
+        raise UserError("unknown quality model")
+    try:
+        _block_policy(dict(config=config))
+    except ValueError as exc:
+        raise UserError(str(exc)) from None
+    return config
+
+
+def initialize(store, tasks, settings, budget, *, seed=0, strategy=DEFAULT_STRATEGY, prices="shipped",
+               cost_model=None, mode="product", config=None, policy=None, run_budgets=None):
+    """A new frontier. `policy` (task rule, pair cap, price quantile, exploration share, refit period) and
+    `run_budgets` (USD per run) apply to block strategies only; the defaults are `blocks.POLICY_DEFAULTS` and 36
+    log-spaced budgets from USD 0.0145 to 26.5."""
     if not isinstance(settings, list) or not all(isinstance(s, dict) for s in settings):
         raise UserError("settings must be a list of objects")
     settings = [dict(s, family=family(s.get("model", ""))) for s in settings]
@@ -98,8 +139,16 @@ def initialize(store, tasks, settings, budget, *, seed=0, strategy="kg+random", 
             raise UserError(f"unknown effort {s['effort']!r}")
     config = dict(config or {})
     config["prices_digest"] = _prices_digest(prices)
+    allowed = STRATEGY_COST_MODELS.get(strategy, ("study", "frontier"))
+    cost_model = cost_model or (allowed[0] if strategy in BLOCK_STRATEGIES else DEFAULT_COST_MODEL)
+    if cost_model in COST_MODELS and cost_model not in allowed:
+        raise UserError(f"strategy {strategy} takes cost model {' or '.join(allowed)}")
+    if strategy in BLOCK_STRATEGIES:
+        config = _block_config(config, policy, run_budgets)
+    elif policy is not None or run_budgets is not None:
+        raise UserError(f"policy settings and run budgets apply to {', '.join(BLOCK_STRATEGIES)} only")
     rec = new_state(settings=settings, tasks=tasks, budget_usd=budget, strategy=strategy, seed=seed,
-                    prices=prices, cost_model=cost_model or DEFAULT_COST_MODEL, mode=mode, config=config)
+                    prices=prices, cost_model=cost_model, mode=mode, config=config)
     if rec["cost_model"] not in COST_MODELS:
         raise UserError("unknown cost model")
     if mode not in ("study", "product"):
@@ -172,7 +221,11 @@ def _unpack(value, arrays):
 
 
 def _snapshot_key(rec, trials):
-    return _digest([rec["fingerprint"], [(t["trial"], t["setting"], t["task"], t["passed"], t["usd"]) for t in trials]])
+    """The package and model versions are in the key: a snapshot from other code is rebuilt from the trials."""
+    rows = [(t["trial"], t["setting"], t["task"], t["passed"], t["usd"]) for t in trials]
+    if rec["strategy"] in BLOCK_STRATEGIES:
+        rows = [r + (t["block"], bool(t.get("explore")), t.get("p_pred")) for r, t in zip(rows, trials)]
+    return _digest([rec["fingerprint"], __version__, MODEL_VERSIONS.get(rec["strategy"], ""), rows])
 
 
 def _snapshot_path(store, rec):
@@ -200,7 +253,113 @@ def _save_snapshot(store, rec, post, trials):
             os.unlink(name)
 
 
+def _block_policy(rec):
+    cfg = rec["config"]
+    return STRATEGIES["adaptive-blocks"](StrategyConfig(0, np.zeros(0), {}, 0,
+                                                        policy=dict(cfg["policy"], run_budgets=cfg["run_budgets"])))
+
+
+def _new_belief(rec):
+    S = len(rec["settings"])
+    weights = np.tile([t["weight"] for t in rec["tasks"]], (S, 1))
+    return AdaptiveBelief(_prior(rec), weights, frontier_cost(rec["settings"], rec["prices"]),
+                          [s["model"] for s in rec["settings"]], tau=rec["config"].get("task_tau", 1.5),
+                          refit_every=rec["config"]["policy"]["refit_every"])
+
+
+def _blocks(rec):
+    """The trials of a block strategy as blocks in issue order: (complete, partial). Only the last block can be
+    partial, because `next` hands out no block while a trial is pending."""
+    groups = []
+    for t in rec["trials"]:
+        if groups and groups[-1][0]["block"] == t["block"]:
+            groups[-1].append(t)
+        else:
+            groups.append([t])
+    complete = [all(t["state"] == "recorded" for t in g) for g in groups]
+    if not all(complete[:-1]):
+        raise UserError("a frontier block other than the last has unrecorded trials")
+    if not groups or complete[-1]:
+        return groups, []
+    return groups[:-1], [t for t in groups[-1] if t["state"] == "recorded"]
+
+
+_BELIEF_PARTS = ("post", "inert", "cost", "monitor")
+
+
+def _save_block_snapshot(store, rec, belief, trials):
+    arrays = {}
+    parts = dict(post={k: v for k, v in vars(belief.post).items() if k != "cost"}, inert=vars(belief.post.cost),
+                 cost=vars(belief.cost), monitor=vars(belief.monitor),
+                 belief={k: v for k, v in vars(belief).items() if k not in ("post", "cost", "monitor", "_cache")})
+    meta = dict(key=_snapshot_key(rec, trials), n=len(trials), **{k: _pack(v, arrays) for k, v in parts.items()})
+    arrays["metadata"] = np.array(json.dumps(meta))
+    path = _snapshot_path(store, rec)
+    fd, name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            np.savez_compressed(stream, **arrays)
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def _load_block_snapshot(store, rec, trials):
+    """(runs covered, belief) from the snapshot, or (0, None) when it is missing, stale or unreadable."""
+    try:
+        with np.load(_snapshot_path(store, rec), allow_pickle=False) as arrays:
+            meta = json.loads(str(arrays["metadata"]))
+            start = meta["n"]
+            if not 0 <= start <= len(trials) or meta["key"] != _snapshot_key(rec, trials[:start]):
+                raise ValueError("stale snapshot")
+            belief = object.__new__(AdaptiveBelief)
+            belief.__dict__.update(_unpack(meta["belief"], arrays), _cache={})
+            for name, cls in zip(_BELIEF_PARTS, (TaskPosterior, InertCost, FrontierCost, Monitor)):
+                part = object.__new__(cls)
+                part.__dict__.update(_unpack(meta[name], arrays))
+                setattr(belief, name, part)
+            belief.post.cost = belief.__dict__.pop("inert")
+            belief.monitor._pending = [tuple(x) for x in belief.monitor._pending]
+            return start, belief
+    except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile):
+        return 0, None
+
+
+def _rebuild_blocks(store, rec, *, cache=True):
+    """The belief of a block strategy: every complete block in issue order (each run added at once, the block end
+    after its last run), then the recorded runs of a partly recorded last block, with no block end. The snapshot
+    holds the complete blocks only, so the order runs are recorded in never changes the state."""
+    if rec["mode"] == "study":
+        cells = np.asarray(rec["config"].get("cell_n"), float)
+        if cells.shape != (len(rec["settings"]), len(rec["tasks"])) or (cells.sum(1) <= 0).any():
+            raise UserError("study replay needs cell_n counts for every setting")
+    done, partial = _blocks(rec)
+    trials = [t for g in done for t in g]
+    start, belief = _load_block_snapshot(store, rec, trials) if cache else (0, None)
+    if belief is None:
+        start, belief = 0, _new_belief(rec)
+    i = 0
+    for group in done:
+        i += len(group)
+        if i <= start:
+            continue
+        for t in group:
+            belief.add(t["setting"], t["task"], t["passed"], t["usd"], t["p_pred"] if t.get("explore") else None)
+        belief.block_end()
+    if cache and start < len(trials):
+        _save_block_snapshot(store, rec, belief, trials)
+    for t in partial:
+        belief.add(t["setting"], t["task"], t["passed"], t["usd"], t["p_pred"] if t.get("explore") else None)
+    if partial:
+        belief.cost.fit()
+    rec["refits"] = list(belief.refits)
+    return belief
+
+
 def rebuild(store, rec, *, cache=True):
+    if rec["strategy"] in BLOCK_STRATEGIES:
+        return _rebuild_blocks(store, rec, cache=cache)
     trials = [t for t in rec["trials"] if t["state"] == "recorded"]
     start, post = 0, None
     if cache and _snapshot_path(store, rec).is_file():
@@ -242,6 +401,8 @@ def ask(store, frontier=None, *, k=1, strategy=None):
         raise UserError("k must be a positive integer")
     with store.lock():
         rec = _checked(store, frontier, strategy)
+        if rec["strategy"] in BLOCK_STRATEGIES:
+            return _ask_block(store, rec, k)
         pending = [t for t in rec["trials"] if t["state"] == "pending"]
         if pending:
             return rec, pending[:k]
@@ -287,6 +448,61 @@ def ask(store, frontier=None, *, k=1, strategy=None):
             rec["rng"]["picker"] = picker.rng.bit_generator.state
         R.save(store, rec)
         return rec, issued
+
+
+def _ask_block(store, rec, k):
+    """The next block: every pending trial if there are any, else a new block (1, 8 or 64 runs, or a round under
+    the balanced task rule), cut before the first run whose expected cost would take the spend over the budget."""
+    if k != 1:
+        raise UserError(f"{rec['strategy']} hands out one block of runs per next; --k is for kg+random")
+    pending = [t for t in rec["trials"] if t["state"] == "pending"]
+    if pending:
+        return rec, pending
+    belief = rebuild(store, rec)
+    policy = _block_policy(rec)
+    seed, saved = rec["seed"], rec.get("rng", {})
+    explore = np.random.default_rng([seed, 29])
+    if "explore" in saved:
+        explore.bit_generator.state = saved["explore"]
+    drawn = {}
+
+    def tasks(s):                                         # one generator per setting, made when first used
+        if s not in drawn:
+            drawn[s] = np.random.default_rng([seed, 19, s])
+            if str(s) in saved.get("balanced", {}):
+                drawn[s].bit_generator.state = saved["balanced"][str(s)]
+        return drawn[s]
+
+    if rec["mode"] == "study":
+        cells = np.asarray(rec["config"]["cell_n"]).astype(np.int64)
+        remaining = np.maximum(np.minimum(cells, rec["config"].get("cell_cap", 4)) - belief.n, 0)
+    else:
+        remaining = np.full((belief.S, belief.T), UNLIMITED, dtype=np.int64)
+    costs = belief.c()
+    if costs.shape != (belief.S,) or not np.isfinite(costs).all() or (costs <= 0).any():
+        raise UserError("cost model returned invalid per-run costs")
+    actions = policy.decide(belief, remaining, dict(explore=explore, tasks=tasks))
+    p = belief.p()
+    spend = sum(t["usd"] for t in rec["trials"] if t["state"] == "recorded")
+    block = 1 + max((t["block"] for t in rec["trials"]), default=0)
+    issued, reserved = [], 0.0
+    for pos, a in enumerate(actions):
+        predicted = float(costs[a["s"]])
+        if spend + reserved + predicted > rec["budget_usd"]:
+            break
+        issued.append(dict(trial=new_id("trl"), setting=int(a["s"]), task=int(a["t"]), p_task=float(a["p_task"]),
+                           why=a["why"], issued=now_iso(), state="pending", predicted_usd=predicted, block=block,
+                           pos=pos, explore=bool(a["explore"]), support=int(a["support"]),
+                           p_pred=float(p[a["s"], a["t"]])))
+        reserved += predicted
+    if not issued:
+        raise UserError("no next trial within the budget or available pool; use loopmath frontier report")
+    rec["trials"].extend(issued)
+    rec["rng"] = dict(saved, explore=explore.bit_generator.state,
+                      balanced=dict(saved.get("balanced", {}),
+                                    **{str(s): g.bit_generator.state for s, g in drawn.items()}))
+    R.save(store, rec)
+    return rec, issued
 
 
 def _normalized_result(rec, trial, passed, usd, input_row):
@@ -356,9 +572,33 @@ def tell(store, frontier, trial_id, *, passed=None, usd=None, input_row=None, ba
         return rec, trial
 
 
+def _budget_view(rec, belief):
+    """Per run budget: the pick from the frontier of the estimates, its pass rate and mean cost per run, its runs,
+    and p_fit, the chance that its mean cost per run is at most the budget."""
+    B = rec["config"]["run_budgets"]
+    q, c = belief.q(), belief.c()
+    returned = returned_default(q, c)
+    fit = belief.p_fit(B)
+    rows = []
+    for j, b in enumerate(B):
+        k = budget_pick(q, c, b, returned)
+        if k < 0:
+            rows.append(dict(budget_usd=b, pick=None, pass_rate=None, cost_usd=None, p_fit=None, runs=0))
+        else:
+            rows.append(dict(budget_usd=b, pick=rec["settings"][k]["name"], pass_rate=float(q[k]),
+                             cost_usd=float(c[k]), p_fit=float(fit[j, k]), runs=int(belief.n[k].sum())))
+    return rows
+
+
 def report(store, frontier=None, *, draws=2000, check_rng=None):
+    """The frontier as of the recorded runs. A block strategy reports after a full refit of a copy of its
+    models (the refit `next` would do at a block end), so a report never changes what `next` hands out."""
     rec = _checked(store, frontier)
-    post = rebuild(store, rec)
+    post = belief = rebuild(store, rec)
+    if rec["strategy"] in BLOCK_STRATEGIES:
+        belief = copy.deepcopy(belief)
+        belief.refit()
+        post = belief.worlds()
     rng = np.random.default_rng([rec["seed"], 23])
     E, M = post.sample_latent(draws, rng)
     q, c = post.to_qc(E, M)
@@ -377,10 +617,63 @@ def report(store, frontier=None, *, draws=2000, check_rng=None):
                              pass_rate=float(qhat[s]), pass_interval=np.quantile(q[:, s], [0.1, 0.9]).tolist(),
                              cost_usd=float(post.cost.per_run()[s]), cost_interval=np.quantile(c[:, s], [0.1, 0.9]).tolist(),
                              runs=int(post.n[s])))
-    return dict(frontier=rec["frontier"], probability_label=PROBABILITY_LABEL, p_match=float(probability),
-                settings=settings, budget_usd=rec["budget_usd"],
-                spend_usd=sum(t["usd"] for t in rec["trials"] if t["state"] == "recorded"),
-                pending=sum(t["state"] == "pending" for t in rec["trials"]), refits=rec["refits"])
+    out = dict(frontier=rec["frontier"], probability_label=PROBABILITY_LABEL, p_match=float(probability),
+               settings=settings, budget_usd=rec["budget_usd"],
+               spend_usd=sum(t["usd"] for t in rec["trials"] if t["state"] == "recorded"),
+               pending=sum(t["state"] == "pending" for t in rec["trials"]), refits=rec["refits"],
+               strategy=rec["strategy"])
+    if rec["strategy"] in BLOCK_STRATEGIES:
+        out.update(budgets=_budget_view(rec, belief), misfit=belief.misfit())
+    elif rec["strategy"] != DEFAULT_STRATEGY:
+        out["note"] = NEWER_STRATEGY_NOTE
+    return out
+
+
+def report_lines(payload):
+    """The text report: the lines of 0.4.5, then the budget view of a block strategy or the strategy note."""
+    lines = [f"frontier {payload['frontier']}: ${payload['spend_usd']:.2f} / ${payload['budget_usd']:.2f}",
+             f"P = {payload['p_match']:.4f}: {PROBABILITY_LABEL}",
+             "setting  P(frontier)  pass rate [80% interval]  USD/run [80% interval]  runs"]
+    for s in payload["settings"]:
+        qlo, qhi = s["pass_interval"]
+        clo, chi = s["cost_interval"]
+        lines.append(f"{s['name']}  {s['p_frontier']:.3f}  {s['pass_rate']:.3f} [{qlo:.3f}, {qhi:.3f}]  "
+                     f"{s['cost_usd']:.3f} [{clo:.3f}, {chi:.3f}]  {s['runs']}")
+    if "budgets" in payload:
+        lines.append("USD/run budget  pick  pass rate  USD/run  P(cost fits budget)  runs")
+        groups = []
+        for row in payload["budgets"]:
+            if groups and groups[-1][-1]["pick"] == row["pick"]:
+                groups[-1].append(row)
+            else:
+                groups.append([row])
+        for g in groups:
+            span = f"{g[0]['budget_usd']:.4g} to {g[-1]['budget_usd']:.4g}"
+            if g[0]["pick"] is None:
+                lines.append(f"{span}  no setting fits")
+                continue
+            fits = f"{g[0]['p_fit']:.2f}" if len(g) == 1 else f"{g[0]['p_fit']:.2f} to {g[-1]['p_fit']:.2f}"
+            lines.append(f"{span}  {g[0]['pick']}  {g[0]['pass_rate']:.3f}  {g[0]['cost_usd']:.3f}  {fits}  "
+                         f"{g[0]['runs']}")
+        m = payload["misfit"]
+        lines.append(f"misfit test: {'flagged' if m['flag'] else 'no flag'} (smallest adjusted p {m['p']:.3f}, "
+                     f"{m['n']} probes)")
+    if "note" in payload:
+        lines.append(f"note: {payload['note']}")
+    return lines
+
+
+def _parse_run_budgets(text):
+    """LO:HI[:J], USD per run: J (default 36) log-spaced budgets from LO to HI, rounded to 6 decimals."""
+    parts = text.split(":")
+    try:
+        lo, hi = float(parts[0]), float(parts[1])
+        n = int(parts[2]) if len(parts) == 3 else 36
+    except (ValueError, IndexError):
+        raise UserError("--run-budgets is LO:HI or LO:HI:J") from None
+    if len(parts) > 3 or not (math.isfinite(lo) and math.isfinite(hi) and 0 < lo < hi) or n < 2:
+        raise UserError("--run-budgets needs 0 < LO < HI and J of at least 2")
+    return budget_grid(lo, hi, n)
 
 
 @handler("frontier")
@@ -394,8 +687,12 @@ def frontier_init(args):
     settings = data.get("settings", [])
     if isinstance(settings, dict):
         settings = [dict(value, name=name) for name, value in settings.items()]
+    given = (("tasks", getattr(args, "task_rule", None)), ("pair_cap", getattr(args, "pair_cap", None)))
+    policy = {k: v for k, v in given if v is not None}
+    budgets = getattr(args, "run_budgets", None)
     rec = initialize(_store(args), tasks, settings, args.budget, seed=args.seed, strategy=args.strategy,
-                     prices=args.prices)
+                     prices=args.prices, policy=policy or None,
+                     run_budgets=_parse_run_budgets(budgets) if budgets else None)
     return _out(args, "frontier", {"frontier": rec["frontier"]}, [rec["frontier"]])
 
 
@@ -423,14 +720,7 @@ def frontier_record(args):
 @handler("frontier")
 def frontier_report(args):
     payload = report(_store(args), args.frontier)
-    lines = [f"frontier {payload['frontier']}: ${payload['spend_usd']:.2f} / ${payload['budget_usd']:.2f}",
-             f"P = {payload['p_match']:.4f}: {PROBABILITY_LABEL}",
-             "setting  P(frontier)  pass rate [80% interval]  USD/run [80% interval]  runs"]
-    for s in payload["settings"]:
-        qlo, qhi = s["pass_interval"]
-        clo, chi = s["cost_interval"]
-        lines.append(f"{s['name']}  {s['p_frontier']:.3f}  {s['pass_rate']:.3f} [{qlo:.3f}, {qhi:.3f}]  "
-                     f"{s['cost_usd']:.3f} [{clo:.3f}, {chi:.3f}]  {s['runs']}")
+    lines = report_lines(payload)
     if args.json:
         return _out(args, "frontier", payload, lines)
     print("\n".join(lines))

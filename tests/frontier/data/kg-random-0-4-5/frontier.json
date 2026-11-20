@@ -1,0 +1,488 @@
+{
+ "settings": [
+  {
+   "name": "opus-high",
+   "model": "claude-opus-4-7",
+   "effort": "high",
+   "family": "claude"
+  },
+  {
+   "name": "haiku-low",
+   "model": "claude-haiku-5-5",
+   "effort": "low",
+   "family": "claude"
+  },
+  {
+   "name": "fake-high",
+   "model": "fake-1",
+   "effort": "high",
+   "family": "other"
+  }
+ ],
+ "tasks": [
+  {
+   "id": "task-0",
+   "weight": 0.06666666666666667
+  },
+  {
+   "id": "task-1",
+   "weight": 0.13333333333333333
+  },
+  {
+   "id": "task-2",
+   "weight": 0.2
+  },
+  {
+   "id": "task-3",
+   "weight": 0.26666666666666666
+  },
+  {
+   "id": "task-4",
+   "weight": 0.3333333333333333
+  }
+ ],
+ "budget_usd": 400,
+ "strategy": "kg+random",
+ "seed": 7,
+ "prices": "shipped",
+ "cost_model": "frontier",
+ "mode": "product",
+ "config": {
+  "prices_digest": "d2dd2f26b642ec94df55416a3b5155830d0ffd0054427ddeb95966edac7743f0"
+ },
+ "schema": "loopmath.frontier/1",
+ "frontier": "frn_01M7V5P5N3QGBNFH3G2KTZ7J0N",
+ "created": "2026-11-20T00:28:47Z",
+ "trials": [
+  {
+   "trial": "trl_01M7V5P5NDZZ4VNGBRMRN9AAAE",
+   "setting": 1,
+   "task": 4,
+   "p_task": 0.3333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.005349157352899027,
+   "passed": 0,
+   "usd": 0.007759,
+   "run": "run_hr_fc87fce4babdc0138ba9",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "6cb6be840ec5cda5067d3a536382d36a8ecfe262a6fc1792dd6658cc78494e4c"
+  },
+  {
+   "trial": "trl_01M7V5P5W9P5NYB58X8P6VT252",
+   "setting": 1,
+   "task": 1,
+   "p_task": 0.13333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.008465575882294673,
+   "passed": 1,
+   "usd": 0.012264,
+   "run": "run_hr_c0b5b1710a9327121cb3",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "78525471dc12a82885ad4c75f76a5252e5ba8f41c1cffeed6f37d1b72db39726"
+  },
+  {
+   "trial": "trl_01M7V5P5WH7919DB758JN2YKQS",
+   "setting": 1,
+   "task": 3,
+   "p_task": 0.26666666666666666,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.010724859744206408,
+   "passed": 0,
+   "usd": 0.009903,
+   "run": "run_hr_1d619bb3efa9246ab2da",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "8c46732f87a7ed95911a99f2c3d8ba36c7c29e5b6f272cd0932ad661cf58e057"
+  },
+  {
+   "trial": "trl_01M7V5P5WT58YGC8D0JP2WAN6K",
+   "setting": 1,
+   "task": 3,
+   "p_task": 0.26666666666666666,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.010812988384320835,
+   "passed": 0,
+   "usd": 0.009831,
+   "run": "run_hr_f49c5cf07a170bcf156f",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "a7162fee5e9413ad331d748bc8c95708f94189af35642335c14e5b4d94762e72"
+  },
+  {
+   "trial": "trl_01M7V5P5X3CK7KRR6SAC6DD32M",
+   "setting": 0,
+   "task": 3,
+   "p_task": 0.26666666666666666,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.7349646822817484,
+   "passed": 1,
+   "usd": 0.387737,
+   "run": "run_hr_65cc95198ec544cdfbdc",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "da89d7196c54a305994502b17b16d531f51bc2634be26a1eee29faa450a0ce98"
+  },
+  {
+   "trial": "trl_01M7V5P5XCY92WTR21C2DXRJJZ",
+   "setting": 1,
+   "task": 4,
+   "p_task": 0.3333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.01076627990210947,
+   "passed": 0,
+   "usd": 0.011177,
+   "run": "run_hr_178ffb721c0dc353335c",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "a8fc849996acd259ab83d58dcfc6ba329f994ddfdd708f293ff2e37d3699c1bd"
+  },
+  {
+   "trial": "trl_01M7V5P5XMM9ZM4WBC8YQP8WG9",
+   "setting": 1,
+   "task": 3,
+   "p_task": 0.26666666666666666,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.010986053632100114,
+   "passed": 0,
+   "usd": 0.014155,
+   "run": "run_hr_6c63c39c87e3ad44cf33",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "a43f2dce6317d22e96eff34e92829344e7f667aaf8f82795cccbb1055db65bde"
+  },
+  {
+   "trial": "trl_01M7V5P5XWS22PP79NY24MYCDM",
+   "setting": 1,
+   "task": 3,
+   "p_task": 0.26666666666666666,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011594489944154102,
+   "passed": 0,
+   "usd": 0.011055,
+   "run": "run_hr_59519d35cf03e068cc75",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "d87514a6eace4a76f3757014208aa89409eca01335fa2da0f5ee79bfaf66e6e0"
+  },
+  {
+   "trial": "trl_01M7V5P5Y4H1FX50H04EDEKB23",
+   "setting": 1,
+   "task": 4,
+   "p_task": 0.3333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011590177710414382,
+   "passed": 1,
+   "usd": 0.010467,
+   "run": "run_hr_652b7152fd4ca79e3cce",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "6fb9e8655cff3e81931360a9efcf1f67e03e345adb136fe524bd6f88f7aa7f4d"
+  },
+  {
+   "trial": "trl_01M7V5P5YEWEG4GR17C0X398BE",
+   "setting": 1,
+   "task": 2,
+   "p_task": 0.2,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011498383645281671,
+   "passed": 1,
+   "usd": 0.008765,
+   "run": "run_hr_17c01d692d1bdb475fb1",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "7e17af810fd187c5b5127db03077cbaf536f4be52e75e07f1ceac066263f3dde"
+  },
+  {
+   "trial": "trl_01M7V5P5YEWEG4GR17C0X398BF",
+   "setting": 2,
+   "task": 4,
+   "p_task": 0.3333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 1.1737193534641157,
+   "passed": 0,
+   "usd": 0.915981,
+   "run": "run_hr_b992eaad966da8e0ec89",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "9f62e52a18913b0968e8290305effd262f7f5ddc7db467911262bed66d21aaaa"
+  },
+  {
+   "trial": "trl_01M7V5P5YEWEG4GR17C0X398BG",
+   "setting": 0,
+   "task": 1,
+   "p_task": 0.13333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.5420212122756087,
+   "passed": 1,
+   "usd": 0.802591,
+   "run": "run_hr_9a65e5c2307f4aaab6a3",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "05369306caf56b234285055719888f4cc61904e7f8f0d3747537cea33d29b89c"
+  },
+  {
+   "trial": "trl_01M7V5P5YV95W0A99D4EVNN5S5",
+   "setting": 1,
+   "task": 4,
+   "p_task": 0.3333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011228987388711238,
+   "passed": 0,
+   "usd": 0.013753,
+   "run": "run_hr_398eca54154ab73959ca",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "82968cd8fc7456c9683f7b635c6a720cc00c38cc45fff77fa62094efec038c11"
+  },
+  {
+   "trial": "trl_01M7V5P5Z3P60QH2NMGA2RGTQC",
+   "setting": 2,
+   "task": 1,
+   "p_task": 0.13333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 1.1296622013732516,
+   "passed": 0,
+   "usd": 0.877625,
+   "run": "run_hr_74e3642f8b443791a6f3",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "e1cd6f01a9dedd003a96dc9cfb640aac133ff50bcc6a6c49b06bf7cb56ae5688"
+  },
+  {
+   "trial": "trl_01M7V5P5ZA01YF26FYRAGPD6H8",
+   "setting": 0,
+   "task": 3,
+   "p_task": 0.26666666666666666,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.6897980641549226,
+   "passed": 1,
+   "usd": 1.013952,
+   "run": "run_hr_ed27e58195a4148d9315",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "dada1338f15caf451558c233a2466e699bc827886a7a345de4283bf4e254ba16"
+  },
+  {
+   "trial": "trl_01M7V5P5ZJH19JDR03E4YDRVRQ",
+   "setting": 1,
+   "task": 3,
+   "p_task": 0.26666666666666666,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011518570780437139,
+   "passed": 0,
+   "usd": 0.007094,
+   "run": "run_hr_4f1ddb972614af2585d7",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "c853b3e03d2758f3df30d2c47ac85072726a762b45b68c55efb6c1c19187a02d"
+  },
+  {
+   "trial": "trl_01M7V5P5ZV88SGC0ZEA2JS39YA",
+   "setting": 1,
+   "task": 0,
+   "p_task": 0.06666666666666667,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011103209252577354,
+   "passed": 0,
+   "usd": 0.014175,
+   "run": "run_hr_dcca7ab7b921e317ff97",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "b4d80e37d2235e6224403b679acd8fdd9d3b717eb968be36a9ad047901ecb0af"
+  },
+  {
+   "trial": "trl_01M7V5P603PJZQ60G21WECDN17",
+   "setting": 1,
+   "task": 2,
+   "p_task": 0.2,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011380874811908,
+   "passed": 0,
+   "usd": 0.01613,
+   "run": "run_hr_79b22676c2a1a807e130",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "3bc26be5cf7b18c8768b13c69f17ab08db19dc3476b3dbc4c0df0ecf200bc75b"
+  },
+  {
+   "trial": "trl_01M7V5P60BAK07MA2N6C4HHPF5",
+   "setting": 1,
+   "task": 4,
+   "p_task": 0.3333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011758821140770962,
+   "passed": 1,
+   "usd": 0.012095,
+   "run": "run_hr_7d6eac1290c4a5bf241a",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "3fb18089fc4f146584f7beaa1b66a5e06d65fd3793afb014428e05fa4a88e1db"
+  },
+  {
+   "trial": "trl_01M7V5P60MAV2PRYBV2MYG9XNW",
+   "setting": 0,
+   "task": 3,
+   "p_task": 0.26666666666666666,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.8034759223894703,
+   "passed": 1,
+   "usd": 0.451834,
+   "run": "run_hr_f16976d1197dfd975043",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "5f67eed0ca271b9e2b6d01e07efaff4efb9eb64ff389fe86d25d940c5c4dfae6"
+  },
+  {
+   "trial": "trl_01M7V5P60WZ7ASNN23WYZFHK25",
+   "setting": 1,
+   "task": 4,
+   "p_task": 0.3333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011799835579378418,
+   "passed": 0,
+   "usd": 0.015961,
+   "run": "run_hr_2c4a3a3199b38cfaf958",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "1eca7f1ec3bab2a54e951edcd7986d98b74109cc9d9bf8f1893ed336f7853bac"
+  },
+  {
+   "trial": "trl_01M7V5P614Y11EZ0RPBWB5AP59",
+   "setting": 1,
+   "task": 1,
+   "p_task": 0.13333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.012090612771248127,
+   "passed": 0,
+   "usd": 0.00919,
+   "run": "run_hr_5a0b645e2bf9e9f4cf39",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "c02a8f523c93ea0743bcb72b0e5fca899c837e0f16b58e1f0d759fc0ea086976"
+  },
+  {
+   "trial": "trl_01M7V5P61CMHS2DSD80G3W2MFJ",
+   "setting": 1,
+   "task": 4,
+   "p_task": 0.3333333333333333,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.011909947473427657,
+   "passed": 0,
+   "usd": 0.012023,
+   "run": "run_hr_4ee43057797467563a14",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "c4d77c48fcf075e4734878d360878c860b6c2d2db5d77959e1307ddb53dd0d7c"
+  },
+  {
+   "trial": "trl_01M7V5P61M4EYXXKVFCF7KYRYX",
+   "setting": 0,
+   "task": 3,
+   "p_task": 0.26666666666666666,
+   "why": {
+    "picker": "kg_dollar"
+   },
+   "issued": "2026-11-20T00:28:47Z",
+   "state": "recorded",
+   "predicted_usd": 0.7231852145627454,
+   "passed": 1,
+   "usd": 0.906173,
+   "run": "run_hr_83e34c69be76148d8d78",
+   "recorded": "2026-11-20T00:28:47Z",
+   "digest": "d4dc5154b7465c7fc2737abccbcbde96505ee61543103d1dcf8d8ca0946229bd"
+  }
+ ],
+ "refits": [],
+ "rng": {
+  "tasks": {
+   "bit_generator": "PCG64",
+   "state": {
+    "state": 170281964927202841733878859386529243900,
+    "inc": 54208272121409765563211278473629484791
+   },
+   "has_uint32": 0,
+   "uinteger": 0
+  },
+  "picker": {
+   "bit_generator": "PCG64",
+   "state": {
+    "state": 9550766087240305152619585098269680608,
+    "inc": 284126930415717604577974248760035974405
+   },
+   "has_uint32": 0,
+   "uinteger": 0
+  }
+ },
+ "fingerprint": "812432e6cd811d650a716caab99afe66500e3f2faa3376328f3be1acb683b027"
+}

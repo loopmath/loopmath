@@ -19,6 +19,7 @@ def setup_frontier(tmp_path, **kw):
     store = Store(tmp_path / "store")
     tasks = [{"id": f"task-{i}", "weight": i + 1} for i in range(5)]
     settings = [{"name": f"setting-{i}", "model": f"fake-{i}", "effort": "high"} for i in range(3)]
+    kw.setdefault("strategy", "kg+random")                 # these tests cover the kg+random code path
     return store, C.initialize(store, tasks, settings, kw.pop("budget", 1000), **kw)
 
 
@@ -170,6 +171,7 @@ def test_cli_init_and_report(tmp_path):
     assert viewed.returncode == 0, viewed.stderr
     assert report["probability_label"] == C.PROBABILITY_LABEL
     assert report["settings"][0]["name"] == "candidate"
+    assert report["strategy"] == "adaptive-blocks" and len(report["budgets"]) == 36
     result = subprocess.run([sys.executable, "-m", "loopmath", "frontier", "report", report["frontier"],
                              "--home", str(store.home)], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr

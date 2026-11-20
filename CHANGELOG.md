@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### `loopmath frontier` (experimental)
+
+What changes for you:
+
+- **New frontiers use the `adaptive-blocks` strategy.** `frontier init` makes one unless you pass `--strategy kg+random`. It buys the run or block of runs (1, 8 or 64 runs of one setting) that adds the most value per planned dollar. The value is the pass rate of the setting a user would pick at each budget per run, averaged over a grid of budgets. A pair (setting, task) takes at most 4 runs. Whether a setting can serve a budget is judged by an optimistic price, the 20th percentile of the belief about its mean cost per run. How it works is in [`docs/frontier.md`](docs/frontier.md).
+- **`init` options.** `--task-rule chosen|balanced` sets how tasks are chosen. With `chosen` (the default) a run's task is the one worth most. With `balanced` it is a least-run task. `--pair-cap N` (4) and `--run-budgets LO:HI[:J]` (36 budgets from USD 0.0145 to 26.5) set the cap and the budget grid. `kg+random` refuses all three.
+- **`next` hands out a block.** For `adaptive-blocks` it returns every trial of the block and refuses `--k`. While any trial is pending it returns those trials again. A block is cut before the first run whose expected cost would take the spend over the budget. Each trial records `block`, `pos`, `explore`, `support` and `p_pred`.
+- **`record` takes part of a block.** Runs of a block can be recorded one at a time and in any order. The next block does not depend on that order or on reports in between.
+- **`report` adds the pick per budget.** For `adaptive-blocks`, `budgets` gives, for each budget per run, the pick, its pass rate and cost per run, its runs, and `p_fit`, the chance that its mean cost per run fits the budget. `misfit` gives the state of a standing test of the success model. Every 0.4.5 key and line stays.
+- **`kg+random` frontiers resume unchanged.** A frontier made by 0.4.5 or earlier gives the same trials and the same report numbers. Its report adds `strategy` and a `note` line saying a newer strategy exists. A frontier never changes strategy.
+- **Snapshots are keyed by version.** The snapshot that speeds up a resume now includes the package version and the model version in its key. After an upgrade, the first command rebuilds it from the recorded runs.
+
+Known limits:
+
+- **P is not yet checked for calibration.** Do not stop on it.
+- **The cap and the optimistic price were chosen on replays of recorded runs and on simulations.** They have not yet been checked on a fresh set of tasks.
+
 ## 0.4.5 (2026-11-18)
 
 This release changes `loopmath eval` (experimental): a faster default engine that needs no extra, a new unit for the hidden quality behind yes or no and comparison results, and fixes. Everything else is 0.4.4's.

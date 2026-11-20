@@ -1,9 +1,12 @@
 """The pick seam: a `Strategy` gives the next trials, a `TaskChooser` swaps only the task given the setting.
 
-v1 ships one strategy, `kg+random`: kg_dollar over the open settings, then a task drawn by the declared task
-weights, with replacement. A difficulty-weighted chooser is a new `TaskChooser` that returns its pick probability;
-a joint (setting, task) KG or a frontier Thompson picker is a new `Strategy`. Neither touches `kg`, the CLI or the
-state file. The strategy name is stored in the frontier file, and resuming under another name is refused.
+Two strategies ship. `kg+random` (the only one up to 0.4.5): kg_dollar over the open settings, then a task drawn by
+the declared task weights, with replacement. `adaptive-blocks` (the default for new frontiers, `blocks.py`): a run
+or a block of 8 or 64 runs, whichever adds the most value per planned dollar, at most 4 runs per pair; it hands out
+whole blocks through `AdaptiveBlocks.decide` instead of `Strategy.pick`, and `commands` gives it its own models.
+A difficulty-weighted chooser is a new `TaskChooser` that returns its pick probability; a joint (setting, task) KG
+or a frontier Thompson picker is a new `Strategy`. Neither touches `kg`, the CLI or the state file. The strategy name
+is stored in the frontier file, and resuming under another name is refused.
 """
 
 from __future__ import annotations
@@ -29,13 +32,15 @@ class Pick:
 @dataclass
 class StrategyConfig:
     """What a strategy factory gets. `weights`: T task weights summing to 1 (the declared ones, else equal).
-    `spec`: the `MatchSpec` fields as a dict. `seed`: the frontier's seed. `picker`: extra `Picker` keywords."""
+    `spec`: the `MatchSpec` fields as a dict. `seed`: the frontier's seed. `picker`: extra `Picker` keywords.
+    `policy`: the settings of a block strategy, with `run_budgets` (config["policy"] plus config["run_budgets"])."""
 
     n_settings: int
     weights: np.ndarray
     spec: dict
     seed: int
     picker: dict = field(default_factory=dict)
+    policy: dict = field(default_factory=dict)
 
 
 class TaskChooser(Protocol):
@@ -96,4 +101,14 @@ def _kg_random(cfg: StrategyConfig) -> Strategy:
     return KGThenTask(picker, RandomTasks(cfg.weights))
 
 
-STRATEGIES: dict[str, Callable[[StrategyConfig], Strategy]] = {"kg+random": _kg_random}
+def _adaptive_blocks(cfg: StrategyConfig):
+    from .blocks import AdaptiveBlocks
+
+    policy = dict(cfg.policy)
+    budgets = np.asarray(policy.pop("run_budgets"), float)
+    policy.pop("refit_every", None)                        # the belief's schedule, not the policy's
+    return AdaptiveBlocks(budgets, np.ones(len(budgets)) / len(budgets), **policy)
+
+
+STRATEGIES: dict[str, Callable[[StrategyConfig], Strategy]] = {"kg+random": _kg_random,
+                                                               "adaptive-blocks": _adaptive_blocks}
